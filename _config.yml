@@ -1,7 +1,7 @@
 site: Personal Jekyll Theme
 
-url: https://blog.itlab.app
-baseurl: https://blog.itlab.app
+url: 
+baseurl: 
 
 collections:
   pages:
