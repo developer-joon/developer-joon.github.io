@@ -154,6 +154,6 @@ advanced_settings:
   ajax_loading: true
   analytics_code: "G-TQ9ZC08YXH"
   custom_styles: |
-    .single-comment { margin-top: 0px }
+    .single-comment { margin-top: 60px }
   header_js: ""
   footer_js: ""

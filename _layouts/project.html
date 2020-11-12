@@ -25,10 +25,17 @@ layout: default
 
 			{{ page.content }}
 
+			<div class="single-comment">
+
+				<div id="fb-root"></div>
+
+				<div class="fb-comments" data-href="{{site.url}}{{page.url}}" data-numposts="20" data-width="100%"></div>
+
+			</div>
+			
+
 		</article>
 
 	</div>
 
 </section>
-
-{% include post-comment.html %}

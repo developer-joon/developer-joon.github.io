@@ -33,6 +33,7 @@
 	<meta property="og:title" content="{% if page.url == "/" %}{{ site.data.settings.basic_settings.site_title }} – {{ page.title }}{% else %}{{ page.title }} – {{ site.data.settings.basic_settings.site_title }}{% endif %}" />
 	<meta property="og:description" content="{{ page.description | strip_html | xml_escape }}" />
 	<meta property="og:image" content="{{ page.featured_image | absolute_url }}" />
+	<meta property="og:url" content="{{site.url}}{{page.url}}">
 
 	{% if site.data.settings.font_settings.font_embed %}
 	<!-- Font Embed Code -->
@@ -88,11 +89,11 @@
 	<div class="page">
 
 		<div class="page__content" data-page-title="{% if page.url == "/" %}{{ site.data.settings.basic_settings.site_title }} – {{ page.title }}{% else %}{{ page.title }} – {{ site.data.settings.basic_settings.site_title }}{% endif %}">
-
+			
 			{{ content }}
 
 		</div>
-
+		
 	</div>
 
 
@@ -106,7 +107,10 @@
 	
 	<!-- Facebook Code -->
 	<script async defer crossorigin="anonymous" src="https://connect.facebook.net/ko_KR/sdk.js#xfbml=1&version=v9.0" nonce="osvTEYsM"></script>
-
+	<script>
+		setInterval(() => window.FB ? window.FB.init({version: "v9.0", xfbml: true}) : {}, 100)
+	</script>
+	
 	{% if site.data.settings.advanced_settings.footer_js %}
 	<!-- Extra Footer JS Code -->
 	{{ site.data.settings.advanced_settings.footer_js }}
