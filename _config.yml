@@ -1,7 +1,7 @@
 site: LiAh PaPa
 
-url: 
-baseurl: 
+url: blog.itlab.app
+baseurl: /
 
 collections:
   pages:
