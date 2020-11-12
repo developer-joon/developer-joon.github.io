@@ -55,7 +55,15 @@
 
 	{% if site.data.settings.advanced_settings.analytics_code %}
 	<!-- Analytics Code -->
-	{{ site.data.settings.advanced_settings.analytics_code }}
+	<!-- Global site tag (gtag.js) - Google Analytics -->
+	<script async src="https://www.googletagmanager.com/gtag/js?id=G-TQ9ZC08YXH"></script>
+	<script>
+	window.dataLayer = window.dataLayer || [];
+	function gtag(){dataLayer.push(arguments);}
+	gtag('js', new Date());
+
+	gtag('config', '{{ site.data.settings.advanced_settings.analytics_code }}');
+	</script>
 	{% endif %}
 
 	{% if site.data.settings.advanced_settings.header_js %}

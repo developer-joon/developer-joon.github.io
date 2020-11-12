@@ -1,5 +1,5 @@
 basic_settings:
-  site_title: Personal
+  site_title: LiAh PaPa
   favicon_image: /images/favicon.png
 
 header_settings:
@@ -152,7 +152,7 @@ font_settings:
 
 advanced_settings:
   ajax_loading: true
-  analytics_code: ""
+  analytics_code: "G-TQ9ZC08YXH"
   custom_styles: ""
   header_js: ""
   footer_js: ""
