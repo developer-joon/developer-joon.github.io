@@ -1,4 +1,4 @@
-site: LiAh PaPa
+site: Ria PaPa
 
 url: www.itlab.app
 baseurl: /
@@ -54,4 +54,3 @@ plugins:
 
 paginate: 6
 paginate_path: "/blog/page:num/"
-  

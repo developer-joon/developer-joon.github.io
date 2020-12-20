@@ -1,5 +1,5 @@
 basic_settings:
-  site_title: LiAh PaPa
+  site_title: Ria PaPa
   favicon_image: /images/favicon.png
 
 header_settings:
@@ -18,7 +18,7 @@ menu_settings:
       url: '/contact'
 
 footer_settings:
-  footer_tagline: 승자는 시간을 관리하며 살고, 패자는 시간에 끌려 산다. - J. 하비스
+  footer_tagline: Software development / architecture / open source can be an expert. - Joonwoo.Kim
 
 hero_settings:
   overlay_opacity: 0.8

@@ -1,10 +1,10 @@
 ---
 title: Contact
-subtitle: Personal comes with a built-in contact form that's free and easy to set up.
-description: Personal is the perfect theme for developers, designers and other creatives.
+subtitle: 저와 소통이 필요하면 메일 보내주세요.
+description: 저와 소통이 필요하면 메일 보내주세요.
 featured_image: /images/demo/contact.jpg
 ---
 
 {% include contact-form.html %}
 
-We've made a contact form that you can use with [Formspree](https://formspree.io/create/jekyllthemes) to handle up to 50 submissions per month for free. You could also easily switch out the end-point to use another contact form service.
+developer.joon@gmail.com 메일 보내시면 빠른 회신드리겠습니다.
