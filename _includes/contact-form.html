@@ -1,6 +1,6 @@
 <div class="contact-form">
 
-    <form method="post" action="{{ site.data.settings.contact_settings.form_action }}" id="contact-form">
+    <form method="post" target="_blank" action="{{ site.data.settings.contact_settings.form_action }}" id="contact-form">
 
         <div class="contact-form__item">
             <label class="contact-form__label">Email Address *</label>
@@ -23,6 +23,7 @@
 
         <div class="contact-form__item">
             <input type="submit" value="{{ site.data.settings.contact_settings.send_button_text }}"
+                onclick="window.location.href = '{{ site.data.settings.contact_settings.confirmation_url }}';"
                    class="button button--large">
         </div>
 
