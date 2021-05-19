@@ -424,20 +424,22 @@
 			// Submit the form!
 
 			e.preventDefault();
-			fetch({
-				url: $(this).attr('action'),
+			fetch($(this).attr('action'), {
 				method: "POST",
-				mode: 'cors',
+				headers: {
+					"Content-type": "application/json; charset=UTF-8"
+				},
 				body: JSON.stringify({
-					email: emailField,
-					name: nameField,
-					message: messageField,
-					gotcha: gotchaField,
+					email: emailField.val(),
+					name: nameField.val(),
+					message: messageField.val(),
+					gotcha: gotchaField.val(),
 				})
-			})
-			.then(() => History.pushState(null, "thanks", "/thanks.html"))
-			.catch(err => alert(err));
+			}).catch(err => alert(err));
 
+			setTimeout(() => {
+				History.pushState(null, "thanks", "/thanks.html")
+			}, 500)
 		}
 
 		else {
