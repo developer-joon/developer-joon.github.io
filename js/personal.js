@@ -427,6 +427,7 @@
 			fetch({
 				url: $(this).attr('action'),
 				method: "POST",
+				mode: 'cors',
 				body: JSON.stringify({
 					email: emailField,
 					name: nameField,
