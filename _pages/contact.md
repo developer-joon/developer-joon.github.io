@@ -7,4 +7,4 @@ featured_image: /images/demo/contact.jpg
 
 {% include contact-form.html %}
 
-developer.joon@gmail.com 메일 보내시면 빠른 회신드리겠습니다.
+developer.joon@gmail.com 메일로 보내주세요.

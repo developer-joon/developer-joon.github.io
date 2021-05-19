@@ -420,12 +420,27 @@
 
 		// If all fields are filled, except gotcha
 		if ( emailField.val() !== '' && nameField.val() !== '' && messageField.val() !== '' && gotchaField.val().length === 0 ) {
-
+			
 			// Submit the form!
+
+			e.preventDefault();
+			fetch({
+				url: $(this).attr('action'),
+				method: "POST",
+				body: JSON.stringify({
+					email: emailField,
+					name: nameField,
+					message: messageField,
+					gotcha: gotchaField,
+				})
+			})
+			.then(() => History.pushState(null, "thanks", "/thanks.html"))
+			.catch(err => alert(err));
+
 		}
 
 		else {
-
+			
 			// Stop submission
 			e.preventDefault();
 		}
