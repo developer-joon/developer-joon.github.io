@@ -7,4 +7,4 @@ featured_image: /images/demo/contact.jpg
 
 {% include contact-form.html %}
 
-developer.joon@gmail.com 메일로 보내주세요.
+잘못된 내용이 있으면 developer.joon@gmail.com 메일로 보내주세요.
