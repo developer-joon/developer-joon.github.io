@@ -9,11 +9,11 @@ featured_image: '/images/trend-trendy-lifestlye-urban-style-concept.jpg'
 
 ## 개요
 
-자바의 I/O의 스트림이 아닌 데이터 컬렉션과 유사한 것으로, 자바8에서 새롭게 등장한 함수형 프로그래밍의 스트림을 학습해본다. 스트림이라는 표현은 주로 어떤 데이터의 흐름을 말한다. 이번 자바 8에서 새롭게 나온기 전에도 자바에서 사용하던 용어로 [java.io](http://java.io) 패키지에 있는 I/O 프로그래밍에 활용되는 클래스명에 Stream이라는 단어를 사용하고 있다. 이번에 학습할 스트림은 주로 컬렉션 프래임워크나 이와 유사한 형태의 데이터를 처리하는 자바8에서 새롭게 제안한 API 이다.
+자바의 I/O의 스트림이 아닌 데이터 컬렉션과 유사한 것으로, 자바8에서 새롭게 등장한 함수형 프로그래밍의 스트림을 학습해본다. 스트림이라는 표현은 주로 어떤 데이터의 흐름을 말한다. 이번 자바 8에서 새롭게 나온기 전에도 자바에서 사용하던 용어로 java.io 패키지에 있는 I/O 프로그래밍에 활용되는 클래스명에 Stream이라는 단어를 사용하고 있다. 이번에 학습할 스트림은 주로 컬렉션 프래임워크나 이와 유사한 형태의 데이터를 처리하는 자바8에서 새롭게 제안한 API 이다.
 
 ## 스트림 인터페이스
 
-자바 8의 스트림은 [java.util.stream](http://java.util.stream) 패키지에 정의되어 있다. 스트림은 람다 표현식이나 메서드 참조를 통해 구체적인 구현체를 전달 받아 동작하기 때문에 함수형 인터페이스와 관련이 있다. 스트림에서 가장 기본이 되는 인터페이스는 BaseStream이며 제네릭 타입으로 <T, S extends BaseStream<T, S>>가 인터페이스에 추가적으로 정의되어 있다.
+자바 8의 스트림은 java.util.stream 패키지에 정의되어 있다. 스트림은 람다 표현식이나 메서드 참조를 통해 구체적인 구현체를 전달 받아 동작하기 때문에 함수형 인터페이스와 관련이 있다. 스트림에서 가장 기본이 되는 인터페이스는 BaseStream이며 제네릭 타입으로 <T, S extends BaseStream<T, S>>가 인터페이스에 추가적으로 정의되어 있다.
 
 T: 스트림에서 처리할 데이터의 타입을 의미한다.
 
@@ -103,7 +103,7 @@ accept 메서드를 이용한 것으로 리턴 타입이 void이다. 즉, 생성
 
 파이프라인을 이용해서 명령어를 조합하면 한 줄의 코드로 강력한 결과를 확인할 수있다. 이렇게 셸 스크립트에서 명령어와 파이프라인의 조합을 이용하면 무궁무진한 기능 조합을 만들어낼 수 있다. 스트림 API 기반의 연산 작업을 선호하는 이유는 파이프라인과 유사한 개념으로 기능을 조합할 수 있기 때문이다.
 
-![Untitled](/images/2021-08-17-[JAVA_8_Stream_API/Untitled.png)
+![Untitled](/images/2021-08-17-JAVA_8_Stream_API/Untitled.png)
 
 **스트림 객체가 생성되는 단계:** 주로 Collection이나 Array 등에서 stream 메서드를 호출해서 생성되며, 스트림의 저수준 API를 이용해서 직접 생성하는 경우도 있다.
 
@@ -122,8 +122,8 @@ public static <T> Predicate<T> distinctByKey(Function<? super T, ?> key) {
 }
 
 personList.stream()
-					.filter(distinctByKey(b -> (b.getName() + b.getAge())))
-					.forEach(System.out::println);
+			.filter(distinctByKey(b -> (b.getName() + b.getAge())))
+			.forEach(System.out::println);
 ```
 
 ![주요 최종 연산 메서드](/images/2021-08-17-JAVA_8_Stream_API/table5.jpg)
