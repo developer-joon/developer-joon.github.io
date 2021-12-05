@@ -1,11 +1,11 @@
 ---
 title: '[객체지향] 프로그래밍 원칙 SOLID에 대해 요약정리'
-date: 2021-08-14 00:00:00
+date: 2021-12-05 00:00:00
 description: '객체 지향 프로그래밍에서 지켜야하는 원칙을 요약합니다.'
-featured_image: '/images/trend-trendy-lifestlye-urban-style-concept.jpg'
+featured_image: '/images/earth-gf8287310f_1920.jpg'
 ---
 
-![](/images/earth-gf8287310f_1920.jpg)
+![](/images/sauerland-g27a304e52_1920.jpg)
 
 
 ## 소개
