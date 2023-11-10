@@ -1,1 +1,0 @@
-docker run --rm --name jekyll-server -v %cd%:/srv/jekyll -p 4000:4000 -it jekyll/jekyll jekyll serve --force_polling --no-watch

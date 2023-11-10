@@ -1,21 +1,26 @@
 <footer class="footer">
+  <div class="wrap">
+    <p class="footer__text">
+      {{ site.data.settings.footer_settings.footer_tagline }}
+    </p>
 
-	<div class="wrap">
+    <div class="footer__copyright">
+      <span
+        >© {{ 'now' | date: "%Y" }} {{
+        site.data.settings.basic_settings.site_title }}</span
+      >
+      <!-- <a href="https://itlab.app" target="_blank">ItLab.app</a> -->
+    </div>
+    <div class="footer__siteseal">
+      <span id="siteseal"
+        ><script
+          async
+          type="text/javascript"
+          src="https://seal.starfieldtech.com/getSeal?sealID=Dx7axgPzFwS7gVwrPNA1zDivK20rjvnyg32AqRlYxtsCyjLOkyJHHempwsNi"
+        ></script
+      ></span>
+    </div>
 
-		<p class="footer__text">{{ site.data.settings.footer_settings.footer_tagline }}</p>
-
-		<div class="footer__copyright">
-			<span>© {{ 'now' | date: "%Y" }} {{ site.data.settings.basic_settings.site_title }}</span>
-			<!-- <a href="https://itlab.app" target="_blank">ItLab.app</a> -->
-		</div>
-		<div class="footer__siteseal">
-			<span id="siteseal"><script async type="text/javascript" src="https://seal.godaddy.com/getSeal?sealID=LF2s4430vEW3DXcIWsDVvs2Vw19yOjtVN4lSnyD5t2lWxMDaAf8vDTaldz7c"></script></span>
-		</div>
-
-		{% include socials.html %}
-
-	</div>
-
+    {% include socials.html %}
+  </div>
 </footer>
-
-
