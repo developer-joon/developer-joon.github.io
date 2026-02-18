@@ -493,7 +493,7 @@ AI가 어떤 성격으로 대화할지 정의합니다. 친근한 비서, 전문
 
 ## 사용자 정보
 - GitHub: developer-joon
-- 블로그: www.itlab.app (Jekyll, GitHub Pages)
+- 블로그: www.k6s.app (Jekyll, GitHub Pages)
 - 투자에 관심: 비트코인, 국내주식
 
 ## 서버 환경
