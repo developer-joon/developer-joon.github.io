@@ -8,7 +8,7 @@ header_settings:
 
 menu_settings:
   menu_items:
-    - title: "Projects"
+    - title: "0 → 1"
       url: "/"
     - title: "Blog"
       url: "/blog/"
@@ -18,7 +18,7 @@ menu_settings:
     #   url: '/contact'
 
 footer_settings:
-  footer_tagline: Software development / architecture / open source can be an expert. - Joonwoo.Kim
+  footer_tagline: Build things. Ship fast. Learn always.
 
 hero_settings:
   overlay_opacity: 0.8
@@ -33,7 +33,7 @@ contact_settings:
   send_button_text: "Send Message"
 
 social_settings:
-  facebook_url: "https://www.facebook.com/kimjoonwoo88"
+  facebook_url: ""
   twitter_url: ""
   instagram_url: ""
   snapchat_url: ""
