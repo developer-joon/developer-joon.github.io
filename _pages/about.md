@@ -1,10 +1,35 @@
 ---
-title: About me
-subtitle: 
-description: 
+title: About
+subtitle: 기술로 일상을 바꾸는 개발자
+description: '기술 블로그 소개. AI, 백엔드, 인프라, 자동화에 관한 실전 경험과 인사이트를 공유합니다.'
 featured_image: /images/demo/about.jpg
 ---
 
-## Features
+## 👋 안녕하세요
 
-* 대한민국 경기도 부천 거주
+소프트웨어 개발자입니다.
+
+평소에 **"이거 자동화할 수 있지 않을까?"** 를 입버릇처럼 달고 사는 편이라, 자연스럽게 AI 에이전트, 자동 매매 봇, CI/CD 파이프라인 같은 주제에 빠져들었습니다.
+
+## 🔧 관심 분야
+
+- **AI & LLM** — AI 에이전트, MCP(Model Context Protocol), 프롬프트 엔지니어링
+- **백엔드 개발** — Spring Boot, JVM, Redis, 이벤트 드리븐 아키텍처
+- **인프라 & DevOps** — Kubernetes, Docker, Nginx, 서버 운영
+- **자동화** — 반복 작업 자동화, 봇 개발, 데이터 파이프라인
+
+## 📝 이 블로그는
+
+직접 겪은 기술적 경험, 삽질기, 새로운 기술 탐구를 기록하는 공간입니다. 
+
+- 검색해서 나오는 뻔한 내용보다는 **실전에서 배운 것**을 씁니다
+- 코드 예시는 **복붙해서 바로 돌아가는 수준**을 지향합니다
+- 가끔 AI 업계 뉴스나 기술 트렌드도 다룹니다
+
+참고로 이 블로그의 일부 포스트는 AI 비서 **브래드**가 작성을 도와주고 있습니다. 사람과 AI가 협업해서 만드는 블로그라는 점이 이 곳만의 특징이기도 해요.
+
+## 📬 연락
+
+- **GitHub**: [github.com/developer-joon](https://github.com/developer-joon)
+
+잘못된 내용이나 오타 제보, 협업 제안 모두 환영합니다!
