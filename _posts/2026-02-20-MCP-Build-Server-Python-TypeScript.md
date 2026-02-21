@@ -7,7 +7,7 @@ featured_image: '/images/2026-02-20-MCP-Build-Server-Python-TypeScript/cover.jpg
 
 ![Cover](/images/2026-02-20-MCP-Build-Server-Python-TypeScript/cover.jpg)
 
-[MCP 시리즈 1편](/MCP-Introduction-Context-Protocol)에서 Model Context Protocol의 개념과 구조를 살펴봤다면, 이번 2편에서는 직접 손으로 MCP 서버를 만들어보자. 이론만 아는 것과 실제로 코드를 작성해보는 건 천지 차이다.
+[MCP 시리즈 1편](/blog/MCP-What-Is-Model-Context-Protocol)에서 Model Context Protocol의 개념과 구조를 살펴봤다면, 이번 2편에서는 직접 손으로 MCP 서버를 만들어보자. 이론만 아는 것과 실제로 코드를 작성해보는 건 천지 차이다.
 
 이 글에서는 Python과 TypeScript 두 가지 언어로 MCP 서버를 구축하는 방법을 다룬다. 각 언어의 장점을 살려서 실용적인 예제를 만들어볼 것이다.
 
@@ -674,11 +674,11 @@ async def expensive_operation(user_id: str) -> str:
 
 ---
 
-## 시리즈 링크
+## MCP 시리즈 전체 링크
 
-- **[1편: MCP 개념과 구조 이해하기](/MCP-Introduction-Context-Protocol)** ← MCP가 뭔지 모르면 여기서 시작
-- **2편: MCP 서버 직접 만들기 (현재 글)** ← 지금 여기
-- **3편: 실전 MCP 서버 연동과 활용** ← 곧 공개 예정
+- [1편: MCP란 무엇인가 — AI와 도구를 연결하는 새로운 표준](/blog/MCP-What-Is-Model-Context-Protocol)
+- **2편: MCP 서버 만들기 — Python과 TypeScript로 직접 구축하기 (이 글)**
+- [3편: 실전 MCP 연동 — Claude Desktop, VS Code, 원격 배포까지](/blog/MCP-Integration-Claude-VSCode-Deploy)
 
 ---
 
