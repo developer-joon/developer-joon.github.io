@@ -2,7 +2,7 @@
 title: '[JAVA 8] Functional Basic (2/2)'
 date: 2021-08-15 00:00:00
 description: '자바에서 제공하는 기본 함수형 인터페이스 외에 새로 함수형 인터페이스를 추가할 때는 명시적으로 FunctionalInterface 어노테이션을 적용하는 것이 좋다. 자바에서 기본적으로 제공하는 많은 함수형 인터페이스가 있지만 주된 패턴의 내용을 정리해본다.'
-featured_image: '/images/trend-trendy-lifestlye-urban-style-concept.jpg'
+featured_image: '/images/trend-java-functional-2.jpg'
 ---
 
 ![](/images/mockup-copy-space-blank-screen-concept.jpg)
