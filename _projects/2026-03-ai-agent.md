@@ -96,7 +96,7 @@ featured_image: '/images/project-ai-agent/cover.jpg'
 
 ## 📝 관련 포스트
 
-- [OpenClaw로 나만의 AI 에이전트 만들기](/blog/openclaw-ai-agent-setup-guide)
-- [MCP 시리즈 1편: 개념과 원리](/blog/mcp-series-1-introduction)
-- [MCP 시리즈 2편: 서버 구축](/blog/mcp-series-2-build-server)
-- [MCP 시리즈 3편: 실전 연동](/blog/mcp-series-3-integration)
+- [OpenClaw로 나만의 AI 에이전트 만들기](/blog/OpenClaw-AI-Agent-Setup-Guide)
+- [MCP 시리즈 1편: 개념과 원리](/blog/MCP-What-Is-Model-Context-Protocol)
+- [MCP 시리즈 2편: 서버 구축](/blog/MCP-Build-Server-Python-TypeScript)
+- [MCP 시리즈 3편: 실전 연동](/blog/MCP-Integration-Claude-VSCode-Deploy)
