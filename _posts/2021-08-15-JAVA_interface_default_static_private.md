@@ -2,7 +2,7 @@
 title: '[JAVA 8~9] interface default, static, private'
 date: 2021-08-13 00:00:00
 description: '자바8 버전에서 인터페이스에 default, static, private 메서드가 추가 되었으며, 사용방법에 대해 알아본다.'
-featured_image: '/images/trend-trendy-lifestlye-urban-style-concept.jpg'
+featured_image: '/images/trend-java-interface.jpg'
 ---
 
 ![](/images/mockup-copy-space-blank-screen-concept.jpg)

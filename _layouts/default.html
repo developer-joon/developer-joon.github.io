@@ -116,6 +116,49 @@
 	{{ site.data.settings.advanced_settings.footer_js }}
 	{% endif %}
 
+	<!-- Giscus 댓글 동적 로더 (AJAX 페이지 전환 대응) -->
+	<script>
+	(function() {
+	  function loadGiscus() {
+	    var container = document.querySelector('.page__content .giscus-container');
+	    if (!container) return;
+	    if (container.querySelector('.giscus-frame')) return;
+	    container.innerHTML = '';
+	    var s = document.createElement('script');
+	    s.src = 'https://giscus.app/client.js';
+	    s.setAttribute('data-repo', 'developer-joon/developer-joon.github.io');
+	    s.setAttribute('data-repo-id', 'MDEwOlJlcG9zaXRvcnkzMTE1NDYwODY=');
+	    s.setAttribute('data-category', 'General');
+	    s.setAttribute('data-category-id', 'DIC_kwDOEpHQ5s4C22vS');
+	    s.setAttribute('data-mapping', 'pathname');
+	    s.setAttribute('data-strict', '0');
+	    s.setAttribute('data-reactions-enabled', '1');
+	    s.setAttribute('data-emit-metadata', '0');
+	    s.setAttribute('data-input-position', 'top');
+	    s.setAttribute('data-theme', 'preferred_color_scheme');
+	    s.setAttribute('data-lang', 'ko');
+	    s.setAttribute('data-loading', 'eager');
+	    s.crossOrigin = 'anonymous';
+	    s.async = true;
+	    container.appendChild(s);
+	  }
+	  // 초기 로드
+	  loadGiscus();
+	  // AJAX 전환 감시: History statechange 후 재로드
+	  if (window.History && window.History.Adapter) {
+	    window.History.Adapter.bind(window, 'statechange', function() {
+	      setTimeout(loadGiscus, 800);
+	    });
+	  }
+	  // 백업: MutationObserver
+	  var target = document.querySelector('.page');
+	  if (target) {
+	    new MutationObserver(function() {
+	      setTimeout(loadGiscus, 600);
+	    }).observe(target, { childList: true, subtree: true });
+	  }
+	})();
+	</script>
 
 </body>
 
