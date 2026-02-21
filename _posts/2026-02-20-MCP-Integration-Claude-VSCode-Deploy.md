@@ -605,8 +605,8 @@ cd servers/src/filesystem
 질문이나 피드백은 언제든 환영입니다. 댓글이나 트위터(@developer_joon)로 연락주세요!
 
 **MCP 시리즈 전체 링크:**
-- [1편: MCP란 무엇인가 - AI와 도구를 연결하는 새로운 표준](#)
-- [2편: MCP 서버 만들기 - 파이썬으로 나만의 도구 서버 구축하기](#)
-- [3편: MCP 실전 연동 가이드 (이 글)](#)
+- [1편: MCP란 무엇인가 — AI와 도구를 연결하는 새로운 표준](/blog/MCP-What-Is-Model-Context-Protocol)
+- [2편: MCP 서버 만들기 — Python과 TypeScript로 직접 구축하기](/blog/MCP-Build-Server-Python-TypeScript)
+- **3편: 실전 MCP 연동 — Claude Desktop, VS Code, 원격 배포까지 (이 글)**
 
 Happy Coding! 🚀
