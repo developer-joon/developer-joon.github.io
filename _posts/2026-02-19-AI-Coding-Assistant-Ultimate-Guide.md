@@ -11,8 +11,8 @@ AI 코딩 어시스턴트가 개발자의 일상을 바꾸고 있어요. 하지�
 
 > 📌 이 글은 **"AI 기반 개발 실전 가이드"** 시리즈의 첫 번째 편이에요.
 > - **1편**: AI 코딩 어시스턴트 200% 활용법 (현재 글)
-> - **2편**: [개발자를 위한 프롬프트 엔지니어링](/blog/Prompt-Engineering-for-Developers)
-> - **3편**: [AI 기반 개발 워크플로우](/blog/AI-Driven-Development-Workflow)
+> - **2편**: [개발자를 위한 프롬프트 엔지니어링](/blog/prompt-engineering-for-developers)
+> - **3편**: [AI 기반 개발 워크플로우](/blog/ai-driven-development-workflow)
 
 ## 3대 AI 코딩 도구 한눈에 비교
 
@@ -166,7 +166,7 @@ PostgreSQL advisory lock이나 SELECT FOR UPDATE를
 
 **핵심 원칙**: 맥락(기술 스택) + 구체적 요구사항 + 제약조건을 함께 주세요.
 
-> 프롬프트 엔지니어링에 대해 더 깊이 알고 싶다면 이 시리즈의 2편 [개발자를 위한 프롬프트 엔지니어링](/blog/Prompt-Engineering-for-Developers)을 확인하세요!
+> 프롬프트 엔지니어링에 대해 더 깊이 알고 싶다면 이 시리즈의 2편 [개발자를 위한 프롬프트 엔지니어링](/blog/prompt-engineering-for-developers)을 확인하세요!
 
 ## AI가 잘하는 일 vs 못하는 일 솔직 정리
 
@@ -287,7 +287,7 @@ ai generate-code
 2. **중급자**: Cursor로 넘어가서 프로젝트 단위 작업을 경험하세요
 3. **고급자**: Claude Code를 자동화 파이프라인에 통합하세요
 
-가장 중요한 건 **"AI를 잘 부리는 능력"**이에요. 같은 도구를 써도 프롬프트를 잘 쓰는 사람과 못 쓰는 사람의 생산성 차이가 5배 이상 나거든요. 프롬프트 작성법이 궁금하다면 다음 편 [개발자를 위한 프롬프트 엔지니어링](/blog/Prompt-Engineering-for-Developers)에서 자세히 다룰게요.
+가장 중요한 건 **"AI를 잘 부리는 능력"**이에요. 같은 도구를 써도 프롬프트를 잘 쓰는 사람과 못 쓰는 사람의 생산성 차이가 5배 이상 나거든요. 프롬프트 작성법이 궁금하다면 다음 편 [개발자를 위한 프롬프트 엔지니어링](/blog/prompt-engineering-for-developers)에서 자세히 다룰게요.
 
 AI 코딩 어시스턴트는 여러분을 대체하는 게 아니라, 여러분의 능력을 증폭시키는 도구예요. 잘 활용하면 정말로 생산성이 2~3배는 올라갑니다. 지금 바로 하나 골라서 시작해보세요! 🚀
 
@@ -295,8 +295,8 @@ AI 코딩 어시스턴트는 여러분을 대체하는 게 아니라, 여러분�
 
 **📚 AI 기반 개발 실전 가이드 시리즈**
 - **1편**: AI 코딩 어시스턴트 200% 활용법 (현재 글)
-- **2편**: [개발자를 위한 프롬프트 엔지니어링](/blog/Prompt-Engineering-for-Developers)
-- **3편**: [AI 기반 개발 워크플로우](/blog/AI-Driven-Development-Workflow)
+- **2편**: [개발자를 위한 프롬프트 엔지니어링](/blog/prompt-engineering-for-developers)
+- **3편**: [AI 기반 개발 워크플로우](/blog/ai-driven-development-workflow)
 
 ---
 

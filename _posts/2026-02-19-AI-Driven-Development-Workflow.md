@@ -10,8 +10,8 @@ featured_image: '/images/2026-02-19-AI-Driven-Development-Workflow/cover.jpg'
 AI 코딩 도구를 설치만 해놓고 자동완성 정도만 쓰고 있다면, 전체 능력의 20%밖에 활용 못하고 있는 거예요. 이 글에서는 **기획부터 배포까지** 개발 프로세스 전체에 AI를 녹여넣는 실전 워크플로우를 공유합니다.
 
 > 📌 이 글은 **"AI 기반 개발 실전 가이드"** 시리즈의 세 번째(마지막) 편이에요.
-> - **1편**: [AI 코딩 어시스턴트 200% 활용법](/blog/AI-Coding-Assistant-Ultimate-Guide)
-> - **2편**: [개발자를 위한 프롬프트 엔지니어링](/blog/Prompt-Engineering-for-Developers)
+> - **1편**: [AI 코딩 어시스턴트 200% 활용법](/blog/ai-coding-assistant-ultimate-guide)
+> - **2편**: [개발자를 위한 프롬프트 엔지니어링](/blog/prompt-engineering-for-developers)
 > - **3편**: AI 기반 개발 워크플로우 (현재 글)
 
 ## 개발 단계별 AI 활용 맵
@@ -473,8 +473,8 @@ AI 기반 개발 워크플로우의 핵심은 **"AI가 대신 해주는 것"이 
 
 **이 시리즈에서 다룬 내용 정리:**
 
-1. **[1편](/blog/AI-Coding-Assistant-Ultimate-Guide)**: AI 코딩 도구 선택과 기본 활용법
-2. **[2편](/blog/Prompt-Engineering-for-Developers)**: AI에게 일 잘 시키는 프롬프트 기술
+1. **[1편](/blog/ai-coding-assistant-ultimate-guide)**: AI 코딩 도구 선택과 기본 활용법
+2. **[2편](/blog/prompt-engineering-for-developers)**: AI에게 일 잘 시키는 프롬프트 기술
 3. **3편 (현재)**: 개발 전 과정에서 AI 활용하는 워크플로우
 
 **지금 바로 실행할 수 있는 3가지:**
@@ -488,8 +488,8 @@ AI는 도구일 뿐이에요. 하지만 잘 쓰는 사람과 안 쓰는 사람�
 ---
 
 **📚 AI 기반 개발 실전 가이드 시리즈**
-- **1편**: [AI 코딩 어시스턴트 200% 활용법](/blog/AI-Coding-Assistant-Ultimate-Guide)
-- **2편**: [개발자를 위한 프롬프트 엔지니어링](/blog/Prompt-Engineering-for-Developers)
+- **1편**: [AI 코딩 어시스턴트 200% 활용법](/blog/ai-coding-assistant-ultimate-guide)
+- **2편**: [개발자를 위한 프롬프트 엔지니어링](/blog/prompt-engineering-for-developers)
 - **3편**: AI 기반 개발 워크플로우 (현재 글)
 
 ---
