@@ -35,7 +35,7 @@ featured_image: '/images/app-testing.jpg'
 
 연기 테스트는 최소 부하로 구성된 일반 부하 테스트입니다. 
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%201.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-1.png)
 
 ### load-testing(부하 테스트)
 
@@ -45,31 +45,31 @@ featured_image: '/images/app-testing.jpg'
 
 부하 테스트는 많은 사용자가 동시에 액세스할 때 응용 프로그램이 만족스럽게 수행되는지 확인하는 데 사용됩니다.
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%202.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-2.png)
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%203.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-3.png)
 
 부하 테스트 시나리오 - 정상적인 하루 시뮬레이션
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%204.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-4.png)
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%205.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-5.png)
 
 ### stress-testing (스트레스 테스트)
 
 스트레스 테스트는 시스템의 한계를 결정하는 데 사용되는 부하 테스트 유형입니다. 이 테스트의 목적은 극한 조건에서 시스템의 안정성과 신뢰성을 검증하는 것 입니다.
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%206.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-6.png)
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%207.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-7.png)
 
 ### spike-testing(스파이크 테스트)
 
 스파이크 테스트는 극심한 부하 급증으로 시스템을 즉시 압도하는 스트레스 테스트 유형입니다.
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%208.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-8.png)
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%209.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-9.png)
 
 ### soak-testing(소크 테스트)
 
@@ -77,7 +77,7 @@ featured_image: '/images/app-testing.jpg'
 부하 테스트 는 주로 성능 평가와 관련이 있고 스트레스 테스트 는 극한 조건에서의 시스템 안정성 과 관련이 있는 반면 , 소크 테스트는 장기간에 걸친 안정성과 관련이 있습니다.
 
 
-![Untitled](/images/2021-08-16-testing-basic/Untitled%2010.png)
+![Untitled](/images/2021-08-16-testing-basic/Untitled-10.png)
 
 
 

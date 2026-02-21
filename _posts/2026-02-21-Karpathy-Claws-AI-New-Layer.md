@@ -184,7 +184,7 @@ Claw에 관심이 생겼다면, 시작하는 방법은 간단하다.
 
 더 자세한 설치 가이드는 아래 포스트를 참고:
 
-👉 [OpenClaw로 나만의 AI 에이전트 만들기 — 설치부터 자동화까지 완전 가이드](/blog/openclaw-ai-agent-setup-guide)
+👉 [OpenClaw로 나만의 AI 에이전트 만들기 — 설치부터 자동화까지 완전 가이드](/blog/OpenClaw-AI-Agent-Setup-Guide)
 
 ---
 
@@ -209,4 +209,4 @@ Agent가 "시키면 하는 AI"였다면, Claw는 **"알아서 하는 AI"**다. �
 - [GGML이 Hugging Face에 합류](https://github.com/ggml-org/ggml)
 - [OpenClaw 공식 사이트](https://openclaw.ai)
 - [NanoClaw GitHub](https://github.com/nanoclaw/nanoclaw)
-- [MCP(Model Context Protocol) 소개](/blog/mcp-series-1-introduction)
+- [MCP(Model Context Protocol) 소개](/blog/MCP-What-Is-Model-Context-Protocol)

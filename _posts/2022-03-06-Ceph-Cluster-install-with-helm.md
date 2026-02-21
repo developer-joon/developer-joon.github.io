@@ -27,9 +27,9 @@ featured_image: '/images/sauerland-g27a304e52_1920.jpg'
 
 ![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled.png)
 
-![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled%201.png)
+![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled-1.png)
 
-![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled%202.png)
+![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled-2.png)
 
 ### 설치 환경
 
@@ -56,7 +56,7 @@ $ helm repo add rook-release https://charts.rook.io/release
 - rook-ceph: 새로운 리소스와 operator 파드가 배포됩니다.
 - rook-ceph-cluster: osd, mon 등 ceph 구성이 배포됩니다.
 
-![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled%203.png)
+![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled-3.png)
 
 ### rook-ceph 구성
 
@@ -68,7 +68,7 @@ $ helm pull rook/rook-ceph --untar
 
 helm 구조와 동일하며 values.yaml를 확인합니다.
 
-![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled%204.png)
+![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled-4.png)
 
 ### values.yaml 확인
 
@@ -1242,7 +1242,7 @@ rook-ceph-tools-7d94694498-nz664                    1/1     Running     0       
 
 기본적으로 block, filesystem, object 를 제공하고 있습니다. storageclass 를 확인해봅니다. 
 
-![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled%205.png)
+![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled-5.png)
 
 ### PVC 생성
 
@@ -1266,7 +1266,7 @@ spec:
 
 pvc.yaml 배포와 PVC 생성이 되며 PVC 상태도 bound으로 잘나오는걸 확인 할 수 있습니다.
 
-![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled%206.png)
+![Untitled](/images/2022-03-06-Ceph-Cluster-install-with-helm/Untitled-6.png)
 
 
 ## 마무리
