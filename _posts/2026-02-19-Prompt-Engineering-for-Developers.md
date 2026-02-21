@@ -10,9 +10,9 @@ featured_image: '/images/2026-02-19-Prompt-Engineering-for-Developers/cover.jpg'
 AI에게 "로그인 기능 만들어줘"라고 하면 대충 나오고, 잘 물어보면 프로덕션 레벨 코드가 뚝딱 나와요. 그 차이가 바로 **프롬프트 엔지니어링**이에요. 이 글에서는 개발자가 실무에서 바로 쓸 수 있는 프롬프트 작성 기술을 정리합니다.
 
 > 📌 이 글은 **"AI 기반 개발 실전 가이드"** 시리즈의 두 번째 편이에요.
-> - **1편**: [AI 코딩 어시스턴트 200% 활용법](/blog/AI-Coding-Assistant-Ultimate-Guide)
+> - **1편**: [AI 코딩 어시스턴트 200% 활용법](/blog/ai-coding-assistant-ultimate-guide)
 > - **2편**: 개발자를 위한 프롬프트 엔지니어링 (현재 글)
-> - **3편**: [AI 기반 개발 워크플로우](/blog/AI-Driven-Development-Workflow)
+> - **3편**: [AI 기반 개발 워크플로우](/blog/ai-driven-development-workflow)
 
 ## 프롬프트의 구조: 5가지 핵심 요소
 
@@ -556,14 +556,14 @@ JWT 토큰 생성/검증 유틸리티 함수만 먼저 만들어줘.
 2. 결과가 안 좋으면 **디버깅 체크리스트**로 프롬프트를 점검하세요
 3. 좋은 프롬프트가 나오면 **팀 위키에 공유**하세요
 
-다음 편 [AI 기반 개발 워크플로우](/blog/AI-Driven-Development-Workflow)에서는 이 프롬프트 기술을 실제 개발 프로세스의 각 단계에 적용하는 방법을 다룰게요. 기획부터 배포까지 AI와 함께 일하는 전체 워크플로우를 공개합니다! 🚀
+다음 편 [AI 기반 개발 워크플로우](/blog/ai-driven-development-workflow)에서는 이 프롬프트 기술을 실제 개발 프로세스의 각 단계에 적용하는 방법을 다룰게요. 기획부터 배포까지 AI와 함께 일하는 전체 워크플로우를 공개합니다! 🚀
 
 ---
 
 **📚 AI 기반 개발 실전 가이드 시리즈**
-- **1편**: [AI 코딩 어시스턴트 200% 활용법](/blog/AI-Coding-Assistant-Ultimate-Guide)
+- **1편**: [AI 코딩 어시스턴트 200% 활용법](/blog/ai-coding-assistant-ultimate-guide)
 - **2편**: 개발자를 위한 프롬프트 엔지니어링 (현재 글)
-- **3편**: [AI 기반 개발 워크플로우](/blog/AI-Driven-Development-Workflow)
+- **3편**: [AI 기반 개발 워크플로우](/blog/ai-driven-development-workflow)
 
 ---
 

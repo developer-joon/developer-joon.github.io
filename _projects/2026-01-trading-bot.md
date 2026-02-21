@@ -111,6 +111,6 @@ featured_image: '/images/project-trading-bot/cover.jpg'
 
 ## 📝 관련 포스트
 
-- [암호화폐 자동매매 봇 만들기 - 아키텍처 편](/blog/Trading-Bot-Development-Guide)
+- [암호화폐 자동매매 봇 만들기 - 아키텍처 편](/blog/trading-bot-development-guide)
 
 > 개발이 진행되면 시리즈로 포스팅 예정
