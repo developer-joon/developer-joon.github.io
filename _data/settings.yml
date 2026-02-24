@@ -8,7 +8,7 @@ header_settings:
 
 menu_settings:
   menu_items:
-    - title: "수익 실험실 🧪"
+    - title: "0 → 1"
       url: "/lab/"
     - title: "Blog"
       url: "/blog/"
