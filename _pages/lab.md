@@ -1,6 +1,6 @@
 ---
-title: 수익 실험실
-subtitle: 105만원에서 시작하는 수익 포트폴리오
+title: 0 → 1
+subtitle: 105만원에서 시작하는 수익 실험
 description: '개발자가 코드로 돈을 버는 실험. AI 트레이딩봇, 블로그 수익화, 로또 자동구매까지 — 아이디어에서 수익까지의 여정을 투명하게 기록합니다.'
 permalink: /lab/
 featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
