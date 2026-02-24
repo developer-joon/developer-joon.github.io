@@ -3,6 +3,7 @@ title: "2026년 AI 에이전트 혁명: 단순 챗봇을 넘어 자율적 업무
 date: 2026-02-18 00:00:00
 description: "2026년 AI 기술의 가장 큰 변화는 AI 에이전트의 부상입니다. 단순한 질의응답을 넘어 스스로 판단하고, 도구를 사용하며, 복잡한 업무를 자율적으로 수행하는 AI 에이전트가 개발자의 일상을 어떻게 바꾸고 있는지 알아봅니다."
 featured_image: "/images/2026-02-18-AI-Agent-Revolution-2026/ai-agent-cover.jpeg"
+tags: [ai-agent, 수익실험]
 ---
 
 ## AI 에이전트란 무엇인가?
