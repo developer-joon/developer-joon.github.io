@@ -3,6 +3,7 @@ title: 'Stripe Minions: AI 코딩 에이전트는 어디까지 왔나'
 date: 2026-02-20 00:00:00
 description: 'Stripe가 공개한 AI 코딩 에이전트 Minions. 매주 1300개 이상의 PR을 작성하는 원샷 엔드투엔드 코딩의 실체를 파헤쳐봅니다. GitHub Copilot과 Cursor를 넘어선 완전 자율 코딩의 미래.'
 featured_image: '/images/2026-02-20-Stripe-Minions-AI-Coding-Agent/cover.jpg'
+tags: [ai-news]
 ---
 
 ## 매주 1300개의 PR을 작성하는 AI가 있다면?

@@ -3,6 +3,7 @@ title: '실전 트레이딩 봇 고도화: DCA 6단계 물타기 + 뉴스 감성
 date: 2026-02-22 00:00:00
 description: '-50% 폭락에도 평단가 76% 유지하는 6단계 DCA 전략, 뉴스 감성분석 하이브리드 시그널, Bybit 선물 동적 헤징을 결합한 실전 트레이딩 봇 개발 가이드. 현재 PAPER 모드 검증 중.'
 featured_image: '/images/2026-02-22-Advanced-Trading-Bot-DCA-Strategy/cover.jpg'
+tags: [trading-bot, 수익실험]
 ---
 
 ![](/images/2026-02-22-Advanced-Trading-Bot-DCA-Strategy/cover.jpg)

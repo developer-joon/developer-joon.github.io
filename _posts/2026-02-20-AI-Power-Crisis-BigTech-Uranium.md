@@ -3,6 +3,7 @@ title: 'AI 시대의 전력 위기: 빅테크가 우라늄을 사는 이유'
 date: 2026-02-20 00:00:00
 description: 'ChatGPT 한 번 돌리는데 집 한 채가 쓰는 전기량? AI 데이터센터의 엄청난 전력 소비로 빅테크 기업들이 원자력 에너지에 주목하고, 우라늄 광산에까지 투자하는 이유를 파헤쳐 봅니다.'
 featured_image: '/images/2026-02-20-AI-Power-Crisis-BigTech-Uranium/cover.jpg'
+tags: [ai-news]
 ---
 
 "ChatGPT에게 질문 하나 던지는데 얼마나 전기를 쓸까?" 
