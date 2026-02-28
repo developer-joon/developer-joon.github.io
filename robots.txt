@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://www.k6s.app/sitemap.xml
+Sitemap: https://www.clawops.org/sitemap.xml
