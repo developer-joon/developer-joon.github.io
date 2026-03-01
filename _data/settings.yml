@@ -152,7 +152,7 @@ font_settings:
 
 advanced_settings:
   ajax_loading: true
-  analytics_code: "G-TQ9ZC08YXH"
+  analytics_code: "G-LDK8PWDW4C"
   custom_styles: |
     .single-comment { margin-top: 60px }
   header_js: ""

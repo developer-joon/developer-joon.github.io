@@ -54,7 +54,7 @@
 	{% if site.data.settings.advanced_settings.analytics_code %}
 	<!-- Analytics Code -->
 	<!-- Global site tag (gtag.js) - Google Analytics -->
-	<script async src="https://www.googletagmanager.com/gtag/js?id=G-TQ9ZC08YXH"></script>
+	<script async src="https://www.googletagmanager.com/gtag/js?id={{ site.data.settings.advanced_settings.analytics_code }}"></script>
 	<script>
 	window.dataLayer = window.dataLayer || [];
 	function gtag(){dataLayer.push(arguments);}
@@ -70,8 +70,9 @@
 	{% endif %}
 	
 	<!-- Google AdSense -->
-	<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2281035356217685" crossorigin="anonymous"></script>
 	<meta name="google-adsense-account" content="ca-pub-2281035356217685">
+	<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2281035356217685" crossorigin="anonymous"></script>
+
 </head>
 
 
