@@ -15,6 +15,21 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
     <div style="color: #94a3b8; font-size: 0.85em; margin-top: 4px;">시작: ₩1,050,000 (2026.02.23~) · 추가 입금 ₩1,950,000</div>
   </div>
 
+  <!-- 목표 금액 프로그레스 -->
+  <div style="background: rgba(255,255,255,0.04); border-radius: 16px; padding: 24px; margin-bottom: 8px;">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px;">
+      <span style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 2px;">🎯 목표</span>
+      <span style="font-size: 1.4em; font-weight: 700; color: #f6e05e;">₩10,000,000,000</span>
+    </div>
+    <div style="background: rgba(255,255,255,0.08); border-radius: 99px; height: 28px; overflow: hidden; position: relative;">
+      <div style="background: linear-gradient(90deg, #f6e05e, #f6ad55); height: 100%; border-radius: 99px; width: 0.03%; min-width: 4px; transition: width 1s ease;"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.8em; color: #94a3b8;">
+      <span>달성률 0.03%</span>
+      <span>₩3,005,000 / ₩10,000,000,000</span>
+    </div>
+  </div>
+
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 24px;">
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">트레이딩봇</div>
