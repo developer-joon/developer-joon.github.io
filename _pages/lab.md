@@ -39,7 +39,7 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">블로그</div>
       <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">42편</div>
-      <div style="color: #f56565; font-size: 0.9em;">애드센스 1회 거절 · 재도전 예정</div>
+      <div style="color: #48bb78; font-size: 0.9em;">✅ 애드센스 승인 완료</div>
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">로또</div>
@@ -111,7 +111,7 @@ AI 에이전트가 매주 금요일 동행복권에서 로또 5장 자동 구매
 Jekyll + GitHub Pages 블로그로 애드센스 + 제휴마케팅 수익 달성을 목표.
 
 - 42개 포스트 발행 완료
-- 애드센스 1회 거절 (thin content) → 재신청 준비 중
+- ✅ 애드센스 승인 완료 (2026.03)
 - 쿠팡파트너스 연동 기획 중
 
 ---
