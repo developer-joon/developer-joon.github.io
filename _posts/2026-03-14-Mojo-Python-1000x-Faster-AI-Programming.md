@@ -1,6 +1,6 @@
 ---
 title: 'Mojo로 Python 코드 1000배 빠르게 만들기: AI 시대의 고성능 언어'
-date: 2026-03-14 00:00:00
+date: 2026-03-14 01:00:00
 description: 'Python 문법 그대로 GPU 네이티브 성능을 얻는 Mojo 언어 완벽 가이드. Modular의 혁신적 언어로 AI/ML 코드 성능을 극대화하는 방법과 실전 사례를 소개합니다.'
 featured_image: '/images/2026-03-14-Mojo-Python-1000x-Faster-AI-Programming/cover.jpg'
 ---
