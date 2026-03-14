@@ -276,3 +276,4 @@ bb627845766e5d07d623be947b9048c5 images/social.jpg
 142517f8a89844e309b879bb1afa9e9a images/trend-java-interface.jpg
 c85ea7bd0fad7c33c213838f08490ebf images/trend-java-stream.jpg
 9f57a88ccd451af7bd580740d5f0a4f4 images/trend-trendy-lifestlye-urban-style-concept.jpg
+37f0a35b4596180e8ba8901a823a3541  images/2026-03-14-AI-Agent-Framework-War-2026/cover.jpg
