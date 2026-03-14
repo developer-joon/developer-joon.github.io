@@ -33,12 +33,12 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 24px;">
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">트레이딩봇</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">🟡 PAPER</div>
-      <div style="color: #ecc94b; font-size: 0.9em;">v4 전략 검증 중</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">🟢 LIVE</div>
+      <div style="color: #48bb78; font-size: 0.9em;">v4 LIVE 운영 중 (3/14~)</div>
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">블로그</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">42편</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">70편</div>
       <div style="color: #48bb78; font-size: 0.9em;">✅ 애드센스 승인 완료</div>
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
@@ -62,6 +62,7 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 | 2/23 (시작) | 1,050,000원 | - | v3 LIVE 전환 |
 | 2/24 | 1,055,000원 | +5,000원 | 헤지 수익 |
 | 3/01 | 3,005,000원 | +1,950,000원 입금 | v4 전략 전환 · PAPER 시작 |
+| 3/14 | 3,005,000원 | - | v4 LIVE 전환 · 감성역설 방지 적용 |
 
 ---
 
@@ -71,7 +72,7 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 v4 "듀얼 익절" 전략 — 업비트 롱 + 바이빗 숏 양방향 동시 진입.  
 뉴스 감성분석으로 포지션 동적 조절 + 2단계 DCA 물타기.
 
-**현재 상태:** BTC 단일 코인 · v4 PAPER 모드 검증 중 · 5년 백테스트 수익률 55%
+**현재 상태:** BTC 단일 코인 · LIVE 운영 시작 · 감성역설 방지 로직 적용
 
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 20px 0;">
 
@@ -143,4 +144,4 @@ OpenClaw 기반 AI 비서 **브래드**가 블로그 포스팅, 트레이딩 모
 
 ---
 
-*이 페이지는 격주로 업데이트됩니다. 최근 업데이트: 2026-03-01*
+*이 페이지는 격주로 업데이트됩니다. 최근 업데이트: 2026-03-14*

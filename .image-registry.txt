@@ -277,3 +277,7 @@ bb627845766e5d07d623be947b9048c5 images/social.jpg
 c85ea7bd0fad7c33c213838f08490ebf images/trend-java-stream.jpg
 9f57a88ccd451af7bd580740d5f0a4f4 images/trend-trendy-lifestlye-urban-style-concept.jpg
 37f0a35b4596180e8ba8901a823a3541  images/2026-03-14-AI-Agent-Framework-War-2026/cover.jpg
+7977b63c77a3c9504fa36372f6ac4404  images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/cover.jpg
+ddcbcf9da620d4cd6adba716ec55d60f  images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/sentiment-issue.jpg
+eefd782a4fac99e183f54c21e192f64f  images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/solution.jpg
+099b9254e779a136b55c41a3896db652  images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/live-launch.jpg
