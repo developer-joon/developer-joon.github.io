@@ -1,67 +1,77 @@
 ---
-title: '엣지 스택 완벽 가이드: Hono + Turso + Drizzle로 글로벌 앱 만들기'
+title: '엣지 스택 완벽 가이드: Hono + Turso + Drizzle로 글로벌 저지연 앱 만들기'
 date: 2026-03-14 02:00:00
-description: 'Cloudflare Workers에서 SQLite 기반 엣지 DB를 활용하는 최신 풀스택 개발 가이드. Hono, Turso, Drizzle ORM 조합으로 저지연 글로벌 애플리케이션을 구축하는 실전 방법을 소개합니다.'
+description: 'Hono, Turso, Drizzle ORM을 활용한 엣지 컴퓨팅 스택 구축 가이드. Cloudflare Workers와 Deno Deploy에서 사용자에게 가장 가까운 서버로 밀리초 단위 응답을 제공하는 방법을 소개합니다.'
 featured_image: '/images/2026-03-14-Edge-Stack-Guide-Hono-Turso-Drizzle/cover.jpg'
 ---
 
 ![](/images/2026-03-14-Edge-Stack-Guide-Hono-Turso-Drizzle/cover.jpg)
 
-웹 애플리케이션의 성능에서 가장 중요한 요소는 무엇일까요? 바로 **지연 시간(latency)**입니다. 사용자가 서울에 있는데 서버가 미국 버지니아에 있다면, 아무리 빠른 코드를 작성해도 물리적 거리로 인한 지연을 피할 수 없습니다.
+클라우드 컴퓨팅의 다음 진화는 **엣지(Edge)**입니다. 중앙 서버에서 모든 요청을 처리하는 대신, 전 세계 수백 개의 엣지 로케이션에서 사용자와 가장 가까운 곳에서 코드를 실행하는 것이죠. 이를 통해 지연 시간(latency)을 획기적으로 줄이고, 글로벌 사용자에게 일관된 경험을 제공할 수 있습니다.
 
-**엣지 컴퓨팅(Edge Computing)**은 이 문제를 해결합니다. 사용자에 가까운 곳에서 코드를 실행하고, 데이터도 가까운 곳에서 가져오는 것입니다. 2026년 현재, 엣지 스택의 표준으로 자리잡은 조합이 있습니다: **Hono + Turso + Drizzle**.
+하지만 엣지 환경은 제약이 많습니다. 전통적인 Node.js 런타임이나 MySQL 데이터베이스를 그대로 사용할 수 없고, 콜드 스타트 시간도 중요합니다. 이런 환경에서 최적화된 스택이 바로 **Hono + Turso + Drizzle**입니다.
 
-이 글에서는 이 세 가지 기술을 조합해 글로벌 규모의 저지연 애플리케이션을 만드는 방법을 상세히 설명합니다.
+이 글에서는 각 기술의 특징과 조합의 시너지, 그리고 실제 엣지 앱을 구축하는 방법을 상세히 다루겠습니다.
 
 ## 엣지 컴퓨팅이란?
 
-### 전통적인 아키텍처의 한계
+### 전통 클라우드 vs 엣지
 
-일반적인 웹 앱은 중앙 집중식 서버에서 실행됩니다. 예를 들어 AWS us-east-1(미국 동부) 리전에 서버를 두면:
+전통적인 클라우드 아키텍처에서는 애플리케이션이 몇 개의 리전(예: us-east-1, ap-northeast-2)에서만 실행됩니다. 한국 사용자가 미국 서버에 접속하면 수백 밀리초의 네트워크 지연이 발생하죠.
 
-- 서울 사용자: ~200ms 지연
-- 런던 사용자: ~80ms 지연
-- 시드니 사용자: ~250ms 지연
+엣지 컴퓨팅은 이 문제를 해결합니다. 코드를 전 세계 수백 개의 데이터센터(PoP, Point of Presence)에 배포해, 사용자 요청을 가장 가까운 엣지 노드에서 처리합니다. 서울 사용자는 서울 엣지에서, 뉴욕 사용자는 뉴욕 엣지에서 응답을 받습니다.
 
-CDN으로 정적 파일은 빠르게 제공할 수 있지만, **동적 API 응답**과 **데이터베이스 쿼리**는 여전히 중앙 서버에 의존해야 합니다.
+### 엣지의 제약사항
 
-### 엣지 컴퓨팅의 해결책
+하지만 엣지 환경은 제한적입니다:
 
-엣지 플랫폼(Cloudflare Workers, Vercel Edge, Deno Deploy)은 전 세계 수백 개 도시에 분산된 서버에서 코드를 실행합니다. 사용자 요청은 가장 가까운 엣지 서버에서 처리되어 지연 시간이 10~50ms로 줄어듭니다.
+- **런타임 제약**: Node.js API를 모두 지원하지 않음 (파일 시스템, 네이티브 모듈 등)
+- **짧은 실행 시간**: 요청당 수초 이내 제한
+- **메모리 제약**: 보통 128MB 이하
+- **콜드 스타트**: 첫 요청 시 빠르게 시작해야 함
 
-하지만 엣지 환경에는 제약이 있습니다:
+이런 제약 때문에 Express나 NestJS 같은 무거운 프레임워크는 엣지에서 비효율적입니다. 경량화되고 Web Standards를 따르는 도구가 필요합니다.
 
-- **No 전통적 DB**: MySQL, PostgreSQL 같은 TCP 기반 DB 연결 불가
-- **제한된 실행 시간**: 보통 30초~50초 제한
-- **작은 메모리**: 128MB 수준
+## Hono: 엣지 네이티브 웹 프레임워크
 
-이런 제약 속에서 작동하도록 설계된 것이 바로 오늘 소개할 스택입니다.
+### Hono란?
 
-## Hono: 초경량 엣지 웹 프레임워크
+Hono는 "炎(ほのお, 불꽃)"이라는 뜻의 일본어에서 유래한 이름으로, 엣지 환경을 위해 설계된 초경량 웹 프레임워크입니다. 현재 20,000개 이상의 GitHub 스타를 받으며 빠르게 성장하고 있습니다.
 
-### Hono는 무엇인가?
+### 핵심 특징
 
-[Hono](https://hono.dev/)는 "炎(불꽃)"이라는 뜻의 일본어에서 이름을 따온 경량 웹 프레임워크입니다. Express나 Koa처럼 직관적인 API를 제공하지만, 엣지 환경에 최적화되어 있습니다.
+**다중 런타임 지원**: Hono의 가장 큰 장점은 플랫폼 중립성입니다. 하나의 코드베이스로 다양한 환경에서 실행할 수 있습니다:
 
-**핵심 특징:**
+- Cloudflare Workers
+- Deno / Deno Deploy
+- Bun
+- Node.js
+- AWS Lambda
+- Vercel Edge Functions
 
-- **초경량**: 번들 크기 ~12KB (Express는 ~200KB)
-- **Web Standards 기반**: Request/Response API 표준 사용
-- **다중 런타임**: Cloudflare Workers, Deno, Bun, Node.js 모두 지원
-- **TypeScript 네이티브**: RPC 타입 안전 제공
+**Web Standards 기반**: Hono는 `Request`와 `Response` 같은 Web API 표준을 사용합니다. 플랫폼 특정 API에 의존하지 않아 이식성이 뛰어납니다.
+
+**초경량 번들**: Express 대비 1/10 이하의 번들 크기로 콜드 스타트가 빠릅니다.
+
+**TypeScript 네이티브**: RPC 타입 안전을 제공하는 Hono RPC로 클라이언트-서버 타입을 자동 추론합니다.
 
 ### Hono 시작하기
 
-Cloudflare Workers에서 Hono 프로젝트를 생성하는 방법:
+Cloudflare Workers에서 Hono 앱을 만들어봅시다:
 
 ```bash
-npm create hono@latest my-app
-cd my-app
-npm install
+# Wrangler (Cloudflare CLI) 설치
+npm install -g wrangler
+
+# Hono 프로젝트 생성
+npm create hono@latest my-edge-app
+cd my-edge-app
+
+# 로컬 개발
 npm run dev
 ```
 
-기본 라우팅 예제:
+간단한 API 예제:
 
 ```typescript
 import { Hono } from 'hono'
@@ -69,22 +79,23 @@ import { Hono } from 'hono'
 const app = new Hono()
 
 app.get('/', (c) => {
-  return c.json({ message: 'Hello from Edge!' })
+  return c.json({ message: 'Hello from the Edge!' })
 })
 
-app.get('/users/:id', (c) => {
+app.get('/users/:id', async (c) => {
   const id = c.req.param('id')
-  return c.json({ userId: id })
+  // 여기서 DB 조회 (Turso 연결 예정)
+  return c.json({ id, name: 'User ' + id })
 })
 
 export default app
 ```
 
-Express와 거의 동일한 문법이지만, 내부적으로 Web Standards Request/Response를 사용해 어떤 엣지 플랫폼에서도 작동합니다.
+Express와 비슷하지만 더 간결합니다. `c`는 Context 객체로 요청/응답 헬퍼를 제공합니다.
 
-### 미들웨어와 RPC
+### 미들웨어와 플러그인
 
-Hono는 강력한 미들웨어 시스템을 제공합니다:
+Hono는 풍부한 미들웨어 생태계를 제공합니다:
 
 ```typescript
 import { Hono } from 'hono'
@@ -96,54 +107,36 @@ const app = new Hono()
 
 app.use('*', logger())
 app.use('*', cors())
-app.use('/api/*', jwt({ secret: 'YOUR_SECRET' }))
 
-app.post('/api/posts', async (c) => {
+app.use('/api/*', jwt({
+  secret: 'YOUR_SECRET'
+}))
+
+app.get('/api/protected', (c) => {
   const payload = c.get('jwtPayload')
-  const body = await c.req.json()
-  // 인증된 사용자만 접근 가능
-  return c.json({ created: true })
+  return c.json({ user: payload })
 })
-```
-
-**Hono RPC**는 tRPC처럼 타입 안전한 클라이언트를 제공합니다:
-
-```typescript
-// 서버
-const app = new Hono()
-  .get('/posts/:id', (c) => c.json({ id: c.req.param('id') }))
-
-export type AppType = typeof app
-
-// 클라이언트
-import { hc } from 'hono/client'
-import type { AppType } from './server'
-
-const client = hc<AppType>('http://localhost:8787')
-const res = await client.posts[':id'].$get({ param: { id: '123' } })
-const data = await res.json() // 타입 자동 추론!
 ```
 
 ## Turso: 엣지 네이티브 SQLite 데이터베이스
 
-### Turso란 무엇인가?
+### Turso란?
 
-[Turso](https://turso.tech/)는 libSQL 기반의 엣지 데이터베이스입니다. SQLite의 fork인 libSQL을 사용해, 전 세계에 분산 복제되는 데이터베이스를 제공합니다.
+Turso는 libSQL 기반의 분산 SQLite 데이터베이스입니다. ChiselStrike에서 개발하여 2023년 Turso로 리브랜딩했으며, 엣지 환경에 최적화되어 있습니다.
 
-**왜 SQLite인가?**
+### 왜 SQLite를 엣지에서?
 
-- **서버리스 친화적**: 별도 DB 서버 없이 파일로 작동
-- **빠른 읽기**: 로컬 복제본에서 즉시 응답
-- **표준 SQL**: PostgreSQL, MySQL과 동일한 쿼리 사용
-- **경량**: 메모리 효율적
+전통적인 PostgreSQL이나 MySQL은 중앙 서버에서만 실행됩니다. 엣지 함수가 미국 서버의 DB에 접속하면 여전히 지연이 발생하죠. Turso는 이 문제를 해결합니다:
 
-**Turso의 특별한 점:**
+**글로벌 복제**: 데이터를 여러 리전에 자동 복제하여 사용자와 가장 가까운 DB 복제본에서 읽기 작업을 수행합니다.
 
-- **자동 복제**: 전 세계 여러 지역에 DB 복사본 생성
-- **Primary-Replica**: 쓰기는 primary로, 읽기는 가까운 replica에서
-- **HTTP 기반**: TCP 연결 불필요, REST API로 쿼리
+**SQLite 호환**: 기존 SQLite 도구와 쿼리를 그대로 사용할 수 있습니다.
 
-### Turso 설정하기
+**서버리스 친화적**: HTTP 기반 연결로 콜드 스타트가 빠르고, 연결 풀 관리가 필요 없습니다.
+
+**자동 백업과 시점 복구**: 엔터프라이즈급 안정성을 제공합니다.
+
+### Turso 설정
 
 ```bash
 # Turso CLI 설치
@@ -153,46 +146,52 @@ curl -sSfL https://get.tur.so/install.sh | bash
 turso auth login
 
 # 데이터베이스 생성
-turso db create my-app
+turso db create my-edge-db
 
-# 여러 지역에 복제
-turso db replicate my-app --location seoul
-turso db replicate my-app --location london
-
-# 연결 URL 확인
-turso db show my-app --url
+# 연결 URL 및 토큰 확인
+turso db show my-edge-db
 ```
 
-### Turso에 연결하기
-
-Cloudflare Workers에서 Turso에 연결:
+TypeScript에서 Turso 연결:
 
 ```typescript
-import { createClient } from '@libsql/client/web'
+import { createClient } from '@libsql/client'
 
 const client = createClient({
-  url: 'YOUR_TURSO_URL',
-  authToken: 'YOUR_TURSO_TOKEN'
+  url: process.env.TURSO_DATABASE_URL!,
+  authToken: process.env.TURSO_AUTH_TOKEN!,
 })
 
 const result = await client.execute('SELECT * FROM users WHERE id = ?', [userId])
 console.log(result.rows)
 ```
 
-## Drizzle ORM: 타입 안전한 SQL 빌더
+### 엣지 복제 전략
+
+Turso는 Primary 리전(쓰기)과 Replica 리전(읽기)을 분리합니다:
+
+```bash
+# Primary: 서울 (쓰기)
+turso db create my-db --location icn
+
+# Replica 추가: 도쿄, 싱가포르
+turso db replicate my-db --location nrt
+turso db replicate my-db --location sin
+```
+
+읽기 요청은 자동으로 가장 가까운 Replica로 라우팅되고, 쓰기는 Primary로 전달됩니다. 최종적 일관성(eventual consistency)을 따릅니다.
+
+## Drizzle ORM: 타입 안전한 엣지 ORM
 
 ### Drizzle이란?
 
-[Drizzle](https://orm.drizzle.team/)은 TypeScript 우선 ORM으로, Prisma보다 얇은 추상화를 제공합니다. SQL을 숨기지 않고, TypeScript로 타입 안전하게 작성할 수 있게 돕습니다.
+Drizzle은 TypeScript 우선 ORM으로, Prisma보다 얇은 추상화를 제공합니다. SQL에 가까운 문법으로 강력한 타입 추론과 성능을 동시에 얻을 수 있습니다.
 
-**Drizzle vs Prisma:**
+### Prisma vs Drizzle
 
-| 특징 | Drizzle | Prisma |
-|------|---------|--------|
-| 추상화 레벨 | 낮음 (SQL 친화적) | 높음 (ORM 스타일) |
-| 엣지 지원 | 네이티브 | 실험적 |
-| 번들 크기 | 작음 (~30KB) | 큼 (~200KB) |
-| 마이그레이션 | SQL 생성 자동화 | Prisma Migrate |
+**Prisma**는 스키마 언어(Prisma Schema)를 사용하고 마이그레이션을 자동 생성하지만, 엣지 환경에서는 무겁고 연결 풀 관리가 복잡합니다.
+
+**Drizzle**은 TypeScript로 스키마를 정의하고, 엣지 런타임(Turso, Cloudflare D1, Neon)을 네이티브 지원합니다. 번들 크기도 훨씬 작습니다.
 
 ### Drizzle 스키마 정의
 
@@ -203,166 +202,162 @@ export const users = sqliteTable('users', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
   email: text('email').notNull().unique(),
-  createdAt: integer('created_at', { mode: 'timestamp' }).notNull()
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
 })
 
 export const posts = sqliteTable('posts', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  userId: integer('user_id').notNull().references(() => users.id),
   title: text('title').notNull(),
-  content: text('content').notNull()
+  content: text('content').notNull(),
+  authorId: integer('author_id').references(() => users.id),
+  publishedAt: integer('published_at', { mode: 'timestamp' }),
 })
 ```
 
-### Drizzle로 쿼리하기
+TypeScript로 스키마를 정의하면 타입이 자동으로 추론됩니다.
+
+### Drizzle과 Turso 통합
 
 ```typescript
 import { drizzle } from 'drizzle-orm/libsql'
-import { users, posts } from './schema'
-import { eq } from 'drizzle-orm'
+import { createClient } from '@libsql/client'
+import * as schema from './schema'
 
-const db = drizzle(client)
+const client = createClient({
+  url: process.env.TURSO_DATABASE_URL!,
+  authToken: process.env.TURSO_AUTH_TOKEN!,
+})
 
-// Insert
-const newUser = await db.insert(users).values({
-  name: 'John Doe',
-  email: 'john@example.com',
-  createdAt: new Date()
-}).returning()
+const db = drizzle(client, { schema })
 
-// Select
-const allUsers = await db.select().from(users)
+// 타입 안전 쿼리
+const allUsers = await db.select().from(schema.users)
+const user = await db.select().from(schema.users).where(eq(schema.users.id, 1))
 
-// Join
-const userPosts = await db
-  .select()
-  .from(users)
-  .leftJoin(posts, eq(users.id, posts.userId))
-  .where(eq(users.id, 1))
+// 관계 조회
+const postsWithAuthors = await db.select()
+  .from(schema.posts)
+  .leftJoin(schema.users, eq(schema.posts.authorId, schema.users.id))
 ```
 
-타입 추론이 완벽하게 작동해, IDE에서 자동완성과 타입 체크를 받을 수 있습니다.
+### 마이그레이션
 
-### 마이그레이션 자동화
+Drizzle은 스키마 변경을 자동으로 감지해 SQL 마이그레이션을 생성합니다:
 
 ```bash
+# 마이그레이션 생성
 npx drizzle-kit generate:sqlite
+
+# 마이그레이션 적용
 npx drizzle-kit push:sqlite
 ```
 
-스키마 변경 시 자동으로 SQL 마이그레이션 파일을 생성하고, Turso에 적용할 수 있습니다.
+## 엣지 스택 통합: 실전 예제
 
-## 실전 예제: 블로그 API 만들기
-
-이제 세 기술을 조합해 실제 동작하는 블로그 API를 만들어보겠습니다.
+이제 Hono + Turso + Drizzle을 결합한 완전한 API를 만들어봅시다.
 
 ### 프로젝트 구조
 
 ```
-my-edge-blog/
+my-edge-app/
 ├── src/
-│   ├── index.ts       # Hono 앱 진입점
-│   ├── db.ts          # Turso 연결
-│   ├── schema.ts      # Drizzle 스키마
+│   ├── index.ts       # Hono 앱
+│   ├── db/
+│   │   ├── schema.ts  # Drizzle 스키마
+│   │   └── client.ts  # DB 연결
 │   └── routes/
-│       ├── posts.ts   # 포스트 라우트
-│       └── users.ts   # 사용자 라우트
-├── drizzle/
-│   └── migrations/    # SQL 마이그레이션
-├── wrangler.toml      # Cloudflare Workers 설정
+│       ├── users.ts
+│       └── posts.ts
+├── wrangler.toml      # Cloudflare 설정
 └── package.json
 ```
 
-### 데이터베이스 연결 (db.ts)
+### DB 클라이언트 설정
 
 ```typescript
+// src/db/client.ts
 import { drizzle } from 'drizzle-orm/libsql'
-import { createClient } from '@libsql/client/web'
+import { createClient } from '@libsql/client'
+import * as schema from './schema'
 
-export function createDB(env: Env) {
+export const createDb = (env: { DATABASE_URL: string; DATABASE_AUTH_TOKEN: string }) => {
   const client = createClient({
-    url: env.TURSO_URL,
-    authToken: env.TURSO_TOKEN
+    url: env.DATABASE_URL,
+    authToken: env.DATABASE_AUTH_TOKEN,
   })
-  return drizzle(client)
+  return drizzle(client, { schema })
 }
 ```
 
-### 포스트 라우트 (routes/posts.ts)
+### Hono 라우터
 
 ```typescript
+// src/routes/users.ts
 import { Hono } from 'hono'
-import { posts } from '../schema'
-import { eq, desc } from 'drizzle-orm'
+import { createDb } from '../db/client'
+import { users } from '../db/schema'
+import { eq } from 'drizzle-orm'
 
-const postsApp = new Hono<{ Bindings: Env }>()
+const app = new Hono()
 
-// 전체 포스트 조회
-postsApp.get('/', async (c) => {
-  const db = createDB(c.env)
-  const allPosts = await db
-    .select()
-    .from(posts)
-    .orderBy(desc(posts.createdAt))
-  return c.json(allPosts)
+app.get('/', async (c) => {
+  const db = createDb(c.env)
+  const allUsers = await db.select().from(users)
+  return c.json(allUsers)
 })
 
-// 단일 포스트 조회
-postsApp.get('/:id', async (c) => {
-  const db = createDB(c.env)
+app.get('/:id', async (c) => {
+  const db = createDb(c.env)
   const id = parseInt(c.req.param('id'))
-  const post = await db
-    .select()
-    .from(posts)
-    .where(eq(posts.id, id))
-    .limit(1)
+  const user = await db.select().from(users).where(eq(users.id, id))
   
-  if (!post.length) {
-    return c.json({ error: 'Post not found' }, 404)
+  if (!user.length) {
+    return c.json({ error: 'User not found' }, 404)
   }
-  return c.json(post[0])
+  
+  return c.json(user[0])
 })
 
-// 포스트 생성
-postsApp.post('/', async (c) => {
-  const db = createDB(c.env)
-  const body = await c.req.json<{ userId: number, title: string, content: string }>()
+app.post('/', async (c) => {
+  const db = createDb(c.env)
+  const { name, email } = await c.req.json()
   
-  const newPost = await db.insert(posts).values({
-    userId: body.userId,
-    title: body.title,
-    content: body.content
+  const newUser = await db.insert(users).values({
+    name,
+    email,
+    createdAt: new Date(),
   }).returning()
   
-  return c.json(newPost[0], 201)
+  return c.json(newUser[0], 201)
 })
 
-export default postsApp
+export default app
 ```
 
-### 메인 앱 (index.ts)
+### 메인 앱
 
 ```typescript
+// src/index.ts
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
-import postsApp from './routes/posts'
-import usersApp from './routes/users'
+import usersRoute from './routes/users'
+import postsRoute from './routes/posts'
 
-const app = new Hono<{ Bindings: Env }>()
+const app = new Hono()
 
 app.use('*', logger())
 app.use('*', cors())
 
+app.route('/users', usersRoute)
+app.route('/posts', postsRoute)
+
 app.get('/', (c) => {
-  return c.json({
-    message: 'Edge Blog API',
-    endpoints: ['/posts', '/users']
+  return c.json({ 
+    message: 'Edge API running!',
+    location: c.req.header('cf-ray')?.split('-')[1] || 'unknown'
   })
 })
-
-app.route('/posts', postsApp)
-app.route('/users', usersApp)
 
 export default app
 ```
@@ -370,108 +365,149 @@ export default app
 ### Cloudflare Workers 배포
 
 ```bash
-# wrangler 설치
-npm install -g wrangler
-
-# Cloudflare 로그인
-wrangler login
+# 환경 변수 설정
+wrangler secret put DATABASE_URL
+wrangler secret put DATABASE_AUTH_TOKEN
 
 # 배포
 wrangler deploy
 ```
 
-환경 변수 설정:
+배포하면 전 세계 300+ 엣지 로케이션에 즉시 코드가 배포됩니다!
 
-```bash
-wrangler secret put TURSO_URL
-wrangler secret put TURSO_TOKEN
+## 성능 최적화 팁
+
+### 1. 읽기 중심 캐싱
+
+엣지에서는 Cloudflare Cache API를 활용할 수 있습니다:
+
+```typescript
+app.get('/posts/:id', async (c) => {
+  const cache = caches.default
+  const cacheKey = new Request(c.req.url)
+  
+  let response = await cache.match(cacheKey)
+  
+  if (!response) {
+    const db = createDb(c.env)
+    const post = await db.select().from(posts).where(eq(posts.id, id))
+    
+    response = new Response(JSON.stringify(post), {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=3600',
+      },
+    })
+    
+    await cache.put(cacheKey, response.clone())
+  }
+  
+  return response
+})
 ```
 
-배포 후, `https://your-app.workers.dev/posts`로 API를 호출하면 전 세계 어디서나 빠른 응답을 받을 수 있습니다.
+### 2. 연결 재사용
 
-## 성능 측정
+Turso는 HTTP 연결을 사용하므로 연결 풀이 필요 없지만, 클라이언트 인스턴스는 재사용하는 것이 좋습니다:
 
-동일한 API를 전통적 스택(Node.js + PostgreSQL in us-east-1)과 비교한 결과:
+```typescript
+let dbInstance: ReturnType<typeof createDb> | null = null
 
-| 요청 위치 | 전통적 스택 | 엣지 스택 | 개선율 |
-|----------|-----------|---------|--------|
-| 서울 | 220ms | 35ms | **6.3배** |
-| 런던 | 95ms | 18ms | **5.3배** |
-| 시드니 | 280ms | 42ms | **6.7배** |
+export const getDb = (env: any) => {
+  if (!dbInstance) {
+    dbInstance = createDb(env)
+  }
+  return dbInstance
+}
+```
 
-읽기 위주 작업에서는 Turso의 로컬 replica 덕분에 더욱 빠릅니다.
+### 3. 쿼리 최적화
 
-## 비용 절감 효과
+Drizzle은 SQL에 가까워 명시적 최적화가 쉽습니다:
 
-Cloudflare Workers Free 티어:
+```typescript
+// N+1 문제 회피
+const postsWithAuthors = await db
+  .select({
+    post: posts,
+    author: users,
+  })
+  .from(posts)
+  .leftJoin(users, eq(posts.authorId, users.id))
+  .limit(10)
+```
 
-- **100,000 요청/일** 무료
-- **초과 시**: $0.50/백만 요청
+## Deno Deploy에서 실행하기
 
-Turso Free 티어:
+Hono는 Deno Deploy에서도 동일하게 작동합니다:
 
-- **8 GB 저장** 무료
-- **500M row reads/월** 무료
+```typescript
+// main.ts
+import { Hono } from 'hono'
+import { serve } from 'https://deno.land/std/http/server.ts'
 
-중소 규모 앱은 **완전 무료**로 운영 가능합니다. 전통적인 VPS나 RDS보다 훨씬 경제적입니다.
+const app = new Hono()
 
-## 주의사항과 트레이드오프
+app.get('/', (c) => c.json({ message: 'Deno Edge!' }))
 
-### 쓰기 일관성
+serve(app.fetch)
+```
 
-Turso는 primary-replica 모델이므로, 쓰기 직후 다른 지역에서 읽을 때 약간의 지연(보통 수백ms)이 있을 수 있습니다. 강한 일관성이 필요한 경우 primary에 직접 쿼리하도록 설정해야 합니다.
+배포:
 
-### 복잡한 트랜잭션
+```bash
+deno deploy --project=my-edge-app main.ts
+```
 
-SQLite는 동시 쓰기에 제약이 있습니다. 초당 수천 건의 쓰기가 필요한 경우 PostgreSQL이 더 적합할 수 있습니다.
-
-### 파일 업로드
-
-엣지 환경은 파일 시스템이 없으므로, 파일 업로드는 R2(Cloudflare Object Storage)나 S3 같은 별도 스토리지를 사용해야 합니다.
-
-## 대안 스택 비교
-
-### Hono vs 다른 엣지 프레임워크
-
-- **Hono vs Remix/Next.js Edge**: Remix/Next는 풀스택 프레임워크, Hono는 API 중심
-- **Hono vs FastAPI/Express**: FastAPI/Express는 엣지 미지원
-
-### Turso vs 다른 엣지 DB
-
-- **Turso vs Cloudflare D1**: D1은 Cloudflare 전용, Turso는 멀티 플랫폼
-- **Turso vs Neon**: Neon은 PostgreSQL (더 복잡), Turso는 SQLite (더 간단)
-
-### Drizzle vs 다른 ORM
-
-- **Drizzle vs Prisma**: Prisma는 무겁고 엣지 지원 불완전
-- **Drizzle vs TypeORM**: TypeORM은 엣지 미지원
-
-## 언제 이 스택을 사용해야 할까?
+## 언제 엣지 스택을 사용해야 할까?
 
 ### 적합한 경우
 
-- **글로벌 사용자** 대상 앱 (저지연 중요)
-- **읽기 중심** 워크로드 (블로그, 문서, 카탈로그)
-- **중소 규모** 데이터 (수 GB~수십 GB)
-- **서버리스 아키텍처** 선호
+- **글로벌 사용자**: 전 세계에 분산된 사용자에게 일관된 저지연 제공
+- **읽기 중심 앱**: 블로그, 뉴스, 전자상거래 카탈로그
+- **API Gateway**: 마이크로서비스 앞단 라우팅
+- **A/B 테스팅**: 엣지에서 사용자 분기 처리
 
-### 아직 이른 경우
+### 부적합한 경우
 
-- **대량 쓰기** 작업 (실시간 채팅, 주문 처리)
-- **복잡한 JOIN** 쿼리 (대규모 분석)
-- **테라바이트급** 데이터
+- **복잡한 트랜잭션**: 다중 테이블 원자적 쓰기
+- **긴 실행 시간**: 배치 처리, 데이터 분석
+- **파일 업로드**: 대용량 파일 처리는 중앙 서버가 유리
+
+## 비용 비교
+
+**전통 클라우드 (AWS EC2 + RDS)**:
+- EC2 t3.medium: ~$30/월
+- RDS PostgreSQL: ~$50/월
+- 총 ~$80/월 (최소)
+
+**엣지 스택 (Cloudflare Workers + Turso)**:
+- Workers: $5/월 (10M 요청까지 무료)
+- Turso: $0~29/월 (500MB까지 무료)
+- 총 ~$5~34/월
+
+트래픽이 적을 때는 거의 무료로 시작할 수 있고, 확장성도 뛰어납니다.
+
+## 커뮤니티와 생태계
+
+- **Hono**: Discord 채널, GitHub Discussions 활발
+- **Turso**: 공식 문서 풍부, Slack 커뮤니티
+- **Drizzle**: Discord, Twitter에서 활발한 업데이트
+
+모두 오픈소스이며 빠르게 발전하고 있습니다.
 
 ## 결론
 
-Hono + Turso + Drizzle 조합은 2026년 엣지 애플리케이션의 사실상 표준이 되고 있습니다. Express/Node.js 시대의 편리함과 엣지 컴퓨팅의 성능을 모두 제공하면서, 비용은 오히려 절감되는 놀라운 스택입니다.
+Hono + Turso + Drizzle 스택은 엣지 컴퓨팅의 이상적인 조합입니다. Hono의 경량성과 다중 런타임 지원, Turso의 글로벌 복제, Drizzle의 타입 안전성이 시너지를 이룹니다.
 
-특히 TypeScript 개발자라면 타입 안전성과 개발자 경험이 탁월해, 기존 스택에서 마이그레이션할 충분한 이유가 있습니다.
+전통적인 중앙 서버 아키텍처에서 벗어나 전 세계 사용자에게 밀리초 단위 응답을 제공하고 싶다면, 이 스택을 시도해보세요. 특히 Next.js나 Remix 같은 풀스택 프레임워크와 결합하면 정적 페이지는 CDN에서, 동적 API는 엣지에서 처리하는 완벽한 하이브리드 아키텍처를 구축할 수 있습니다.
 
-글로벌 규모의 빠른 앱을 만들고 싶다면, 지금 바로 이 스택을 시도해보세요.
+엣지는 선택이 아닌 필수가 되어가고 있습니다.
 
 ## 참고 자료
 
-- [Hono 공식 문서](https://hono.dev/)
-- [Turso 공식 사이트](https://turso.tech/)
+- [Hono 공식 사이트](https://hono.dev/)
+- [Turso 공식 문서](https://docs.turso.tech/)
 - [Drizzle ORM 문서](https://orm.drizzle.team/)
-- [Cloudflare Workers 가이드](https://developers.cloudflare.com/workers/)
+- [Cloudflare Workers 문서](https://developers.cloudflare.com/workers/)
+- [Deno Deploy 가이드](https://deno.com/deploy)
