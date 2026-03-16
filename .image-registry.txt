@@ -281,3 +281,5 @@ c85ea7bd0fad7c33c213838f08490ebf images/trend-java-stream.jpg
 ddcbcf9da620d4cd6adba716ec55d60f  images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/sentiment-issue.jpg
 eefd782a4fac99e183f54c21e192f64f  images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/solution.jpg
 099b9254e779a136b55c41a3896db652  images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/live-launch.jpg
+de4d57e843864ad5bff08cc6ac8524ff images/2026-03-16-Spring-Data-2026-Redis-PubSub-MongoDB-Bulk/cover.jpg
+d5e09d4a0bc943c0dac3e53aa597adf6  images/2026-03-16-Nextjs-16-MCP-AI-Agent-Development/cover.jpg
