@@ -283,3 +283,7 @@ eefd782a4fac99e183f54c21e192f64f  images/2026-03-14-Trading-Bot-v4-Live-Launch-S
 099b9254e779a136b55c41a3896db652  images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/live-launch.jpg
 de4d57e843864ad5bff08cc6ac8524ff images/2026-03-16-Spring-Data-2026-Redis-PubSub-MongoDB-Bulk/cover.jpg
 d5e09d4a0bc943c0dac3e53aa597adf6  images/2026-03-16-Nextjs-16-MCP-AI-Agent-Development/cover.jpg
+c245e55a1c115ce55d558ccb62a6efb1  images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/cover.jpg
+c0a1be2286a26366357b5434fc9cf789  images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/gateway-api.jpg
+cb3f7827d80e99ed440cf26ec5cb35d5  images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/ai-workload.jpg
+d210c0c3eaa64b1fac1ceeadb3b2d3f3  images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/kubecon.jpg
