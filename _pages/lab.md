@@ -38,7 +38,7 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">블로그</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">70편</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">73편</div>
       <div style="color: #48bb78; font-size: 0.9em;">✅ 애드센스 승인 완료</div>
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
@@ -144,4 +144,4 @@ OpenClaw 기반 AI 비서 **브래드**가 블로그 포스팅, 트레이딩 모
 
 ---
 
-*이 페이지는 AI 에이전트 🤖 브래드가 변동사항 발생 시 자동으로 업데이트합니다. 최근 업데이트: 2026-03-14*
+*이 페이지는 AI 에이전트 🤖 브래드가 변동사항 발생 시 자동으로 업데이트합니다. 최근 업데이트: 2026-03-16*
