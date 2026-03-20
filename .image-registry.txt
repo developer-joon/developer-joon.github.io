@@ -303,3 +303,7 @@ bddcc03d4c4de182375e7ed5e64d5b8a  images/2026-03-21-Trading-Bot-v4-Live-Week1-Re
 cd04f0031825aea756f21d3e0ffa170f  images/2026-03-21-Kubernetes-136-Preview/infra.jpg
 3f576fbc7f22ecf4f38987a57fe98c4c  images/2026-03-21-Docker-Kanvas-Helm-Kustomize/cover.jpg
 10dfe69535407e224a34a0b3ef40f672  images/2026-03-21-Docker-Kanvas-Helm-Kustomize/container.jpg
+55f7b75fce0e3ebef09d2b664b39de47  images/2026-03-21-Java-26-Release/cover.jpg
+2a35dd24e907238587abab65863d8c3c  images/2026-03-21-Java-26-Release/code.jpg
+0b038d362c004e3a6f643590f465e14e  images/2026-03-21-Edge-js-Node-Wasm-AI/cover.jpg
+45a1a0346d72a30695c3f1cd6a0ef6ed  images/2026-03-21-Edge-js-Node-Wasm-AI/wasm.jpg

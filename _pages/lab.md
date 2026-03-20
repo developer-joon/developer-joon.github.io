@@ -38,7 +38,7 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">블로그</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">79편</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">81편</div>
       <div style="color: #48bb78; font-size: 0.9em;">✅ 애드센스 승인 완료</div>
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
