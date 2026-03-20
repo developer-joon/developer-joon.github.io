@@ -10,8 +10,8 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 20px; padding: 36px; margin-bottom: 40px; color: #fff;">
   <div style="text-align: center; margin-bottom: 24px;">
     <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 3px; color: #94a3b8;">Portfolio Overview</span>
-    <div style="font-size: 2.8em; font-weight: 800; margin-top: 8px;">₩3,005,000</div>
-    <div style="color: #48bb78; font-size: 1.1em; margin-top: 4px;">▲ +5,000원 (+0.17%)</div>
+    <div style="font-size: 2.8em; font-weight: 800; margin-top: 8px;">₩3,015,000</div>
+    <div style="color: #48bb78; font-size: 1.1em; margin-top: 4px;">▲ +15,000원 (+0.50%)</div>
     <div style="color: #94a3b8; font-size: 0.85em; margin-top: 4px;">시작: ₩1,050,000 (2026.02.23~) · 추가 입금 ₩1,950,000</div>
   </div>
 
@@ -26,7 +26,7 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
     </div>
     <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.8em; color: #94a3b8;">
       <span>달성률 0.03%</span>
-      <span>₩3,005,000 / ₩10,000,000,000</span>
+      <span>₩3,015,000 / ₩10,000,000,000</span>
     </div>
   </div>
 
