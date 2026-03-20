@@ -297,3 +297,9 @@ a0a97d089ddaf586242e09f407520116  images/2026-03-21-Lightpanda-Zig-Headless-Brow
 22ec7df7a900b57598b05aeaa669cd08  images/2026-03-21-Trading-Bot-v4-Live-Week1-Report/cover.jpg
 bddcc03d4c4de182375e7ed5e64d5b8a  images/2026-03-21-Trading-Bot-v4-Live-Week1-Report/chart.jpg
 5b92423c972af8ad9b1dc44fb9cf5d8c  images/2026-03-21-Trading-Bot-v4-Live-Week1-Report/bitcoin.jpg
+9b7ace9a3eab1a2ca1149d947939f0ba  images/2026-03-21-AI-Coding-Google-Amazon-Developer-Role/cover.jpg
+6e65ce05af1c107a78a345ab408321f7  images/2026-03-21-AI-Coding-Google-Amazon-Developer-Role/team.jpg
+933697886f601b2e7b16a304e9a14e18  images/2026-03-21-Kubernetes-136-Preview/cover.jpg
+cd04f0031825aea756f21d3e0ffa170f  images/2026-03-21-Kubernetes-136-Preview/infra.jpg
+3f576fbc7f22ecf4f38987a57fe98c4c  images/2026-03-21-Docker-Kanvas-Helm-Kustomize/cover.jpg
+10dfe69535407e224a34a0b3ef40f672  images/2026-03-21-Docker-Kanvas-Helm-Kustomize/container.jpg
