@@ -3,6 +3,7 @@ title: '트레이딩봇 전략 v4: 듀얼 익절 — 양방향 DCA와 뉴스 감
 date: 2026-03-01 11:00:00
 description: '비트코인 자동매매 봇의 전략을 v3에서 v4로 전면 개편했습니다. 양방향 동시 진입(듀얼 익절), 2단계 DCA, 뉴스 감성분석 기반 포지션 조절, 그리고 5년치 실제 BTC 데이터 백테스트 결과를 공유합니다.'
 featured_image: '/images/2026-03-01-Trading-Bot-V4-Dual-TakeProfit-Strategy/cover.jpg'
+tags: [trading-bot, bitcoin, dca]
 ---
 
 ![트레이딩봇 v4 듀얼 익절 전략](/images/2026-03-01-Trading-Bot-V4-Dual-TakeProfit-Strategy/cover.jpg)

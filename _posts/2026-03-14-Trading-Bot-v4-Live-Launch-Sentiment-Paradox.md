@@ -3,6 +3,7 @@ title: '트레이딩봇 v4 LIVE 전환 — 감성 역설 발견과 해결'
 date: 2026-03-14 00:00:00
 description: 'PAPER 모드에서 발견한 감성 역설 문제를 해결하고 LIVE로 전환한 트레이딩봇 v4의 개발 이야기. 뉴스 감성분석이 높을수록 수익을 놓치는 역설적 상황과 해결 방법.'
 featured_image: '/images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/cover.jpg'
+tags: [trading-bot, bitcoin, live-trading]
 ---
 
 ![](/images/2026-03-14-Trading-Bot-v4-Live-Launch-Sentiment-Paradox/cover.jpg)
