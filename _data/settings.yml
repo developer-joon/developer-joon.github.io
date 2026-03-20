@@ -12,6 +12,8 @@ menu_settings:
       url: "/lab/"
     - title: "Blog"
       url: "/blog/"
+    - title: "Shop"
+      url: "/shop/"
     - title: "About"
       url: "/about"
     # - title: 'Contact'
