@@ -288,3 +288,12 @@ c0a1be2286a26366357b5434fc9cf789  images/2026-03-16-Kubernetes-AI-Gateway-Workin
 cb3f7827d80e99ed440cf26ec5cb35d5  images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/ai-workload.jpg
 d210c0c3eaa64b1fac1ceeadb3b2d3f3  images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/kubecon.jpg
 d5e09d4a0bc943c0dac3e53aa597adf6 images/2026-03-16-Nextjs-16-MCP-AI-Agent-Development/cover.jpg
+e4251ccef1caf86ad5a5d975d340abbe  images/2026-03-21-Cilium-119-Kubernetes-Networking/cover.jpg
+5726d144d1c3f49b8c32e6be33a26a68  images/2026-03-21-Cilium-119-Kubernetes-Networking/network.jpg
+674e37c3405b9280a4cc38ff8e620d75  images/2026-03-21-Cilium-119-Kubernetes-Networking/security.jpg
+a0a97d089ddaf586242e09f407520116  images/2026-03-21-Lightpanda-Zig-Headless-Browser-AI/cover.jpg
+5726d144d1c3f49b8c32e6be33a26a68  images/2026-03-21-Lightpanda-Zig-Headless-Browser-AI/benchmark.jpg
+8264a83f08e29c8314c543e16b3837ed  images/2026-03-21-Lightpanda-Zig-Headless-Browser-AI/architecture.jpg
+22ec7df7a900b57598b05aeaa669cd08  images/2026-03-21-Trading-Bot-v4-Live-Week1-Report/cover.jpg
+bddcc03d4c4de182375e7ed5e64d5b8a  images/2026-03-21-Trading-Bot-v4-Live-Week1-Report/chart.jpg
+5b92423c972af8ad9b1dc44fb9cf5d8c  images/2026-03-21-Trading-Bot-v4-Live-Week1-Report/bitcoin.jpg
