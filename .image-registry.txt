@@ -307,3 +307,5 @@ cd04f0031825aea756f21d3e0ffa170f  images/2026-03-21-Kubernetes-136-Preview/infra
 2a35dd24e907238587abab65863d8c3c  images/2026-03-21-Java-26-Release/code.jpg
 0b038d362c004e3a6f643590f465e14e  images/2026-03-21-Edge-js-Node-Wasm-AI/cover.jpg
 45a1a0346d72a30695c3f1cd6a0ef6ed  images/2026-03-21-Edge-js-Node-Wasm-AI/wasm.jpg
+ea42a456fab9c3bd7f4f39c358ba9768  images/2026-03-21-Lotto-Auto-Purchase-1Month-Report/cover.jpg
+9e539e6573a50370cfd5725b818a20b4  images/2026-03-21-Lotto-Auto-Purchase-1Month-Report/analysis.jpg
