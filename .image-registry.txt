@@ -313,3 +313,8 @@ ea42a456fab9c3bd7f4f39c358ba9768  images/2026-03-21-Lotto-Auto-Purchase-1Month-R
 f61e07a1088174cf024472815b2d46f9  images/2026-03-24-WordPress-MCP-AI-Agent-Publishing/wordpress-automation.jpg
 3b4db5cf3c8088d36f85ba0f4daceeab  images/2026-03-24-WordPress-MCP-AI-Agent-Publishing/ai-writing.jpg
 2d0308adb052593af39feffb8d75c239  images/2026-03-24-WordPress-MCP-AI-Agent-Publishing/mcp-protocol.jpg
+d4dff81d39601b17b5cfaa4f1d080acc  images/2026-03-24-GitHub-Trending-AI-Coding-Agents-March/cover.jpg
+ac85d25d28974f470872a55e534d5bdf  images/2026-03-24-GitHub-Trending-AI-Coding-Agents-March/agent-framework.jpg
+ff9f82ab461597433bb0ab43555e6af6  images/2026-03-24-GitHub-Trending-AI-Coding-Agents-March/prediction-ai.jpg
+c74ef38ff1305c5a6762ef226506a171  images/2026-03-24-GitHub-Trending-AI-Coding-Agents-March/dev-tools.jpg
+8533c4247b49d02bba9bb3fbdec0d70f  images/2026-03-24-GitHub-Trending-AI-Coding-Agents-March/special-projects.jpg
