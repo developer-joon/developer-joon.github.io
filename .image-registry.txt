@@ -309,3 +309,7 @@ cd04f0031825aea756f21d3e0ffa170f  images/2026-03-21-Kubernetes-136-Preview/infra
 45a1a0346d72a30695c3f1cd6a0ef6ed  images/2026-03-21-Edge-js-Node-Wasm-AI/wasm.jpg
 ea42a456fab9c3bd7f4f39c358ba9768  images/2026-03-21-Lotto-Auto-Purchase-1Month-Report/cover.jpg
 9e539e6573a50370cfd5725b818a20b4  images/2026-03-21-Lotto-Auto-Purchase-1Month-Report/analysis.jpg
+138750c5e08b4d2e509b75a0666f229c  images/2026-03-24-WordPress-MCP-AI-Agent-Publishing/cover.jpg
+f61e07a1088174cf024472815b2d46f9  images/2026-03-24-WordPress-MCP-AI-Agent-Publishing/wordpress-automation.jpg
+3b4db5cf3c8088d36f85ba0f4daceeab  images/2026-03-24-WordPress-MCP-AI-Agent-Publishing/ai-writing.jpg
+2d0308adb052593af39feffb8d75c239  images/2026-03-24-WordPress-MCP-AI-Agent-Publishing/mcp-protocol.jpg
