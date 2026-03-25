@@ -322,3 +322,9 @@ c74ef38ff1305c5a6762ef226506a171  images/2026-03-24-GitHub-Trending-AI-Coding-Ag
 da80659882a94526f97871791d8eb1e3  /home/openclaw/.openclaw/workspace/developer-joon.github.io/images/2026-03-24-Zuckerberg-AI-CEO-Agent-BigTech/meta-ai.jpg
 899cac689c58d5c2309bfe6e6d34f40a  /home/openclaw/.openclaw/workspace/developer-joon.github.io/images/2026-03-24-Zuckerberg-AI-CEO-Agent-BigTech/bigtech-competition.jpg
 8533c4247b49d02bba9bb3fbdec0d70f  /home/openclaw/.openclaw/workspace/developer-joon.github.io/images/2026-03-24-Zuckerberg-AI-CEO-Agent-BigTech/future-work.jpg
+ba5f7a245bc361d65b2def6817d99265  images/2026-03-25-AI-Agent-Security-2026-Challenge/cover.jpg
+ec5ba5be1d9f747a875b6c0e494bdb07  images/2026-03-25-AI-Agent-Security-2026-Challenge/framework.jpg
+3fa060c49fd7840073155b2ce6c87e08  images/2026-03-25-Bitcoin-150K-Bernstein-Institutional/cover.jpg
+4eb74142f8a12e15dbde3e4922853135  images/2026-03-25-Bitcoin-150K-Bernstein-Institutional/institutional.jpg
+1b628c7623a7eb68d55423a45a088209  images/2026-03-25-Claude-Code-Auto-Mode-Agent/cover.jpg
+619c9ef7c89e95e18daea8b770144ad9  images/2026-03-25-Claude-Code-Auto-Mode-Agent/auto-mode.jpg
