@@ -1,0 +1,2 @@
+# image-registry는 추가만 하는 파일이므로 양쪽 다 합침 (충돌 방지)
+.image-registry.txt merge=union
