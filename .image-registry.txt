@@ -329,3 +329,4 @@ ec5ba5be1d9f747a875b6c0e494bdb07  images/2026-03-25-AI-Agent-Security-2026-Chall
 1b628c7623a7eb68d55423a45a088209  images/2026-03-25-Claude-Code-Auto-Mode-Agent/cover.jpg
 619c9ef7c89e95e18daea8b770144ad9  images/2026-03-25-Claude-Code-Auto-Mode-Agent/auto-mode.jpg
 7599463e7862c2e0da233490e1785ade  images/2026-03-28-gpt-5-4-autonomous-agent-era/cover.jpg
+4df6563e4d3cd39059f8a1221804a7cf  images/2026-03-28-nvidia-lpu-language-processing-unit/cover.jpg
