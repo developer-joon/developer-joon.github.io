@@ -332,3 +332,9 @@ ec5ba5be1d9f747a875b6c0e494bdb07  images/2026-03-25-AI-Agent-Security-2026-Chall
 4df6563e4d3cd39059f8a1221804a7cf  images/2026-03-28-nvidia-lpu-language-processing-unit/cover.jpg
 6b5a4a6adff0d4e18e8981b6e5388dec  images/2026-03-28-arm-agi-cpu-direct-manufacturing/cover.jpg
 8c18d4e4beae8f275e640a0b86407d3f  images/2026-03-28-alibaba-qwen-3-5-local-ai/cover.jpg
+5726d144d1c3f49b8c32e6be33a26a68  images/2026-04-02-kubernetes-v136-sneak-peek/cover.jpg
+8bf1139368d77f326cf8064c26a1d809  images/2026-04-02-typescript-6-rc-migration-guide/cover.jpg
+0412fd5406160fdd12cf810469e11468  images/2026-04-02-sora-api-shutdown-openai-video-ai/cover.jpg
+507d3c498f453d2eea025e9f7b07a605  images/2026-04-02-mcp-97-million-installs-agent-standard/cover.jpg
+35f754d56d48c0d9d9e05c8c1e9d8c72  images/2026-04-02-nvidia-gtc-2026-enterprise-agentic-ai/cover.jpg
+51d12f3c6aa7f41d11f535210ffca4d0  images/2026-04-02-ai-regulation-2026-eu-us-uk/cover.jpg
