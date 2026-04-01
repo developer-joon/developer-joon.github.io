@@ -350,3 +350,4 @@ e2f8fdd316c2c7ee10da2a5c6d7d0bc6  images/2026-04-02-kubernetes-1-36-production-r
 96ff6ac6301f1ef940944b8ab28ee044  images/2026-04-02-openai-astral-code-understanding/cover.jpg
 17b38d32f3d530d48551252cf4d29183  images/2026-04-02-sora-pause-creative-rebellion/cover.jpg
 9edc4ec4f6fc9ba11c0daa2c47b31a37  images/2026-04-02-typescript-6-type-system-evolution/cover.jpg
+a3b3b11b7ede222380d7c0b1094b0559  images/2026-04-02-trading-bot-v4-two-week-review/cover.jpg
