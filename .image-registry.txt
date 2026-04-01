@@ -338,3 +338,15 @@ ec5ba5be1d9f747a875b6c0e494bdb07  images/2026-03-25-AI-Agent-Security-2026-Chall
 507d3c498f453d2eea025e9f7b07a605  images/2026-04-02-mcp-97-million-installs-agent-standard/cover.jpg
 35f754d56d48c0d9d9e05c8c1e9d8c72  images/2026-04-02-nvidia-gtc-2026-enterprise-agentic-ai/cover.jpg
 51d12f3c6aa7f41d11f535210ffca4d0  images/2026-04-02-ai-regulation-2026-eu-us-uk/cover.jpg
+51d12f3c6aa7f41d11f535210ffca4d0  images/2026-04-02-ai-regulation-2026-eu-us-uk/cover.jpg
+41669994c4f8346619f69ab56a91caad  images/2026-04-02-gemini-3-1-flash-thinking-experimental/cover.jpg
+c213d987435435063311d185ffa1c704  images/2026-04-02-gpt-5-4-capabilities-launch/cover.jpg
+53836a73d1a4008c79158dd55b889c23  images/2026-04-02-grok-4-20-multimodal/cover.jpg
+e2f8fdd316c2c7ee10da2a5c6d7d0bc6  images/2026-04-02-kubernetes-1-36-production-ready/cover.jpg
+2b23d427641c465399e6eb9bdd82bb8b  images/2026-04-02-mcp-ecosystem-97m-growth/cover.jpg
+1a2c01ff9405102a1238d75f804f1743  images/2026-04-02-mistral-small-4-open-source/cover.jpg
+507d3c498f453d2eea025e9f7b07a605  images/2026-04-02-nextjs-16-2-react-19-5/cover.jpg
+5436107441c4236e1c3dda91cd045068  images/2026-04-02-nvidia-gtc-2026-blackwell-ultra/cover.jpg
+96ff6ac6301f1ef940944b8ab28ee044  images/2026-04-02-openai-astral-code-understanding/cover.jpg
+17b38d32f3d530d48551252cf4d29183  images/2026-04-02-sora-pause-creative-rebellion/cover.jpg
+9edc4ec4f6fc9ba11c0daa2c47b31a37  images/2026-04-02-typescript-6-type-system-evolution/cover.jpg
