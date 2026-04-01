@@ -64,6 +64,8 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 | 3/01 | 3,005,000원 | +1,950,000원 입금 | v4 전략 전환 · PAPER 시작 |
 | 3/14 | 3,005,000원 | - | v4 LIVE 전환 · 감성역설 방지 적용 |
 | 3/20 | ~3,015,000원 | +10,000원 | 숏 익절 +4.47% · 롱 P2 DCA 진행중 |
+| 3/22 | ~3,015,000원 | - | ETH 전환 · 라운드 #2 시작 |
+| 4/1 | ~3,015,000원 | - | 고정 TP 전환 · 숏 익절 +2.2% |
 
 ---
 
@@ -73,7 +75,7 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 v4 "듀얼 익절" 전략 — 업비트 롱 + 바이빗 숏 양방향 동시 진입.  
 뉴스 감성분석으로 포지션 동적 조절 + 2단계 DCA 물타기.
 
-**현재 상태:** BTC 단일 코인 · LIVE 운영 시작 · 감성역설 방지 로직 적용
+**현재 상태:** ETH 단일 코인 · LIVE 운영 시작 · 감성역설 방지 로직 적용
 
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 20px 0;">
 
