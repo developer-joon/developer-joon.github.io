@@ -1,6 +1,6 @@
 ---
 title: '트레이딩봇 v4 운영 2주 리뷰 — ETH 전환과 고정 TP 전환기'
-date: 2026-04-02 11:00:00
+date: 2026-04-02 00:00:00
 description: 'AI 트레이딩봇 v4의 2주간 실전 운영 결과를 정리합니다. BTC→ETH 전환 이유, 트레일링스탑의 함정, 고정 TP로의 전환 결정, 그리고 실전에서만 배울 수 있는 교훈들을 공유합니다.'
 featured_image: '/images/2026-04-02-trading-bot-v4-two-week-review/cover.jpg'
 tags: [trading-bot, ai, cryptocurrency]
