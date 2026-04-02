@@ -351,3 +351,12 @@ e2f8fdd316c2c7ee10da2a5c6d7d0bc6  images/2026-04-02-kubernetes-1-36-production-r
 17b38d32f3d530d48551252cf4d29183  images/2026-04-02-sora-pause-creative-rebellion/cover.jpg
 9edc4ec4f6fc9ba11c0daa2c47b31a37  images/2026-04-02-typescript-6-type-system-evolution/cover.jpg
 a3b3b11b7ede222380d7c0b1094b0559  images/2026-04-02-trading-bot-v4-two-week-review/cover.jpg
+edd469c22809e368d4d97e9fdd609dfd  images/2026-04-02-gemini-31-ultra-analysis/cover.jpg
+cd1d2c5ccf7ba67c5110a665304748a7  images/2026-04-02-gpt-54-release-analysis/cover.jpg
+3d610a2075c3b1458fac21e1c84af860  images/2026-04-02-grok-420-release-review/cover.jpg
+5726d144d1c3f49b8c32e6be33a26a68  images/2026-04-02-mcp-97-million-installs-agent-standard/cover.jpg
+5587d8ce9333bd3864eabd5ac2d6d766  images/2026-04-02-mistral-small-4-open-source-ai/cover.jpg
+507d3c498f453d2eea025e9f7b07a605  images/2026-04-02-nextjs-162-update-analysis/cover.jpg
+84287cc3f2b1719853406173f280cb38  images/2026-04-02-nvidia-gtc-2026-enterprise-agentic-ai/cover.jpg
+0e1f50e11244dc2e20d98de0aa53999f  images/2026-04-02-openai-astral-acquisition-python-ecosystem/cover.jpg
+17b38d32f3d530d48551252cf4d29183  images/2026-04-02-sora-api-shutdown-openai-video-ai/cover.jpg
