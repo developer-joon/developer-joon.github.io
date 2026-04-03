@@ -360,3 +360,12 @@ cd1d2c5ccf7ba67c5110a665304748a7  images/2026-04-02-gpt-54-release-analysis/cove
 84287cc3f2b1719853406173f280cb38  images/2026-04-02-nvidia-gtc-2026-enterprise-agentic-ai/cover.jpg
 0e1f50e11244dc2e20d98de0aa53999f  images/2026-04-02-openai-astral-acquisition-python-ecosystem/cover.jpg
 17b38d32f3d530d48551252cf4d29183  images/2026-04-02-sora-api-shutdown-openai-video-ai/cover.jpg
+f2a1898fc4d2bcb57aa96be61616f38f  images/2021-08-15-JAVA_8_Functional_Basic_(1_2)/cover.jpg
+8bf1139368d77f326cf8064c26a1d809  images/2021-08-15-JAVA_8_Functional_Basic_(2_2)/cover.jpg
+97d640b1b8a6f74f50c2f801c2ca941c  images/2021-08-15-JAVA_interface_default_static_private/cover.jpg
+39405987e6b528c6de8140be59190bd4  images/2021-08-16-TESTING-testing-basic/cover.jpg
+468383277cd44c05df83be3336cdf383  images/2021-08-17-[JAVA_8_Stream_API/cover.jpg
+f67b2058833ac27ff96eb79322c3ede3  images/2021-12-05-SOLID_Basic/cover.jpg
+5726d144d1c3f49b8c32e6be33a26a68  images/2022-03-06-Ceph-Cluster-install-with-helm/cover.jpg
+edd469c22809e368d4d97e9fdd609dfd  images/2025-07-18-OpenClaw-AI-Agent-Setup-Guide/cover.jpg
+4758572352ff725a1ab87489b58c08b5  images/2026-02-18-AI-Agent-Revolution-2026/cover.jpg
