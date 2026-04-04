@@ -369,3 +369,7 @@ f67b2058833ac27ff96eb79322c3ede3  images/2021-12-05-SOLID_Basic/cover.jpg
 5726d144d1c3f49b8c32e6be33a26a68  images/2022-03-06-Ceph-Cluster-install-with-helm/cover.jpg
 edd469c22809e368d4d97e9fdd609dfd  images/2025-07-18-OpenClaw-AI-Agent-Setup-Guide/cover.jpg
 4758572352ff725a1ab87489b58c08b5  images/2026-02-18-AI-Agent-Revolution-2026/cover.jpg
+5f5250a465bd66883bff8eb24b38abf1  images/2026-04-04-ai-news-april-2026-top-6/cover.jpg
+9fb5d3db0ee4f26e9ca580c6780b30eb  images/2026-04-04-breaddesk-ai-service-desk-development/cover.jpg
+757dac21fbaa319ee6f20e8369e0a55a  images/2026-04-04-lotto-1218-trading-bot-weekly/cover.jpg
+99a89397d049976753590ce0799f90f8  images/2026-04-04-spring-boot-4-spring-framework-7-whats-new/cover.jpg

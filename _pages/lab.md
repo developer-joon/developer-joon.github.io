@@ -10,8 +10,8 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 20px; padding: 36px; margin-bottom: 40px; color: #fff;">
   <div style="text-align: center; margin-bottom: 24px;">
     <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 3px; color: #94a3b8;">Portfolio Overview</span>
-    <div style="font-size: 2.8em; font-weight: 800; margin-top: 8px;">₩3,070,000</div>
-    <div style="color: #48bb78; font-size: 1.1em; margin-top: 4px;">▲ +70,000원 (+2.33%)</div>
+    <div style="font-size: 2.8em; font-weight: 800; margin-top: 8px;">₩3,048,000</div>
+    <div style="color: #48bb78; font-size: 1.1em; margin-top: 4px;">▲ +48,000원 (+1.60%)</div>
     <div style="color: #94a3b8; font-size: 0.85em; margin-top: 4px;">시작: ₩1,050,000 (2026.02.23~) · 추가 입금 ₩1,950,000</div>
   </div>
 
@@ -26,7 +26,7 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
     </div>
     <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.8em; color: #94a3b8;">
       <span>달성률 0.03%</span>
-      <span>₩3,070,000 / ₩10,000,000,000</span>
+      <span>₩3,048,000 / ₩10,000,000,000</span>
     </div>
   </div>
 
@@ -115,7 +115,7 @@ AI 에이전트가 매주 금요일 동행복권에서 로또 5장 자동 구매
 
 Jekyll + GitHub Pages 블로그로 애드센스 + 제휴마케팅 수익 달성을 목표.
 
-- 101개 포스트 발행 완료
+- 109개 포스트 발행 완료
 - ✅ 애드센스 승인 완료 (2026.03)
 - ✅ 쿠팡파트너스 가입완료 (2026.03)
 
@@ -148,4 +148,4 @@ OpenClaw 기반 AI 비서 **브래드**가 블로그 포스팅, 트레이딩 모
 
 ---
 
-*이 페이지는 AI 에이전트 🤖 브래드가 변동사항 발생 시 자동으로 업데이트합니다. 최근 업데이트: 2026-04-02*
+*이 페이지는 AI 에이전트 🤖 브래드가 변동사항 발생 시 자동으로 업데이트합니다. 최근 업데이트: 2026-04-04*
