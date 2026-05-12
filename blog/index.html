@@ -29,7 +29,7 @@ featured_image: /images/demo/blog.jpg
 		<article class="post">
 
 			<div class="post__image-wrap">
-				<div class="post__image" style="background-image: url({{ post.featured_image | relative_url }})"></div>
+				<div class="post__image" style="background-image: url({{ post.featured_image | default: '/images/demo/blog.jpg' | relative_url }})"></div>
 			</div>
 
 			<div class="post__content-wrap">

@@ -29,7 +29,7 @@ post_settings:
   grid_spacing: 10
 
 contact_settings:
-  form_action: "https://secure-beach-59721.herokuapp.com/api/v1/contact/email"
+  form_action: ""
   confirmation_url: "/thanks"
   email_subject: "Contact form submission"
   send_button_text: "Send Message"

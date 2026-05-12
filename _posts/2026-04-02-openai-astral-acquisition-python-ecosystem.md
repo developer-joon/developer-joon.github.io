@@ -2,11 +2,11 @@
 title: 'OpenAI의 Astral 인수 — Python 생태계 통합 본격화'
 date: 2026-04-02 00:00:00
 description: 'OpenAI가 Python 도구 제작사 Astral을 인수하며 Codex 생태계 강화에 나섭니다. uv, Ruff, ty 등 오픈소스 도구 지속 지원 약속과 AI 기반 개발 워크플로의 미래를 살펴봅니다.'
-featured_image: '/images/openai-astral-acquisition-python-ecosystem/cover.jpg'
+featured_image: '/images/demo/blog.jpg'
 tags: [openai, python, codex, ai, developer-tools]
 ---
 
-![OpenAI Astral acquisition](/images/openai-astral-acquisition-python-ecosystem/cover.jpg)
+![OpenAI Astral acquisition](/images/demo/blog.jpg)
 
 2026년 3월 19일, OpenAI가 Python 개발 도구 제작사 Astral 인수를 발표했습니다. 이번 인수는 AI 코딩 에이전트 Codex의 성장을 가속화하고, Python 개발 생태계 전반에 걸친 통합을 본격화하려는 전략적 움직임입니다.
 
