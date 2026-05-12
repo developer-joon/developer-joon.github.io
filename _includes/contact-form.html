@@ -1,5 +1,5 @@
 <div class="contact-form">
-
+{% if site.data.settings.contact_settings.form_action != blank %}
     <form action="{{ site.data.settings.contact_settings.form_action }}" id="contact-form">
 
         <div class="contact-form__item">
@@ -26,5 +26,13 @@
         </div>
 
     </form>
+{% else %}
+    <div style="max-width: 640px; margin: 0 auto; padding: 24px; background: #f7fafc; border-radius: 12px; border: 1px solid #e2e8f0; text-align: center;">
+        <p style="margin: 0; color: #4a5568; line-height: 1.8;">
+            현재 문의 폼은 점검 중입니다.<br>
+            대신 <a href="mailto:developer.joon@gmail.com">developer.joon@gmail.com</a> 로 메일 주세요.
+        </p>
+    </div>
+{% endif %}
 
 </div>

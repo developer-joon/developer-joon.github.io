@@ -50,7 +50,7 @@ featured_image: /images/demo/home.jpg
 				<div style="font-size: 2em; margin-bottom: 8px;">📝</div>
 				<h3 style="color: #fff; margin-bottom: 8px;">블로그 수익화</h3>
 				<p style="color: #a0aec0; font-size: 0.9em; line-height: 1.6; margin-bottom: 16px;">
-					기술 블로그 + AI 뉴스로 애드센스 & 제휴마케팅 수익을 목표. 38개 포스트 발행 완료.
+					기술 블로그 + AI 뉴스로 애드센스 & 제휴마케팅 수익을 목표. 현재 {{ site.posts | size }}개 포스트 발행 완료.
 				</p>
 				<span style="background: #48bb78; color: #fff; padding: 4px 12px; border-radius: 20px; font-size: 0.8em; font-weight: 600;">✅ 애드센스 승인</span>
 			</div>
@@ -85,7 +85,7 @@ featured_image: /images/demo/home.jpg
 		{% for post in recent %}
 		<article class="post">
 			<div class="post__image-wrap">
-				<div class="post__image" style="background-image: url({{ post.featured_image | relative_url }})"></div>
+				<div class="post__image" style="background-image: url({{ post.featured_image | default: '/images/demo/blog.jpg' | relative_url }})"></div>
 			</div>
 			<div class="post__content-wrap">
 				<div class="post__content">

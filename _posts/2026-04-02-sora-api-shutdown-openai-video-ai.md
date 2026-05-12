@@ -2,11 +2,11 @@
 title: 'OpenAI Sora API 중단 — 비디오 AI 전략 재편의 신호탄'
 date: 2026-04-02 00:00:00
 description: '2026년 3월 24일, OpenAI가 Sora API 중단을 발표했습니다. 상업적 한계, 컴퓨팅 비용 부담, 비디오 AI 시장 재편 속에서 OpenAI의 전략 변화와 산업 전반의 영향을 분석합니다.'
-featured_image: '/images/sora-api-shutdown-openai-video-ai/cover.jpg'
+featured_image: '/images/demo/blog.jpg'
 tags: [ai, openai, video-ai, sora]
 ---
 
-![Sora API shutdown](/images/sora-api-shutdown-openai-video-ai/cover.jpg)
+![Sora API shutdown](/images/demo/blog.jpg)
 
 2026년 3월 24일, OpenAI가 **Sora API 중단**을 발표했습니다. 2024년 2월 화려하게 등장했던 텍스트-비디오 생성 모델 Sora는 API 서비스를 단 1년여 만에 종료하며 업계에 큰 충격을 줬습니다. 이번 결정의 배경과 비디오 AI 시장에 미치는 영향을 심층 분석합니다.
 

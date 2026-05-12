@@ -2,11 +2,11 @@
 title: 'GPT-5.4 출시 — 컴퓨터 사용, 100만 토큰, 33% 낮은 오류율'
 date: 2026-04-02 00:00:00
 description: 'OpenAI가 발표한 GPT-5.4는 네이티브 컴퓨터 사용, 100만 토큰 컨텍스트, 툴 서치 등으로 AI 에이전트 시대를 본격화합니다. 벤치마크, 가격, 실전 활용 전략을 심층 분석합니다.'
-featured_image: '/images/gpt-54-release-analysis/cover.jpg'
+featured_image: '/images/demo/blog.jpg'
 tags: [ai, openai, llm, gpt-5]
 ---
 
-![GPT-5.4 release](/images/gpt-54-release-analysis/cover.jpg)
+![GPT-5.4 release](/images/demo/blog.jpg)
 
 2026년 3월 5일, OpenAI가 **GPT-5.4**를 출시했습니다. ChatGPT, API, Codex 전반에 배포되며, **컴퓨터 사용(computer use), 100만 토큰 컨텍스트, 툴 서치** 등으로 프로페셔널 작업에 최적화된 최강 모델로 자리 잡았습니다. 이번 분석에서는 주요 개선사항, 벤치마크, 실전 활용 전략을 살펴봅니다.
 
