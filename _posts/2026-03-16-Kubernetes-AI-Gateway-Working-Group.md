@@ -2,10 +2,10 @@
 title: 'Kubernetes AI Gateway: AI 워크로드 네트워킹의 새 표준'
 date: 2026-03-16 00:00:00
 description: 'Kubernetes AI Gateway Working Group이 발족했습니다. 토큰 기반 rate limiting, 프롬프트 가드레일, 시맨틱 라우팅 등 AI 워크로드를 위한 네트워킹 표준화 움직임을 정리합니다.'
-featured_image: '/images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/cover.jpg'
+featured_image: '/images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/cover.svg'
 ---
 
-![](/images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/cover.jpg)
+![](/images/2026-03-16-Kubernetes-AI-Gateway-Working-Group/cover.svg)
 
 ## AI 워크로드가 Kubernetes로 몰리고 있다
 

@@ -3,11 +3,11 @@ title: 'Vercel Chat SDK의 AI SDK Tools 통합 — 챗봇에서 에이전트 런
 date: 2026-05-24 11:00:00
 categories: ["AI 에이전트"]
 description: 'Vercel Chat SDK가 AI SDK Tools를 내장하면서 챗봇 구현은 단순 메시지 UI를 넘어, 승인·프리셋·도구 호출을 갖춘 에이전트 런타임으로 이동하고 있다.'
-featured_image: '/images/2026-05-24-vercel-chat-sdk-ai-sdk-tools-agent/cover.jpg'
+featured_image: '/images/2026-05-24-vercel-chat-sdk-ai-sdk-tools-agent/cover.svg'
 tags: [vercel, ai-sdk, chat-sdk, ai-agent, frontend]
 ---
 
-![Vercel Chat SDK AI Tools](/images/2026-05-24-vercel-chat-sdk-ai-sdk-tools-agent/cover.jpg)
+![Vercel Chat SDK AI Tools](/images/2026-05-24-vercel-chat-sdk-ai-sdk-tools-agent/cover.svg)
 
 Vercel은 2026년 5월 20일 Chat SDK에 AI SDK tools가 포함되었다고 발표했다. 발표 내용의 핵심은 `chat/ai` 서브패스와 `createChatTools(chat)` 호출이다. 한 번의 호출로 Chat SDK의 read/write 액션을 AI 에이전트 도구 세트로 노출할 수 있고, messenger preset과 승인 흐름도 함께 제공된다.
 

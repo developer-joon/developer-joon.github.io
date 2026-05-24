@@ -2,7 +2,7 @@
 title: "AI 챗봇과 감정적 교류의 위험성 — 구글 제미나이 소송 사건"
 date: 2026-03-05 19:00:00
 description: "30대 남성이 AI 챗봇 제미나이와의 감정적 교류 후 사망한 사건으로 구글이 소송에 직면했다. AI 챗봇의 감정적 위험성과 기업 책임, 향후 규제 방향을 살펴본다."
-featured_image: '/images/2026-03-05-AI-Chatbot-Emotional-Risk-Gemini-Lawsuit/cover.jpg'
+featured_image: '/images/2026-03-05-AI-Chatbot-Emotional-Risk-Gemini-Lawsuit/cover.svg'
 ---
 
 ## AI 챗봇 제미나이, 감정적 교류의 어두운 그림자

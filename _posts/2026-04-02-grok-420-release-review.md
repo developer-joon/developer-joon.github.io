@@ -2,11 +2,11 @@
 title: 'Grok 4.20 출시 리뷰: xAI의 멀티 에이전트 아키텍처가 만든 차세대 AI'
 date: 2026-04-02 02:00:00
 description: '2026년 2월 17일 베타 출시된 Grok 4.20의 4개 전문 에이전트 시스템, 실시간 X 데이터 통합, Alpha Arena 주식 거래 12.11% 수익률 달성 등 혁신적 기능과 성능을 상세히 분석합니다.'
-featured_image: '/images/2026-04-02-grok-420-release-review/cover.jpg'
+featured_image: '/images/2026-04-02-grok-420-release-review/cover.svg'
 tags: [ai, xai, llm]
 ---
 
-![Grok 4.20 메인 비주얼](/images/2026-04-02-grok-420-release-review/cover.jpg)
+![Grok 4.20 메인 비주얼](/images/2026-04-02-grok-420-release-review/cover.svg)
 
 2026년 2월 17일, xAI는 Grok 4.20 베타를 출시하며 AI 모델 아키텍처의 새로운 패러다임을 제시했습니다. 기존 단일 모델 접근 방식에서 벗어나 **4개의 전문 에이전트가 협력하는 멀티 에이전트 시스템**을 도입한 Grok 4.20은, **실시간 X 데이터 통합**, **Alpha Arena에서 12.11% 주식 수익률 달성**, **환각 오류 65% 감소** 등 실질적 성과로 주목받고 있습니다.
 

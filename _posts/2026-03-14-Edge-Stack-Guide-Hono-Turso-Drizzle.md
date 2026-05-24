@@ -2,10 +2,10 @@
 title: '엣지 스택 완벽 가이드: Hono + Turso + Drizzle로 글로벌 저지연 앱 만들기'
 date: 2026-03-14 02:00:00
 description: 'Hono, Turso, Drizzle ORM을 활용한 엣지 컴퓨팅 스택 구축 가이드. Cloudflare Workers와 Deno Deploy에서 사용자에게 가장 가까운 서버로 밀리초 단위 응답을 제공하는 방법을 소개합니다.'
-featured_image: '/images/2026-03-14-Edge-Stack-Guide-Hono-Turso-Drizzle/cover.jpg'
+featured_image: '/images/2026-03-14-Edge-Stack-Guide-Hono-Turso-Drizzle/cover.svg'
 ---
 
-![](/images/2026-03-14-Edge-Stack-Guide-Hono-Turso-Drizzle/cover.jpg)
+![](/images/2026-03-14-Edge-Stack-Guide-Hono-Turso-Drizzle/cover.svg)
 
 클라우드 컴퓨팅의 다음 진화는 **엣지(Edge)**입니다. 중앙 서버에서 모든 요청을 처리하는 대신, 전 세계 수백 개의 엣지 로케이션에서 사용자와 가장 가까운 곳에서 코드를 실행하는 것이죠. 이를 통해 지연 시간(latency)을 획기적으로 줄이고, 글로벌 사용자에게 일관된 경험을 제공할 수 있습니다.
 

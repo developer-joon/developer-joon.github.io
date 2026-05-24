@@ -3,11 +3,11 @@ title: 'AI 에이전트의 테스트 결과를 Jira에 남기는 법 — 재현 
 date: 2026-05-24 19:00:00
 categories: ["AI 에이전트"]
 description: 'AI 에이전트가 코드를 수정한 뒤 테스트 결과를 대화창에만 남기면 재현성이 떨어진다. Jira에 실행 명령, 결과, 실패 원인, 남은 리스크를 구조화해 남기는 방식을 정리한다.'
-featured_image: '/images/2026-05-24-ai-agent-test-results-in-jira/cover.jpg'
+featured_image: '/images/2026-05-24-ai-agent-test-results-in-jira/cover.svg'
 tags: [ai-agent, jira, testing, claude-code, qa]
 ---
 
-![AI 에이전트 테스트 결과 Jira 기록](/images/2026-05-24-ai-agent-test-results-in-jira/cover.jpg)
+![AI 에이전트 테스트 결과 Jira 기록](/images/2026-05-24-ai-agent-test-results-in-jira/cover.svg)
 
 AI 에이전트가 코드를 수정하면 항상 같은 질문이 남는다. 정말 테스트했는가? 어떤 명령을 실행했는가? 실패한 테스트는 없었는가? 실패했다면 왜 실패했고, 어떻게 고쳤는가?
 

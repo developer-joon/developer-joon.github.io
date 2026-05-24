@@ -2,11 +2,11 @@
 title: 'MCP 9700만 설치 돌파 — AI 에이전트 인프라 표준화의 전환점'
 date: 2026-04-02 00:00:00
 description: 'Model Context Protocol이 2026년 3월 25일 9700만 설치 달성. 16개월 만에 OpenAI, Google, Microsoft가 채택한 에이전트 인프라 표준의 성장 배경과 보안 과제를 분석합니다.'
-featured_image: '/images/2026-04-02-mcp-97-million-installs-agent-standard/cover.jpg'
+featured_image: '/images/2026-04-02-mcp-97-million-installs-agent-standard/cover.svg'
 tags: [ai, mcp, ai-agent]
 ---
 
-![데이터 네트워크와 연결 이미지](/images/2026-04-02-mcp-97-million-installs-agent-standard/cover.jpg)
+![데이터 네트워크와 연결 이미지](/images/2026-04-02-mcp-97-million-installs-agent-standard/cover.svg)
 
 2026년 3월 25일, Anthropic의 Model Context Protocol(MCP)이 **월간 9700만 설치**를 기록했습니다. 2024년 11월 출시 후 단 16개월 만입니다. 비교하자면, React가 월 1억 다운로드에 도달하는 데 약 3년이 걸렸습니다. MCP는 그 절반 시간에 비슷한 수준의 채택률을 달성한 것이죠.
 

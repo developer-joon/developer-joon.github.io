@@ -3,11 +3,11 @@ title: 'Kubernetes Service ExternalIPs 폐기 — 오래된 편의 기능이 보
 date: 2026-05-24 12:00:00
 categories: ["개발/인프라"]
 description: 'Kubernetes v1.36에서 Service .spec.externalIPs 폐기와 제거가 본격화된다. CVE-2020-8554 이후 권장되어 온 비활성화 흐름과 운영팀이 준비할 마이그레이션 방향을 정리한다.'
-featured_image: '/images/2026-05-24-kubernetes-service-externalips-deprecation/cover.jpg'
+featured_image: '/images/2026-05-24-kubernetes-service-externalips-deprecation/cover.svg'
 tags: [kubernetes, devops, security, networking, cloud-native]
 ---
 
-![Kubernetes ExternalIPs 폐기](/images/2026-05-24-kubernetes-service-externalips-deprecation/cover.jpg)
+![Kubernetes ExternalIPs 폐기](/images/2026-05-24-kubernetes-service-externalips-deprecation/cover.svg)
 
 Kubernetes 프로젝트는 2026년 5월 14일 v1.36 관련 글에서 Service의 `.spec.externalIPs` 필드 폐기와 제거 방향을 다시 명확히 했다. 이 기능은 초기 Kubernetes에서 클라우드 로드밸런서와 비슷한 동작을 제공하려는 시도였다. 하지만 보안 모델이 현대적인 멀티테넌트 클러스터 환경과 맞지 않으면서 오래된 편의 기능이 리스크가 되었다.
 

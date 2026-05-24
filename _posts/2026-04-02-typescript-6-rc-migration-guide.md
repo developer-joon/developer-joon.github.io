@@ -2,11 +2,11 @@
 title: 'TypeScript 6.0 RC 분석: ES5 폐기와 TypeScript 7.0 Go 포트 준비'
 date: 2026-04-02 00:00:00
 description: 'TypeScript 6.0 RC의 주요 변경사항과 breaking changes를 분석합니다. ES5 deprecated, strict 기본값, baseUrl 폐기, types 기본값 변경 등 TypeScript 7.0 Go 네이티브 포트를 위한 전환 전략을 안내합니다.'
-featured_image: '/images/2026-04-02-typescript-6-rc-migration-guide/cover.jpg'
+featured_image: '/images/2026-04-02-typescript-6-rc-migration-guide/cover.svg'
 tags: [typescript, frontend, javascript]
 ---
 
-![TypeScript 6.0 RC 주요 변경사항](/images/2026-04-02-typescript-6-rc-migration-guide/cover.jpg)
+![TypeScript 6.0 RC 주요 변경사항](/images/2026-04-02-typescript-6-rc-migration-guide/cover.svg)
 
 TypeScript 6.0 RC가 2026년 3월에 공개되었습니다. 이번 릴리스는 단순한 버전 업데이트가 아닌, **TypeScript 7.0 Go 네이티브 포트**를 위한 전환점(transition release)입니다. Microsoft TypeScript 팀은 TypeScript 7.0부터 컴파일러와 언어 서비스를 JavaScript에서 Go로 재작성하여, 네이티브 코드의 속도와 공유 메모리 멀티스레딩을 활용할 계획입니다.
 
