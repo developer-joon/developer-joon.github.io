@@ -2,11 +2,11 @@
 title: '후행지표만으로 수익이 가능할까? — 예측 없는 트레이딩 전략 실험기'
 date: 2026-03-07 23:00:00
 description: '선행지표로 미래를 예측하는 대신, 후행지표만으로 매매 전략을 설계하고 백테스트와 페이퍼 트레이딩으로 검증한 실험 과정과 결과를 공유합니다. 이동평균, RSI, 뉴스 감성 점수 같은 후행지표 기반 전략의 현실적인 수익 가능성을 데이터로 분석합니다.'
-featured_image: '/images/2026-03-07-Lagging-Indicator-Trading-Strategy/cover.svg'
+featured_image: 'https://picsum.photos/seed/Lagging-Indicator-Trading-Strategy/1600/900'
 tags: [trading-bot, bitcoin, technical-analysis]
 ---
 
-![후행지표 기반 트레이딩 전략 분석](/images/2026-03-07-Lagging-Indicator-Trading-Strategy/cover.svg)
+![후행지표 기반 트레이딩 전략 분석](https://picsum.photos/seed/Lagging-Indicator-Trading-Strategy/1600/900)
 
 트레이딩에서 가장 흔한 실수가 뭘까요? **미래를 맞추려는 것**입니다.
 

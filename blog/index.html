@@ -29,7 +29,13 @@ featured_image: /images/demo/blog.jpg
 		<article class="post">
 
 			<div class="post__image-wrap">
-				<div class="post__image" style="background-image: url({{ post.featured_image | default: '/images/demo/blog.jpg' | relative_url }})"></div>
+				{% assign post_image = post.featured_image | default: '/images/demo/blog.jpg' %}
+				{% if post_image contains '://' %}
+					{% assign post_image_url = post_image %}
+				{% else %}
+					{% assign post_image_url = post_image | relative_url %}
+				{% endif %}
+				<div class="post__image" style="background-image: url({{ post_image_url }})"></div>
 			</div>
 
 			<div class="post__content-wrap">

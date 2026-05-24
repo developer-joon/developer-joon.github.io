@@ -3,11 +3,11 @@ title: '과거 Jira Issue 검색으로 에이전트 삽질 줄이기 — 조직 
 date: 2026-05-24 20:00:00
 categories: ["AI 에이전트"]
 description: 'AI 에이전트가 매번 처음부터 추론하지 않게 하려면 과거 Jira Issue를 검색해야 한다. 유사 이슈, 결정 사항, 실패 로그, 해결 패턴을 활용하는 /jira similar 인터페이스를 정리한다.'
-featured_image: '/images/2026-05-24-jira-similar-issues-agent-memory/cover.svg'
+featured_image: 'https://picsum.photos/seed/jira-similar-issues-agent-memory/1600/900'
 tags: [jira, ai-agent, knowledge-management, search, workflow]
 ---
 
-![Jira 유사 이슈 검색](/images/2026-05-24-jira-similar-issues-agent-memory/cover.svg)
+![Jira 유사 이슈 검색](https://picsum.photos/seed/jira-similar-issues-agent-memory/1600/900)
 
 AI 에이전트가 자주 하는 비효율 중 하나는 이미 조직이 겪은 문제를 처음 보는 문제처럼 다시 푸는 것이다. 과거에 비슷한 장애가 있었고, 비슷한 설계 결정을 했고, 비슷한 테스트 실패가 있었는데도 에이전트는 현재 코드와 현재 이슈만 보고 새로 추론한다.
 
