@@ -2,10 +2,10 @@
 title: 'Gleam으로 시작하는 타입 안전 함수형 프로그래밍'
 date: 2026-03-14 01:00:00
 description: 'Gleam은 Erlang VM 위에서 동작하는 타입 안전 함수형 언어입니다. Elixir의 확장성과 OCaml의 타입 시스템을 결합하면서도 낮은 학습 곡선을 자랑합니다. 함수형 프로그래밍 입문자와 Erlang 생태계 개발자 모두를 위한 가이드.'
-featured_image: '/images/2026-03-14-Gleam-Type-Safe-Functional-Programming/cover.svg'
+featured_image: 'https://picsum.photos/seed/Gleam-Type-Safe-Functional-Programming/1600/900'
 ---
 
-![](/images/2026-03-14-Gleam-Type-Safe-Functional-Programming/cover.svg)
+![](https://picsum.photos/seed/Gleam-Type-Safe-Functional-Programming/1600/900)
 
 함수형 프로그래밍은 강력하지만 가파른 학습 곡선으로 유명합니다. Haskell은 너무 학술적이고, OCaml은 문법이 낯설며, Elixir는 타입 안전성이 부족합니다. 이 모든 문제에 대한 해답으로 Gleam이 등장했습니다. Erlang VM의 검증된 신뢰성 위에서, 친절한 타입 시스템과 읽기 쉬운 문법으로 함수형 프로그래밍의 진입 장벽을 낮춥니다.
 

@@ -2,11 +2,11 @@
 title: 'Next.js 16.2 — 개발 서버 400% 빨라지고 렌더링 50% 개선'
 date: 2026-04-02 00:00:00
 description: 'Next.js 16.2의 주요 개선사항을 분석합니다. 극적인 성능 향상, AI 도구 통합 강화, Turbopack 안정화와 함께 프로덕션 환경에서의 실질적 변화를 살펴봅니다.'
-featured_image: '/images/2026-04-02-nextjs-162-update-analysis/cover.svg'
+featured_image: 'https://picsum.photos/seed/nextjs-162-update-analysis/1600/900'
 tags: [nextjs, frontend, react, performance]
 ---
 
-![Next.js 16.2 update](/images/2026-04-02-nextjs-162-update-analysis/cover.svg)
+![Next.js 16.2 update](https://picsum.photos/seed/nextjs-162-update-analysis/1600/900)
 
 2026년 3월 18일, Vercel이 Next.js 16.2를 발표했습니다. 이번 릴리스는 **개발 서버 시작 시간 400% 단축, 렌더링 속도 50% 개선** 등 성능에 집중한 업데이트입니다. AI 도구 통합, Turbopack 안정화, 디버깅 개선까지 포함한 주요 변경사항을 분석합니다.
 

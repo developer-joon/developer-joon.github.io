@@ -2,11 +2,11 @@
 title: 'AI 저작권 전쟁 본격화: Netflix vs ByteDance, Google Lyria 3, Meta의 6,500만 달러 로비까지'
 date: 2026-02-19 00:00:00
 description: '2026년 2월 셋째 주, AI 업계의 핵심 이슈를 정리합니다. Netflix가 ByteDance의 Seedance AI에 소송을 예고하고, Google이 AI 음악 모델 Lyria 3를 공개하고, Meta가 AI 규제 방지에 6,500만 달러를 쏟아붓는 등 AI를 둘러싼 저작권·정치·비즈니스 전쟁이 뜨겁습니다.'
-featured_image: '/images/2026-02-19-AI-News-Copyright-Wars-and-Big-Money/cover.svg'
+featured_image: 'https://picsum.photos/seed/AI-News-Copyright-Wars-and-Big-Money/1600/900'
 tags: [ai-news]
 ---
 
-![](/images/2026-02-19-AI-News-Copyright-Wars-and-Big-Money/cover.svg)
+![](https://picsum.photos/seed/AI-News-Copyright-Wars-and-Big-Money/1600/900)
 
 ## 들어가며
 
