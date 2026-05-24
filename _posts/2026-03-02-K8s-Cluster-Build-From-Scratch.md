@@ -2,11 +2,11 @@
 title: '집에서 K8s 클러스터 6노드 구축한 삽질기 — kubeadm, Cilium, ArgoCD까지'
 date: 2026-03-02 00:00:00
 description: '온프레미스 환경에서 Kubernetes 6노드 클러스터를 kubeadm으로 직접 구축하며 겪은 삽질 기록. HAProxy HA 구성, Cilium CNI, ArgoCD GitOps까지 시행착오와 해결 과정을 공유합니다.'
-featured_image: '/images/2026-03-02-K8s-Cluster-Build-From-Scratch/cover.jpg'
+featured_image: '/images/2026-03-02-K8s-Cluster-Build-From-Scratch/cover.svg'
 tags: [kubernetes, k8s, 삽질기, devops, 수익실험]
 ---
 
-![K8s 클러스터 구축](/images/2026-03-02-K8s-Cluster-Build-From-Scratch/cover.jpg)
+![K8s 클러스터 구축](/images/2026-03-02-K8s-Cluster-Build-From-Scratch/cover.svg)
 
 ## 왜 굳이 온프레미스 K8s를?
 

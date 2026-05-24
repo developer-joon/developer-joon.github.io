@@ -3,11 +3,11 @@ title: 'Claude Code Jira 플러그인 설계 — 에이전트가 읽고 쓸 수 
 date: 2026-05-24 16:00:00
 categories: ["AI 에이전트"]
 description: 'Jira Issue를 AI 에이전트의 업무 인터페이스로 쓰려면 단순 API 래퍼로는 부족하다. 이슈 조회, 요구사항 요약, 댓글 템플릿, 상태 변경, 과거 이슈 검색까지 포함한 Claude Code 플러그인 설계를 정리한다.'
-featured_image: '/images/2026-05-24-claude-code-jira-plugin-interface-design/cover.jpg'
+featured_image: '/images/2026-05-24-claude-code-jira-plugin-interface-design/cover.svg'
 tags: [claude-code, jira, ai-agent, plugin, workflow]
 ---
 
-![Claude Code Jira 플러그인 설계](/images/2026-05-24-claude-code-jira-plugin-interface-design/cover.jpg)
+![Claude Code Jira 플러그인 설계](/images/2026-05-24-claude-code-jira-plugin-interface-design/cover.svg)
 
 Jira Issue를 AI 에이전트의 업무 인수인계 인터페이스로 쓰기로 했다면, 다음 문제는 도구다. 사람이 웹 브라우저에서 Jira를 열고 복사해서 Claude Code에 붙여 넣는 방식은 오래가지 못한다.
 

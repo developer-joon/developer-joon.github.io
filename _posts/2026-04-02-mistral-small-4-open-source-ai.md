@@ -2,11 +2,11 @@
 title: 'Mistral Small 4 — 119B 파라미터 MoE, 4개 모델 통합한 오픈소스 AI'
 date: 2026-04-02 00:00:00
 description: 'Mistral AI가 출시한 Mistral Small 4는 119B 파라미터 MoE 구조로 추론, 멀티모달, 코딩을 단일 모델에 통합했습니다. Apache 2.0 라이선스, 40% 빠른 레이턴시, 3배 높은 처리량을 자랑하는 오픈소스 AI의 새로운 기준을 분석합니다.'
-featured_image: '/images/demo/blog.jpg'
+featured_image: '/images/2026-04-02-mistral-small-4-open-source-ai/cover.svg'
 tags: [ai, open-source, llm, mistral, moe]
 ---
 
-![Mistral Small 4](/images/demo/blog.jpg)
+![Mistral Small 4](/images/2026-04-02-mistral-small-4-open-source-ai/cover.svg)
 
 2026년 3월 16일, Mistral AI가 **Mistral Small 4**를 출시했습니다. 119B 파라미터 Mixture-of-Experts (MoE) 구조로, **4개의 특화 모델을 단일 배포에 통합**한 오픈소스 AI입니다. Apache 2.0 라이선스로 공개되며, **40% 빠른 레이턴시, 3배 높은 처리량**을 달성했습니다.
 

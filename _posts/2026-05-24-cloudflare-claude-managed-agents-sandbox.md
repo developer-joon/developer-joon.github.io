@@ -3,11 +3,11 @@ title: 'Cloudflare Claude Managed Agents — 에이전트 실행 환경의 승�
 date: 2026-05-24 13:00:00
 categories: ["AI 에이전트"]
 description: 'Cloudflare와 Anthropic의 Claude Managed Agents 통합은 에이전트 시장의 경쟁 축이 모델에서 실행 환경, 샌드박스, 프록시, 관측성으로 이동하고 있음을 보여준다.'
-featured_image: '/images/2026-05-24-cloudflare-claude-managed-agents-sandbox/cover.jpg'
+featured_image: '/images/2026-05-24-cloudflare-claude-managed-agents-sandbox/cover.svg'
 tags: [cloudflare, anthropic, claude, ai-agent, sandbox]
 ---
 
-![Cloudflare Claude Managed Agents](/images/2026-05-24-cloudflare-claude-managed-agents-sandbox/cover.jpg)
+![Cloudflare Claude Managed Agents](/images/2026-05-24-cloudflare-claude-managed-agents-sandbox/cover.svg)
 
 Cloudflare는 2026년 5월 19일 Anthropic과 협력해 Claude Managed Agents를 Cloudflare Sandboxes와 통합한다고 발표했다. 발표 요지는 명확하다. Claude Platform에서 에이전트 루프를 돌리고, Cloudflare는 코드 실행, 보안 연결, 커스텀 도구 호출, 샌드박스 관측성을 제공한다.
 

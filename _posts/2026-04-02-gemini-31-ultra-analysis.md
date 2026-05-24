@@ -2,11 +2,11 @@
 title: 'Gemini 3.1 Pro 심층 분석: 16개 벤치마크 중 13개 1위 달성한 Google의 AI 역습'
 date: 2026-04-02 01:00:00
 description: '2026년 2월 20일 출시된 Gemini 3.1 Pro의 벤치마크 성능, 가격 경쟁력, 멀티모달 능력을 분석합니다. 750만 MAU 돌파, ARC-AGI-2 77.1% 달성, GPT-5.2/Claude Opus 4.6와의 상세 비교.'
-featured_image: '/images/2026-04-02-gemini-31-ultra-analysis/cover.jpg'
+featured_image: '/images/2026-04-02-gemini-31-ultra-analysis/cover.svg'
 tags: [ai, google, llm]
 ---
 
-![Gemini 3.1 Pro 메인 비주얼](/images/2026-04-02-gemini-31-ultra-analysis/cover.jpg)
+![Gemini 3.1 Pro 메인 비주얼](/images/2026-04-02-gemini-31-ultra-analysis/cover.svg)
 
 2026년 2월 20일, Google은 Gemini 3.1 Pro를 출시하며 AI 플랫폼 전쟁에서 강력한 반격을 시작했습니다. **16개 주요 벤치마크 중 13개에서 1위**를 달성한 Gemini 3.1 Pro는 Anthropic의 Claude Opus 4.6 출시 직후 등장해, 추상 추론(ARC-AGI-2)에서 **77.1%**라는 경이적인 성과를 기록하며 경쟁 모델들을 압도했습니다.
 
