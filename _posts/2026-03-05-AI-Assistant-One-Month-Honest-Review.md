@@ -2,11 +2,11 @@
 title: '개발자가 AI 비서를 1달 써본 솔직 후기 - 좋은 점, 아쉬운 점, 비용까지'
 date: 2026-03-05 00:00:00
 description: '개발자가 AI 에이전트 비서를 한 달간 실제로 운영하며 겪은 경험담. 자동화 성공과 실패, API 비용 현실, 생산성 변화를 솔직하게 정리했습니다.'
-featured_image: '/images/2026-03-05-AI-Assistant-One-Month-Honest-Review/cover.svg'
+featured_image: 'https://picsum.photos/seed/AI-Assistant-One-Month-Honest-Review/1600/900'
 tags: [AI비서, 수익실험, 회고]
 ---
 
-![개발자가 AI 비서를 1달 써본 솔직 후기 커버](/images/2026-03-05-AI-Assistant-One-Month-Honest-Review/cover.svg)
+![개발자가 AI 비서를 1달 써본 솔직 후기 커버](https://picsum.photos/seed/AI-Assistant-One-Month-Honest-Review/1600/900)
 
 "AI 비서가 내 대신 일해준다고?"
 
