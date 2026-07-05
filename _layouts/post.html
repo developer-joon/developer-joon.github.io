@@ -4,7 +4,13 @@ layout: default
 
 <section class="hero hero--single">
 
-	<div class="hero__image" style="background-image: url({{ page.featured_image | default: '/images/demo/blog.jpg' | relative_url }})">
+	{% assign hero_image = page.featured_image | default: '/images/demo/blog.jpg' %}
+	{% if hero_image contains '://' %}
+		{% assign hero_image_url = hero_image %}
+	{% else %}
+		{% assign hero_image_url = hero_image | relative_url %}
+	{% endif %}
+	<div class="hero__image" style="background-image: url({{ hero_image_url }})">
 		<div class="hero__overlay"></div>
 	</div>
 
