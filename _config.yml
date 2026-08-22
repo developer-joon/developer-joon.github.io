@@ -2,6 +2,7 @@ site: Ria & Seoa PaPa
 
 url: https://breadlab.ai
 baseurl: /
+timezone: Asia/Seoul
 
 collections:
   pages:

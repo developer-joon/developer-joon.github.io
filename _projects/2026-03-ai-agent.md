@@ -1,8 +1,8 @@
 ---
-title: '🤖 AI 에이전트 자동화 서비스'
-subtitle: '잠자는 동안에도 일하는 비서'
+title: '🤖 AI 에이전트 운영 실험'
+subtitle: '자동 실행보다 검증 가능한 실행'
 date: 2026-02-01 00:02:00
-description: OpenClaw 기반 AI 에이전트로 반복 업무를 자동화하고, 노하우를 서비스화하는 프로젝트
+description: Hermes Agent 기반 AI 파트너와 콘텐츠, 개발, 운영 작업을 수행하고 검증 가능한 자동화 경계를 만드는 프로젝트
 featured_image: '/images/project-ai-agent/cover.jpg'
 ---
 
@@ -10,37 +10,35 @@ featured_image: '/images/project-ai-agent/cover.jpg'
   <div style="display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: center;">
     <div>
       <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">Status</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">🟢 운영 중</div>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">🟢 운영 중 · 사람 검증</div>
     </div>
     <div style="text-align: center;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">자동화 작업</span>
-      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">8개 크론</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">운영 원칙</span>
+      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">검증 후 반영</div>
     </div>
     <div style="text-align: right;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">절감 시간</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">주 8~10시간</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">현재 파트너</span>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">Hermes Agent · 코난</div>
     </div>
   </div>
 </div>
 
 ## 💡 한 줄 요약
 
-> AI 에이전트가 블로그 작성, 보안 점검, 복권 구매까지 자동 처리. 이 경험을 콘텐츠와 서비스로 확장한다.
+> AI 에이전트가 조사, 작성, 개발과 검증을 지원하되 금융 거래와 외부 변경은 사람이 상태를 확인하고 책임진다.
 
 ---
 
-## 🎯 무엇을 자동화하나
+## 🎯 현재 운영 경계
 
-| 작업 | 주기 | 절감 시간 |
-|------|------|-----------|
-| 🔒 서버 보안 점검 | 매일 + 주간 | 30분/주 |
-| 📝 AI 뉴스 블로그 발행 | 월 2회 | 3시간/월 |
-| 🎰 로또 자동 구매 + 분석 | 매주 금요일 | 15분/주 |
-| 🏆 당첨 결과 확인 | 매주 월요일 | 5분/주 |
-| 📊 트레이딩봇 시장 분석 | 4시간마다 (6회/일) | 2시간/일 |
-| ⚡ 트레이딩봇 급변 감지 | 15분마다 | 상시 모니터링 |
-| 🌐 브라우저 자동화 | 수시 | 가변 |
-| 🔄 블로그 PR 자동 생성 | 수시 | 1시간/건 |
+| 작업 | 실행 방식 | 2026-08 상태 |
+|------|-----------|--------------|
+| 📝 기술 블로그 조사·작성 | 요청 기반 + 빌드 검증 | 운영 중 |
+| 🔍 최신 기술 주제 탐색 | 날짜 확인 + 복수 소스 조사 | 운영 중 |
+| 🌐 브라우저 자동화 | 격리 세션, 필요 시 실행 | 운영 중 |
+| 🔄 GitHub 변경 | diff·빌드 확인 후 커밋 | 사람 검증 필수 |
+| 📊 트레이딩 계좌 모니터링 | 거래소별 상태 대조 필요 | reconciliation 개선 필요 |
+| 💸 금융 거래 | 에이전트 단독 실행 금지 | 사람이 판단·개입 |
 
 ---
 
@@ -60,13 +58,13 @@ featured_image: '/images/project-ai-agent/cover.jpg'
 
 ```
 ┌─────────────────────────────────────────┐
-│              OpenClaw Gateway            │
+│              Hermes Agent                │
 ├──────────┬──────────┬───────────────────┤
 │  크론 잡  │  브라우저 │  메시징 (Telegram) │
 │  스케줄러 │  제어(CDP)│  양방향 통신       │
 ├──────────┴──────────┴───────────────────┤
-│           AI 모델 (Claude)              │
-│     Opus (고품질) / Sonnet (효율)        │
+│        모델 + 도구 + 검증 워크플로        │
+│      작업별 실행 증거와 승인 경계         │
 └─────────────────────────────────────────┘
 ```
 
@@ -76,7 +74,7 @@ featured_image: '/images/project-ai-agent/cover.jpg'
 
 | 단계 | 기간 | 내용 | 상태 |
 |------|------|------|------|
-| **Phase 0** | 2026.02 | OpenClaw 설치 + 기본 자동화 | ✅ 완료 |
+| **Phase 0** | 2026.02 | 당시 OpenClaw 설치 + 기본 자동화 | ✅ 완료 |
 | **Phase 1** | 2026.02 | 크론 작업 5종 구축 (보안/블로그/로또) | ✅ 완료 |
 | **Phase 2** | 2026.02 | 브라우저 자동화 (CDP + 안티봇 우회) | ✅ 완료 |
 | **Phase 3** | 2026.02 | 트레이딩봇 연동 (크론 8종, 15분/4시간) | ✅ 완료 |
@@ -84,14 +82,16 @@ featured_image: '/images/project-ai-agent/cover.jpg'
 | **Phase 5** | 2026.03 | 자동화 사례 블로그 시리즈화 | 🔄 진행중 |
 | **Phase 6** | 2026.04~ | 컨설팅/서비스 모델 검증 | ⬜ 대기 |
 
-### ✅ 달성 하이라이트
+> 초기 자동화는 OpenClaw로 시작했으며, 현재 운영 파트너와 검증 워크플로는 Hermes Agent·코난으로 전환했다.
 
-- **크론 작업 8종** 자동 운영 (보안 점검, 블로그, 로또, 트레이딩)
-- **트레이딩봇**: 뉴스 수집 → 감성 분석 → 하이브리드 시그널 → DCA 물타기 → 방어정책까지 전자동
-- **블로그 포스팅**: 주제 선정 → 작성 → 이미지 → PR 생성까지 에이전트가 처리
-- **브라우저 자동화**: CDP 기반 동행복권 안티봇 우회 + 자동 구매
-- **서브에이전트**: 병렬 작업 실행 (포스팅 + 이미지 교체 동시 처리)
-- **블로그 {{ site.posts | size }}+ 포스트** AI 에이전트가 작성, PR 워크플로우로 품질 관리
+### 운영하면서 확인한 것
+
+- **트레이딩 자동화**는 양쪽 계좌가 함께 종료되지 않으면 헤지가 독립 위험으로 바뀐다.
+- **수동 개입**도 자동 주문과 같은 이벤트로 기록하고 반대 포지션을 재평가해야 한다.
+- **블로그 포스팅**은 주제 선정과 작성만으로 끝나지 않고 출처 확인과 Jekyll 빌드가 필요하다.
+- **브라우저 자동화**는 로그인 상태와 화면 변화 때문에 실패를 기본값으로 설계해야 한다.
+- **서브에이전트 병렬 작업**은 속도를 높이지만 최종 통합 리뷰가 없으면 문체와 사실관계가 흔들린다.
+- **블로그 {{ site.posts | size }}편**을 운영하며 자동화보다 검증 가능한 결과물이 중요하다는 점을 확인했다.
 
 ---
 
@@ -99,10 +99,10 @@ featured_image: '/images/project-ai-agent/cover.jpg'
 
 | 영역 | 기술 |
 |------|------|
-| 프레임워크 | OpenClaw |
-| AI 모델 | Claude Opus 4.6 / Sonnet 4.5 |
-| 브라우저 | Chrome CDP (headful) |
-| 스케줄링 | OpenClaw Cron |
+| 프레임워크 | Hermes Agent |
+| AI 모델 | 작업별 모델/provider 선택 |
+| 브라우저 | 격리된 browser-use 세션 |
+| 스케줄링 | Hermes Cron |
 | 메시징 | Telegram Bot |
 | OS | Rocky Linux 9.7 |
 
@@ -129,8 +129,7 @@ featured_image: '/images/project-ai-agent/cover.jpg'
 
 ## 📝 관련 포스트
 
-- [OpenClaw로 나만의 AI 에이전트 만들기](/blog/openclaw-ai-agent-setup-guide)
-- [MCP 시리즈 1편: 개념과 원리](/blog/mcp-what-is-model-context-protocol)
-- [MCP 시리즈 2편: 서버 구축](/blog/mcp-build-server-python-typescript)
-- [MCP 시리즈 3편: 실전 연동](/blog/mcp-integration-claude-vscode-deploy)
-- [실전 트레이딩 봇 고도화](/blog/advanced-trading-bot-dca-strategy)
+{% assign agent_posts = site.posts | where_exp: "post", "post.tags contains 'ai-agent'" %}
+{% for post in agent_posts limit: 8 %}
+- [{{ post.title }}]({{ post.url | relative_url }})
+{% endfor %}
