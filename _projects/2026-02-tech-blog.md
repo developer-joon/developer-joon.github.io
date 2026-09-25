@@ -10,15 +10,15 @@ featured_image: '/images/project-tech-blog/cover.jpg'
   <div style="display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: center;">
     <div>
       <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #4cc9f0;">Status</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">🟡 콘텐츠 빌드업 중</div>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">🟢 현재 운영 중</div>
     </div>
     <div style="text-align: center;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #4cc9f0;">누적 수익</span>
-      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">₩0</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #4cc9f0;">AdSense</span>
+      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">승인 완료</div>
     </div>
     <div style="text-align: right;">
       <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #4cc9f0;">게시글</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">16+ 포스트</div>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">{{ site.posts | size }}개</div>
     </div>
   </div>
 </div>
@@ -51,16 +51,15 @@ SNS 공유       ──▶  뉴스레터 구독      장기 자산
 
 ---
 
-## 📅 로드맵
+## 📅 현재 상태
 
-| 단계 | 기간 | 내용 | 상태 |
-|------|------|------|------|
-| **Phase 0** | 2026.02 | 블로그 세팅 + 첫 포스트 | ✅ 완료 |
-| **Phase 1** | 2026.02~03 | 20+ 포스트 확보 | 🔄 진행중 |
-| **Phase 2** | 2026.03 | AdSense 승인 | ✅ 완료 |
-| **Phase 3** | 2026.03~04 | SEO 최적화 + 검색 유입 확보 | ⬜ 대기 |
-| **Phase 4** | 2026.04~ | 제휴 마케팅 도입 | ⬜ 대기 |
-| **Phase 5** | 2026.06~ | 뉴스레터 런칭 | ⬜ 대기 |
+| 항목 | 상태 | 설명 |
+|------|------|------|
+| 블로그 운영 | 🟢 운영 중 | 기술·AI·자동화 실험을 계속 기록 |
+| 콘텐츠 | 🟢 발행 중 | 게시글 수는 상단에 동적으로 표시 |
+| Google AdSense | ✅ 승인 완료 | 광고 게재 승인이며 실제 수익 발생·규모와는 별개 |
+| SEO·유입 개선 | 🔄 지속 개선 | 콘텐츠별 검색 노출과 읽기 경험을 점검 |
+| 제휴 마케팅·뉴스레터 | ⚪ 검토 항목 | 현재 도입 여부를 단정하지 않음 |
 
 ---
 
@@ -78,13 +77,9 @@ SNS 공유       ──▶  뉴스레터 구독      장기 자산
 
 ---
 
-## 💰 수익 리포트
+## 💰 수익 현황
 
-| 월 | 페이지뷰 | AdSense | 제휴 | 합계 | 메모 |
-|----|----------|---------|------|------|------|
-| 2026.03 | — | — | — | — | AdSense 승인 완료 · 수익 집계 시작 |
-
-> 매월 업데이트 예정
+Google AdSense 승인은 완료됐지만, 승인이 곧 실제 수익을 의미하지는 않는다. 현재 공개된 확정 수익 집계는 없으므로 금액을 추정하거나 0원으로 단정하지 않는다.
 
 ---
 
@@ -97,5 +92,4 @@ SNS 공유       ──▶  뉴스레터 구독      장기 자산
 - MCP 시리즈 3편 (입문/구축/연동)
 - AI 뉴스 단신 5편 (로보택시, Stripe, 구글 안경, 전력위기, Gemini)
 
-**자동 발행 (크론):**
-- AI 뉴스 블로그 — 매월 1일, 15일 자동 생성
+새 글은 사람과 AI 비서가 함께 작성하고 검토해 발행한다.

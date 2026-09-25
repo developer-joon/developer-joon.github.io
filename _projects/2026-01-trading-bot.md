@@ -1,8 +1,8 @@
 ---
-title: '📈 뉴스 기반 암호화폐 트레이딩 봇'
-subtitle: 'AI가 뉴스를 읽고, 봇이 매매한다'
+title: '📈 뉴스 기반 암호화폐 트레이딩 봇 실험'
+subtitle: 'PAPER부터 실전까지 검증하고 운영을 종료한 기록'
 date: 2026-02-01 00:00:00
-description: 뉴스 감성 분석 + 그리드 전략 + 리스크 관리를 결합한 자동매매 시스템
+description: 뉴스 감성 분석과 자동매매 전략을 PAPER부터 실전까지 검증한 뒤 운영을 종료·보류하고 포지션을 정리한 프로젝트 기록
 featured_image: '/images/project-trading-bot/cover.jpg'
 ---
 
@@ -10,22 +10,24 @@ featured_image: '/images/project-trading-bot/cover.jpg'
   <div style="display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: center;">
     <div>
       <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">Status</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">🟡 설계 완료 · 개발 대기</div>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">⏸️ 실전 운영 종료 · 보류</div>
     </div>
     <div style="text-align: center;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">누적 수익</span>
-      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">₩0</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">포지션</span>
+      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">정리 완료</div>
     </div>
     <div style="text-align: right;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">투자금</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">₩1,000,000 (예정)</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">현재 방향</span>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">다른 수익모델 연구</div>
     </div>
   </div>
 </div>
 
 ## 💡 한 줄 요약
 
-> 뉴스 감성 분석으로 시장 방향을 읽고, 그리드 봇이 자동 매매하며, 방어 정책이 자산을 지킨다.
+> 뉴스 감성 분석과 자동매매 전략을 PAPER부터 실전까지 검증한 뒤 운영을 종료하고 보류한 실험이다.
+
+현재 트레이딩은 중단했으며, 보유 포지션은 모두 정리했다. 최종 손익은 별도로 확정해 공개하지 않는다.
 
 ---
 
@@ -40,7 +42,7 @@ featured_image: '/images/project-trading-bot/cover.jpg'
 
 ---
 
-## 🏗️ 아키텍처
+## 🏗️ 실험 당시 아키텍처
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
@@ -86,31 +88,24 @@ featured_image: '/images/project-trading-bot/cover.jpg'
 
 ---
 
-## 📅 로드맵
+## 📅 진행 기록
 
-| 단계 | 기간 | 내용 | 상태 |
-|------|------|------|------|
-| **Phase 0** | 2026.02 | 아키텍처 설계 + 거래소 비교 | ✅ 완료 |
-| **Phase 1** | 2026.03 | 거래소 연동 + 뉴스 수집기 | ⬜ 대기 |
-| **Phase 2** | 2026.03 | 감성 분석 엔진 + 백테스트 | ⬜ 대기 |
-| **Phase 3** | 2026.04 | 테스트넷 1주 운영 | ⬜ 대기 |
-| **Phase 4** | 2026.04 | 실전 투입 (소액) | ⬜ 대기 |
-| **Phase 5** | 2026.05~ | 스케일업 + 전략 고도화 | ⬜ 대기 |
+| 단계 | 진행 내용 | 상태 |
+|------|-----------|------|
+| **PAPER** | 모의 환경에서 전략과 리스크 관리 검증 | ✅ 완료 |
+| **LIVE** | 소액 실전 운영으로 주문·방어 로직 검증 | ✅ 완료 |
+| **v4** | 운영 결과를 반영해 전략과 자동화 고도화 | ✅ 완료 |
+| **종료** | 자동매매 중단, 포지션 전량 정리 | ⏸️ 종료·보류 |
 
 ---
 
-## 💰 수익 리포트
+## 💰 정산 안내
 
-| 월 | 투자금 | 수익 | 수익률 | 메모 |
-|----|--------|------|--------|------|
-| — | — | — | — | 아직 시작 전 |
-
-> 실전 투입 후 매월 업데이트 예정
+실전 운영은 종료했지만 최종 정산값은 공개하지 않았다. 따라서 이 페이지에서는 최종 손익이나 수익률을 추정하지 않는다.
 
 ---
 
 ## 📝 관련 포스트
 
 - [암호화폐 자동매매 봇 만들기 - 아키텍처 편](/blog/trading-bot-development-guide)
-
-> 개발이 진행되면 시리즈로 포스팅 예정
+- [암호화폐 트레이딩 실험을 보류하며](/blog/crypto-trading-experiment-on-hold)
