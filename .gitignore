@@ -7,3 +7,8 @@ Gemfile.lock
 
 .DS_Store
 
+community-app/.env*
+!community-app/.env.example
+community-app/node_modules/
+community-app/dist/
+community-app/coverage/
