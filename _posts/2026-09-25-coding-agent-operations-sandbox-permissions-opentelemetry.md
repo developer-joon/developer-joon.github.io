@@ -23,7 +23,7 @@ GitHub가 2026년 9월 발표한 변화에는 Copilot 앱의 로컬 sandbox와 �
 - 세션 쿠키나 장기 토큰만으로 고영향 작업을 밀어붙일 수 있는가?
 - 사고 후 하나의 trace에서 계획, 정책, 명령, 파일 변경, 네트워크 요청, 사람의 개입을 재구성할 수 있는가?
 
-핵심 주장은 간단하다. **sandbox, permission, telemetry, proof of presence 중 하나만 도입해서는 에이전트 운영 통제가 완성되지 않는다.** 네 계층은 서로 다른 실패를 막으며, 서로를 대체하지 않는다.
+주장은 간단하다. **sandbox, permission, telemetry, proof of presence 중 하나만 도입해서는 에이전트 운영 통제가 완성되지 않는다.** 네 계층은 서로 다른 실패를 막으며, 서로를 대체하지 않는다.
 
 ## 먼저 공식 발표의 범위를 좁혀 읽자
 
@@ -43,11 +43,11 @@ Proof of presence는 enterprise sudo mode에 IdP challenge를 추가한다. 보�
 
 ### 이 글의 운영 해석
 
-다음부터 제안하는 span 이름, 승인 토큰 필드, 위험 등급, SLO, 장애 분류는 GitHub가 정의한 프로토콜이 아니다. 공식 기능을 조직의 운영 체계에 연결하기 위한 **설계 제안**이다. 특히 proof of presence는 현재 “모든 에이전트 작업에 사람 승인을 붙이는 기능”이 아니다. 지원 범위와 보호 대상이 정해진 GitHub 계정 보안 기능이다.[4][8] 이를 에이전트 승인 모델의 완성품으로 과장하지 않고, 별도의 인간 확인 계층을 설계할 때 참고할 원칙으로 사용한다.
+이제부터 제안하는 span 이름, 승인 토큰 필드, 위험 등급, SLO, 장애 분류는 GitHub가 정의한 프로토콜이 아니다. 공식 기능을 조직의 운영 체계에 연결하기 위한 **설계 제안**이다. 특히 proof of presence는 현재 “모든 에이전트 작업에 사람 승인을 붙이는 기능”이 아니다. 지원 범위와 보호 대상이 정해진 GitHub 계정 보안 기능이다.[4][8] 따라서 에이전트 승인 모델의 완성품으로 과장하지 않고, 별도의 인간 확인 계층을 설계할 때 참고할 원칙으로 사용한다.
 
 ## 네 개의 통제는 서로 다른 질문에 답한다
 
-네 통제를 한 문장으로 합치면 오히려 경계가 흐려진다. 각각이 답하는 질문부터 분리하자.
+네 통제를 한 문장으로 합치면 오히려 경계가 흐려진다. 먼저 각각이 답하는 질문을 분리하자.
 
 | 통제 계층 | 답해야 하는 질문 | 막으려는 대표 실패 | 막지 못하는 것 |
 |---|---|---|---|
@@ -64,7 +64,7 @@ Sandbox의 첫 목적은 명령이 성공하게 만드는 것이 아니라 잘�
 
 ### 기본 정책은 읽기보다 더 좁아야 한다
 
-개발자는 저장소 전체 읽기와 현재 작업 트리 쓰기를 당연하게 생각한다. 그러나 에이전트 세션에는 더 좁은 경계가 가능하다.
+개발자는 저장소 전체 읽기와 현재 작업 트리 쓰기를 당연하게 여긴다. 그러나 에이전트 세션에는 더 좁은 경계가 가능하다.
 
 1. 작업 디렉터리만 읽기 허용
 2. 변경 대상 경로만 쓰기 허용
@@ -74,7 +74,7 @@ Sandbox의 첫 목적은 명령이 성공하게 만드는 것이 아니라 잘�
 6. Git·GitHub CLI 자격 증명 주입은 작업 단계별로 분리
 7. MCP·LSP 같은 하위 프로세스도 가능한 경우 같은 sandbox 경계 안에서 실행
 
-GitHub의 managed sandbox 설정은 sandbox 강제, bypass 금지, current working directory 자동 grant 제한, MCP/LSP sandbox 강제, Git 또는 `gh` 인증 주입 금지, local/outbound network 차단 같은 제한을 중앙에서 더할 수 있다.[6] 문서가 설명하는 핵심 의미는 관리 설정이 사용자 설정의 “편리한 기본값”이 아니라 완화할 수 없는 최소 제한이라는 점이다.[5][6]
+GitHub의 managed sandbox 설정은 sandbox 강제, bypass 금지, current working directory 자동 grant 제한, MCP/LSP sandbox 강제, Git 또는 `gh` 인증 주입 금지, local/outbound network 차단 같은 제한을 중앙에서 더할 수 있다.[6] 문서가 말하는 요지는 관리 설정이 사용자 설정의 “편리한 기본값”이 아니라 완화할 수 없는 최소 제한이라는 점이다.[5][6]
 
 ### 정책 계산과 정책 집행을 따로 기록하라
 
@@ -84,13 +84,13 @@ GitHub의 managed sandbox 설정은 sandbox 강제, bypass 금지, current worki
 - `effective_policy`: 기업 정책과 OS 제약을 합성한 최종 정책
 - `enforcement_result`: 실제 프로세스 시작 시 적용 성공 여부
 
-예를 들어 프로젝트는 `/work/repo` 쓰기와 인터넷 접근을 요청했지만, 기업 정책이 인터넷을 차단하고 `/work/repo/generated`만 쓰도록 좁힐 수 있다. trace에 requested만 남기면 “인터넷을 허용했다”는 잘못된 결론을 내리고, effective만 남기면 사용자가 더 넓은 접근을 시도했다는 탐지 신호를 잃는다.
+예를 들어 프로젝트가 `/work/repo` 쓰기와 인터넷 접근을 요청했더라도, 기업 정책은 인터넷을 차단하고 `/work/repo/generated`만 쓰도록 좁힐 수 있다. trace에 requested만 남기면 “인터넷을 허용했다”는 잘못된 결론을 내리고, effective만 남기면 사용자가 더 넓은 접근을 시도했다는 탐지 신호를 잃는다.
 
 정책 원문 전체를 매 span에 복사할 필요는 없다. 정규화한 정책의 hash와 version을 기록하고, 별도 정책 저장소에서 해당 시점의 문서를 조회할 수 있게 한다. 단, hash가 같다는 사실만으로 집행이 같았다고 보면 안 된다. OS, 앱 버전, sandbox backend, 시작 오류도 함께 남겨야 한다.
 
 ### Fail-closed를 정상 장애로 다뤄라
 
-GitHub는 OS가 요청 정책을 집행하지 못하면 격리 없이 실행하지 않고 shell을 실패시킨다고 명시한다.[1] 이것은 불편한 예외가 아니라 보안 설계의 핵심이다. 운영팀은 이 실패를 “에이전트 가용성 저하”로만 보고 sandbox를 끄도록 유도해서는 안 된다.
+GitHub는 OS가 요청 정책을 집행하지 못하면 격리 없이 실행하지 않고 shell을 실패시킨다고 명시한다.[1] 이는 불편한 예외가 아니라 보안 설계의 핵심이다. 운영팀은 이 실패를 “에이전트 가용성 저하”로만 보고 sandbox를 끄도록 유도해서는 안 된다.
 
 권장 상태 전이는 다음과 같다.
 
@@ -123,7 +123,7 @@ System prompt는 행동 지침이지 권한 경계가 아니다. GitHub의 관�
 
 ## 운영 설계 3: OpenTelemetry trace를 실행 증거로 만들라
 
-GitHub는 Copilot agent session에서 model과 tool의 흐름을 OTel 호환 도구로 보낼 수 있고, 중앙 관리 설정으로 endpoint를 지정할 수 있다고 설명한다.[2][7] 이것은 출발점이지 완성된 감사 모델은 아니다. 관찰 backend에 span이 도착해도 정책 결정, 실제 변경, 사람 승인과 연결되지 않으면 “agent가 tool을 썼다”는 정도만 알 수 있다.
+GitHub는 Copilot agent session에서 model과 tool의 흐름을 OTel 호환 도구로 보낼 수 있고, 중앙 관리 설정으로 endpoint를 지정할 수 있다고 설명한다.[2][7] 이것은 출발점이지 완성된 감사 모델은 아니다. 관찰 backend에 span이 도착해도 정책 결정, 실제 변경, 사람 승인과 연결되지 않으면 “agent가 tool을 썼다”는 정도밖에 알 수 없다.
 
 ### 권장 trace 계층
 
@@ -143,7 +143,7 @@ agent.session                         # root
 └─ session.finalize                   # 결과·잔여 변경·폐기 상태
 ```
 
-`model.inference`와 `tool.invoke`만 있으면 에이전트 행동은 보이지만 통제의 작동은 보이지 않는다. 반드시 `policy.evaluate`, `approval.wait`, `sandbox.command`를 동등한 운영 span으로 취급해야 한다.
+`model.inference`와 `tool.invoke`만 있으면 에이전트 행동은 보여도 통제의 작동은 보이지 않는다. 반드시 `policy.evaluate`, `approval.wait`, `sandbox.command`를 동등한 운영 span으로 취급해야 한다.
 
 ### 최소 attribute schema
 
@@ -160,7 +160,7 @@ agent.session                         # root
 | 대상 | `agent.resource.kind`, `agent.resource.id_hash`, `agent.repo.id` | 영향 받은 객체 식별 |
 | 효과 | `agent.effect.type`, `agent.effect.count`, `agent.effect.digest` | 실제 변경 요약과 무결성 확인 |
 
-민감한 파일 path, command argument, prompt 전문을 attribute에 그대로 넣으면 telemetry backend가 두 번째 비밀 저장소가 된다. GitHub 발표도 prompt와 response content가 기본 제외된다고 명시한다.[2] 기본값을 유지하고, 원문 capture가 반드시 필요한 조사 환경에서만 별도 권한·보존 기간·마스킹을 적용하는 편이 낫다.
+민감한 파일 path, command argument, prompt 전문을 attribute에 그대로 넣으면 telemetry backend가 두 번째 비밀 저장소가 된다. GitHub 발표도 prompt와 response content가 기본 제외된다고 명시한다.[2] 기본값을 유지하고, 원문 capture가 반드시 필요한 조사 환경에서만 별도 권한·보존 기간·마스킹을 적용하는 편이 좋다.
 
 ### Event, status, link를 구분하라
 
@@ -172,7 +172,7 @@ agent.session                         # root
 
 ### Trace만으로 감사가 완성되지는 않는다
 
-OTel backend는 sampling, cardinality 제한, retention, exporter failure의 영향을 받는다. 따라서 법적 감사나 변경 승인 증거를 trace 하나에만 맡겨서는 안 된다. 정책 결정 record와 승인 record는 불변 감사 저장소에 별도로 보존하고, trace에는 그 ID와 digest를 연결한다.
+OTel backend는 sampling, cardinality 제한, retention, exporter failure의 영향을 받는다. 따라서 법적 감사나 변경 승인 증거를 trace 하나에만 맡겨서는 안 된다. 정책 결정 record와 승인 record는 불변 감사 저장소에 따로 보존하고, trace에는 그 ID와 digest를 연결한다.
 
 권장 원칙은 이렇다.
 
@@ -206,11 +206,11 @@ Trace에서는 `approval.review → identity.freshness.challenge → sandbox.com
 | PoP freshness 과대평가 | 한 번의 MFA를 장시간 포괄 승인으로 해석 | PoP와 operation approval의 별도 만료, 짧은 single-use binding[4] |
 | MCP/LSP 경계 이탈 | command는 sandbox 안이지만 local server는 host 권한 | local MCP/LSP sandbox 강제, remote server의 별도 identity·network 정책[6] |
 
-Content capture는 별도 위험이다. GitHub는 prompt와 response를 기본 제외하므로 이 기본을 유지하고, 조사 때문에 켤 때만 대상·기간·저장소를 제한한다.[2] Permission deny는 transient error가 아니라 통제 결과이므로 재시도하지 않고 계획 변경이나 사람 에스컬레이션으로 보낸다.
+Content capture는 별도 위험이다. GitHub는 prompt와 response를 기본 제외하므로 이 기본을 유지하고, 조사 때문에 켤 때만 대상·기간·저장소를 제한한다.[2] Permission deny는 transient error가 아니라 통제 결과다. 재시도하지 않고 계획 변경이나 사람 에스컬레이션으로 보낸다.
 
 ## Trace에서 봐야 할 운영 지표
 
-“세션 성공률” 하나는 거의 아무것도 설명하지 못한다. 최소한 다음 지표를 위험 등급과 팀, repository, 정책 version별로 나눈다.
+“세션 성공률” 하나로는 거의 아무것도 설명하지 못한다. 최소한 다음 지표를 위험 등급과 팀, repository, 정책 version별로 나눈다.
 
 ### 정책 품질
 
@@ -260,7 +260,7 @@ Content capture는 별도 위험이다. GitHub는 prompt와 response를 기본 �
 
 ### 0단계: 작업 분류와 금지선
 
-먼저 agent operation catalog를 만든다.
+우선 agent operation catalog를 만든다.
 
 - 읽기: source search, log read, dependency metadata 조회
 - 제한 쓰기: 작업 트리 수정, test fixture 생성
@@ -272,23 +272,23 @@ Content capture는 별도 위험이다. GitHub는 prompt와 response를 기본 �
 
 ### 1단계: OTel을 먼저 연결하되 content는 수집하지 않는다
 
-기존 동작을 바꾸기 전에 session, model, tool 흐름을 관찰한다. prompt·response content는 기본 제외 상태로 두고, trace completeness와 exporter 안정성부터 측정한다.[2] 기존 agent가 어떤 command, path, domain을 사용하는지 baseline을 만든다.
+기존 동작을 바꾸기 전에 session, model, tool 흐름을 관찰한다. prompt·response content는 기본 제외 상태로 두고, trace completeness와 exporter 안정성부터 측정한다.[2] 기존 agent가 어떤 command, path, domain을 쓰는지 baseline을 만든다.
 
 ### 2단계: Managed permissions를 audit 성격으로 설계한다
 
-즉시 모든 unknown operation을 deny하기보다 read/ask/deny 후보를 분류한다. 단, credential path, local network, production token 같은 명확한 금지선은 처음부터 deny한다. 정책 판정과 실제 효과의 차이를 trace로 확인한다.
+즉시 모든 unknown operation을 deny하기보다 read/ask/deny 후보를 분류한다. 단, credential path, local network, production token 같은 명확한 금지선은 처음부터 deny한다. 정책 판정과 실제 효과의 차이는 trace로 확인한다.
 
 ### 3단계: Sandbox를 신규 세션에 강제한다
 
-Copilot 앱의 프로젝트 sandbox 설정이 신규 세션에 적용되고 기존 세션에는 자동 소급되지 않는 점을 고려해 전환 창을 관리한다.[1] 활성 세션 목록을 확인하고, 재시작 기준과 종료 시점을 정한다. OS·backend별 fail-closed 테스트를 수행한다.
+Copilot 앱의 프로젝트 sandbox 설정이 신규 세션에 적용되고 기존 세션에는 자동 소급되지 않는 점을 고려해 전환 창을 관리한다.[1] 활성 세션 목록을 확인하고, 재시작 기준과 종료 시점을 정한다. OS·backend별 fail-closed 테스트를 한다.
 
 ### 4단계: `ask`를 bound approval로 바꾼다
 
-승인 화면에 정규화한 command, target, diff, network destination, credential 사용, 예상 효과를 보여준다. 승인 record를 digest와 policy version에 묶고, 변경되면 재승인한다. approval wait span으로 마찰을 측정해 정책을 세분화한다.
+승인 화면에 정규화한 command, target, diff, network destination, credential 사용, 예상 효과를 보여준다. 승인 record를 digest와 policy version에 묶고, 변경되면 재승인한다. approval wait span으로 마찰을 측정하고 정책을 세분화한다.
 
 ### 5단계: 고영향 작업에 identity freshness를 더한다
 
-지원되는 GitHub Enterprise 범위에서는 PoP를 검토하되, EMU·Entra ID·배포 형태·보호 action 범위를 확인한다.[4][8] 지원되지 않는 작업에는 자체 step-up authentication을 둔다. PoP가 업무 승인이나 command binding을 대체하지 않게 한다.
+지원되는 GitHub Enterprise 범위에서는 PoP를 검토하되, EMU·Entra ID·배포 형태·보호 action 범위를 확인한다.[4][8] 지원되지 않는 작업에는 자체 step-up authentication을 둔다. PoP가 업무 승인이나 command binding을 대체하지 않도록 한다.
 
 ### 6단계: 실패 주입과 운영 훈련
 
@@ -322,7 +322,7 @@ Copilot 앱의 프로젝트 sandbox 설정이 신규 세션에 적용되고 기�
 
 ## 공급자 주장과 운영 판단의 경계
 
-이번 글이 인용한 자료는 모두 GitHub 공식 발표와 공식 문서다. 따라서 기능 제공 여부, 지원 범위, 설정 의미를 확인하는 1차 자료로는 적합하지만 효과를 독립 검증한 자료는 아니다.
+이번 글이 인용한 자료는 모두 GitHub 공식 발표와 공식 문서다. 기능 제공 여부, 지원 범위, 설정 의미를 확인하는 1차 자료로는 적합하지만 효과를 독립 검증한 자료는 아니다.
 
 GitHub는 로컬 sandbox가 unintended command의 잠재 영향을 줄이고, managed permission이 민감 operation에 fine-grained guardrail을 제공한다고 설명한다.[1][3]
 또한 OTel은 예상 밖 행동 조사를 돕고, PoP는 탈취된 credential이나 agent의 무단 고영향 행동을 막는 데 도움이 된다고 설명한다.[2][4] 이 문장들은 공급자의 목적과 기대 효과다. 각 조직의 repository 구조, OS, plugin, MCP server, credential broker, IdP 정책에서 실제로 어느 정도 효과가 있는지는 실패 주입과 내부 측정으로 확인해야 한다.
@@ -343,7 +343,7 @@ GitHub는 로컬 sandbox가 unintended command의 잠재 영향을 줄이고, ma
 
 Sandbox는 영향 반경을 줄이지만 허용 범위 안의 잘못된 행동을 판정하지 않는다. Managed permissions는 행동을 판정하지만 실제 OS 격리를 대신하지 않는다. OpenTelemetry는 흐름을 보여주지만 그 자체로 차단하지 않는다. Proof of presence는 현재 권한자의 개입을 확인하지만 변경 내용의 적절성을 보장하지 않는다. 네 계층의 역할이 다른 이유다.
 
-새 기준은 기능 네 개를 켜는 것이 아니다. **정책 결정과 sandbox 집행, 인간 승인과 identity freshness, command 실행과 결과 검증을 하나의 trace로 연결하는 것**이다. 여기에 fail-closed, 제한된 approval capability, content-minimized telemetry, 재현 가능한 실패 주입이 더해져야 한다.
+새 기준은 기능 네 개를 켜는 데 있지 않다. **정책 결정과 sandbox 집행, 인간 승인과 identity freshness, command 실행과 결과 검증을 하나의 trace로 연결하는 것**이다. 여기에 fail-closed, 제한된 approval capability, content-minimized telemetry, 재현 가능한 실패 주입이 더해져야 한다.
 
 조직이 “에이전트가 무엇을 할 수 있는가”만 문서화하고 “실패했을 때 무엇이 실행되지 않았으며 어떤 증거가 남는가”를 답하지 못한다면 아직 운영 준비가 끝난 것이 아니다. 반대로 거부, 승인 만료, sandbox 시작 실패, telemetry 손실, IdP 장애까지 정상 상태 기계에 넣었다면 코딩 에이전트는 개인 생산성 도구를 넘어 관리 가능한 실행 주체가 된다.
 
