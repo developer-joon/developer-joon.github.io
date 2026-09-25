@@ -1,8 +1,8 @@
 ---
-title: '🎰 로또 자동 구매 & 분석기'
-subtitle: '매주 까먹지 않고, 데이터로 분석까지'
+title: '🎰 로또 자동 구매 & 분석 실험'
+subtitle: '구매와 결과 확인 자동화를 검증한 기록'
 date: 2026-02-01 00:03:00
-description: 동행복권 자동 구매 + 당첨 확인 + 통계 분석을 AI 에이전트가 자동 처리
+description: 동행복권 구매와 결과 확인 과정에 AI 에이전트와 브라우저 자동화를 적용해 본 구현·검증 기록
 featured_image: '/images/project-lotto-analyzer/cover.jpg'
 ---
 
@@ -10,22 +10,24 @@ featured_image: '/images/project-lotto-analyzer/cover.jpg'
   <div style="display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: center;">
     <div>
       <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">Status</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">🟢 자동 운영 중</div>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">📚 자동화 실험 기록</div>
     </div>
     <div style="text-align: center;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">누적 당첨금</span>
-      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">₩0</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">기록 범위</span>
+      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">구현·검증 과정</div>
     </div>
     <div style="text-align: right;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">누적 투자</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">₩5,000 (1회)</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #ffd700;">현재 구매 여부</span>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">공개하지 않음</div>
     </div>
   </div>
 </div>
 
 ## 💡 한 줄 요약
 
-> AI 에이전트가 매주 금요일 로또를 사고, 월요일에 당첨을 확인해준다. 사람은 꿈만 꾸면 된다.
+> 로또 구매와 당첨 확인 과정을 AI 에이전트로 자동화해 본 구현·검증 기록이다.
+
+이 페이지는 자동화 실험을 정리한 문서이며, 현재 구매나 자동 실행 여부를 나타내지 않는다.
 
 ---
 
@@ -38,10 +40,10 @@ featured_image: '/images/project-lotto-analyzer/cover.jpg'
 
 ---
 
-## ⚙️ 자동화 흐름
+## ⚙️ 구현했던 자동화 흐름
 
 ```
-매주 금요일 19:00                    매주 월요일 09:00
+구매 작업                             결과 확인 작업
 ─────────────                       ─────────────
 ┌──────────────┐                    ┌──────────────┐
 │  사이트 접속  │                    │  결과 조회    │
@@ -75,41 +77,28 @@ featured_image: '/images/project-lotto-analyzer/cover.jpg'
 
 ---
 
-## 📅 로드맵
+## 📅 실험 진행 기록
 
 | 단계 | 기간 | 내용 | 상태 |
 |------|------|------|------|
-| **Phase 0** | 2026.02 | 수동 구매 테스트 | ✅ 완료 |
-| **Phase 1** | 2026.02 | 자동 구매 크론 구축 | ✅ 완료 |
-| **Phase 2** | 2026.02 | 안티봇 우회 해결 | ✅ 완료 |
-| **Phase 3** | 2026.03 | 당첨 통계 대시보드 | ⬜ 대기 |
-| **Phase 4** | 2026.04 | 번호 패턴 분석 (재미용) | ⬜ 대기 |
-| **Phase 5** | 미정 | 1등 당첨 🎉 | ⬜ ... |
+| **Phase 0** | 2026.02 | 수동 구매 테스트 | ✅ 실험 완료 |
+| **Phase 1** | 2026.02 | 자동 구매 흐름 구축 | ✅ 구현 완료 |
+| **Phase 2** | 2026.02 | 브라우저 자동화 제약 대응 | ✅ 검증 완료 |
+| **후속 아이디어** | — | 당첨 통계·번호 패턴 분석 | ⚪ 미정 |
 
 ---
 
-## 💰 당첨 기록
+## 🧾 당시 실험 기록
 
 | 회차 | 구매일 | 당첨번호 | 결과 | 당첨금 | 메모 |
 |------|--------|----------|------|--------|------|
-| 1212 | 2026.02.20 | **5, 8, 25, 31, 41, 44** + 보너스 45 | ❌ 낙첨 | ₩0 | 첫 자동 구매. 5장 전부 최대 2개 일치 |
+| 1212 | 2026.02.20 | **5, 8, 25, 31, 41, 44** + 보너스 45 | ❌ 낙첨 | ₩0 | 자동 구매 흐름을 검증한 당시 기록 |
 
-**누적 성적표**
-
-| 항목 | 값 |
-|------|-----|
-| 총 구매 횟수 | 1회 (5장) |
-| 누적 투자금 | ₩5,000 |
-| 누적 당첨금 | ₩0 |
-| 수익률 | -100% 😂 |
-| 최다 번호 일치 | 2개 |
-
-> 매주 자동 업데이트 예정. 1등 나오면 이 페이지 대대적 리뉴얼 🎊
-> 
-> 현실: 수익률 -100%에서 시작하는 모든 로또 투자자의 숙명...
+이 기록만으로 현재 구매 여부, 누적 투자금, 누적 당첨금 또는 수익률을 추정하지 않는다.
 
 ---
 
 ## 📝 관련 포스트
 
-> 로또 자동화 삽질기 포스트 준비 중
+- [AI 에이전트로 로또 자동 구매 자동화하기](/blog/lotto-auto-purchase-ai-agent)
+- [로또 자동 구매 1개월 실험 보고서](/blog/lotto-auto-purchase-1month-report)

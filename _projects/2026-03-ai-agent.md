@@ -1,8 +1,8 @@
 ---
-title: '🤖 AI 에이전트 자동화 서비스'
-subtitle: '잠자는 동안에도 일하는 비서'
+title: '🤖 AI 에이전트 자동화 실험'
+subtitle: '초기 자동화에서 콘텐츠·연구 지원으로'
 date: 2026-02-01 00:02:00
-description: OpenClaw 기반 AI 에이전트로 반복 업무를 자동화하고, 노하우를 서비스화하는 프로젝트
+description: 초기 OpenClaw 자동화 경험을 바탕으로 콘텐츠 작성과 연구·검증을 지원하는 AI 협업 방식을 다듬는 프로젝트
 featured_image: '/images/project-ai-agent/cover.jpg'
 ---
 
@@ -10,53 +10,53 @@ featured_image: '/images/project-ai-agent/cover.jpg'
   <div style="display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: center;">
     <div>
       <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">Status</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">🟢 운영 중</div>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">🔄 활용 방향 조정</div>
     </div>
     <div style="text-align: center;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">자동화 작업</span>
-      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">8개 크론</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">현재 역할</span>
+      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">콘텐츠·연구 지원</div>
     </div>
     <div style="text-align: right;">
-      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">절감 시간</span>
-      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">주 8~10시간</div>
+      <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #a8e6cf;">운영 원칙</span>
+      <div style="font-size: 1.4em; font-weight: 700; margin-top: 4px;">사람이 검토·결정</div>
     </div>
   </div>
 </div>
 
 ## 💡 한 줄 요약
 
-> AI 에이전트가 블로그 작성, 보안 점검, 복권 구매까지 자동 처리. 이 경험을 콘텐츠와 서비스로 확장한다.
+> 초기 OpenClaw 자동화 구현 경험을 바탕으로, 현재는 콘텐츠 작성과 연구·검증을 지원하는 AI 협업 방식을 다듬는다.
 
 ---
 
-## 🎯 무엇을 자동화하나
+## 🎯 현재 활용 범위
 
-| 작업 | 주기 | 절감 시간 |
-|------|------|-----------|
-| 🔒 서버 보안 점검 | 매일 + 주간 | 30분/주 |
-| 📝 AI 뉴스 블로그 발행 | 월 2회 | 3시간/월 |
-| 🎰 로또 자동 구매 + 분석 | 매주 금요일 | 15분/주 |
-| 🏆 당첨 결과 확인 | 매주 월요일 | 5분/주 |
-| 📊 트레이딩봇 시장 분석 | 4시간마다 (6회/일) | 2시간/일 |
-| ⚡ 트레이딩봇 급변 감지 | 15분마다 | 상시 모니터링 |
-| 🌐 브라우저 자동화 | 수시 | 가변 |
-| 🔄 블로그 PR 자동 생성 | 수시 | 1시간/건 |
+| 작업 | AI의 역할 | 운영 방식 |
+|------|-------------|-----------|
+| 📝 콘텐츠 | 자료 정리, 초안 작성, 교정 지원 | 사람이 검토 후 발행 |
+| 🔍 연구 | 아이디어 탐색, 비교, 실험 보조 | 근거와 결과를 재검증 |
+| ✅ 검증 | 문서·코드 점검, 반복 확인 지원 | 최종 판단은 사람이 수행 |
+| 🌐 브라우저 자동화 | 필요한 실험의 실행 보조 | 대상과 범위를 정해 사용 |
+
+브래드는 모든 업무를 24시간 자율 수행하는 시스템이 아니라, 정해진 작업을 함께 진행하는 AI 비서다.
 
 ---
 
 ## 🚀 확장 계획
 
 ```
-현재 (자체 사용)              향후 (서비스화)
+현재 (협업 지원)              검토 중인 확장 방향
 ───────────────             ───────────────
-내 서버 자동화         ──▶   자동화 컨설팅/구축 대행
+콘텐츠·연구 지원       ──▶   자동화 컨설팅/구축 대행
 블로그 콘텐츠 작성     ──▶   AI 글쓰기 워크플로우 판매
 보안 점검 자동화       ──▶   소규모 서버 관리 서비스
 ```
 
 ---
 
-## 🏗️ 현재 시스템 구조
+## 🏗️ 초기 구현 구조
+
+아래는 OpenClaw를 기반으로 자동화 범위를 넓혔던 초기 구현 기록이다. 각 기능이 현재도 같은 방식으로 가동 중이라는 의미는 아니다.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -72,30 +72,30 @@ featured_image: '/images/project-ai-agent/cover.jpg'
 
 ---
 
-## 📅 로드맵
+## 📅 진행 기록과 현재 방향
 
 | 단계 | 기간 | 내용 | 상태 |
 |------|------|------|------|
-| **Phase 0** | 2026.02 | OpenClaw 설치 + 기본 자동화 | ✅ 완료 |
-| **Phase 1** | 2026.02 | 크론 작업 5종 구축 (보안/블로그/로또) | ✅ 완료 |
-| **Phase 2** | 2026.02 | 브라우저 자동화 (CDP + 안티봇 우회) | ✅ 완료 |
-| **Phase 3** | 2026.02 | 트레이딩봇 연동 (크론 8종, 15분/4시간) | ✅ 완료 |
-| **Phase 4** | 2026.02 | 블로그 포스팅 자동화 (PR 워크플로우) | ✅ 완료 |
-| **Phase 5** | 2026.03 | 자동화 사례 블로그 시리즈화 | 🔄 진행중 |
-| **Phase 6** | 2026.04~ | 컨설팅/서비스 모델 검증 | ⬜ 대기 |
+| **Phase 0** | 2026.02 | OpenClaw 설치 + 기본 자동화 | ✅ 구현 기록 |
+| **Phase 1** | 2026.02 | 보안·블로그·로또 자동화 실험 | ✅ 구현 기록 |
+| **Phase 2** | 2026.02 | 브라우저 자동화 실험 | ✅ 구현 기록 |
+| **Phase 3** | 2026.02 | 트레이딩봇 연동 실험 | ⏸️ 운영 종료 |
+| **Phase 4** | 2026.02 | 블로그 PR 워크플로우 구현 | ✅ 구현 기록 |
+| **현재** | — | 콘텐츠·연구·검증 지원 중심으로 활용 | 🔄 진행 중 |
 
-### ✅ 달성 하이라이트
+### ✅ 초기 구현 하이라이트
 
-- **크론 작업 8종** 자동 운영 (보안 점검, 블로그, 로또, 트레이딩)
-- **트레이딩봇**: 뉴스 수집 → 감성 분석 → 하이브리드 시그널 → DCA 물타기 → 방어정책까지 전자동
-- **블로그 포스팅**: 주제 선정 → 작성 → 이미지 → PR 생성까지 에이전트가 처리
-- **브라우저 자동화**: CDP 기반 동행복권 안티봇 우회 + 자동 구매
-- **서브에이전트**: 병렬 작업 실행 (포스팅 + 이미지 교체 동시 처리)
-- **블로그 {{ site.posts | size }}+ 포스트** AI 에이전트가 작성, PR 워크플로우로 품질 관리
+- **자동화 실험**: 보안 점검, 블로그, 로또, 트레이딩 흐름을 OpenClaw 기반으로 구현
+- **트레이딩봇**: 뉴스 수집부터 시그널·리스크 관리까지 연결한 뒤 실전 검증을 마치고 운영 종료
+- **블로그 포스팅**: 초안, 이미지, PR 생성 과정을 연결한 워크플로우 구현
+- **브라우저 자동화**: CDP 기반 반복 작업 자동화 가능성 검증
+- **서브에이전트**: 포스팅과 이미지 작업을 나눠 병렬 실행하는 방식 실험
 
 ---
 
-## 🔧 기술 스택
+## 🔧 초기 구현 기술 스택
+
+아래 구성은 초기 OpenClaw 자동화 실험 당시 기준이며, 현재 모든 요소가 같은 형태로 운영 중이라는 의미는 아니다.
 
 | 영역 | 기술 |
 |------|------|

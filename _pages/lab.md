@@ -1,82 +1,66 @@
 ---
 title: 0 → 1
-subtitle: 105만원에서 시작하는 수익 실험
-description: '개발자가 코드로 돈을 버는 실험. AI 트레이딩봇, 블로그 수익화, 로또 자동구매까지 — 아이디어에서 수익까지의 여정을 투명하게 기록합니다.'
+subtitle: 수익모델의 진행·종료·연구 상태를 기록하는 실험실
+description: '개발자와 AI가 수익모델을 검증하는 실험실. 종료한 트레이딩 실험의 교훈과 블로그 운영, 자동화 기록, 다음 수익모델 연구를 투명하게 공개합니다.'
 permalink: /lab/
 featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 ---
 
-<!-- 종합 대시보드 -->
+<!-- 상태 대시보드 -->
 <div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 20px; padding: 36px; margin-bottom: 40px; color: #fff;">
   <div style="text-align: center; margin-bottom: 24px;">
-    <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 3px; color: #94a3b8;">Portfolio Overview</span>
-    <div style="font-size: 2.8em; font-weight: 800; margin-top: 8px;">₩3,070,000</div>
-    <div style="color: #48bb78; font-size: 1.1em; margin-top: 4px;">▲ +70,000원 (+2.33%)</div>
-    <div style="color: #94a3b8; font-size: 0.85em; margin-top: 4px;">시작: ₩1,050,000 (2026.02.23~) · 추가 입금 ₩1,950,000</div>
-  </div>
-
-  <!-- 목표 금액 프로그레스 -->
-  <div style="background: rgba(255,255,255,0.04); border-radius: 16px; padding: 24px; margin-bottom: 8px;">
-    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px;">
-      <span style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 2px;">🎯 목표</span>
-      <span style="font-size: 1.4em; font-weight: 700; color: #f6e05e;">₩10,000,000,000</span>
-    </div>
-    <div style="background: rgba(255,255,255,0.08); border-radius: 99px; height: 28px; overflow: hidden; position: relative;">
-      <div style="background: linear-gradient(90deg, #f6e05e, #f6ad55); height: 100%; border-radius: 99px; width: 0.03%; min-width: 4px; transition: width 1s ease;"></div>
-    </div>
-    <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.8em; color: #94a3b8;">
-      <span>달성률 0.03%</span>
-      <span>₩3,070,000 / ₩10,000,000,000</span>
-    </div>
+    <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 3px; color: #94a3b8;">Revenue Experiment Status</span>
+    <div style="font-size: 2.2em; font-weight: 800; margin-top: 8px;">현재 수익 실험 상태</div>
+    <div style="color: #cbd5e1; font-size: 0.95em; margin-top: 8px;">확정되지 않은 수익 대신 각 실험의 운영 상태와 검증 결과를 공개합니다.</div>
   </div>
 
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 24px;">
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">트레이딩봇</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">🟢 LIVE</div>
-      <div style="color: #48bb78; font-size: 0.9em;">v4 LIVE 운영 중 (3/14~)</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">종료·보류</div>
+      <div style="color: #cbd5e1; font-size: 0.9em;">상태: 자동매매 중단</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
+      <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">포지션</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">정리 완료</div>
+      <div style="color: #cbd5e1; font-size: 0.9em;">상태: 기존 포지션 없음</div>
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
       <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">블로그</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">{{ site.posts | size }}편</div>
-      <div style="color: #48bb78; font-size: 0.9em;">✅ 애드센스 승인 완료</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">운영</div>
+      <div style="color: #68d391; font-size: 0.9em;">상태: {{ site.posts | size }}편 공개</div>
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
-      <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">로또</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">🎰 자동</div>
-      <div style="color: #94a3b8; font-size: 0.9em;">매주 금 5장 구매</div>
-    </div>
-    <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
-      <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">제휴마케팅</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">🟢 운영</div>
-      <div style="color: #48bb78; font-size: 0.9em;">쿠팡파트너스 가입완료</div>
+      <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">다음 수익모델</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">연구 중</div>
+      <div style="color: #f6e05e; font-size: 0.9em;">상태: 후보 탐색·검증</div>
     </div>
   </div>
 </div>
 
-<!-- 자산 추이 -->
-## 📈 자산 추이
+<!-- 과거 공개 스냅샷 -->
+## 📌 과거 공개 스냅샷
 
-| 날짜 | 총 자산 | 변동 | 비고 |
-|------|--------|------|------|
-| 2/23 (시작) | 1,050,000원 | - | v3 LIVE 전환 |
-| 2/24 | 1,055,000원 | +5,000원 | 헤지 수익 |
-| 3/01 | 3,005,000원 | +1,950,000원 입금 | v4 전략 전환 · PAPER 시작 |
-| 3/14 | 3,005,000원 | - | v4 LIVE 전환 · 감성역설 방지 적용 |
-| 3/20 | ~3,015,000원 | +10,000원 | 숏 익절 +4.47% · 롱 P2 DCA 진행중 |
-| 3/22 | ~3,015,000원 | - | ETH 전환 · 라운드 #2 시작 |
-| 4/1 | ~3,065,000원 | +50,000원 | 고정 TP 전환 · 숏 익절 +2.2% · Earn 이자 포함 |
-| 4/2 | ~3,070,000원 | +5,000원 | 롱 +2.5% 보유 · TP 0.5% 남음 |
+아래 금액은 당시 페이지에 공개했던 시점별 기록입니다. **현재 자산이나 트레이딩 실험의 최종 정산값이 아닙니다.** 종료 시점의 최종 손익은 확정해 공개하지 않았습니다.
+
+| 날짜 | 공개 스냅샷 | 비고 |
+|------|--------------|------|
+| 2026-04-02 | 3,070,000원 | 당시 공개된 추정 총액 · 최종 정산 아님 |
+| 2026-05-24 | 3,085,757원 | 당시 공개된 총액 스냅샷 · 최종 정산 아님 |
+| 2026-09-25 | - | 자동매매 종료·보류 전환 · 기존 포지션 정리 완료 · 최종 손익 미공개 |
 
 ---
 
 <!-- 프로젝트별 상세 -->
 ## 🤖 AI 트레이딩봇
 
-v4 "듀얼 익절" 전략 — 업비트 롱 + 바이빗 숏 양방향 동시 진입.  
-뉴스 감성분석으로 포지션 동적 조절 + 2단계 DCA 물타기.
+뉴스 감성분석, RSI, DCA, 현물 롱과 선물 숏 헤지를 조합한 자동매매 전략을 운영했으나, 2026년 9월 25일부로 실험을 종료·보류했습니다. 기존 포지션은 모두 정리했으며 최종 손익 숫자는 확정해 공개하지 않습니다.
 
-**현재 상태:** ETH 단일 코인 · LIVE 운영 시작 · 감성역설 방지 로직 적용
+**현재 상태: 종료·보류 · 포지션 정리 완료**
+
+운영 과정에서 전략 자체보다 데이터 품질, 거래소별 실행 차이, 장애 대응, 손실 한도와 중단 기준이 자동매매의 핵심이라는 교훈을 얻었습니다. 새로운 자금을 투입하기보다 이 기록을 다음 수익모델의 검증 기준으로 활용합니다.
+
+[트레이딩 자동화 실험 종료·보류 기록 보기 →](/blog/crypto-trading-experiment-on-hold)
 
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 20px 0;">
 
@@ -92,10 +76,9 @@ v4 "듀얼 익절" 전략 — 업비트 롱 + 바이빗 숏 양방향 동시 진
 
 ---
 
-## 🎰 로또 자동구매 & 분석
+## 🎰 로또 자동화 실험 기록
 
-AI 에이전트가 매주 금요일 동행복권에서 로또 5장 자동 구매.  
-안티봇 우회, 브라우저 자동화의 실전기.
+동행복권 구매 과정에 브라우저 자동화를 적용하며 확인한 제약과 실패 사례를 기록합니다. 현재 수익 발생이나 정기 자동 구매 운영을 의미하지 않습니다.
 
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 20px 0;">
 
@@ -113,17 +96,18 @@ AI 에이전트가 매주 금요일 동행복권에서 로또 5장 자동 구매
 
 ## 📝 블로그 수익화
 
-Jekyll + GitHub Pages 블로그로 애드센스 + 제휴마케팅 수익 달성을 목표.
+Jekyll + GitHub Pages 블로그를 운영하며 콘텐츠 기반 수익모델을 검증합니다. 애드센스 승인과 제휴 채널 가입은 수익 발생 자체와 구분해 기록합니다.
 
-- 101개 포스트 발행 완료
-- ✅ 애드센스 승인 완료 (2026.03)
-- ✅ 쿠팡파트너스 가입완료 (2026.03)
+- {{ site.posts | size }}개 포스트 공개
+- 상태: 블로그 운영
+- 애드센스 승인 완료 (2026.03) · 실제 수익과 별개
+- 쿠팡파트너스 가입 완료 (2026.03) · 제휴 채널 구축 단계
 
 ---
 
 ## 🤖 AI 에이전트 자동화
 
-OpenClaw 기반 AI 비서 **브래드**가 블로그 포스팅, 트레이딩 모니터링, 로또 구매를 24시간 자동 수행.
+AI 에이전트는 콘텐츠 초안, 자료 정리, 반복 작업을 보조합니다. 자동으로 수익을 만들거나 모든 채널을 무인 운영한다는 의미는 아닙니다.
 
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 20px 0;">
 
@@ -139,6 +123,12 @@ OpenClaw 기반 AI 비서 **브래드**가 블로그 포스팅, 트레이딩 모
 
 ---
 
+## 🔎 다음 수익모델 연구
+
+트레이딩 실험에서 얻은 운영 교훈을 바탕으로, 손실 한도와 중단 기준을 먼저 정하고 결과를 검증할 수 있는 새로운 수익모델을 연구하고 있습니다. 후보가 검증되기 전에는 예상 수익을 현재 수익처럼 공개하지 않습니다.
+
+---
+
 ## 💡 원칙
 
 1. **투명하게** — 수익이든 손실이든 있는 그대로 공개
@@ -148,4 +138,4 @@ OpenClaw 기반 AI 비서 **브래드**가 블로그 포스팅, 트레이딩 모
 
 ---
 
-*이 페이지는 AI 에이전트 🤖 브래드가 변동사항 발생 시 자동으로 업데이트합니다. 최근 업데이트: 2026-04-02*
+*이 페이지는 검증 가능한 변경이 있을 때 수동 검토 후 업데이트합니다. 최근 업데이트: 2026-09-25*
