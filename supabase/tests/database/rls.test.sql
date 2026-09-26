@@ -36,7 +36,7 @@ insert into public.comment_reactions (user_id, comment_id) values
   ('91000000-0000-0000-0000-000000000002', '94000000-0000-0000-0000-000000000002');
 
 select ok((select bool_and(relrowsecurity) from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname = any(array['profiles','user_roles','posts','comments','tags','post_tags','post_reactions','comment_reactions','attachments','reports','moderation_audit_logs','idempotency_keys','rate_limit_rules','rate_limit_events'])), 'RLS remains enabled on all 14 tables');
-select is((select count(*)::integer from pg_policies where schemaname='public'), 5, 'exactly five narrow public-read policies exist');
+select is((select count(*)::integer from pg_policies where schemaname='public' and tablename <> 'attachments'), 5, 'Task 3 keeps exactly five narrow public-read policies; Task 4 attachment RLS is tested separately');
 select ok(has_table_privilege('anon', 'public.posts', 'SELECT'), 'anon has post SELECT');
 select ok(has_table_privilege('authenticated', 'public.posts', 'SELECT'), 'authenticated has post SELECT');
 select ok(has_column_privilege('anon', 'public.profiles', 'display_name', 'SELECT'), 'anon can select safe profile fields');

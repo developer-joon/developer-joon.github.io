@@ -32,12 +32,12 @@ select is(
    where schemaname = 'public'
      and tablename = any(array[
        'profiles', 'user_roles', 'posts', 'comments', 'tags', 'post_tags',
-       'post_reactions', 'comment_reactions', 'attachments', 'reports',
+       'post_reactions', 'comment_reactions', 'reports',
        'moderation_audit_logs', 'idempotency_keys', 'rate_limit_rules',
        'rate_limit_events'
      ])),
   5,
-  'Task 3 installs only five public-read policies; raw reactions stay private'
+  'Task 3 installs only five public-read policies; Task 4 attachment policy is tested separately'
 );
 
 select is(
@@ -341,7 +341,7 @@ select throws_like(
 );
 
 select throws_like(
-  $$insert into public.attachments (owner_id, storage_path, mime_type, byte_size, status) values ('00000000-0000-0000-0000-000000000001', 'path/image.png', 'image/png', 20, 'attached')$$,
+  $$insert into public.attachments (owner_id, post_id, storage_path, mime_type, byte_size, status) values ('00000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001/50000000-0000-4000-8000-000000000001', 'image/png', 20, 'attached')$$,
   '%attachments_state_check%',
   'attached attachment requires attached_at'
 );

@@ -1,0 +1,61 @@
+name: Community attachment cleanup
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment containing the target Supabase secrets
+        required: true
+        type: choice
+        default: staging
+        options:
+          - staging
+          - production
+
+permissions: {}
+
+concurrency:
+  group: community-attachment-cleanup-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'production' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Invoke cleanup Edge Function
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          test -n "$SUPABASE_URL"
+          test -n "$SUPABASE_SERVICE_ROLE_KEY"
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          curl \
+            --silent \
+            --show-error \
+            --fail \
+            --max-time 270 \
+            --output "$response_file" \
+            --request POST \
+            --header "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            --header "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            "${SUPABASE_URL%/}/functions/v1/cleanup-attachments"
+          jq -e '
+            type == "object" and
+            ((keys | sort) == ["claimed", "deleted", "failed", "skipped"]) and
+            ([.claimed, .deleted, .skipped, .failed] |
+              all(type == "number" and floor == . and . >= 0)) and
+            (.claimed == (.deleted + .skipped + .failed))
+          ' "$response_file" >/dev/null
+          claimed="$(jq -r '.claimed' "$response_file")"
+          deleted="$(jq -r '.deleted' "$response_file")"
+          skipped="$(jq -r '.skipped' "$response_file")"
+          failed="$(jq -r '.failed' "$response_file")"
+          printf 'cleanup counts: claimed=%s deleted=%s skipped=%s failed=%s\n' \
+            "$claimed" "$deleted" "$skipped" "$failed"
+          test "$failed" -eq 0
