@@ -1,6 +1,6 @@
 begin;
 
-select plan(112);
+select plan(117);
 
 -- Core relations exist and are protected before any policies are added.
 select has_table('public', table_name, format('%s table exists', table_name))
@@ -36,8 +36,8 @@ select is(
        'moderation_audit_logs', 'idempotency_keys', 'rate_limit_rules',
        'rate_limit_events'
      ])),
-  0,
-  'core tables have no policies before the RLS task'
+  5,
+  'Task 3 installs only five public-read policies; raw reactions stay private'
 );
 
 select is(
@@ -51,9 +51,16 @@ select is(
        'moderation_audit_logs', 'idempotency_keys', 'rate_limit_rules',
        'rate_limit_events'
      ])),
-  0,
-  'anon and authenticated have no direct core table grants'
+  8,
+  'Task 3 installs only eight table-level public-read grants'
 );
+
+-- Production migrations, not optional local seed data, own security limits.
+select is((select max_requests from public.rate_limit_rules where action='post.create' and window_seconds=600 and is_enabled), 5, 'migration installs the 5 per 10 minutes post rule');
+select is((select max_requests from public.rate_limit_rules where action='post.create' and window_seconds=86400 and is_enabled), 30, 'migration installs the 30 per day post rule');
+select is((select max_requests from public.rate_limit_rules where action='comment.create' and window_seconds=600 and is_enabled), 20, 'migration installs the 20 per 10 minutes comment rule');
+select is((select max_requests from public.rate_limit_rules where action='comment.create' and window_seconds=86400 and is_enabled), 200, 'migration installs the 200 per day comment rule');
+select is((select max_requests from public.rate_limit_rules where action='report.create' and window_seconds=86400 and is_enabled), 10, 'migration installs the 10 per day report rule');
 
 -- Future objects must remain fail-closed for browser roles and PUBLIC.
 select is(
