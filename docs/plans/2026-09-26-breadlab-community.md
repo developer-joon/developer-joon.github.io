@@ -213,7 +213,7 @@
 **Objective:** 신고 queue, 숨김·복구·잠금·공지 고정과 불변 감사 로그를 제공한다.
 
 **Files:**
-- Create: `supabase/migrations/202609260004_moderation.sql`
+- Create: `supabase/migrations/202609260005_moderation.sql`
 - Create: `supabase/tests/database/moderation.test.sql`
 - Create: `community-app/src/pages/AdminReportsPage.tsx`
 - Create: `community-app/src/components/{ReportDialog,ReportQueue,ModerationActions}.tsx`

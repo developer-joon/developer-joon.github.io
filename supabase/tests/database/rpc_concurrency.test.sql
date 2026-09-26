@@ -1,6 +1,6 @@
 begin;
 
-select plan(25);
+select plan(26);
 
 create extension if not exists dblink with schema extensions;
 
@@ -34,13 +34,26 @@ end;
 $$;
 
 insert into rpc_fixture
-select gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
+with random_prefixes as materialized (
+  select
+    substring(replace(gen_random_uuid()::text,'-','') for 28) as user_one_prefix,
+    substring(replace(gen_random_uuid()::text,'-','') for 28) as user_two_prefix
+)
+select (user_one_prefix||'0001')::uuid, (user_two_prefix||'0002')::uuid, gen_random_uuid(), gen_random_uuid(),
        2000000000 + floor(random()*500000000)::bigint,
        2500000000 + floor(random()*500000000)::bigint,
        format('hostaddr=%s port=%s dbname=%L user=%L password=postgres options=%L',
               coalesce(host(inet_server_addr()),'127.0.0.1'), inet_server_port(),
               current_database(), current_user,
-              '-c statement_timeout=5000 -c lock_timeout=3000');
+              '-c statement_timeout=5000 -c lock_timeout=3000')
+from random_prefixes;
+
+select isnt(
+  (get_byte(uuid_send(user_id),15)%64)::integer,
+  (get_byte(uuid_send(user_two_id),15)%64)::integer,
+  'parallel reaction fixture uses distinct counter shards'
+)
+from rpc_fixture;
 
 select extensions.dblink_connect('rpc_setup', connection_string) from rpc_fixture;
 select extensions.dblink_exec('rpc_setup', format($sql$
