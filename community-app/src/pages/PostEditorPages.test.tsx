@@ -4,6 +4,7 @@ import type { User } from '@supabase/supabase-js'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import type { CommunityRepository } from '../data/communityRepository'
 import { draftKey } from '../lib/draftStore'
+import { withDraftLock } from '../lib/draftLock'
 import { WritePostPage } from './WritePostPage'
 import { EditPostPage } from './EditPostPage'
 
@@ -234,6 +235,73 @@ describe('WritePostPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '발행' }))
     expect(await screen.findByText('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.')).toBeInTheDocument()
     expect(navigate).not.toHaveBeenCalled(); expect(local.values.has(draftKey('write'))).toBe(true)
+  })
+
+  it('holds the write lock through create, clear, and navigation before a cooperating replacement writer runs', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const createPost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const local = storage(); const navigate = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid()
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    await waitFor(() => expect(createPost).toHaveBeenCalledTimes(1))
+    const replacement = JSON.stringify({ version: 1, kind: 'write', title: '다음 글', bodyMarkdown: '다음 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000098' })
+    let replacementWritten = false
+    const writer = withDraftLock(draftKey('write'), () => { replacementWritten = true; local.setItem(draftKey('write'), replacement) })
+
+    await Promise.resolve()
+    expect(replacementWritten).toBe(false)
+    resolve({ ok: true, data: postId })
+    await writer
+
+    expect(createPost).toHaveBeenCalledTimes(1)
+    expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`)
+    expect(local.values.get(draftKey('write'))).toBe(replacement)
+  })
+
+  it('serializes autosave compare/write before a cooperating writer', async () => {
+    const local = storage(); const key = draftKey('write'); const events: string[] = []
+    let trigger = false; let writer: Promise<void> | undefined
+    const observedStorage = {
+      ...local,
+      getItem: (requested: string) => {
+        const value = local.getItem(requested)
+        if (trigger && requested === key && !writer) writer = withDraftLock(key, () => { events.push('writer'); local.setItem(key, '{replacement}') })
+        return value
+      },
+      setItem: (requested: string, value: string) => {
+        if (trigger && requested === key) events.push('autosave')
+        local.setItem(requested, value)
+      },
+    }
+    wrap(<WritePostPage repository={repository()} storage={observedStorage} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' })
+    await waitFor(() => expect(local.values.has(key)).toBe(true))
+
+    trigger = true
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '잠금 제목' } })
+    await waitFor(() => expect(writer).toBeDefined())
+    await writer
+
+    expect(events).toEqual(['autosave', 'writer'])
+    expect(local.values.get(key)).toBe('{replacement}')
+  })
+
+  it('fails closed with an accessible error when Web Locks are unavailable', async () => {
+    const local = storage(); const createPost = vi.fn(); const navigate = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' })
+    await waitFor(() => expect(local.values.has(draftKey('write'))).toBe(true))
+    const before = local.values.get(draftKey('write'))
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined })
+
+    fillValid()
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('초안 잠금을 사용할 수 없어 발행하지 않았습니다. 브라우저 설정을 확인해 주세요.')
+    expect(local.values.get(draftKey('write'))).toBe(before)
+    expect(createPost).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
   })
 })
 
@@ -494,5 +562,45 @@ describe('EditPostPage', () => {
     expect(local.values.get(draftKey('edit', postId))).toBe('{broken')
     expect(deletePost).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('holds the shared edit lock through update completion before a cooperating replacement writer runs', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const updatePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const local = storage(); const navigate = vi.fn(); const key = draftKey('edit', postId)
+    wrap(<EditPostPage repository={repository({ updatePost })} search={`?id=${postId}`} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    await waitFor(() => expect(updatePost).toHaveBeenCalledTimes(1))
+    let replacementWritten = false
+    const writer = withDraftLock(key, () => { replacementWritten = true; local.setItem(key, '{replacement-after-update}') })
+
+    await Promise.resolve()
+    expect(replacementWritten).toBe(false)
+    resolve({ ok: true, data: postId })
+    await writer
+
+    expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`)
+    expect(local.values.get(key)).toBe('{replacement-after-update}')
+  })
+
+  it('holds the shared edit lock through delete completion before a cooperating replacement writer runs', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const deletePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const local = storage(); const navigate = vi.fn(); const key = draftKey('edit', postId)
+    wrap(<EditPostPage repository={repository({ deletePost })} search={`?id=${postId}`} storage={local} navigate={navigate} confirmDelete={() => true} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.click(screen.getByRole('button', { name: '글 삭제' }))
+    await waitFor(() => expect(deletePost).toHaveBeenCalledTimes(1))
+    let replacementWritten = false
+    const writer = withDraftLock(key, () => { replacementWritten = true; local.setItem(key, '{replacement-after-delete}') })
+
+    await Promise.resolve()
+    expect(replacementWritten).toBe(false)
+    resolve({ ok: true, data: postId })
+    await writer
+
+    expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`)
+    expect(local.values.get(key)).toBe('{replacement-after-delete}')
   })
 })

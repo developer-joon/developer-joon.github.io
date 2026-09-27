@@ -5,7 +5,8 @@ import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import { normalizeCommunityReturnPath } from '../auth/auth'
 import type { CommunityRepository } from '../data/communityRepository'
-import { clearDraft, createWriteDraft, isPersistableDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft, type DraftSnapshot, type DraftStorage, type WriteDraft } from '../lib/draftStore'
+import { DraftLockUnavailableError, withDraftLock } from '../lib/draftLock'
+import { clearDraft, createWriteDraft, draftKey, isPersistableDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft, type DraftSnapshot, type DraftStorage, type WriteDraft } from '../lib/draftStore'
 import { isStrictUuid, type PostInput } from '../lib/validation'
 import type { CommunityTag } from '../types/community'
 
@@ -24,6 +25,8 @@ function safeWritePath(path: string) {
   return `/community/write/${parsed.search}${parsed.hash}`
 }
 
+const lockError = '초안 잠금을 사용할 수 없습니다. 브라우저 설정을 확인해 주세요.'
+
 export function WritePostPage({ repository, storage = window.localStorage, navigate = path => window.location.assign(path), currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}` }: Props) {
   const auth = useAuth()
   const initial = useRef<{ draft: WriteDraft; restored: boolean; snapshot: DraftSnapshot; conflict: boolean; storageFailed: boolean } | null>(null)
@@ -38,6 +41,7 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
       storageFailed: !snapshot.ok,
     }
   }
+  const key = draftKey('write')
   const draftRef = useRef<WriteDraft>(initial.current.draft)
   const baseline = useRef<DraftSnapshot>(initial.current.snapshot)
   const draftSaveFailed = useRef(initial.current.storageFailed)
@@ -53,7 +57,7 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
   const [conflict, setConflict] = useState(initial.current.conflict)
   const [editorRevision, setEditorRevision] = useState(0)
 
-  const persistExact = useCallback((draft: WriteDraft) => {
+  const persistExactLocked = useCallback((draft: WriteDraft) => {
     if (!isPersistableDraft(draft)) return false
     const saved = saveDraft(storage, draft)
     const snapshot = readDraftSnapshot(storage, 'write')
@@ -63,20 +67,45 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
     return verified
   }, [storage])
 
-  useEffect(() => {
-    if (conflictRef.current || !baseline.current.ok || baseline.current.raw !== null) return
+  function enterConflict(message: string) {
+    conflictRef.current = true
+    setConflict(true)
+    setSubmitError(message)
+  }
+
+  const persistAutosaveLocked = useCallback((draft: WriteDraft) => {
+    if (conflictRef.current) return false
     const before = readDraftSnapshot(storage, 'write')
-    if (!before.ok || before.raw !== baseline.current.raw) {
-      enterConflict('다른 탭에서 초안 상태가 변경되었습니다. 사용할 내용을 선택해 주세요.')
-      return
+    if (!baseline.current.ok || !before.ok || before.raw !== baseline.current.raw) {
+      enterConflict('다른 탭에서 초안이 변경되었습니다. 사용할 내용을 선택해 주세요.')
+      return false
     }
-    persistExact(draftRef.current)
-  }, [persistExact, storage])
+    const saved = persistExactLocked(draft)
+    if (!saved) setSubmitError('초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+    return saved
+  }, [persistExactLocked, storage])
 
   useEffect(() => {
     const generation = ++lifecycle.current
     return () => { if (lifecycle.current === generation) lifecycle.current += 1 }
   }, [repository, storage])
+
+  useEffect(() => {
+    const generation = lifecycle.current
+    const initialBaseline = baseline.current
+    if (conflictRef.current || !initialBaseline.ok || initialBaseline.raw !== null) return
+    void withDraftLock(key, () => {
+      if (generation !== lifecycle.current) return
+      const before = readDraftSnapshot(storage, 'write')
+      if (!before.ok || before.raw !== initialBaseline.raw) {
+        enterConflict('다른 탭에서 초안 상태가 변경되었습니다. 사용할 내용을 선택해 주세요.')
+        return
+      }
+      persistExactLocked(draftRef.current)
+    }).catch(error => {
+      if (generation === lifecycle.current && error instanceof DraftLockUnavailableError) setSubmitError(lockError)
+    })
+  }, [key, persistExactLocked, storage])
 
   useEffect(() => {
     let active = true
@@ -89,113 +118,132 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
     return () => { active = false }
   }, [repository, tagAttempt])
 
-  function enterConflict(message: string) {
-    conflictRef.current = true
-    setConflict(true)
-    setSubmitError(message)
-  }
-
   const autosave = useCallback((value: PostInput) => {
     const next: WriteDraft = { ...draftRef.current, ...value, updatedAt: new Date().toISOString() }
     draftRef.current = next
-    if (conflictRef.current) return false
-    const before = readDraftSnapshot(storage, 'write')
-    if (!baseline.current.ok || !before.ok || before.raw !== baseline.current.raw) {
-      enterConflict('다른 탭에서 초안이 변경되었습니다. 사용할 내용을 선택해 주세요.')
-      return false
-    }
-    const saved = persistExact(next)
-    if (!saved) setSubmitError('초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
-    return saved
-  }, [persistExact, storage])
+    if (conflictRef.current) return
+    const generation = lifecycle.current
+    void withDraftLock(key, () => {
+      if (generation !== lifecycle.current) return
+      persistAutosaveLocked(next)
+    }).catch(error => {
+      if (generation === lifecycle.current && error instanceof DraftLockUnavailableError) setSubmitError(lockError)
+    })
+  }, [key, persistAutosaveLocked])
 
-  function loadConflictingDraft() {
-    const snapshot = readDraftSnapshot(storage, 'write')
-    const loaded = loadDraft(storage, 'write')
-    if (!snapshot.ok || snapshot.raw === null || !loaded) {
-      setSubmitError('다른 탭 초안을 확인할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
-      return
+  async function loadConflictingDraft() {
+    const generation = lifecycle.current
+    try {
+      await withDraftLock(key, () => {
+        if (generation !== lifecycle.current) return
+        const snapshot = readDraftSnapshot(storage, 'write')
+        const loaded = loadDraft(storage, 'write')
+        if (!snapshot.ok || snapshot.raw === null || !loaded) {
+          setSubmitError('다른 탭 초안을 확인할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+          return
+        }
+        draftRef.current = loaded
+        baseline.current = snapshot
+        draftSaveFailed.current = false
+        conflictRef.current = false
+        setConflict(false)
+        setSubmitError(null)
+        setEditorRevision(value => value + 1)
+      })
+    } catch (error) {
+      if (generation === lifecycle.current && error instanceof DraftLockUnavailableError) setSubmitError(lockError)
     }
-    draftRef.current = loaded
-    baseline.current = snapshot
-    draftSaveFailed.current = false
-    conflictRef.current = false
-    setConflict(false)
-    setSubmitError(null)
-    setEditorRevision(value => value + 1)
   }
 
-  function overwriteConflictingDraft() {
-    if (!isPersistableDraft(draftRef.current)) {
-      setSubmitError('현재 내용은 로컬 초안으로 저장할 수 없습니다. 입력 길이를 확인해 주세요.')
-      return
+  async function overwriteConflictingDraft() {
+    const generation = lifecycle.current
+    try {
+      await withDraftLock(key, () => {
+        if (generation !== lifecycle.current) return
+        if (!isPersistableDraft(draftRef.current)) {
+          setSubmitError('현재 내용은 로컬 초안으로 저장할 수 없습니다. 입력 길이를 확인해 주세요.')
+          return
+        }
+        if (!persistExactLocked(draftRef.current)) {
+          setSubmitError('현재 초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+          return
+        }
+        conflictRef.current = false
+        setConflict(false)
+        setSubmitError(null)
+      })
+    } catch (error) {
+      if (generation === lifecycle.current && error instanceof DraftLockUnavailableError) setSubmitError(lockError)
     }
-    if (!persistExact(draftRef.current)) {
-      setSubmitError('현재 초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
-      return
-    }
-    conflictRef.current = false
-    setConflict(false)
-    setSubmitError(null)
   }
 
   async function publish(value: PostInput) {
     setSubmitError(null); setNeedsLogin(false)
-    if (conflictRef.current) {
-      enterConflict('다른 탭의 초안과 충돌했습니다. 사용할 내용을 선택해 주세요.')
-      return
-    }
-    const before = readDraftSnapshot(storage, 'write')
-    if (!before.ok) {
-      setSubmitError('초안 저장소를 확인할 수 없어 발행하지 않았습니다. 브라우저 설정을 확인해 주세요.')
-      return
-    }
-    if (!baseline.current.ok || before.raw !== baseline.current.raw) {
-      enterConflict('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')
-      return
-    }
-    if (draftSaveFailed.current) {
-      if (!persistExact(draftRef.current)) {
-        setSubmitError('초안을 저장할 수 없어 발행하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
-        return
+    const generation = lifecycle.current
+    try {
+      await withDraftLock(key, async () => {
+        if (generation !== lifecycle.current) return
+        if (conflictRef.current) {
+          enterConflict('다른 탭의 초안과 충돌했습니다. 사용할 내용을 선택해 주세요.')
+          return
+        }
+        const before = readDraftSnapshot(storage, 'write')
+        if (!before.ok) {
+          setSubmitError('초안 저장소를 확인할 수 없어 발행하지 않았습니다. 브라우저 설정을 확인해 주세요.')
+          return
+        }
+        if (!baseline.current.ok || before.raw !== baseline.current.raw) {
+          enterConflict('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')
+          return
+        }
+        if (draftSaveFailed.current && !persistExactLocked(draftRef.current)) {
+          setSubmitError('초안을 저장할 수 없어 발행하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+          return
+        }
+        const next: WriteDraft = { ...draftRef.current, ...value, updatedAt: new Date().toISOString() }
+        draftRef.current = next
+        const saved = persistAutosaveLocked(next)
+        const submitted: WriteDraft = { ...next, tagIds: [...next.tagIds] }
+        const submittedSnapshot = readDraftSnapshot(storage, 'write')
+        if (!saved || !matchesDraftSnapshot(submittedSnapshot, submitted)) {
+          if (saved) enterConflict('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')
+          else setSubmitError('초안을 저장할 수 없어 발행하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+          return
+        }
+        if (!auth.user) {
+          await auth.signInWithGitHub(safeWritePath(currentPath))
+          return
+        }
+        const actorId = auth.user.id
+        const result = await repository.createPost({ ...value, idempotencyKey: submitted.idempotencyKey })
+        if (generation !== lifecycle.current || authUserId.current !== actorId) return
+        if (!result.ok) {
+          setSubmitError(result.error.message)
+          setNeedsLogin(result.error.code === 'auth_required')
+          return
+        }
+        if (!isStrictUuid(result.data)) {
+          setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.')
+          return
+        }
+        const completionSnapshot = readDraftSnapshot(storage, 'write')
+        if (!matchesDraftSnapshot(completionSnapshot, submitted)) {
+          enterConflict('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')
+          return
+        }
+        lifecycle.current += 1
+        clearDraft(storage, 'write')
+        draftRef.current = createWriteDraft()
+        navigate(`/community/post/?id=${result.data}`)
+      })
+    } catch (error) {
+      if (generation === lifecycle.current && error instanceof DraftLockUnavailableError) {
+        setSubmitError('초안 잠금을 사용할 수 없어 발행하지 않았습니다. 브라우저 설정을 확인해 주세요.')
       }
     }
-    const saved = autosave(value)
-    const submitted: WriteDraft = { ...draftRef.current, tagIds: [...draftRef.current.tagIds] }
-    const submittedSnapshot = readDraftSnapshot(storage, 'write')
-    if (!saved || !matchesDraftSnapshot(submittedSnapshot, submitted)) {
-      if (saved) enterConflict('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')
-      else setSubmitError('초안을 저장할 수 없어 발행하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
-      return
-    }
-    if (!auth.user) {
-      await auth.signInWithGitHub(safeWritePath(currentPath))
-      return
-    }
-    const generation = lifecycle.current
-    const actorId = auth.user.id
-    const result = await repository.createPost({ ...value, idempotencyKey: submitted.idempotencyKey })
-    if (generation !== lifecycle.current || authUserId.current !== actorId) return
-    if (!result.ok) {
-      setSubmitError(result.error.message)
-      setNeedsLogin(result.error.code === 'auth_required')
-      return
-    }
-    if (!isStrictUuid(result.data)) {
-      setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.')
-      return
-    }
-    const completionSnapshot = readDraftSnapshot(storage, 'write')
-    if (!matchesDraftSnapshot(completionSnapshot, submitted)) {
-      enterConflict('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')
-      return
-    }
-    clearDraft(storage, 'write')
-    draftRef.current = createWriteDraft()
-    navigate(`/community/post/?id=${result.data}`)
   }
 
-  const conflictActions = conflict ? <div className="editor-conflict-actions"><button type="button" className="secondary-action" onClick={loadConflictingDraft}>다른 탭 초안 불러오기</button><button type="button" className="secondary-action" onClick={overwriteConflictingDraft}>현재 내용으로 덮어쓰기</button></div> : null
+  const conflictActions = conflict ? <div className="editor-conflict-actions"><button type="button" className="secondary-action" onClick={() => void loadConflictingDraft()}>다른 탭 초안 불러오기</button><button type="button" className="secondary-action" onClick={() => void overwriteConflictingDraft()}>현재 내용으로 덮어쓰기</button></div> : null
 
   return <div className="community-page editor-page"><AppHeader /><main>
     <header className="editor-heading"><p className="post-detail-kicker">NEW COMMUNITY NOTE</p><h1>새 글 쓰기</h1><p>이 브라우저의 로컬 저장소에 임시 저장을 시도합니다.</p></header>
