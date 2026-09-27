@@ -368,9 +368,7 @@ isOneToOne: true
 { Args: Record<PropertyKey, never>; Returns: boolean
                            },
 "list_public_post_comments":
-{ Args: { "p_post_id": string }; Returns: {
-              "author_avatar_url": string,"author_display_name": string,"author_id": string,"author_login": string,"body_markdown": string,"created_at": string,"id": string,"parent_id": string,"row_number": number,"updated_at": string
-            }[]
+{ Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_reply"?: boolean,"p_cursor_root_created_at"?: string,"p_cursor_root_id"?: string,"p_limit"?: number,"p_post_id": string }; Returns: Json
                            },
 "list_public_posts":
 { Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_pinned"?: boolean,"p_cursor_rank"?: number,"p_cursor_search_rank"?: number,"p_limit": number,"p_search"?: string,"p_sort": string,"p_tag_id"?: string }; Returns: {

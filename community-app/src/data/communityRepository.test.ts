@@ -1,5 +1,15 @@
-import { describe, expect, it } from 'vitest'
-import { createCommunityRepository, type CommunityClient, type QueryResponse } from './communityRepository'
+import { describe, expect, it, vi } from 'vitest'
+
+const browserClient = vi.hoisted(() => ({ rpc: vi.fn() }))
+vi.mock('../lib/supabase', () => ({ getSupabaseClient: () => browserClient }))
+vi.mock('../config/env', () => ({
+  parseEnv: () => ({
+    supabaseUrl: 'https://abcdefghijklmnopqrst.supabase.co',
+    supabasePublishableKey: 'sb_publishable_test',
+  }),
+}))
+
+import { createCommunityRepository, getCommunityRepository, type CommunityClient, type QueryResponse } from './communityRepository'
 
 const row = {
   row_number: 1,
@@ -30,11 +40,14 @@ function setup() {
   let detailResponse: QueryResponse = { data: null, error: null }
   let mutationResponse: QueryResponse = { data: 'post-1', error: null }
   const client: CommunityClient = {
-    listPublicPosts(args) { calls.push({ method: 'listPublicPosts', args }); return Promise.resolve(listResponse) },
-    getPost(postId) { calls.push({ method: 'getPost', args: postId }); return Promise.resolve(detailResponse) },
     publicAttachmentUrl(attachmentId) { return `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}` },
     listTags() { calls.push({ method: 'listTags', args: null }); return Promise.resolve({ data: [], error: null }) },
-    rpc(fn, args) { calls.push({ method: fn, args }); return Promise.resolve(mutationResponse) },
+    rpc(fn, args) {
+      calls.push({ method: fn, args })
+      if (fn === 'list_public_posts') return Promise.resolve(listResponse)
+      if (fn === 'get_public_post_v2') return Promise.resolve(detailResponse)
+      return Promise.resolve(mutationResponse)
+    },
   }
   return {
     repository: createCommunityRepository(client), calls,
@@ -49,7 +62,7 @@ describe('community repository public list contract', () => {
     const value = setup()
     value.setListResponse({ data: [row], error: null })
     const result = await value.repository.listPosts({ limit: 20, sort: 'popular', search: 'needle', tagId: 'tag-1' })
-    expect(value.calls).toEqual([{ method: 'listPublicPosts', args: {
+    expect(value.calls).toEqual([{ method: 'list_public_posts', args: {
       p_sort: 'popular', p_limit: 20, p_search: 'needle', p_tag_id: 'tag-1',
       p_cursor_is_pinned: undefined, p_cursor_created_at: undefined, p_cursor_rank: undefined, p_cursor_id: undefined,
       p_cursor_search_rank: undefined,
@@ -57,6 +70,14 @@ describe('community repository public list contract', () => {
     expect(result.ok && result.data.items[0]).toMatchObject({
       excerpt: '서버 요약', commentCount: 3, reactionCount: 4, popularityScore: 11,
       tags: [{ id: 'tag-1' }, { id: 'tag-2' }],
+    })
+
+    browserClient.rpc.mockResolvedValueOnce({ data: [row], error: null })
+    await getCommunityRepository().listPosts({ limit: 20, sort: 'popular', search: 'needle', tagId: 'tag-1' })
+    expect(browserClient.rpc).toHaveBeenLastCalledWith('list_public_posts', {
+      p_sort: 'popular', p_limit: 20, p_search: 'needle', p_tag_id: 'tag-1',
+      p_cursor_is_pinned: undefined, p_cursor_created_at: undefined, p_cursor_rank: undefined, p_cursor_id: undefined,
+      p_cursor_search_rank: undefined,
     })
   })
 
@@ -91,7 +112,7 @@ describe('community repository public list contract', () => {
 
     const result = await value.repository.getPost('post-1')
 
-    expect(value.calls).toEqual([{ method: 'getPost', args: 'post-1' }])
+    expect(value.calls).toEqual([{ method: 'get_public_post_v2', args: { p_post_id: 'post-1' } }])
     expect(result).toMatchObject({
       ok: true,
       data: {
@@ -106,6 +127,10 @@ describe('community repository public list contract', () => {
         },
       },
     })
+
+    browserClient.rpc.mockResolvedValueOnce({ data: { kind: 'published', post: detailRow }, error: null })
+    await getCommunityRepository().getPost('post-1')
+    expect(browserClient.rpc).toHaveBeenLastCalledWith('get_public_post_v2', { p_post_id: 'post-1' })
   })
 
   it.each([
@@ -147,8 +172,6 @@ describe('community repository public list contract', () => {
   it('maps the active tag projection', async () => {
     const calls: string[] = []
     const client: CommunityClient = {
-      listPublicPosts: () => Promise.resolve({ data: [], error: null }),
-      getPost: () => Promise.resolve({ data: null, error: null }),
       publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
       listTags: () => {
         calls.push('listTags')
@@ -197,8 +220,6 @@ describe('community repository mutation failures', () => {
 
   it('maps rejected fetches to a stable network error', async () => {
     const client: CommunityClient = {
-      listPublicPosts: () => Promise.reject(new TypeError('Failed to fetch')),
-      getPost: () => Promise.reject(new TypeError('Failed to fetch')),
       publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
       listTags: () => Promise.reject(new TypeError('Failed to fetch')),
       rpc: () => Promise.reject(new TypeError('Failed to fetch')),

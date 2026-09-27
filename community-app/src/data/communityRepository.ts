@@ -17,14 +17,13 @@ import { parseEnv } from '../config/env'
 export interface QueryResponse { data: unknown; error: unknown }
 type Functions = Database['public']['Functions']
 type MutationName = 'create_post' | 'update_post' | 'soft_delete_post'
-type ListArgs = Functions['list_public_posts']['Args']
+type ReadName = 'list_public_posts' | 'get_public_post_v2'
+type RpcName = ReadName | MutationName
 
 export interface CommunityClient {
-  listPublicPosts(args: ListArgs): PromiseLike<QueryResponse>
-  getPost(postId: string): PromiseLike<QueryResponse>
   publicAttachmentUrl(attachmentId: string): string
   listTags(): PromiseLike<QueryResponse>
-  rpc<Name extends MutationName>(name: Name, args: Functions[Name]['Args']): PromiseLike<QueryResponse>
+  rpc<Name extends RpcName>(name: Name, args: Functions[Name]['Args']): PromiseLike<QueryResponse>
 }
 
 interface RawTag { id: string; slug: string; label: string }
@@ -172,7 +171,7 @@ export function createCommunityRepository(client: CommunityClient) {
   return {
     async listPosts(input: PostListInput): Promise<CommunityResult<PostPage>> {
       const sort = input.sort ?? 'newest'
-      return execute(() => client.listPublicPosts({
+      return execute(() => client.rpc('list_public_posts', {
         p_sort: sort, p_limit: input.limit, p_search: input.search?.trim() || undefined,
         p_tag_id: input.tagId, p_cursor_is_pinned: input.cursor?.isPinned,
         p_cursor_created_at: input.cursor?.createdAt, p_cursor_rank: input.cursor?.rank ?? undefined,
@@ -192,7 +191,7 @@ export function createCommunityRepository(client: CommunityClient) {
     },
     async getPost(postId: string): Promise<CommunityResult<PublicPostRead>> {
       return execute(
-        () => client.getPost(postId),
+        () => client.rpc('get_public_post_v2', { p_post_id: postId }),
         data => mapPublicPostRead(data, client.publicAttachmentUrl),
       )
     },
@@ -216,8 +215,6 @@ function createBrowserCommunityClient(): CommunityClient {
   const client = getSupabaseClient()
   const { supabaseUrl } = parseEnv(import.meta.env)
   return {
-    listPublicPosts: args => client.rpc('list_public_posts', args),
-    getPost: postId => client.rpc('get_public_post_v2', { p_post_id: postId }),
     publicAttachmentUrl: attachmentId => new URL(`/functions/v1/public-attachment/${attachmentId}`, supabaseUrl).toString(),
     listTags: () => client.from('tags').select('id,slug,label').eq('is_active', true).order('sort_order', { ascending: true }).order('label', { ascending: true }),
     rpc: (name, args) => client.rpc(name, args),
