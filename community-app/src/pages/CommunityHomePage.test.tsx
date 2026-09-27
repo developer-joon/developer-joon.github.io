@@ -106,6 +106,36 @@ describe('CommunityHomePage', () => {
     expect(postLinks.map((link) => link.textContent)).toEqual([post.title, secondPost.title])
   })
 
+  it('restores accumulated posts on forward navigation and cursor URL reload', async () => {
+    const firstVisit = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
+    const firstRender = render(<CommunityHomePage repository={repository({ listPosts: firstVisit })} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '더 불러오기' }))
+    expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    const pageTwo = { search: window.location.search, state: window.history.state }
+
+    window.history.replaceState({}, '', '/')
+    window.dispatchEvent(new PopStateEvent('popstate', { state: {} }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: secondPost.title })).not.toBeInTheDocument())
+
+    window.history.replaceState(pageTwo.state, '', pageTwo.search)
+    window.dispatchEvent(new PopStateEvent('popstate', { state: pageTwo.state }))
+    expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: post.title })).toBeInTheDocument()
+    firstRender.unmount()
+
+    const reload = vi.fn().mockResolvedValue({ ok: true, data: { items: [secondPost], nextCursor: null } })
+    render(<CommunityHomePage repository={repository({ listPosts: reload })} />)
+
+    expect(await screen.findByRole('heading', { name: post.title })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    expect(reload).toHaveBeenCalledWith(expect.objectContaining({ cursor }))
+  })
+
   it('keeps loaded posts while a next page fails and retries that cursor', async () => {
     const listPosts = vi.fn()
       .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })

@@ -15,36 +15,57 @@ interface CommunityHomePageProps {
   onQueryChange?: (search: string) => void
 }
 
+const historyStateKey = 'communityListing'
+
+interface CommunityHistorySnapshot {
+  version: 1
+  posts: PostListItem[]
+}
+
+function postsFromHistoryState(state: unknown): PostListItem[] {
+  if (typeof state !== 'object' || state === null) return []
+  const snapshot = (state as Record<string, unknown>)[historyStateKey]
+  if (typeof snapshot !== 'object' || snapshot === null) return []
+  const candidate = snapshot as Partial<CommunityHistorySnapshot>
+  return candidate.version === 1 && Array.isArray(candidate.posts) ? candidate.posts : []
+}
+
+function withPostsSnapshot(state: unknown, posts: PostListItem[]) {
+  const current = typeof state === 'object' && state !== null ? state : {}
+  return { ...current, [historyStateKey]: { version: 1, posts } satisfies CommunityHistorySnapshot }
+}
+
 function appendUniquePosts(current: PostListItem[], incoming: PostListItem[]) {
   const knownIds = new Set(current.map((post) => post.id))
   return [...current, ...incoming.filter((post) => !knownIds.has(post.id))]
 }
 
-export function CommunityHomePage({ repository, initialSearch = window.location.search, onQueryChange }: CommunityHomePageProps) {
-  const [query, setQuery] = useState<CommunityQueryState>(() => parseCommunityQuery(initialSearch))
+export function CommunityHomePage({ repository, initialSearch, onQueryChange }: CommunityHomePageProps) {
+  const [usesCurrentLocation] = useState(() => initialSearch === undefined || initialSearch === window.location.search)
+  const [query, setQuery] = useState<CommunityQueryState>(() => parseCommunityQuery(initialSearch ?? window.location.search))
   const [tags, setTags] = useState<CommunityTag[]>([])
-  const [posts, setPosts] = useState<PostListItem[]>([])
+  const [posts, setPosts] = useState<PostListItem[]>(() => usesCurrentLocation ? postsFromHistoryState(window.history.state) : [])
   const [nextCursor, setNextCursor] = useState<PostCursor | null>(null)
   const [error, setError] = useState<CommunityError | null>(null)
   const [loading, setLoading] = useState(true)
   const [attempt, setAttempt] = useState(0)
 
-  const applyQuery = useCallback((next: CommunityQueryState) => {
+  const applyQuery = useCallback((next: CommunityQueryState, historyPosts = posts) => {
     const search = serializeCommunityQuery(next)
     setQuery(next)
     if (onQueryChange) onQueryChange(search)
-    else window.history.pushState({}, '', `${window.location.pathname}${search}`)
-  }, [onQueryChange])
+    else window.history.pushState(withPostsSnapshot(window.history.state, historyPosts), '', `${window.location.pathname}${search}`)
+  }, [onQueryChange, posts])
 
   const applyFilters = useCallback((next: CommunityQueryState) => {
     setPosts([])
     setNextCursor(null)
-    applyQuery({ ...next, cursor: null })
+    applyQuery({ ...next, cursor: null }, [])
   }, [applyQuery])
 
   useEffect(() => {
-    function restoreQueryFromHistory() {
-      setPosts([])
+    function restoreQueryFromHistory(event: PopStateEvent) {
+      setPosts(postsFromHistoryState(event.state))
       setNextCursor(null)
       setError(null)
       setQuery(parseCommunityQuery(window.location.search))
@@ -52,6 +73,11 @@ export function CommunityHomePage({ repository, initialSearch = window.location.
     window.addEventListener('popstate', restoreQueryFromHistory)
     return () => window.removeEventListener('popstate', restoreQueryFromHistory)
   }, [])
+
+  useEffect(() => {
+    if (onQueryChange || !usesCurrentLocation) return
+    window.history.replaceState(withPostsSnapshot(window.history.state, posts), '')
+  }, [onQueryChange, posts, usesCurrentLocation])
 
   useEffect(() => {
     let active = true
