@@ -2,6 +2,8 @@ import { lazy, Suspense } from 'react'
 import { resolveCommunityRoute } from './routes'
 import { getCommunityRepository, type CommunityRepository } from './data/communityRepository'
 import { CommunityHomePage } from './pages/CommunityHomePage'
+import { AuthCallbackPage } from './pages/AuthCallbackPage'
+import type { AuthClient } from './auth/AuthProvider'
 
 const PostDetailPage = lazy(async () => {
   const module = await import('./pages/PostDetailPage')
@@ -50,9 +52,11 @@ interface AppProps {
   pathname?: string
   search?: string
   repository?: CommunityRepository
+  authClient?: AuthClient
+  onAuthCallbackNavigate?: (path: string) => void
 }
 
-export function App({ pathname = window.location.pathname, search = window.location.search, repository }: AppProps) {
+export function App({ pathname = window.location.pathname, search = window.location.search, repository, authClient, onAuthCallbackNavigate }: AppProps) {
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
@@ -63,6 +67,9 @@ export function App({ pathname = window.location.pathname, search = window.locat
         <PostDetailPage repository={repository ?? getCommunityRepository()} search={search} />
       </Suspense>
     )
+  }
+  if (normalizedPathname === '/community/auth/callback') {
+    return <AuthCallbackPage client={authClient} search={search} navigate={onAuthCallbackNavigate} />
   }
   const route = resolveCommunityRoute(pathname)
 

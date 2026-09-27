@@ -10,6 +10,13 @@ export function getSupabaseClient(): SupabaseClient<Database> {
   }
 
   const env = parseEnv(import.meta.env)
-  browserClient = createClient<Database>(env.supabaseUrl, env.supabasePublishableKey)
+  browserClient = createClient<Database>(env.supabaseUrl, env.supabasePublishableKey, {
+    auth: {
+      flowType: 'pkce',
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: false,
+    },
+  })
   return browserClient
 }

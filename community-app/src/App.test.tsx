@@ -1,13 +1,13 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { App, ConfigurationErrorScreen } from './App'
+import type { AuthClient } from './auth/AuthProvider'
 import type { CommunityRepository } from './data/communityRepository'
 
 const routeCases = [
   ['/community/write/', '글쓰기 화면을 준비하고 있습니다'],
   ['/community/edit/', '글 수정 화면을 준비하고 있습니다'],
   ['/community/admin/reports/', '신고 관리 화면을 준비하고 있습니다'],
-  ['/community/auth/callback/', '로그인 확인 화면을 준비하고 있습니다'],
 ] as const
 
 describe('App', () => {
@@ -31,6 +31,24 @@ describe('App', () => {
 
     expect(await screen.findByRole('heading', { name: '게시글을 찾을 수 없습니다' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '커뮤니티 글 목록으로' })).toHaveAttribute('href', '/community/')
+  })
+
+  it('routes the auth callback shell to the real callback page', async () => {
+    const exchangeCodeForSession = vi.fn().mockResolvedValue({
+      data: { session: { user: { id: 'user-1' } } },
+      error: null,
+    })
+    const navigate = vi.fn()
+
+    render(<App
+      pathname="/community/auth/callback/"
+      search="?code=callback-code"
+      authClient={{ exchangeCodeForSession } as unknown as AuthClient}
+      onAuthCallbackNavigate={navigate}
+    />)
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/community/'))
+    expect(exchangeCodeForSession).toHaveBeenCalledWith('callback-code')
   })
 
   it.each(routeCases)('renders the route-aware placeholder for %s', (pathname, statusTitle) => {
