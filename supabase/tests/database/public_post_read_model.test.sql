@@ -1,6 +1,6 @@
 begin;
 
-select plan(61);
+select plan(64);
 
 insert into auth.users (id, aud, role, email) values
   ('51000000-0000-0000-0000-000000000001','authenticated','authenticated','read-a@example.test'),
@@ -13,7 +13,7 @@ insert into public.tags(id,slug,label,sort_order) values
   ('53000000-0000-0000-0000-000000000002','read-two','Read Two',952);
 insert into public.posts(id,author_id,title,body_markdown,status,is_pinned,created_at,updated_at) values
   ('52000000-0000-0000-0000-000000000001','51000000-0000-0000-0000-000000000001','weighted needle','short body','published',false,'2026-09-01','2026-09-01'),
-  ('52000000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000001','newest','needle in body','published',false,'2026-09-03','2026-09-03'),
+  ('52000000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000001','newest',E'needle [leak](<https://project.supabase.co/storage/v1/object/sign/community-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002?token=list_secret> "safe list") [ordinary](cafe/dead)','published',false,'2026-09-03','2026-09-03'),
   ('52000000-0000-0000-0000-000000000003','51000000-0000-0000-0000-000000000001','pinned','other','published',true,'2026-09-02','2026-09-02'),
   ('52000000-0000-0000-0000-000000000004','51000000-0000-0000-0000-000000000001','hidden needle','secret','hidden',false,'2026-09-04','2026-09-04');
 insert into public.post_tags(post_id,tag_id) values
@@ -48,6 +48,9 @@ create temporary table read_rows as select * from public.list_public_posts('newe
 select is((select count(*)::integer from read_rows),3,'only public posts are listed');
 select is((select id from read_rows order by row_number limit 1),'52000000-0000-0000-0000-000000000003'::uuid,'pinned post sorts first');
 select ok(not exists(select 1 from information_schema.columns where table_schema like 'pg_temp%' and table_name='read_rows' and column_name='body_markdown'),'list transfers no full body');
+select is((select excerpt from read_rows where id='52000000-0000-0000-0000-000000000002'),E'needle [leak](about:blank#attachment-unavailable "safe list") [ordinary](cafe/dead)','list excerpt is derived from the sanitized public body');
+select ok(position('storage/v1/object' in (select excerpt from read_rows where id='52000000-0000-0000-0000-000000000002'))=0,'list excerpt exposes no Storage API URL');
+select ok(position('token=' in (select excerpt from read_rows where id='52000000-0000-0000-0000-000000000002'))=0,'list excerpt exposes no credential suffix');
 select is((select comment_count from read_rows where id='52000000-0000-0000-0000-000000000001'),2::bigint,'initial comment metric backfill excludes hidden comments');
 select is((select reaction_count from read_rows where id='52000000-0000-0000-0000-000000000001'),2::bigint,'display reaction count includes all-time likes');
 select is((select popularity_score from read_rows where id='52000000-0000-0000-0000-000000000001'),4::bigint,'popularity excludes likes older than 30 UTC days');
@@ -65,13 +68,13 @@ insert into public.attachments(
   ('56000000-0000-4000-8000-000000000002','51000000-0000-0000-0000-000000000001','52000000-0000-0000-0000-000000000001','57000000-0000-4000-8000-000000000002',repeat('b',64),'51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000002','image/webp',123,'attached',null,now()),
   ('56000000-0000-4000-8000-000000000003','51000000-0000-0000-0000-000000000001',null,'57000000-0000-4000-8000-000000000003',repeat('c',64),'51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000003','image/jpeg',123,'quarantined',null,null);
 update public.posts
-   set body_markdown = E'앞 문단 **그대로**\n\n![첫 이미지](51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?token=raw_secret#apikey=sb_secret_raw)\n![둘째 이미지](https://project.supabase.co/storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000002?token=storage_secret#apikey=sb_secret_storage)\n![정식 공개 URL](https://project.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001?token=route_secret#apikey=sb_secret_route)\n![격리](51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000003?token=quarantine_secret)\n![임의 경로](/storage/v1/object/community-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002?apikey=sb_secret_leak#token=forged)\n![위조 공개 URL](https://evil.example/functions/v1/public-attachment/59000000-0000-4000-8000-000000000003?token=forged#apikey=sb_secret_forged)\n![대문자 UUID](/functions/v1/public-attachment/56000000-0000-4000-8000-00000000000A?token=uppercase)\n![인코딩 UUID](/functions/v1/public-attachment/%35%36%30%30%30%30%30%30-0000-4000-8000-000000000001?apikey=encoded)\n![잘못된 UUID](/functions/v1/public-attachment/not-a-uuid#token=malformed)\n\n[일반 링크](https://example.com/docs?q=1)'
+   set body_markdown = E'앞 문단 **그대로**\n\n![첫 이미지](<51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?token=raw_secret#apikey=sb_secret_raw> "첫 제목")\n[둘째 파일](https://project.supabase.co/storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000002?token=storage_secret#apikey=sb_secret_storage ''둘째 제목'')\n![정식 공개 URL](https://project.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001?token=route_secret#apikey=sb_secret_route (셋째 제목))\n![격리](51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000003?token=quarantine_secret)\n![임의 경로](</storage/v1/object/community-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002?apikey=sb_secret_leak#token=forged> "안전 제목")\n[위조 공개 URL](https://evil.example/functions/v1/public-attachment/59000000-0000-4000-8000-000000000003?token=forged#apikey=sb_secret_forged "token=title_secret")\n![대문자 UUID](/functions/v1/public-attachment/56000000-0000-4000-8000-00000000000A?token=uppercase)\n![인코딩 UUID](/functions/v1/public-attachment/%35%36%30%30%30%30%30%30-0000-4000-8000-000000000001?apikey=encoded)\n![잘못된 UUID](/functions/v1/public-attachment/not-a-uuid#token=malformed)\n[자격증명 링크](https://example.com/download?signature=signed_secret (다운로드))\n\n[일반 링크](https://example.com/docs?q=1) [ordinary](cafe/dead)'
  where id = '52000000-0000-0000-0000-000000000001';
 select is(
   (select jsonb_build_object('body', body_markdown, 'comments', comment_count, 'reactions', reaction_count, 'popularity', popularity_score, 'tags', jsonb_array_length(tags))
      from public.get_public_post('52000000-0000-0000-0000-000000000001')),
   jsonb_build_object(
-    'body', E'앞 문단 **그대로**\n\n![첫 이미지](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)\n![둘째 이미지](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002)\n![정식 공개 URL](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)\n![격리](about:blank#attachment-unavailable)\n![임의 경로](about:blank#attachment-unavailable)\n![위조 공개 URL](about:blank#attachment-unavailable)\n![대문자 UUID](about:blank#attachment-unavailable)\n![인코딩 UUID](about:blank#attachment-unavailable)\n![잘못된 UUID](about:blank#attachment-unavailable)\n\n[일반 링크](https://example.com/docs?q=1)',
+    'body', E'앞 문단 **그대로**\n\n![첫 이미지](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001 "첫 제목")\n[둘째 파일](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002 ''둘째 제목'')\n![정식 공개 URL](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001 (셋째 제목))\n![격리](about:blank#attachment-unavailable)\n![임의 경로](about:blank#attachment-unavailable "안전 제목")\n[위조 공개 URL](about:blank#attachment-unavailable)\n![대문자 UUID](about:blank#attachment-unavailable)\n![인코딩 UUID](about:blank#attachment-unavailable)\n![잘못된 UUID](about:blank#attachment-unavailable)\n[자격증명 링크](about:blank#attachment-unavailable (다운로드))\n\n[일반 링크](https://example.com/docs?q=1) [ordinary](cafe/dead)',
     'comments', 2, 'reactions', 2, 'popularity', 4, 'tags', 2
   ),
   'detail RPC rewrites multiple eligible images to attachment-ID URLs and preserves ordinary Markdown'

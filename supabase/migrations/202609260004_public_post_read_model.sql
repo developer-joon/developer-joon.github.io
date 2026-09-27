@@ -116,6 +116,13 @@ language sql stable security definer set search_path='' as $$
   ) r on true
 $$;
 
+-- Later attachment migrations replace this implementation. Defining the read
+-- model boundary here lets both detail and list reads consume one body mapper.
+create function private.public_post_body(p_post_id uuid,p_body_markdown text)
+returns text language sql stable set search_path='' as $$
+  select p_body_markdown
+$$;
+
 create function public.list_public_posts(
   p_sort text,
   p_limit integer,
@@ -201,7 +208,7 @@ begin
 
   return query
   with candidates as (
-    select p.id,p.title,pg_catalog.left(p.body_markdown,180) excerpt,
+    select p.id,p.title,pg_catalog.left(private.public_post_body(p.id,p.body_markdown),180) excerpt,
       p.created_at,p.updated_at,p.is_locked,p.is_pinned,
       pr.id author_id,pr.login author_login,pr.display_name author_display_name,pr.avatar_url author_avatar_url,
       coalesce(t.tags,'[]'::jsonb) tags,
