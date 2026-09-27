@@ -1,4 +1,6 @@
 import { resolveCommunityRoute } from './routes'
+import { getCommunityRepository, type CommunityRepository } from './data/communityRepository'
+import { CommunityHomePage } from './pages/CommunityHomePage'
 
 const sharedStyles = `
   :root { color: #20201d; background: #f4f0e7; font-family: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif; font-synthesis: none; }
@@ -40,9 +42,15 @@ function Masthead() {
 
 interface AppProps {
   pathname?: string
+  search?: string
+  repository?: CommunityRepository
 }
 
-export function App({ pathname = window.location.pathname }: AppProps) {
+export function App({ pathname = window.location.pathname, search = window.location.search, repository }: AppProps) {
+  const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
+  if (normalizedPathname === '/community') {
+    return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
+  }
   const route = resolveCommunityRoute(pathname)
 
   return (

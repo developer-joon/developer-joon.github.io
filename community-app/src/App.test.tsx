@@ -1,9 +1,9 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { App, ConfigurationErrorScreen } from './App'
+import type { CommunityRepository } from './data/communityRepository'
 
 const routeCases = [
-  ['/community/', '커뮤니티를 준비하고 있습니다'],
   ['/community/write/', '글쓰기 화면을 준비하고 있습니다'],
   ['/community/post/', '게시글 화면을 준비하고 있습니다'],
   ['/community/edit/', '글 수정 화면을 준비하고 있습니다'],
@@ -12,6 +12,16 @@ const routeCases = [
 ] as const
 
 describe('App', () => {
+  it('renders the public community home route', async () => {
+    const repository = {
+      listPosts: async () => ({ ok: true, data: { items: [], nextCursor: null } }),
+      listTags: async () => ({ ok: true, data: [] }),
+    } as unknown as CommunityRepository
+    render(<App pathname="/community/" search="" repository={repository} />)
+    expect(screen.getByRole('heading', { name: '개발자가 쓰고 답하는 공간' })).toBeInTheDocument()
+    expect(await screen.findByText('조건에 맞는 글이 없습니다')).toBeInTheDocument()
+  })
+
   it.each(routeCases)('renders the route-aware placeholder for %s', (pathname, statusTitle) => {
     render(<App pathname={pathname} />)
 

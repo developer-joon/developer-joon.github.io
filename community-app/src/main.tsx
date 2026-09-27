@@ -2,6 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App, ConfigurationErrorScreen } from './App'
 import { parseEnv } from './config/env'
+import './styles/global.css'
+import './styles/community.css'
 
 const rootElement = document.getElementById('app')
 
