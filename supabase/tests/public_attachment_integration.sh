@@ -98,6 +98,20 @@ upload_status="$(curl --silent --show-error --output "$tmpdir/upload.json" \
 [[ "$upload_status" == "200" ]] || fail "Storage upload returned $upload_status"
 
 public_url="$API_URL/functions/v1/public-attachment/$attachment_id"
+detail_status="$(curl --silent --show-error --output "$tmpdir/detail.json" \
+  --write-out '%{http_code}' --request POST \
+  "$API_URL/rest/v1/rpc/get_public_post" \
+  --header "apikey: $ANON_KEY" \
+  --header "authorization: Bearer $ANON_KEY" \
+  --header 'content-type: application/json' \
+  --data '{"p_post_id":"e2000000-0000-4000-8000-000000000001"}')"
+[[ "$detail_status" == "200" ]] || fail "public detail RPC returned $detail_status"
+detail_body="$(<"$tmpdir/detail.json")"
+[[ "$detail_body" == *"/functions/v1/public-attachment/$attachment_id"* ]] || \
+  fail "public detail omitted the attachment-ID URL"
+[[ "$detail_body" != *"$storage_path"* ]] || fail "public detail leaked the Storage path"
+[[ "$detail_body" != *"$SERVICE_ROLE_KEY"* ]] || fail "public detail leaked the service role key"
+
 eligible_status="$(curl --silent --show-error --retry 10 --retry-all-errors \
   --retry-delay 1 --output "$tmpdir/eligible.body" \
   --dump-header "$tmpdir/eligible.headers" --write-out '%{http_code}' \

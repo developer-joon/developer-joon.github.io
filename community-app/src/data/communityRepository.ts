@@ -11,6 +11,7 @@ import type {
 } from '../types/community'
 import type { Database } from '../types/database'
 import { getSupabaseClient } from '../lib/supabase'
+import { parseEnv } from '../config/env'
 
 export interface QueryResponse { data: unknown; error: unknown }
 type Functions = Database['public']['Functions']
@@ -20,6 +21,7 @@ type ListArgs = Functions['list_public_posts']['Args']
 export interface CommunityClient {
   listPublicPosts(args: ListArgs): PromiseLike<QueryResponse>
   getPost(postId: string): PromiseLike<QueryResponse>
+  publicAttachmentUrl(attachmentId: string): string
   listTags(): PromiseLike<QueryResponse>
   rpc<Name extends MutationName>(name: Name, args: Functions[Name]['Args']): PromiseLike<QueryResponse>
 }
@@ -101,9 +103,12 @@ function mapListPost(row: PublicPostRow): PostListItem {
     tags: tagsFrom(row.tags),
   }
 }
-function mapDetailPost(row: PublicPostDetailRow): PostDetail {
+const publicAttachmentPath = /\/functions\/v1\/public-attachment\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g
+
+function mapDetailPost(row: PublicPostDetailRow, publicAttachmentUrl: (attachmentId: string) => string): PostDetail {
+  const bodyMarkdown = row.body_markdown.replace(publicAttachmentPath, (_path, attachmentId: string) => publicAttachmentUrl(attachmentId))
   return {
-    id: row.id, title: row.title, excerpt: row.body_markdown.slice(0, 180), bodyMarkdown: row.body_markdown,
+    id: row.id, title: row.title, excerpt: bodyMarkdown.slice(0, 180), bodyMarkdown,
     createdAt: row.created_at, updatedAt: row.updated_at, isLocked: row.is_locked, isPinned: row.is_pinned,
     commentCount: row.comment_count, reactionCount: row.reaction_count, popularityScore: row.popularity_score,
     author: { id: row.author_id, login: row.author_login, displayName: row.author_display_name, avatarUrl: row.author_avatar_url },
@@ -136,7 +141,7 @@ export function createCommunityRepository(client: CommunityClient) {
     async getPost(postId: string): Promise<CommunityResult<PostDetail>> {
       const result = await execute(
         () => client.getPost(postId),
-        data => data === null ? null : mapDetailPost(data as PublicPostDetailRow),
+        data => data === null ? null : mapDetailPost(data as PublicPostDetailRow, client.publicAttachmentUrl),
       )
       if (!result.ok) return result
       return result.data ? { ok: true, data: result.data } : failure({ code: 'not_found', sourceCode: 'PGRST116', message: '게시글을 찾을 수 없습니다.' })
@@ -159,9 +164,11 @@ export type CommunityRepository = ReturnType<typeof createCommunityRepository>
 
 function createBrowserCommunityClient(): CommunityClient {
   const client = getSupabaseClient()
+  const { supabaseUrl } = parseEnv(import.meta.env)
   return {
     listPublicPosts: args => client.rpc('list_public_posts', args),
     getPost: postId => client.rpc('get_public_post', { p_post_id: postId }).maybeSingle(),
+    publicAttachmentUrl: attachmentId => new URL(`/functions/v1/public-attachment/${attachmentId}`, supabaseUrl).toString(),
     listTags: () => client.from('tags').select('id,slug,label').eq('is_active', true).order('sort_order', { ascending: true }).order('label', { ascending: true }),
     rpc: (name, args) => client.rpc(name, args),
   }

@@ -22,6 +22,7 @@ function setup() {
   const client: CommunityClient = {
     listPublicPosts(args) { calls.push({ method: 'listPublicPosts', args }); return Promise.resolve(listResponse) },
     getPost(postId) { calls.push({ method: 'getPost', args: postId }); return Promise.resolve(detailResponse) },
+    publicAttachmentUrl(attachmentId) { return `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}` },
     listTags() { calls.push({ method: 'listTags', args: null }); return Promise.resolve({ data: [], error: null }) },
     rpc(fn, args) { calls.push({ method: fn, args }); return Promise.resolve(mutationResponse) },
   }
@@ -73,7 +74,7 @@ describe('community repository public list contract', () => {
     value.setDetailResponse({
       data: {
         ...row,
-        body_markdown: '전체 본문',
+        body_markdown: '전체 본문\n\n![one](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)\n![two](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002)',
       },
       error: null,
     })
@@ -85,7 +86,7 @@ describe('community repository public list contract', () => {
       ok: true,
       data: {
         id: 'post-1',
-        bodyMarkdown: '전체 본문',
+        bodyMarkdown: '전체 본문\n\n![one](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)\n![two](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002)',
         commentCount: 3,
         reactionCount: 4,
         popularityScore: 11,
@@ -122,6 +123,7 @@ describe('community repository public list contract', () => {
     const client: CommunityClient = {
       listPublicPosts: () => Promise.resolve({ data: [], error: null }),
       getPost: () => Promise.resolve({ data: null, error: null }),
+      publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
       listTags: () => {
         calls.push('listTags')
         return Promise.resolve({ data: [{ id: 'tag-1', slug: 'typescript', label: 'TypeScript' }], error: null })
@@ -171,6 +173,7 @@ describe('community repository mutation failures', () => {
     const client: CommunityClient = {
       listPublicPosts: () => Promise.reject(new TypeError('Failed to fetch')),
       getPost: () => Promise.reject(new TypeError('Failed to fetch')),
+      publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
       listTags: () => Promise.reject(new TypeError('Failed to fetch')),
       rpc: () => Promise.reject(new TypeError('Failed to fetch')),
     }
