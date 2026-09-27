@@ -81,7 +81,7 @@ export function App({ pathname = window.location.pathname, search = window.locat
     return <Suspense fallback={<div className="page" role="status">글쓰기 화면을 준비하고 있습니다.</div>}><WritePostPage repository={repository ?? getCommunityRepository()} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/edit') {
-    return <Suspense fallback={<div className="page" role="status">글 수정 화면을 준비하고 있습니다.</div>}><EditPostPage repository={repository ?? getCommunityRepository()} search={search} /></Suspense>
+    return <Suspense fallback={<div className="page" role="status">글 수정 화면을 준비하고 있습니다.</div>}><EditPostPage repository={repository ?? getCommunityRepository()} search={search} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/auth/callback') {
     return <AuthCallbackPage client={authClient} search={search} navigate={onAuthCallbackNavigate} />

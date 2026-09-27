@@ -30,6 +30,12 @@ function fillValid() {
 }
 
 describe('WritePostPage', () => {
+  it('describes local draft persistence without promising success', async () => {
+    wrap(<WritePostPage repository={repository()} storage={storage()} navigate={vi.fn()} />, auth(authorId))
+    expect(await screen.findByText('이 브라우저의 로컬 저장소에 임시 저장을 시도합니다.')).toBeInTheDocument()
+    expect(screen.queryByText(/안전하게 임시 저장/)).not.toBeInTheDocument()
+  })
+
   it('persists a fresh idempotency key before asynchronous tag loading completes', async () => {
     const local = storage()
     const repo = repository({ listTags: vi.fn(() => new Promise(() => undefined)) as CommunityRepository['listTags'] })
@@ -119,6 +125,42 @@ describe('WritePostPage', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
+  it('retries and verifies the current canonical draft on a later submit after storage recovers', async () => {
+    const local = storage(); let blocked = false
+    const flakyStorage = { ...local, setItem: (key: string, value: string) => {
+      if (blocked) throw new Error('quota')
+      local.setItem(key, value)
+    } }
+    const createPost = vi.fn().mockResolvedValue({ ok: true, data: postId }); const navigate = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} storage={flakyStorage} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' })
+    blocked = true; fillValid()
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    expect(await screen.findByText(/초안을 저장할 수 없어 발행하지 않았습니다/)).toBeInTheDocument()
+    blocked = false
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+
+    await waitFor(() => expect(createPost).toHaveBeenCalledTimes(1))
+    expect(createPost).toHaveBeenCalledWith(expect.objectContaining({ title: '새 제목', bodyMarkdown: '새 본문' }))
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`))
+  })
+
+  it('pauses write autosave on a snapshot conflict until the user loads explicitly', async () => {
+    const local = storage(); const createPost = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} storage={local} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid()
+    const replacement = { version: 1, kind: 'write', title: '다른 탭 제목', bodyMarkdown: '다른 탭 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000098' }
+    local.setItem(draftKey('write'), JSON.stringify(replacement))
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    expect(await screen.findByRole('button', { name: '다른 탭 초안 불러오기' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '현재 내용으로 덮어쓰기' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '충돌 뒤 현재 제목' } })
+    expect(JSON.parse(local.values.get(draftKey('write'))!).title).toBe('다른 탭 제목')
+    fireEvent.click(screen.getByRole('button', { name: '다른 탭 초안 불러오기' }))
+    expect(await screen.findByDisplayValue('다른 탭 제목')).toBeInTheDocument()
+  })
+
   it('does not overwrite a malformed replacement already present before create dispatch', async () => {
     const local = storage(); const createPost = vi.fn(); const navigate = vi.fn()
     wrap(<WritePostPage repository={repository({ createPost })} storage={local} navigate={navigate} />, auth(authorId))
@@ -165,6 +207,15 @@ describe('EditPostPage', () => {
     wrap(<EditPostPage repository={repository()} search={`?id=${postId}`} storage={storage()} navigate={vi.fn()} />, auth('56000000-0000-4000-8000-000000000031'))
     expect(await screen.findByRole('heading', { name: '이 글을 수정할 권한이 없습니다' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '수정' })).not.toBeInTheDocument()
+  })
+
+  it('shows signed-out users a login-required action preserving the canonical full edit URL', async () => {
+    const a = auth(null)
+    wrap(<EditPostPage repository={repository()} search={`?id=${postId}&from=list`} currentPath={`/community/edit?id=${postId}&from=list#editor`} storage={storage()} navigate={vi.fn()} />, a)
+    expect(await screen.findByRole('heading', { name: '로그인이 필요합니다' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '로그인하고 수정하기' }))
+    expect(a.signInWithGitHub).toHaveBeenCalledWith(`/community/edit/?id=${postId}&from=list#editor`)
+    expect(screen.queryByRole('heading', { name: '이 글을 수정할 권한이 없습니다' })).not.toBeInTheDocument()
   })
 
   it('restores a newer edit draft and blocks inactive tags until replaced', async () => {
@@ -247,6 +298,69 @@ describe('EditPostPage', () => {
     expect(await screen.findByText('초안을 저장할 수 없어 수정하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')).toBeInTheDocument()
     expect(updatePost).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('retries the current edit draft on submit after transient storage recovery without another edit', async () => {
+    const local = storage(); let blocked = false
+    const flakyStorage = { ...local, setItem: (key: string, value: string) => {
+      if (blocked) throw new Error('quota')
+      local.setItem(key, value)
+    } }
+    const updatePost = vi.fn().mockResolvedValue({ ok: true, data: postId }); const navigate = vi.fn()
+    wrap(<EditPostPage repository={repository({ updatePost })} search={`?id=${postId}`} storage={flakyStorage} navigate={navigate} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목'); blocked = true
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '저장 복구 제목' } })
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    expect(await screen.findByText(/초안을 저장할 수 없어 수정하지 않았습니다/)).toBeInTheDocument()
+    blocked = false
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    await waitFor(() => expect(updatePost).toHaveBeenCalledWith(expect.objectContaining({ title: '저장 복구 제목' })))
+    expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`)
+  })
+
+  it('prevents delete while update is pending and disables all controls', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const updatePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const deletePost = vi.fn()
+    wrap(<EditPostPage repository={repository({ updatePost, deletePost })} search={`?id=${postId}`} storage={storage()} navigate={vi.fn()} confirmDelete={() => true} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    const deleteButton = screen.getByRole('button', { name: '글 삭제' })
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    expect(deleteButton).toBeDisabled()
+    expect(screen.getByLabelText('제목')).toBeDisabled()
+    fireEvent.click(deleteButton)
+    expect(deletePost).not.toHaveBeenCalled()
+    resolve({ ok: true, data: postId })
+  })
+
+  it('prevents update while delete is pending', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const deletePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const updatePost = vi.fn()
+    wrap(<EditPostPage repository={repository({ updatePost, deletePost })} search={`?id=${postId}`} storage={storage()} navigate={vi.fn()} confirmDelete={() => true} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    const updateButton = screen.getByRole('button', { name: '수정' })
+    fireEvent.click(screen.getByRole('button', { name: '글 삭제' }))
+    expect(updateButton).toBeDisabled()
+    fireEvent.submit(updateButton.closest('form')!)
+    expect(updatePost).not.toHaveBeenCalled()
+    resolve({ ok: true, data: postId })
+  })
+
+  it('pauses edit autosave during conflict and overwrites only after explicit verified choice', async () => {
+    const local = storage(); const updatePost = vi.fn()
+    wrap(<EditPostPage repository={repository({ updatePost })} search={`?id=${postId}`} storage={local} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '현재 제목' } })
+    const replacement = { version: 1, kind: 'edit', postId, title: '다른 탭 제목', bodyMarkdown: '다른 탭 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z' }
+    local.setItem(draftKey('edit', postId), JSON.stringify(replacement))
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    expect(await screen.findByRole('button', { name: '현재 내용으로 덮어쓰기' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '충돌 뒤 현재 제목' } })
+    expect(JSON.parse(local.values.get(draftKey('edit', postId))!).title).toBe('다른 탭 제목')
+    fireEvent.click(screen.getByRole('button', { name: '현재 내용으로 덮어쓰기' }))
+    expect(JSON.parse(local.values.get(draftKey('edit', postId))!).title).toBe('충돌 뒤 현재 제목')
+    expect(screen.queryByRole('button', { name: '현재 내용으로 덮어쓰기' })).not.toBeInTheDocument()
   })
 
   it('retains an edit draft and offers safe re-login when the session expires', async () => {

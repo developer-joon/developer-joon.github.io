@@ -16,7 +16,7 @@ export function TagSelector({ tags, selected, onChange, error, unavailableLabels
     onChange(checked ? [...selected, id] : selected.filter(value => value !== id))
   }
   return (
-    <fieldset className="tag-selector" aria-describedby="tag-help tag-error unavailable-tags">
+    <fieldset className="tag-selector" aria-describedby={['tag-help', error && 'tag-error', unavailableIds.length > 0 && 'unavailable-tags'].filter(Boolean).join(' ')}>
       <legend>태그</legend>
       <p id="tag-help" className="editor-hint">1개 이상 3개 이하로 선택해 주세요. <strong>{selected.filter(id => activeIds.has(id)).length} / 3개 선택</strong></p>
       <div className="tag-options">

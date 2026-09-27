@@ -71,6 +71,16 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: '새 글 쓰기' })).toBeInTheDocument()
   })
 
+  it('accepts a hash-bearing edit route without falling back to the placeholder shell', async () => {
+    const repository = {
+      publicAttachmentOrigin: 'https://example.com',
+      listTags: async () => ({ ok: true, data: [] }),
+      getPost: async () => ({ ok: true, data: { kind: 'not_found' } }),
+    } as unknown as CommunityRepository
+    render(<App pathname="/community/edit" search="?id=56000000-0000-4000-8000-000000000010&from=list" hash="#editor" repository={repository} />)
+    expect(await screen.findByRole('heading', { name: '게시글을 찾을 수 없습니다' })).toBeInTheDocument()
+  })
+
   it.each(routeCases)('renders the route-aware placeholder for %s', (pathname, statusTitle) => {
     render(<App pathname={pathname} />)
 

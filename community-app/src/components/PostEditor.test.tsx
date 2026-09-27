@@ -47,6 +47,39 @@ describe('PostEditor', () => {
     await waitFor(() => expect(button).not.toBeDisabled())
   })
 
+  it('disables every editor control and auxiliary action while externally pending', () => {
+    render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '본문', tagIds: [tags[0].id] }} tags={tags} onSubmit={vi.fn()} submitLabel="수정" disabled auxiliaryActions={<button type="button">글 삭제</button>} />)
+
+    expect(screen.getByLabelText('제목')).toBeDisabled()
+    expect(screen.getByLabelText('본문')).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: 'TypeScript' })).toBeDisabled()
+    expect(screen.getByRole('tab', { name: '미리보기' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '수정' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '글 삭제' })).toBeDisabled()
+  })
+
+  it('focuses and scrolls a new asynchronous submission alert without focusing on ordinary render', async () => {
+    const scrollIntoView = vi.fn()
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    const view = render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '본문', tagIds: [tags[0].id] }} tags={tags} onSubmit={vi.fn()} submitLabel="발행" />)
+    expect(screen.getByLabelText('제목')).not.toHaveFocus()
+
+    view.rerender(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '본문', tagIds: [tags[0].id] }} tags={tags} onSubmit={vi.fn()} submitLabel="발행" submissionError="저장 실패" />)
+
+    const alert = await screen.findByRole('alert')
+    await waitFor(() => expect(alert).toHaveFocus())
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+  })
+
+  it('only references rendered tag descriptions', () => {
+    const view = render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '본문', tagIds: [] }} tags={tags} onSubmit={vi.fn()} submitLabel="발행" />)
+    expect(screen.getByRole('group', { name: '태그' })).toHaveAttribute('aria-describedby', 'tag-help')
+
+    view.unmount()
+    render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '본문', tagIds: ['56000000-0000-4000-8000-000000000099'] }} tags={tags} unavailableTagLabels={['비활성 태그']} onSubmit={vi.fn()} submitLabel="발행" />)
+    expect(screen.getByRole('group', { name: '태그' })).toHaveAttribute('aria-describedby', expect.stringContaining('unavailable-tags'))
+  })
+
   it('renders a sanitized keyboard-accessible preview without raw HTML execution', () => {
     render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '**안전**\n\n<script>alert(1)</script>', tagIds: [tags[0].id] }} tags={tags} onSubmit={vi.fn()} submitLabel="발행" />)
     fireEvent.click(screen.getByRole('tab', { name: '미리보기' }))
