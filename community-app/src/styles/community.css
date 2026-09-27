@@ -47,11 +47,14 @@
 .post-detail-heading { padding: 26px 0 clamp(34px, 6vw, 64px); border-bottom: 3px solid var(--ink); }
 .post-detail-kicker { margin: 0 0 18px; color: var(--blue); font-size: 11px; font-weight: 900; letter-spacing: .18em; }
 .post-detail-heading h1, .post-state h1 { max-width: 16ch; margin: 0; font-family: var(--serif); font-size: clamp(42px, 7vw, 76px); font-weight: 500; letter-spacing: -.045em; line-height: 1.06; word-break: keep-all; }
+.post-detail-title { overflow-wrap: anywhere; }
 .post-detail-heading > p:last-child { max-width: 42rem; color: var(--muted); line-height: 1.75; }
 .post-detail-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 28px; color: var(--muted); font-size: 13px; }
 .post-detail-author { color: var(--ink); font-weight: 900; }
+.post-detail-meta > *, .comment header strong { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .post-detail-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .post-detail-tags span { border-bottom: 1px solid var(--blue); padding: 4px 0; color: var(--blue-dark); font-size: 13px; font-weight: 800; }
+.post-detail-tags span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .reaction-count { margin-top: 24px; border: 1px solid var(--line); background: transparent; padding: 9px 13px; color: var(--muted); }
 .reaction-count:disabled { opacity: 1; }
 .markdown-content { overflow-wrap: anywhere; line-height: 1.85; }

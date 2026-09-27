@@ -129,6 +129,31 @@ describe('PostDetailPage', () => {
     expect(screen.queryByRole('button', { name: /댓글 작성/ })).not.toBeInTheDocument()
   })
 
+  it('announces an asynchronously loaded empty comment state', async () => {
+    const repo = repository(() => Promise.resolve(success(published)))
+    render(<PostDetailPage repository={repo} search={`?id=${postId}`} />)
+
+    expect(await screen.findByText('아직 공개된 댓글이 없습니다.')).toHaveAttribute('role', 'status')
+  })
+
+  it('renders pathological unbroken metadata inside wrapping containers', async () => {
+    const longValue = '긴문자열'.repeat(80)
+    const repo = repository(() => Promise.resolve(success({
+      ...published,
+      post: {
+        ...published.post,
+        title: longValue,
+        author: { ...published.post.author, displayName: longValue },
+        tags: [{ ...published.post.tags[0], label: longValue }],
+      },
+    })))
+    const { container } = render(<PostDetailPage repository={repo} search={`?id=${postId}`} />)
+
+    expect(await screen.findByRole('heading', { name: longValue })).toHaveClass('post-detail-title')
+    expect(container.querySelector('.post-detail-author')).toHaveTextContent(longValue)
+    expect(container.querySelector('.post-detail-tags span')).toHaveTextContent(longValue)
+  })
+
   it('retries comment pagination and appends in server order without duplicates or orphan nesting', async () => {
     const orphan = { ...replyComment, id: '56000000-0000-4000-8000-000000000022', parentId: '56000000-0000-4000-8000-000000000099', bodyMarkdown: '고아 답글' }
     const listComments = vi.fn()
@@ -140,12 +165,17 @@ describe('PostDetailPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '댓글 더 보기' }))
     expect(await screen.findByRole('alert', { name: '댓글을 더 불러오지 못했습니다' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '댓글 다시 시도' }))
+    const retryButton = screen.getByRole('button', { name: '댓글 다시 시도' })
+    retryButton.focus()
+    fireEvent.click(retryButton)
 
     await screen.findByText('답글')
     expect(screen.getAllByText('첫 댓글')).toHaveLength(1)
     expect(screen.queryByText('고아 답글')).not.toBeInTheDocument()
     expect(listComments).toHaveBeenLastCalledWith({ postId, limit: 50, cursor })
     await waitFor(() => expect(screen.queryByRole('button', { name: '댓글 더 보기' })).not.toBeInTheDocument())
+    const completionStatus = screen.getByRole('status', { name: '댓글 추가 로드 결과' })
+    expect(completionStatus).toHaveTextContent('댓글 1개를 더 불러왔습니다.')
+    expect(document.activeElement).toBe(completionStatus)
   })
 })

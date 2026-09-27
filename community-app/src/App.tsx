@@ -1,7 +1,12 @@
+import { lazy, Suspense } from 'react'
 import { resolveCommunityRoute } from './routes'
 import { getCommunityRepository, type CommunityRepository } from './data/communityRepository'
 import { CommunityHomePage } from './pages/CommunityHomePage'
-import { PostDetailPage } from './pages/PostDetailPage'
+
+const PostDetailPage = lazy(async () => {
+  const module = await import('./pages/PostDetailPage')
+  return { default: module.PostDetailPage }
+})
 
 const sharedStyles = `
   :root { color: #20201d; background: #f4f0e7; font-family: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif; font-synthesis: none; }
@@ -53,7 +58,11 @@ export function App({ pathname = window.location.pathname, search = window.locat
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
   }
   if (normalizedPathname === '/community/post') {
-    return <PostDetailPage repository={repository ?? getCommunityRepository()} search={search} />
+    return (
+      <Suspense fallback={<div className="page" role="status">게시글 화면을 준비하고 있습니다.</div>}>
+        <PostDetailPage repository={repository ?? getCommunityRepository()} search={search} />
+      </Suspense>
+    )
   }
   const route = resolveCommunityRoute(pathname)
 

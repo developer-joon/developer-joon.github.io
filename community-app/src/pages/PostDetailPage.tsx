@@ -24,6 +24,11 @@ function appendUnique(current: PublicComment[], incoming: PublicComment[]) {
   })]
 }
 
+function visibleCommentCount(comments: PublicComment[]) {
+  const rootIds = new Set(comments.filter((comment) => comment.parentId === null).map((comment) => comment.id))
+  return comments.filter((comment) => comment.parentId === null || rootIds.has(comment.parentId)).length
+}
+
 function PageState({ title, role, children }: { title: string; role?: 'alert' | 'status'; children?: React.ReactNode }) {
   return (
     <section className="post-state" role={role} aria-label={title}>
@@ -45,7 +50,13 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
   const [commentsError, setCommentsError] = useState<string | null>(null)
   const [nextCursor, setNextCursor] = useState<CommentCursor | null>(null)
   const [hasMore, setHasMore] = useState(false)
+  const [commentAnnouncement, setCommentAnnouncement] = useState<string | null>(null)
   const commentRequestGeneration = useRef(0)
+  const commentAnnouncementRef = useRef<HTMLParagraphElement>(null)
+
+  useEffect(() => {
+    if (commentAnnouncement) commentAnnouncementRef.current?.focus()
+  }, [commentAnnouncement])
 
   useEffect(() => {
     if (!postId) return
@@ -57,6 +68,7 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
     setNextCursor(null)
     setHasMore(false)
     setCommentsError(null)
+    setCommentAnnouncement(null)
     void repository.getPost(postId).then((result) => {
       if (!active) return
       if (result.ok) setRead(result.data)
@@ -89,12 +101,16 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
     const requestGeneration = commentRequestGeneration.current
     setCommentsLoading(true)
     setCommentsError(null)
+    setCommentAnnouncement(null)
     void repository.listComments({ postId, limit: commentPageSize, cursor: nextCursor }).then((result) => {
       if (requestGeneration !== commentRequestGeneration.current) return
       if (result.ok) {
-        setComments((current) => appendUnique(current, result.data.items))
+        const nextComments = appendUnique(comments, result.data.items)
+        const addedCount = visibleCommentCount(nextComments) - visibleCommentCount(comments)
+        setComments(nextComments)
         setHasMore(result.data.hasMore)
         setNextCursor(result.data.nextCursor)
+        setCommentAnnouncement(`댓글 ${addedCount}개를 더 불러왔습니다.`)
       } else {
         setCommentsError(result.error.message)
       }
@@ -141,7 +157,7 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
             <>
               <header className="post-detail-heading">
                 <p className="post-detail-kicker">PUBLIC JOURNAL</p>
-                <h1>{read.post.title}</h1>
+                <h1 className="post-detail-title">{read.post.title}</h1>
                 <PostMeta post={read.post} />
                 <div className="post-detail-tags" aria-label="게시글 태그">
                   {read.post.tags.map((tag) => <span key={tag.id}>#{tag.label}</span>)}
@@ -165,7 +181,7 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
           {!deleted && read.post.isLocked && <p className="locked-notice" role="status" aria-label="댓글 작성이 잠겼습니다">이 글은 댓글 작성이 잠겨 있습니다. 기존 댓글은 계속 읽을 수 있습니다.</p>}
           {comments.length > 0 && <CommentList comments={comments} />}
           {commentsLoading && comments.length === 0 && <p className="comments-status" role="status">댓글을 불러오고 있습니다.</p>}
-          {!commentsLoading && !commentsError && comments.length === 0 && <p className="comments-status">아직 공개된 댓글이 없습니다.</p>}
+          {!commentsLoading && !commentsError && comments.length === 0 && <p className="comments-status" role="status">아직 공개된 댓글이 없습니다.</p>}
           {commentsError && (
             <div className="comments-status" role="alert" aria-label="댓글을 더 불러오지 못했습니다">
               <p>{commentsError}</p>
@@ -178,6 +194,17 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
                 {commentsLoading ? '불러오는 중' : '댓글 더 보기'}
               </button>
             </div>
+          )}
+          {commentAnnouncement && (
+            <p
+              ref={commentAnnouncementRef}
+              className="comments-status"
+              role="status"
+              aria-label="댓글 추가 로드 결과"
+              tabIndex={-1}
+            >
+              {commentAnnouncement}
+            </p>
           )}
         </section>
       </>
