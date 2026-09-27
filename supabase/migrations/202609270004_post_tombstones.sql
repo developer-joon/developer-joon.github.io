@@ -123,7 +123,9 @@ begin
          or (root.created_at,root.id)>=(p_cursor_root_created_at,p_cursor_root_id)
        )
      order by root.created_at,root.id
-     limit p_limit+1
+     -- A continuation can include its cursor root while yielding no remaining
+     -- items from it, so retain one extra root for the item lookahead.
+     limit p_limit+1+case when p_cursor_root_created_at is null then 0 else 1 end
   ), bounded_items as materialized (
     select
       root.created_at root_created_at,

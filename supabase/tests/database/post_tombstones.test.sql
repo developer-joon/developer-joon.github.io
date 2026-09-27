@@ -1,6 +1,6 @@
 begin;
 
-select plan(56);
+select plan(58);
 
 insert into auth.users (id,aud,role,email) values
   ('71000000-0000-0000-0000-000000000001','authenticated','authenticated','tomb-a@example.test'),
@@ -13,7 +13,8 @@ insert into public.posts(id,author_id,title,body_markdown,status,deleted_at,crea
   ('72000000-0000-0000-0000-000000000002','71000000-0000-0000-0000-000000000001','Hidden secret','hidden secret body','hidden',null,'2026-09-02','2026-09-02'),
   ('72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000001','Deleted with comments','deleted secret body','deleted','2026-09-03','2026-09-03','2026-09-03'),
   ('72000000-0000-0000-0000-000000000004','71000000-0000-0000-0000-000000000001','Deleted empty','empty secret body','deleted','2026-09-04','2026-09-04','2026-09-04'),
-  ('72000000-0000-0000-0000-000000000005','71000000-0000-0000-0000-000000000001','Deleted private comments','private secret body','deleted','2026-09-05','2026-09-05','2026-09-05');
+  ('72000000-0000-0000-0000-000000000005','71000000-0000-0000-0000-000000000001','Deleted private comments','private secret body','deleted','2026-09-05','2026-09-05','2026-09-05'),
+  ('72000000-0000-0000-0000-000000000006','71000000-0000-0000-0000-000000000001','Continuation boundary','continuation body','published',null,'2026-09-06','2026-09-06');
 insert into public.comments(id,post_id,author_id,parent_id,body_markdown,status,deleted_at,created_at,updated_at) values
   ('74000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000002',null,'top one','published',null,'2026-09-03 01:00','2026-09-03 01:00'),
   ('74000000-0000-0000-0000-000000000002','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000001','74000000-0000-0000-0000-000000000001','reply one','published',null,'2026-09-03 01:01','2026-09-03 01:01'),
@@ -26,7 +27,12 @@ insert into public.comments(id,post_id,author_id,parent_id,body_markdown,status,
   ('74000000-0000-0000-0000-000000000009','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000002',null,'hidden root','hidden',null,'2026-09-03 05:00','2026-09-03 05:00'),
   ('74000000-0000-0000-0000-000000000010','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000001','74000000-0000-0000-0000-000000000009','orphan hidden reply','published',null,'2026-09-03 05:01','2026-09-03 05:01'),
   ('74000000-0000-0000-0000-000000000011','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000002',null,'deleted root','deleted','2026-09-03 06:00','2026-09-03 06:00','2026-09-03 06:00'),
-  ('74000000-0000-0000-0000-000000000012','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000001','74000000-0000-0000-0000-000000000011','orphan deleted reply','published',null,'2026-09-03 06:01','2026-09-03 06:01');
+  ('74000000-0000-0000-0000-000000000012','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000001','74000000-0000-0000-0000-000000000011','orphan deleted reply','published',null,'2026-09-03 06:01','2026-09-03 06:01'),
+  ('74000000-0000-0000-0000-000000000013','72000000-0000-0000-0000-000000000006','71000000-0000-0000-0000-000000000001',null,'boundary root one','published',null,'2026-09-06 01:00','2026-09-06 01:00'),
+  ('74000000-0000-0000-0000-000000000014','72000000-0000-0000-0000-000000000006','71000000-0000-0000-0000-000000000002','74000000-0000-0000-0000-000000000013','boundary reply one','published',null,'2026-09-06 01:01','2026-09-06 01:01'),
+  ('74000000-0000-0000-0000-000000000015','72000000-0000-0000-0000-000000000006','71000000-0000-0000-0000-000000000001',null,'boundary root two','published',null,'2026-09-06 02:00','2026-09-06 02:00'),
+  ('74000000-0000-0000-0000-000000000016','72000000-0000-0000-0000-000000000006','71000000-0000-0000-0000-000000000001',null,'boundary root three','published',null,'2026-09-06 03:00','2026-09-06 03:00'),
+  ('74000000-0000-0000-0000-000000000017','72000000-0000-0000-0000-000000000006','71000000-0000-0000-0000-000000000001',null,'boundary root four','published',null,'2026-09-06 04:00','2026-09-06 04:00');
 
 select has_function('public','get_public_post_v2',array['uuid'],'v2 scalar post RPC exists');
 select has_function('public','list_public_post_comments',array['uuid','integer','timestamp with time zone','uuid','boolean','timestamp with time zone','uuid'],'bounded comment RPC identity exists');
@@ -71,6 +77,16 @@ select is(public.list_public_post_comments(
   '2026-09-03 01:00+00','74000000-0000-0000-0000-000000000001',true,
   '2026-09-03 01:01+00','74000000-0000-0000-0000-000000000002'
 )->'next_cursor','null'::jsonb,'final page exposes no continuation cursor');
+select is((select pg_catalog.jsonb_agg(item->>'body_markdown') from pg_catalog.jsonb_array_elements(public.list_public_post_comments(
+  '72000000-0000-0000-0000-000000000006',2,
+  '2026-09-06 01:00+00','74000000-0000-0000-0000-000000000013',true,
+  '2026-09-06 01:01+00','74000000-0000-0000-0000-000000000014'
+)->'items') item),'["boundary root two","boundary root three"]'::jsonb,'continuation page skips its exhausted cursor root');
+select is(public.list_public_post_comments(
+  '72000000-0000-0000-0000-000000000006',2,
+  '2026-09-06 01:00+00','74000000-0000-0000-0000-000000000013',true,
+  '2026-09-06 01:01+00','74000000-0000-0000-0000-000000000014'
+)->'has_more','true'::jsonb,'continuation retains lookahead after an exhausted cursor root');
 reset role;
 insert into public.comments(id,post_id,author_id,parent_id,body_markdown,status,deleted_at,created_at,updated_at)
 select
