@@ -196,7 +196,7 @@ language plpgsql stable security definer set search_path='' as $$
 declare
   v_search_query tsquery;
 begin
-  if p_sort not in ('newest','comments','popular') then
+  if p_sort is null or p_sort not in ('newest','comments','popular') then
     raise exception 'invalid post sort' using errcode='22023';
   end if;
   if p_limit is null or p_limit not between 1 and 100 then
@@ -205,6 +205,12 @@ begin
   if p_search is not null and pg_catalog.char_length(pg_catalog.btrim(p_search)) > 200 then
     raise exception 'invalid search' using errcode='22023';
   end if;
+
+  v_search_query := case
+    when p_search is null or pg_catalog.btrim(p_search)='' then null
+    else pg_catalog.websearch_to_tsquery('simple',pg_catalog.btrim(p_search))
+  end;
+
   if (p_cursor_is_pinned is null) <> (p_cursor_created_at is null)
      or (p_cursor_is_pinned is null) <> (p_cursor_id is null)
      or (p_cursor_is_pinned is null) <> (p_cursor_search_rank is null)
@@ -212,14 +218,11 @@ begin
      or (p_sort='newest' and p_cursor_rank is not null)
      or (p_sort<>'newest' and p_cursor_is_pinned is not null and p_cursor_rank is null)
      or (p_cursor_created_at is not null and not pg_catalog.isfinite(p_cursor_created_at))
-     or (p_cursor_search_rank is not null and not (p_cursor_search_rank >= 0 and p_cursor_search_rank < 1)) then
+     or (p_cursor_search_rank is not null and not (p_cursor_search_rank >= 0 and p_cursor_search_rank < 1))
+     or (p_cursor_is_pinned is not null and v_search_query is null and p_cursor_search_rank <> 0)
+     or (p_cursor_rank is not null and p_cursor_rank < 0) then
     raise exception 'invalid cursor' using errcode='22023';
   end if;
-
-  v_search_query := case
-    when p_search is null or pg_catalog.btrim(p_search)='' then null
-    else pg_catalog.websearch_to_tsquery('simple',pg_catalog.btrim(p_search))
-  end;
 
   return query
   with page_keys as materialized (
@@ -258,7 +261,7 @@ end $$;
 alter function private.public_post_page_keys(text,integer,tsquery,uuid,boolean,timestamptz,bigint,uuid,real) owner to postgres;
 alter function public.list_public_posts(text,integer,text,uuid,boolean,timestamptz,bigint,uuid,real) owner to postgres;
 revoke all on function private.public_post_page_keys(text,integer,tsquery,uuid,boolean,timestamptz,bigint,uuid,real) from public,anon,authenticated,service_role;
-revoke all on function public.list_public_posts(text,integer,text,uuid,boolean,timestamptz,bigint,uuid,real) from public,anon,authenticated;
+revoke all on function public.list_public_posts(text,integer,text,uuid,boolean,timestamptz,bigint,uuid,real) from public,anon,authenticated,service_role;
 grant execute on function public.list_public_posts(text,integer,text,uuid,boolean,timestamptz,bigint,uuid,real) to anon,authenticated;
 
 commit;

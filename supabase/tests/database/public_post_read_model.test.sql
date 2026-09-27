@@ -1,6 +1,6 @@
 begin;
 
-select plan(144);
+select plan(159);
 
 insert into auth.users (id, aud, role, email) values
   ('51000000-0000-0000-0000-000000000001','authenticated','authenticated','read-a@example.test'),
@@ -32,6 +32,7 @@ insert into public.post_reactions(id,user_id,post_id,created_at) values
 
 select has_function('public','list_public_posts',array['text','integer','text','uuid','boolean','timestamp with time zone','bigint','uuid','real'],'public list RPC exists');
 select ok(not has_function_privilege('public','public.list_public_posts(text,integer,text,uuid,boolean,timestamp with time zone,bigint,uuid,real)','EXECUTE'),'PUBLIC cannot execute list RPC');
+select ok(not has_function_privilege('service_role','public.list_public_posts(text,integer,text,uuid,boolean,timestamp with time zone,bigint,uuid,real)','EXECUTE'),'service_role cannot execute list RPC');
 select ok(has_function_privilege('anon','public.list_public_posts(text,integer,text,uuid,boolean,timestamp with time zone,bigint,uuid,real)','EXECUTE'),'anon can execute list RPC');
 select ok(has_function_privilege('authenticated','public.list_public_posts(text,integer,text,uuid,boolean,timestamp with time zone,bigint,uuid,real)','EXECUTE'),'authenticated can execute list RPC');
 select is((select prosecdef from pg_proc where oid='public.list_public_posts(text,integer,text,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure),true,'RPC is a constrained security definer');
@@ -68,8 +69,17 @@ select * from public.list_public_posts(
 ) where row_number=1;
 select is((select id from search_first),'52000000-0000-0000-0000-000000000001'::uuid,'search cursor exposes the first relevance-ranked key');
 select is((select id from search_second),'52000000-0000-0000-0000-000000000002'::uuid,'search cursor continues without skipping the lower relevance rank');
+select ok(
+  not exists(
+    select 1 from public.list_public_posts('newest',10,'needle',null,null,null,null,null,null)
+    where not (search_rank >= 0 and search_rank < 1)
+  ),
+  'emitted search ranks stay finite and within the accepted cursor domain'
+);
 select is((select id from public.list_public_posts('comments',10,null,null,null,null,null,null,null) where not is_pinned order by row_number limit 1),'52000000-0000-0000-0000-000000000001'::uuid,'comments sort uses public comment count');
 select is((select id from public.list_public_posts('popular',10,null,null,null,null,null,null,null) where not is_pinned order by row_number limit 1),'52000000-0000-0000-0000-000000000001'::uuid,'popular sort uses recent likes times two plus comments');
+select is(pg_typeof((select rank_key from public.list_public_posts('comments',10,null,null,null,null,null,null,null) limit 1))::text,'bigint','ranked cursors preserve a bigint rank key');
+select ok(not exists(select 1 from public.list_public_posts('newest',10,null,null,null,null,null,null,null) where rank_key is not null),'newest rows retain a null rank key');
 select is((select count(*)::integer from public.get_public_post('52000000-0000-0000-0000-000000000004')),0,'detail RPC does not expose hidden posts or their metrics');
 reset role;
 insert into public.attachments(
@@ -587,6 +597,7 @@ select throws_ok(
 );
 set local statement_timeout=default;
 select throws_ok($$select * from public.list_public_posts('bad',10,null,null,null,null,null,null,null)$$,'22023','invalid post sort','invalid sort is rejected');
+select throws_ok($$select * from public.list_public_posts(null,10,null,null,null,null,null,null,null)$$,'22023','invalid post sort','null sort is rejected');
 select throws_ok($$select * from public.list_public_posts('newest',101,null,null,null,null,null,null,null)$$,'22023','invalid page limit','invalid limit is rejected');
 select throws_ok($$select * from public.list_public_posts('comments',10,null,null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001',0)$$,'22023','invalid cursor','incomplete cursor is rejected');
 select throws_ok($$select * from public.list_public_posts('comments',10,null,null,null,null,2,null,null)$$,'22023','invalid cursor','an isolated rank is rejected');
@@ -594,6 +605,16 @@ select throws_ok($$select * from public.list_public_posts('newest',10,null,null,
 select throws_ok($$select * from public.list_public_posts('newest',10,repeat('x',201),null,null,null,null,null,null)$$,'22023','invalid search','oversized search input is rejected');
 select throws_ok($$select * from public.list_public_posts('newest',10,null,null,false,'infinity',null,'52000000-0000-0000-0000-000000000001',0)$$,'22023','invalid cursor','infinite cursor timestamps are rejected');
 select throws_ok($$select * from public.list_public_posts('newest',10,null,null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001','NaN'::real)$$,'22023','invalid cursor','non-finite search ranks are rejected');
+select throws_ok($$select * from public.list_public_posts('newest',10,null,null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001',0.5)$$,'22023','invalid cursor','null-search cursors require the emitted zero search rank');
+select throws_ok($$select * from public.list_public_posts('newest',10,'   ',null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001',0.5)$$,'22023','invalid cursor','blank-search cursors require the emitted zero search rank');
+select throws_ok($$select * from public.list_public_posts('newest',10,null,null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001',-0.1)$$,'22023','invalid cursor','negative null-search ranks are rejected');
+select throws_ok($$select * from public.list_public_posts('newest',10,null,null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001','Infinity'::real)$$,'22023','invalid cursor','infinite null-search ranks are rejected');
+select throws_ok($$select * from public.list_public_posts('newest',10,'needle',null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001',-0.1)$$,'22023','invalid cursor','negative active-search ranks are rejected');
+select throws_ok($$select * from public.list_public_posts('newest',10,'needle',null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001',1)$$,'22023','invalid cursor','active-search ranks outside the emitted domain are rejected');
+select throws_ok($$select * from public.list_public_posts('newest',10,'needle',null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001','NaN'::real)$$,'22023','invalid cursor','NaN active-search ranks are rejected');
+select throws_ok($$select * from public.list_public_posts('newest',10,'needle',null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001','Infinity'::real)$$,'22023','invalid cursor','infinite active-search ranks are rejected');
+select throws_ok($$select * from public.list_public_posts('comments',10,null,null,false,'2026-09-01',-1,'52000000-0000-0000-0000-000000000001',0)$$,'22023','invalid cursor','negative comments rank keys are rejected');
+select throws_ok($$select * from public.list_public_posts('popular',10,null,null,false,'2026-09-01',-1,'52000000-0000-0000-0000-000000000001',0)$$,'22023','invalid cursor','negative popular rank keys are rejected');
 reset role;
 
 insert into public.comments(id,post_id,author_id,body_markdown,status) values ('54000000-0000-0000-0000-000000000004','52000000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000002','transition','published');
@@ -746,7 +767,7 @@ select ok(
   and position('private.public_post_excerpt' in pg_get_functiondef('private.public_post_page_keys(text,integer,tsquery,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure))=0
   and position('private.public_post_counts' in pg_get_functiondef('private.public_post_page_keys(text,integer,tsquery,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure))=0
   and position('private.public_post_excerpt' in pg_get_functiondef('public.list_public_posts(text,integer,text,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure))>0,
-  'all ranking branches limit IDs before invoking page-only metrics and excerpt hydration'
+  'ranking key branches are bounded and exclude hydration helpers'
 );
 select ok(
   (select p.prosecdef and p.proconfig=array['search_path=""'] and pg_get_userbyid(p.proowner)='postgres'
