@@ -57,6 +57,17 @@ describe('community repository public list contract', () => {
     expect(value.calls[0]?.args).toMatchObject({ p_sort: 'comments', p_limit: 1, p_cursor_rank: 11, p_cursor_search_rank: 0.8 })
     expect(result).toMatchObject({ ok: true, data: { items: [{ id: 'post-1' }], nextCursor: cursor } })
   })
+
+  it('preserves repository row order so pinned announcements stay first', async () => {
+    const value = setup()
+    value.setListResponse({ data: [row, { ...row, id: 'post-2', title: '일반 글', is_pinned: false }], error: null })
+
+    const result = await value.repository.listPosts({ limit: 2, sort: 'newest' })
+
+    expect(result.ok && result.data.items.map((item) => item.id)).toEqual(['post-1', 'post-2'])
+    expect(result.ok && result.data.items.map((item) => item.isPinned)).toEqual([true, false])
+  })
+
   it('maps detail body, counters, and all tags from the controlled detail RPC', async () => {
     const value = setup()
     value.setDetailResponse({

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommunityRepository } from '../data/communityRepository'
+import { parseCommunityQuery } from '../lib/queryState'
 import { CommunityHomePage } from './CommunityHomePage'
 
 const post = {
@@ -18,6 +19,15 @@ const post = {
   tags: [{ id: 'tag-1', slug: 'development', label: '개발' }],
 }
 
+const secondPost = { ...post, id: 'post-2', title: '두 번째 글', isPinned: false }
+const cursor = {
+  isPinned: true,
+  searchRank: 0.8,
+  createdAt: post.createdAt,
+  id: post.id,
+  rank: null,
+}
+
 function repository(overrides: Partial<CommunityRepository> = {}): CommunityRepository {
   return {
     listPosts: vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } }),
@@ -31,6 +41,8 @@ function repository(overrides: Partial<CommunityRepository> = {}): CommunityRepo
 }
 
 describe('CommunityHomePage', () => {
+  afterEach(() => window.history.replaceState({}, '', '/'))
+
   it('lets anonymous visitors read the public post list', async () => {
     render(<CommunityHomePage repository={repository()} initialSearch="" />)
 
@@ -50,6 +62,78 @@ describe('CommunityHomePage', () => {
     fireEvent.click(screen.getByRole('button', { name: '검색' }))
 
     expect(onQueryChange).toHaveBeenCalledWith('?q=%EB%B3%B4%EC%95%88&sort=popular')
+  })
+
+  it('exposes the selected tag and sort as pressed buttons', async () => {
+    render(<CommunityHomePage repository={repository()} initialSearch="?tag=tag-1&sort=popular" />)
+
+    await screen.findByRole('heading', { name: post.title })
+    expect(screen.getByRole('button', { name: '개발' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '전체' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: '인기순' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: '최신순' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('restores filters and the search draft from browser navigation', async () => {
+    const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } })
+    window.history.replaceState({}, '', '/?q=before')
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+    await screen.findByRole('heading', { name: post.title })
+
+    window.history.pushState({}, '', '/?q=after&sort=comments')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+
+    await waitFor(() => expect(screen.getByRole('searchbox', { name: '게시글 검색' })).toHaveValue('after'))
+    await waitFor(() => expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'after', sort: 'comments' })))
+    expect(screen.getByRole('button', { name: '댓글순' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('loads the next cursor page, keeps repository order, and removes duplicate posts', async () => {
+    const onQueryChange = vi.fn()
+    const listPosts = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [post, secondPost], nextCursor: null } })
+    render(<CommunityHomePage repository={repository({ listPosts })} initialSearch="" onQueryChange={onQueryChange} />)
+
+    await screen.findByRole('button', { name: '더 불러오기' })
+    fireEvent.click(screen.getByRole('button', { name: '더 불러오기' }))
+
+    expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { name: post.title })).toHaveLength(1)
+    expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ cursor }))
+    expect(parseCommunityQuery(onQueryChange.mock.lastCall?.[0] ?? '').cursor).toEqual(cursor)
+    const postLinks = screen.getAllByRole('link').filter((link) => link.getAttribute('href')?.startsWith('/community/post/'))
+    expect(postLinks.map((link) => link.textContent)).toEqual([post.title, secondPost.title])
+  })
+
+  it('keeps loaded posts while a next page fails and retries that cursor', async () => {
+    const listPosts = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
+      .mockResolvedValueOnce({ ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR', message: '네트워크 연결을 확인해 주세요.' } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
+    render(<CommunityHomePage repository={repository({ listPosts })} initialSearch="" />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '더 불러오기' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('네트워크 연결을 확인해 주세요.')
+    expect(screen.getByRole('heading', { name: post.title })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
+
+    expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ cursor }))
+  })
+
+  it('resets the cursor and replaces posts when the sort changes', async () => {
+    const listPosts = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
+    render(<CommunityHomePage repository={repository({ listPosts })} initialSearch="" />)
+
+    await screen.findByRole('heading', { name: post.title })
+    fireEvent.click(screen.getByRole('button', { name: '인기순' }))
+
+    expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: post.title })).not.toBeInTheDocument()
+    expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'popular', cursor: undefined }))
   })
 
   it('renders an accessible empty state', async () => {

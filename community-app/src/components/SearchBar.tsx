@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 
 interface SearchBarProps {
   value: string
@@ -7,6 +7,9 @@ interface SearchBarProps {
 
 export function SearchBar({ value, onSubmit }: SearchBarProps) {
   const [draft, setDraft] = useState(value)
+
+  useEffect(() => setDraft(value), [value])
+
   function submit(event: FormEvent) {
     event.preventDefault()
     onSubmit(draft.trim())

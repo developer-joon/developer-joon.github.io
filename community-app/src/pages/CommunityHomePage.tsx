@@ -7,7 +7,7 @@ import { SortTabs } from '../components/SortTabs'
 import { StatePanel } from '../components/StatePanel'
 import { TagFilter } from '../components/TagFilter'
 import { parseCommunityQuery, serializeCommunityQuery, type CommunityQueryState } from '../lib/queryState'
-import type { CommunityError, CommunityTag, PostListItem } from '../types/community'
+import type { CommunityError, CommunityTag, PostCursor, PostListItem } from '../types/community'
 
 interface CommunityHomePageProps {
   repository: CommunityRepository
@@ -15,10 +15,16 @@ interface CommunityHomePageProps {
   onQueryChange?: (search: string) => void
 }
 
+function appendUniquePosts(current: PostListItem[], incoming: PostListItem[]) {
+  const knownIds = new Set(current.map((post) => post.id))
+  return [...current, ...incoming.filter((post) => !knownIds.has(post.id))]
+}
+
 export function CommunityHomePage({ repository, initialSearch = window.location.search, onQueryChange }: CommunityHomePageProps) {
   const [query, setQuery] = useState<CommunityQueryState>(() => parseCommunityQuery(initialSearch))
   const [tags, setTags] = useState<CommunityTag[]>([])
   const [posts, setPosts] = useState<PostListItem[]>([])
+  const [nextCursor, setNextCursor] = useState<PostCursor | null>(null)
   const [error, setError] = useState<CommunityError | null>(null)
   const [loading, setLoading] = useState(true)
   const [attempt, setAttempt] = useState(0)
@@ -29,6 +35,23 @@ export function CommunityHomePage({ repository, initialSearch = window.location.
     if (onQueryChange) onQueryChange(search)
     else window.history.pushState({}, '', `${window.location.pathname}${search}`)
   }, [onQueryChange])
+
+  const applyFilters = useCallback((next: CommunityQueryState) => {
+    setPosts([])
+    setNextCursor(null)
+    applyQuery({ ...next, cursor: null })
+  }, [applyQuery])
+
+  useEffect(() => {
+    function restoreQueryFromHistory() {
+      setPosts([])
+      setNextCursor(null)
+      setError(null)
+      setQuery(parseCommunityQuery(window.location.search))
+    }
+    window.addEventListener('popstate', restoreQueryFromHistory)
+    return () => window.removeEventListener('popstate', restoreQueryFromHistory)
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -47,10 +70,15 @@ export function CommunityHomePage({ repository, initialSearch = window.location.
       sort: query.sort,
       search: query.search || undefined,
       tagId: query.tagId || undefined,
+      cursor: query.cursor || undefined,
     }).then((result) => {
       if (!active) return
-      if (result.ok) setPosts(result.data.items)
-      else setError(result.error)
+      if (result.ok) {
+        setPosts((current) => query.cursor ? appendUniquePosts(current, result.data.items) : result.data.items)
+        setNextCursor(result.data.nextCursor)
+      } else {
+        setError(result.error)
+      }
       setLoading(false)
     })
     return () => { active = false }
@@ -70,16 +98,16 @@ export function CommunityHomePage({ repository, initialSearch = window.location.
         </section>
 
         <section className="community-tools" aria-label="게시글 탐색">
-          <SearchBar value={query.search} onSubmit={(search) => applyQuery({ ...query, search })} />
-          <TagFilter tags={tags} selected={query.tagId} onChange={(tagId) => applyQuery({ ...query, tagId })} />
+          <SearchBar value={query.search} onSubmit={(search) => applyFilters({ ...query, search })} />
+          <TagFilter tags={tags} selected={query.tagId} onChange={(tagId) => applyFilters({ ...query, tagId })} />
           <div className="list-heading">
             <div><span>PUBLIC DESK</span><h2>커뮤니티 글</h2></div>
-            <SortTabs value={query.sort} onChange={(sort) => applyQuery({ ...query, sort })} />
+            <SortTabs value={query.sort} onChange={(sort) => applyFilters({ ...query, sort })} />
           </div>
         </section>
 
-        {loading && <StatePanel title="글을 불러오고 있습니다" role="status" />}
-        {!loading && error && (
+        {loading && posts.length === 0 && <StatePanel title="글을 불러오고 있습니다" role="status" />}
+        {!loading && error && posts.length === 0 && (
           <StatePanel title={error.message} role="alert">
             <button className="secondary-action" type="button" onClick={() => setAttempt((value) => value + 1)}>다시 시도</button>
           </StatePanel>
@@ -87,7 +115,25 @@ export function CommunityHomePage({ repository, initialSearch = window.location.
         {!loading && !error && posts.length === 0 && (
           <StatePanel title="조건에 맞는 글이 없습니다"><p>검색어를 바꾸거나 전체 태그를 확인해 보세요.</p></StatePanel>
         )}
-        {!loading && !error && posts.length > 0 && <PostList posts={posts} />}
+        {posts.length > 0 && <PostList posts={posts} />}
+        {error && posts.length > 0 && (
+          <div className="load-more-state" role="alert">
+            <p>{error.message}</p>
+            <button className="secondary-action" type="button" onClick={() => setAttempt((value) => value + 1)}>다시 시도</button>
+          </div>
+        )}
+        {!error && nextCursor && (
+          <div className="load-more-state">
+            <button
+              className="secondary-action"
+              type="button"
+              disabled={loading}
+              onClick={() => applyQuery({ ...query, cursor: nextCursor })}
+            >
+              {loading ? '불러오는 중' : '더 불러오기'}
+            </button>
+          </div>
+        )}
       </main>
       <footer className="community-footer"><span>BREADLAB · 개발 기록과 열린 대화</span><a href="/privacy/">개인정보 처리방침</a></footer>
     </div>
