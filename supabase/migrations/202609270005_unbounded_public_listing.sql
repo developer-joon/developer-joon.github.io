@@ -11,6 +11,25 @@ create index concurrently if not exists post_reaction_daily_recent_idx
   include (reaction_count)
   where reaction_count > 0;
 
+do $$
+declare
+  v_indisvalid boolean;
+  v_indisready boolean;
+begin
+  select i.indisvalid,i.indisready
+    into v_indisvalid,v_indisready
+  from pg_catalog.pg_class c
+  join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+  join pg_catalog.pg_index i on i.indexrelid=c.oid
+  where n.nspname='private'
+    and c.relname='post_reaction_daily_recent_idx';
+
+  if not coalesce(v_indisvalid,false) or not coalesce(v_indisready,false) then
+    raise exception 'post_reaction_daily_recent_idx is invalid or not ready; run DROP INDEX CONCURRENTLY IF EXISTS private.post_reaction_daily_recent_idx; then retry migration'
+      using errcode='55000';
+  end if;
+end $$;
+
 begin;
 
 create function private.public_post_page_keys(
