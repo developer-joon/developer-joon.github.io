@@ -4,8 +4,13 @@ url: https://www.breadlab.ai
 baseurl: /
 
 exclude:
+  - community-app
   - docs
+  - scripts
+  - supabase
   - README.md
+  - deno.lock
+  - dockerRun.sh
 
 collections:
   pages:

@@ -1,6 +1,6 @@
 # Ria & Seoa PaPa 블로그
 
-이 저장소는 `developer-joon.github.io` 기반의 **Jekyll / GitHub Pages** 블로그입니다.
+이 저장소는 `developer-joon.github.io` 기반의 **Jekyll / GitHub Pages** 블로그와 React 커뮤니티입니다.
 
 - 사이트 주소: https://breadlab.ai
 - 목적: 블로그, 프로젝트, 소개 페이지를 함께 운영하는 개인 사이트
@@ -14,6 +14,8 @@
 - `_includes/` — 재사용 컴포넌트
 - `_data/` — 사이트 설정 데이터
 - `images/` — 이미지 자산
+- `community-app/` — `/community/`에 배포되는 React/Vite MPA
+- `scripts/` — Jekyll과 커뮤니티를 단일 Pages artifact로 조립·검증하는 스크립트
 
 ## 로컬 실행
 
@@ -30,10 +32,17 @@ bundle exec jekyll serve
 http://localhost:4000
 ```
 
+커뮤니티를 포함한 배포 artifact 전체를 빌드하려면 Node.js 24와 Ruby 3.3/Bundler가 필요합니다.
+
+```bash
+./scripts/build-site.sh
+```
+
+이 명령은 커뮤니티 의존성 설치·검사·Vite 빌드, production Jekyll 빌드, `_site/community/` 병합, 최종 artifact 검증을 순서대로 실행합니다. 이미 조립된 artifact만 다시 검사하려면 `node scripts/verify-site.mjs _site`를 실행합니다.
+
 ## 배포
 
-이 사이트는 GitHub Pages 기준으로 운영합니다.
-수정 후에는 `master` 브랜치에 반영하면 배포 흐름에 맞게 갱신됩니다.
+이 사이트는 GitHub Pages 기준으로 운영합니다. 기존 `.github/workflows/jekyll.yml` 하나가 `master` push 또는 수동 실행 시 `_site` artifact를 한 번 업로드하고 배포합니다.
 
 ## 관리 메모
 
