@@ -1,11 +1,17 @@
 -- Keep cursor-based public post listing available beyond a fixed corpus size.
 
-begin;
+-- Supabase CLI executes migration files without wrapping them in an implicit
+-- transaction, so this can build while reaction writes continue. If a later
+-- statement fails, retrying the migration keeps the completed valid index via
+-- IF NOT EXISTS. An interrupted concurrent build can leave an invalid index;
+-- drop that invalid index concurrently before retrying rather than blocking
+-- writes with a transactional rebuild.
+create index concurrently if not exists post_reaction_daily_recent_idx
+  on private.post_reaction_daily_counts (reaction_date,post_id)
+  include (reaction_count)
+  where reaction_count > 0;
 
-drop index if exists public.posts_public_list_idx;
-create index posts_public_list_idx
-  on public.posts (is_pinned desc, created_at desc, id desc)
-  where status='published' and deleted_at is null;
+begin;
 
 create function private.public_post_page_keys(
   p_sort text,
@@ -127,6 +133,7 @@ begin
     from private.post_reaction_daily_counts d
     where d.reaction_date between (pg_catalog.statement_timestamp() at time zone 'UTC')::date-29
                               and (pg_catalog.statement_timestamp() at time zone 'UTC')::date
+      and d.reaction_count > 0
     group by d.post_id
   ), ranked as (
     select p.id,p.is_pinned,p.created_at,

@@ -15,6 +15,7 @@
     "db:test": "supabase test db",
     "db:test:public-attachment-integration": "bash ../supabase/tests/public_attachment_integration.sh",
     "db:test:storage-upgrade": "bash ../supabase/tests/storage_upgrade.sh",
+    "db:test:public-listing-upgrade": "bash ../supabase/tests/public_listing_upgrade.sh",
     "db:lint": "supabase db lint --level error",
     "db:stop": "supabase stop"
   },

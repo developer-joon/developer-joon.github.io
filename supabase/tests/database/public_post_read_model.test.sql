@@ -1,6 +1,14 @@
 begin;
 
-select plan(159);
+select plan(172);
+
+create function pg_temp.explain_json(p_sql text)
+returns jsonb language plpgsql as $$
+declare v_plan jsonb;
+begin
+  execute 'explain (analyze, buffers, format json) '||p_sql into v_plan;
+  return v_plan;
+end $$;
 
 insert into auth.users (id, aud, role, email) values
   ('51000000-0000-0000-0000-000000000001','authenticated','authenticated','read-a@example.test'),
@@ -57,6 +65,15 @@ select ok(position('token=' in (select excerpt from read_rows where id='52000000
 select is((select comment_count from read_rows where id='52000000-0000-0000-0000-000000000001'),2::bigint,'initial comment metric backfill excludes hidden comments');
 select is((select reaction_count from read_rows where id='52000000-0000-0000-0000-000000000001'),2::bigint,'display reaction count includes all-time likes');
 select is((select popularity_score from read_rows where id='52000000-0000-0000-0000-000000000001'),4::bigint,'popularity excludes likes older than 30 UTC days');
+reset role;
+insert into private.post_reaction_daily_counts(post_id,reaction_date,reaction_bucket,reaction_count)
+values ('52000000-0000-0000-0000-000000000001',current_date-1,63,0);
+select is(
+  (select popularity_score from private.public_post_counts('52000000-0000-0000-0000-000000000001')),
+  4::bigint,
+  'zero-count recent buckets do not change popularity'
+);
+set local role anon;
 select is((select jsonb_array_length(tags) from public.list_public_posts('newest',10,null,'53000000-0000-0000-0000-000000000001',null,null,null,null,null) where id='52000000-0000-0000-0000-000000000001'),2,'tag filtering preserves all post tags');
 select is((select count(*)::integer from public.list_public_posts('newest',10,'needle',null,null,null,null,null,null)),2,'FTS searches title and body and excludes hidden posts');
 select is((select id from public.list_public_posts('newest',10,'needle',null,null,null,null,null,null) order by row_number limit 1),'52000000-0000-0000-0000-000000000001'::uuid,'title-weighted relevance outranks a newer body-only match');
@@ -682,6 +699,45 @@ insert into public.post_tags(post_id,tag_id)
 select md5('capacity-post-'||g::text)::uuid,
        '53000000-0000-0000-0000-000000000001'
 from generate_series(1,5001) g;
+insert into private.post_reaction_daily_counts(post_id,reaction_date,reaction_bucket,reaction_count)
+select md5('capacity-post-'||(((g-1)%5001)+1)::text)::uuid,
+       (statement_timestamp() at time zone 'UTC')::date-31-((g-1)/5001)::integer,
+       0,
+       1
+from generate_series(1,100000) g;
+insert into private.post_reaction_daily_counts(post_id,reaction_date,reaction_bucket,reaction_count) values
+  (md5('capacity-post-1')::uuid,(statement_timestamp() at time zone 'UTC')::date,1,3),
+  (md5('capacity-post-2')::uuid,(statement_timestamp() at time zone 'UTC')::date,1,0);
+analyze private.post_reaction_daily_counts;
+select is(
+  (select popularity_score from private.public_post_counts(md5('capacity-post-1')::uuid)),
+  6::bigint,
+  'recent nonzero buckets contribute exactly twice their count to popularity'
+);
+select is(
+  (select popularity_score from private.public_post_counts(md5('capacity-post-2')::uuid)),
+  0::bigint,
+  'recent zero-count buckets remain semantically invisible'
+);
+create temporary table stale_history_plan as
+select pg_temp.explain_json($query$
+  select d.post_id,coalesce(sum(d.reaction_count),0)::bigint recent_count
+  from private.post_reaction_daily_counts d
+  where d.reaction_date between (statement_timestamp() at time zone 'UTC')::date-29
+                            and (statement_timestamp() at time zone 'UTC')::date
+    and d.reaction_count > 0
+  group by d.post_id
+$query$) plan;
+select ok(
+  (select plan::text like '%post_reaction_daily_recent_idx%' from stale_history_plan),
+  'the exact recent-popularity aggregate uses the date-leading covering index'
+);
+select ok(
+  (select coalesce((plan#>>'{0,Plan,Shared Hit Blocks}')::integer,0)
+        +coalesce((plan#>>'{0,Plan,Shared Read Blocks}')::integer,0) < 100
+     from stale_history_plan),
+  '100000 entirely stale buckets require fewer than 100 shared buffers'
+);
 set local role anon;
 create temporary table scale_newest_first as
 select * from public.list_public_posts('newest',10,null,null,null,null,null,null,null) where row_number<=10;
@@ -696,6 +752,48 @@ select * from public.list_public_posts(
 select is((select count(*)::integer from scale_newest_first),10,'newest returns a full first page above 5000 posts');
 select is((select count(*)::integer from scale_newest_second),10,'newest returns a full second page above 5000 posts');
 select is((select count(*)::integer from scale_newest_first join scale_newest_second using(id)),0,'newest keyset has no duplicate across large tied pages');
+
+create temporary table scale_newest_walk(id uuid,is_fixture boolean);
+do $$
+declare
+  v_is_pinned boolean;
+  v_created_at timestamptz;
+  v_id uuid;
+  v_search_rank real;
+  v_page_count integer;
+begin
+  loop
+    with page as materialized (
+      select * from public.list_public_posts(
+        'newest',100,null,null,
+        v_is_pinned,v_created_at,null,v_id,v_search_rank
+      ) where row_number<=100
+    ), inserted as (
+      insert into scale_newest_walk(id,is_fixture)
+      select id,id in (select md5('capacity-post-'||g::text)::uuid from generate_series(1,5001) g)
+      from page returning 1
+    )
+    select p.is_pinned,p.created_at,p.id,p.search_rank,(select count(*) from inserted)
+      into v_is_pinned,v_created_at,v_id,v_search_rank,v_page_count
+      from page p order by p.row_number desc limit 1;
+    exit when coalesce(v_page_count,0)<100;
+  end loop;
+end $$;
+select is((select count(*)::integer from scale_newest_walk where is_fixture),5001,'newest cursor traverses all 5001 fixture posts');
+select is((select count(distinct id)::integer from scale_newest_walk where is_fixture),5001,'newest cursor traverses 5001 fixture posts without duplicates or skips');
+
+create temporary table scale_search_first as
+select * from public.list_public_posts('newest',100,'Capacity post',null,null,null,null,null,null) where row_number<=100;
+create temporary table scale_search_second as
+select * from public.list_public_posts(
+  'newest',100,'Capacity post',null,
+  (select is_pinned from scale_search_first order by row_number desc limit 1),
+  (select created_at from scale_search_first order by row_number desc limit 1),null,
+  (select id from scale_search_first order by row_number desc limit 1),
+  (select search_rank from scale_search_first order by row_number desc limit 1)
+) where row_number<=100;
+select is((select count(*)::integer from scale_search_second),100,'search continues with a full page across more than 5000 equal-rank matches');
+select is((select count(*)::integer from scale_search_first join scale_search_second using(id)),0,'large equal search-rank pages continue without duplicates');
 
 create temporary table scale_tag_first as
 select * from public.list_public_posts('newest',10,null,'53000000-0000-0000-0000-000000000001',null,null,null,null,null) where row_number<=10;
@@ -778,6 +876,29 @@ select is(
   (select count(*)::integer from pg_proc where pronamespace='public'::regnamespace and proname='list_public_posts'),
   1,
   'large-list migration creates no ambiguous RPC overload'
+);
+select ok(
+  (select indexdef not like '%deleted_at%' from pg_indexes
+    where schemaname='public' and indexname='posts_public_list_idx'),
+  'large-list migration retains the original published-post index without rebuilding it'
+);
+select ok(
+  (select indisvalid and indisready from pg_index
+    where indexrelid='private.post_reaction_daily_recent_idx'::regclass),
+  'date-leading recent-reaction index is ready and valid'
+);
+select ok(
+  (select indexdef like '%(reaction_date, post_id) INCLUDE (reaction_count)%'
+       and indexdef like '%WHERE (reaction_count > 0)%'
+     from pg_indexes
+    where schemaname='private' and indexname='post_reaction_daily_recent_idx'),
+  'recent-reaction index is date-leading, covering, and excludes zero buckets'
+);
+select ok(
+  position('d.reaction_count > 0' in pg_get_functiondef(
+    'private.public_post_page_keys(text,integer,tsquery,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure
+  ))>0,
+  'popular ranking applies the partial-index reaction-count predicate'
 );
 
 select * from finish();
