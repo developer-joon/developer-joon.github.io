@@ -43,7 +43,7 @@ const forbiddenNames = [
   /^Gemfile(?:\.lock)?$/,
   /^package(?:-lock)?\.json$/i,
   /^tsconfig(?:\..*)?\.json$/i,
-  /\.(?:sql|ts|tsx)$/i,
+  /\.(?:sql|ts|tsx|jsx|vue|svelte|scss|sass|less|map)$/i,
   /^(?:id_rsa|id_ed25519)$/i,
   /\.(?:key|pem)$/i,
 ]
@@ -92,6 +92,26 @@ function assertIncludes(content, expected, relativePath, behavior) {
   if (!content.includes(expected)) {
     fail(`${relativePath} is missing ${behavior}: ${expected}`)
   }
+}
+
+function communityAssetReferences(html, shellPath) {
+  const references = []
+  const attributePattern = /\b(?:src|href)=["']([^"']+)["']/gi
+  for (const match of html.matchAll(attributePattern)) {
+    try {
+      const url = new URL(match[1], `https://www.breadlab.ai/${shellPath}`)
+      if (url.origin === 'https://www.breadlab.ai' && url.pathname.startsWith('/community/assets/')) {
+        references.push(url.pathname)
+      }
+    } catch {
+      // Other verifier checks handle malformed or missing asset references.
+    }
+  }
+  return references
+}
+
+function isContentHashedAsset(assetPath) {
+  return /^.+-[A-Za-z0-9_-]{8,}\.(?:js|css)$/i.test(path.posix.basename(assetPath))
 }
 
 async function walk(relativeDirectory = '') {
@@ -144,6 +164,11 @@ async function main() {
   }
 
   const files = rootStat?.isDirectory() ? await walk() : []
+  for (const relativePath of files) {
+    if (/^community\/assets\/.+\.(?:js|css)$/i.test(relativePath) && !isContentHashedAsset(relativePath)) {
+      fail(`community JS/CSS asset lacks a Vite-style content-hashed filename: ${relativePath}`)
+    }
+  }
 
   const cname = (await readText('CNAME')).trim()
   if (cname !== 'www.breadlab.ai') {
@@ -197,8 +222,18 @@ async function main() {
   for (const [relativePath, title] of communityShells) {
     const html = await readText(relativePath)
     assertIncludes(html, title, relativePath, 'expected title')
-    if (!/\b(?:src|href)="\/community\/assets\//.test(html)) {
+    const assetReferences = communityAssetReferences(html, relativePath)
+    if (assetReferences.length === 0) {
       fail(`${relativePath} does not reference a built /community/assets/ file`)
+    }
+    for (const assetPath of assetReferences) {
+      const basename = path.posix.basename(assetPath)
+      if (/\.(?:js|css)$/i.test(basename) && !isContentHashedAsset(assetPath)) {
+        fail(`${relativePath} references a JS/CSS asset without a Vite-style content-hashed filename: ${assetPath}`)
+      }
+      if (!files.includes(assetPath.slice(1))) {
+        fail(`${relativePath} references a missing community asset: ${assetPath}`)
+      }
     }
     if (/\/(?:src|node_modules)\//.test(html)) {
       fail(`${relativePath} references implementation source`)

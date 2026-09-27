@@ -52,6 +52,7 @@ kramdown:
 
 sass:
   style: compressed
+  sourcemap: never
 
 plugins:
   - jekyll-paginate

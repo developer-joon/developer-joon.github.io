@@ -15,4 +15,5 @@ rm -rf _site/community
 mkdir -p _site/community
 cp -a community-app/dist/. _site/community/
 
+node --test scripts/verify-site.test.mjs
 node scripts/verify-site.mjs _site
