@@ -6,7 +6,7 @@
 
 **Architecture:** 기존 Jekyll 소스는 유지하고 `community-app/`을 React 19 + TypeScript + Vite MPA로 분리한다. 브라우저는 publishable key로 Supabase에 연결하지만 보호된 mutation은 `security definer` RPC가 `auth.uid()`와 상태를 재검증한다. GitHub Pages 배포 시 Jekyll 산출물과 Vite 산출물·SEO snapshot을 하나의 artifact로 합친다.
 
-**Tech Stack:** Node 24, React 19.3, TypeScript 6.0, Vite 8.3, Vitest 5, Testing Library, Supabase JS 2.117, Supabase CLI 2.118/Postgres 17/pgTAP, Marked + DOMPurify, Playwright, Jekyll 3.8.5
+**Tech Stack:** Node 24, React 19.3, TypeScript 6.0, Vite 8.3, Vitest 5, Testing Library, Supabase JS 2.117, Supabase CLI 2.118/Postgres 17/pgTAP, Marked + DOMPurify, Playwright, Jekyll 4.4.1
 
 **Design Direction:** 밝은 종이색과 짙은 잉크색을 기반으로 한 “개발자용 편집 매거진형 커뮤니티”. 기존 Breadlab의 파란색은 CTA와 상태에 제한하고, 흔한 dark SaaS 카드 스택보다 읽기 흐름·목록 위계·한국어 Markdown 가독성을 우선한다.
 
@@ -107,6 +107,70 @@
 3. 필요한 열만 선택하고 RPC를 호출하며 PostgREST/Auth 오류를 안정적인 한국어 domain error로 변환한다.
 4. 테스트·typecheck·lint를 통과시킨다.
 5. Commit: `feat: add typed community data client`.
+
+### Task 5A: OAuth 프로필 자동 provision
+
+**Objective:** GitHub OAuth로 생성된 신규 사용자가 첫 요청부터 보호된 mutation을 사용할 수 있게 한다.
+
+**Files:**
+- Create: `supabase/migrations/202609260005_profile_provisioning.sql`
+- Create: `supabase/tests/database/profile_provisioning.test.sql`
+
+**Steps:**
+1. GitHub provider metadata의 불변 numeric ID와 login을 사용한 생성·갱신, 잘못된 provider와 누락 metadata 거부 pgTAP RED를 작성한다.
+2. `auth.users`의 insert/update trigger가 `public.profiles`를 idempotent하게 provision하되 일반 browser role에는 직접 쓰기 권한을 주지 않도록 구현한다.
+3. 기존 수동 fixture와 신규 실제 OAuth 형태 fixture를 모두 포함해 DB 전체 테스트·lint를 통과시킨다.
+4. Commit: `fix: provision community profiles from GitHub auth`.
+
+### Task 5B: 공개 이미지 전달 경계
+
+**Objective:** private bucket을 유지하면서 공개 게시글에 연결된 정상 이미지만 익명 독자에게 전달한다.
+
+**Files:**
+- Create: `supabase/functions/public-attachment/index.ts`
+- Create: `supabase/functions/public-attachment/index.test.ts`
+- Modify: `supabase/config.toml`
+- Modify: `community-app/src/data/communityRepository.ts`
+
+**Steps:**
+1. published+attached만 200, hidden/deleted/pending/quarantined/잘못된 UUID는 거부하는 Edge Function RED를 작성한다.
+2. service role로 attachment와 post 상태를 필요한 열만 조회한 뒤 Storage object를 stream하고 MIME·크기·짧은 cache header를 고정한다.
+3. 본문에는 raw storage path나 service credential을 노출하지 않고 attachment ID 기반 URL만 사용한다.
+4. Deno 테스트와 DB/프런트 회귀 검사를 통과시킨다.
+5. Commit: `fix: serve public community attachments safely`.
+
+### Task 5C: 삭제 글 tombstone read model
+
+**Objective:** 댓글이 남은 삭제 글을 본문·작성자 개인정보 없이 안전한 tombstone으로 읽게 한다.
+
+**Files:**
+- Create: `supabase/migrations/202609260006_post_tombstones.sql`
+- Modify: `supabase/tests/database/public_post_read_model.test.sql`
+- Modify: `community-app/src/types/community.ts`
+- Modify: `community-app/src/data/communityRepository.ts`
+- Modify: `community-app/src/data/communityRepository.test.ts`
+
+**Steps:**
+1. missing/hidden/deleted-with-comments/deleted-without-comments 상태 계약 RED를 작성한다.
+2. read RPC가 허용된 tombstone에 상태와 최소 메타데이터만 반환하고 원문·작성자 정보는 반환하지 않도록 구현한다.
+3. repository가 `not_found`, `hidden`, `deleted`를 구분하도록 타입과 mapping을 갱신한다.
+4. DB·프런트 전체 검사를 통과시킨다.
+5. Commit: `fix: add safe deleted-post tombstones`.
+
+### Task 5D: 무제한 cursor 목록
+
+**Objective:** 공개 게시글이 5,000개를 넘어도 목록이 중단되지 않게 한다.
+
+**Files:**
+- Create: `supabase/migrations/202609260007_unbounded_public_listing.sql`
+- Modify: `supabase/tests/database/public_post_read_model.test.sql`
+
+**Steps:**
+1. 5,001개 이상 fixture에서 첫 page와 다음 cursor가 성공하는 RED를 작성한다.
+2. 전체 후보 count와 SQLSTATE `54000` hard fail을 제거하고 기존 cursor·정렬 계약을 유지한다.
+3. `EXPLAIN` fixture로 최신순·태그 필터가 의도한 인덱스 경로를 사용할 수 있는지 확인한다.
+4. DB 전체 테스트·lint를 통과시킨다.
+5. Commit: `fix: keep public post pagination available at scale`.
 
 ### Task 6: 공통 app shell과 read-only 목록
 
@@ -234,13 +298,13 @@
 - Modify: `_data/settings.yml`, `_pages/privacy.md`, `README.md`, `.gitignore`
 - Create: `scripts/build-site.sh`, `scripts/verify-site.mjs`
 - Create: `Dockerfile.build` or pinned Docker build script
-- Create: `.github/workflows/pages.yml`
+- Modify: `.github/workflows/jekyll.yml`
 
 **Steps:**
-1. 기존 주요 URL/title/canonical과 6개 community shell 존재를 검사하는 실패 검증을 작성한다.
-2. Jekyll build 후 `community-app/dist`를 `_site/community/`로 복사하고 CNAME/404/sitemap을 검증한다.
-3. Pages workflow는 checkout/configure-pages/upload-pages-artifact/deploy-pages의 pinned major를 사용하되 production deploy는 `master`와 수동 승인 조건으로 제한한다.
-4. Docker에서 전체 build를 재현하고 artifact에 symlink가 없는지 확인한다.
+1. 최신 `origin/master`를 반영하고 기존 주요 URL/title/canonical과 6개 community shell 존재를 검사하는 실패 검증을 작성한다.
+2. Jekyll build 후 `community-app/dist`를 `_site/community/`로 복사하고 CNAME/404/sitemap을 검증하며 `community-app`·`supabase` 소스가 artifact에 포함되지 않게 한다.
+3. 기존 `.github/workflows/jekyll.yml`에 Node 설치·프런트 검사·Vite build·단일 artifact 조립 단계를 추가한다. 별도의 Pages deploy workflow는 만들지 않는다.
+4. Docker에서 전체 build를 재현하고 artifact에 symlink나 비공개 소스가 없는지 확인한다.
 5. Commit: `build: assemble community pages artifact`.
 
 ### Task 14: SEO snapshot과 sitemap

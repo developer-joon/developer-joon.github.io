@@ -50,7 +50,7 @@
 
 ### 3.1 프런트엔드
 
-- 기존 블로그: Jekyll 3.8.5 유지
+- 기존 블로그: `master`에서 채택한 Jekyll 4.4.1과 GitHub Actions Pages 배포 유지
 - 커뮤니티: React + TypeScript + Vite SPA
 - 위치: 저장소의 `community-app/`
 - Vite base path: `/community/`
@@ -79,7 +79,7 @@ Supabase를 사용한다.
 
 ### 3.3 배포
 
-현재 `master` 루트를 직접 빌드하는 GitHub Pages legacy 배포를 GitHub Actions artifact 배포로 전환한다.
+현재 `master`의 `.github/workflows/jekyll.yml`을 단일 배포 workflow로 확장한다. 커뮤니티 전용 Pages 배포 workflow를 추가하지 않는다.
 
 배포 작업은 다음 순서를 따른다.
 
@@ -254,6 +254,7 @@ DB constraint 또는 trigger로 대댓글의 부모가 다시 대댓글을 가�
 
 ### 로그인 사용자
 
+- GitHub OAuth로 생성된 `auth.users` row는 검증된 provider metadata를 통해 `public.profiles`로 자동 provision한다.
 - 본인 이름으로 글·댓글·reaction·신고를 생성할 수 있다.
 - 자신의 게시글·댓글만 수정·소프트 삭제할 수 있다.
 - `author_id`는 요청 payload가 아니라 `auth.uid()`에서 결정한다.
@@ -281,6 +282,7 @@ DB constraint 또는 trigger로 대댓글의 부모가 다시 대댓글을 가�
 - SVG, HTML, scriptable 문서, 임의 binary는 거부한다.
 - 확장자나 브라우저 MIME만 믿지 않고 Edge Function이 파일 signature와 실제 크기를 검증한다.
 - Storage 쓰기 경로는 사용자 ID와 무작위 ID를 포함하고 원본 파일명을 경로로 사용하지 않는다.
+- bucket은 private으로 유지한다. 공개 게시글에 연결된 이미지는 게시 상태와 attachment 상태를 재검증하는 공개 전달 Edge Function을 통해서만 읽고, 숨김·삭제·격리 상태에서는 즉시 거부한다.
 - pending 첨부는 글 생성 transaction 성공 후에만 게시글과 연결한다.
 - 생성 후 24시간이 지난 연결되지 않은 pending 첨부는 정기 작업으로 정리한다.
 - 소프트 삭제된 게시글의 이미지는 30일 복구 유예 기간 후 물리 삭제한다.
@@ -306,6 +308,7 @@ DB constraint 또는 trigger로 대댓글의 부모가 다시 대댓글을 가�
 - 제목과 본문에서 검색하되 제목 일치에 더 높은 가중치를 둔다.
 - 공개·비숨김 데이터만 검색 결과에 포함한다.
 - 목록은 offset이 아니라 안정적인 cursor pagination을 우선한다.
+- 전체 후보 수가 5,000개를 넘더라도 목록을 중단하지 않는다. cursor와 정렬 인덱스로 요청한 page 범위만 조회한다.
 - 최신순 cursor는 `(created_at, id)` 내림차순을 사용한다.
 - 댓글순은 `(공개 댓글 수, created_at, id)`, 인기순은 최근 30일의 `(좋아요 수 × 2 + 댓글 수, created_at, id)` 내림차순을 사용한다. cursor에는 해당 정렬 키 전체를 포함한다.
 - 정렬용 좋아요·댓글 수는 매 요청마다 전체 집계하지 않는다. 트리거나 안전한 비동기 집계로 counter를 유지하되 원본 reaction·comment가 진실의 원장이다.
@@ -392,15 +395,15 @@ OAuth E2E는 production GitHub 계정을 공유하지 않고 staging 전용 OAut
 
 ## 14. 배포와 롤백
 
-첫 Actions 전환은 별도 배포 브랜치에서 검증한다.
+현재 Actions 전환 결과를 기준선으로 삼고 커뮤니티 통합은 별도 배포 브랜치에서 검증한다.
 
-1. 동일 커밋을 legacy 방식과 Actions 방식으로 각각 빌드한다.
-2. 기존 사이트 주요 URL과 정적 asset을 비교한다.
+1. 최신 `master`의 Jekyll-only Actions artifact를 기준선으로 저장한다.
+2. 커뮤니티 통합 artifact와 기존 사이트 주요 URL·정적 asset을 비교한다.
 3. staging Supabase로 커뮤니티 smoke test를 수행한다.
-4. Pages 배포 소스를 Actions로 전환한다.
-5. production smoke test를 수행한다.
+4. 단일 통합 artifact를 staging에서 검증한다.
+5. production 승인 후 배포하고 smoke test를 수행한다.
 
-롤백은 이전 정상 Pages artifact를 재배포하고, 필요하면 Pages 소스를 legacy `master /`로 되돌리는 두 경로를 문서화한다. DB migration은 초기에는 additive change만 허용한다. destructive migration은 백업·복구 검증과 별도 승인 없이는 실행하지 않는다.
+롤백은 이전 정상 Pages artifact를 재배포한다. 필요하면 커뮤니티 조립 단계를 비활성화해 Jekyll-only Actions artifact로 복귀한다. DB migration은 초기에는 additive change만 허용한다. destructive migration은 백업·복구 검증과 별도 승인 없이는 실행하지 않는다.
 
 ## 15. 수용 기준
 
