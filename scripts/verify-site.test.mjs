@@ -38,7 +38,7 @@ async function makeValidArtifact() {
     await put(root, relativePath, `${title}<link rel="canonical" href="${canonical}">${body}`)
   }
   for (const [relativePath, title] of shellTitles) {
-    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
   }
   await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">GitHub OAuth 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
@@ -58,6 +58,7 @@ async function makeValidArtifact() {
     'fonts/generated.woff2',
     'notes/generated.txt',
     'community/assets/main-Ab12Cd34.js',
+    'community/assets/logo-Xy12Za34.png',
   ]) {
     await put(root, relativePath)
   }
@@ -107,6 +108,18 @@ test('rejects an unhashed local stylesheet referenced by a community shell', asy
   })
 })
 
+test('rejects an existing unhashed image referenced by every community shell', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/assets/logo.png')
+    for (const [relativePath, title] of shellTitles) {
+      await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo.png">`)
+    }
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unhashed non-JS/CSS shell asset')
+    assert.match(result.stderr, /content-hashed/)
+  })
+})
+
 for (const extension of ['js', 'css']) {
   test(`rejects an unreferenced unhashed .${extension} file in community/assets`, async () => {
     await withArtifact(async (root) => {
@@ -118,10 +131,10 @@ for (const extension of ['js', 'css']) {
   })
 }
 
-test('rejects a hashed community asset reference when the file is missing', async () => {
+test('rejects a hashed non-JS/CSS community asset reference when the file is missing', async () => {
   await withArtifact(async (root) => {
     const [relativePath, title] = shellTitles.entries().next().value
-    await put(root, relativePath, `${title}<script type="module" src="/community/assets/missing-Xy12Za34.js"></script>`)
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/missing-Xy12Za34.png">`)
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a missing hashed asset')
     assert.match(result.stderr, /missing community asset/)

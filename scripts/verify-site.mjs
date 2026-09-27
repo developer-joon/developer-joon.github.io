@@ -111,7 +111,7 @@ function communityAssetReferences(html, shellPath) {
 }
 
 function isContentHashedAsset(assetPath) {
-  return /^.+-[A-Za-z0-9_-]{8,}\.(?:js|css)$/i.test(path.posix.basename(assetPath))
+  return /^.+-[A-Za-z0-9_-]{8,}\.[^./]+$/i.test(path.posix.basename(assetPath))
 }
 
 async function walk(relativeDirectory = '') {
@@ -227,9 +227,8 @@ async function main() {
       fail(`${relativePath} does not reference a built /community/assets/ file`)
     }
     for (const assetPath of assetReferences) {
-      const basename = path.posix.basename(assetPath)
-      if (/\.(?:js|css)$/i.test(basename) && !isContentHashedAsset(assetPath)) {
-        fail(`${relativePath} references a JS/CSS asset without a Vite-style content-hashed filename: ${assetPath}`)
+      if (!isContentHashedAsset(assetPath)) {
+        fail(`${relativePath} references an asset without a Vite-style content-hashed filename: ${assetPath}`)
       }
       if (!files.includes(assetPath.slice(1))) {
         fail(`${relativePath} references a missing community asset: ${assetPath}`)
