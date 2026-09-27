@@ -16,14 +16,13 @@ declare
   attachment record;
   rewritten text := p_body_markdown;
   public_path text;
-  uuid_pattern constant text := '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 begin
-  -- A stored public URL is not proof that its attachment belongs to this post.
-  -- Remove every caller-supplied route before introducing authorized routes.
+  -- Reserve the internal marker before using it so caller content can never be
+  -- promoted into an authorized public route.
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    '/functions/v1/public-attachment/' || uuid_pattern,
-    'about:blank#attachment-unavailable',
+    '[(]urn:public-attachment-authorized:[^()[:space:]]+[)]',
+    '(about:blank#attachment-unavailable)',
     'g'
   );
 
@@ -39,59 +38,78 @@ begin
          (a.owner_id::text||'/'||a.client_key::text) collate "C"
      order by a.id
   loop
-    public_path := '/functions/v1/public-attachment/'||attachment.id::text;
+    public_path := 'urn:public-attachment-authorized:'||attachment.id::text;
 
-    -- Accept the Storage URL shapes used by Supabase clients, then reduce the
-    -- body to the attachment identifier route. Query credentials disappear.
+    -- Canonicalize only complete Markdown destinations for attachments that
+    -- belong to this post. This drops every caller-supplied query or fragment.
     rewritten := pg_catalog.regexp_replace(
       rewritten,
-      'https?://[^[:space:]<>()]+/storage/v1/object/(public/|sign/|authenticated/)?community-images/' ||
-        attachment.storage_path || '([?][^[:space:]<>()]*)?',
-      public_path,
+      '[(](https?://[^/()[:space:]]+)?/functions/v1/public-attachment/' ||
+        attachment.id::text || '([?#][^()[:space:]]*)?[)]',
+      '('||public_path||')',
       'g'
     );
     rewritten := pg_catalog.regexp_replace(
       rewritten,
-      '/storage/v1/object/(public/|sign/|authenticated/)?community-images/' ||
-        attachment.storage_path || '([?][^[:space:]<>()]*)?',
-      public_path,
+      '[(](https?://[^/()[:space:]]+)?/storage/v1/object/(public/|sign/|authenticated/)?community-images/' ||
+        attachment.storage_path || '([?#][^()[:space:]]*)?[)]',
+      '('||public_path||')',
       'g'
     );
-    rewritten := pg_catalog.replace(
+    rewritten := pg_catalog.regexp_replace(
       rewritten,
-      'community-images/'||attachment.storage_path,
-      public_path
+      '[(](community-images/)?' || attachment.storage_path ||
+        '([?#][^()[:space:]]*)?[)]',
+      '('||public_path||')',
+      'g'
     );
-    rewritten := pg_catalog.replace(rewritten,attachment.storage_path,public_path);
   end loop;
 
-  -- Fail closed for every remaining Storage endpoint, managed object path, or
-  -- forged attachment route. Ordinary Markdown that is unrelated to private
-  -- attachment addressing is left byte-for-byte unchanged.
+  -- Fail closed on complete Markdown destinations for every remaining Storage
+  -- endpoint, managed object path, or public attachment route. Restricting the
+  -- match to these address shapes leaves ordinary links byte-for-byte intact.
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    'https?://[^[:space:]<>()]+/storage/v1/object/[^[:space:]<>()]+',
-    'about:blank#attachment-unavailable',
+    '[(](https?://[^/()[:space:]]+)?/functions/v1/public-attachment/[^()[:space:]]+[)]',
+    '(about:blank#attachment-unavailable)',
     'g'
   );
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    '/storage/v1/object/[^[:space:]<>()]+',
-    'about:blank#attachment-unavailable',
+    '[(](https?://[^/()[:space:]]+)?/storage/v1/object/[^()[:space:]]+[)]',
+    '(about:blank#attachment-unavailable)',
     'g'
   );
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    'community-images/'||uuid_pattern||'/'||uuid_pattern||'([?][^[:space:]<>()]*)?',
-    'about:blank#attachment-unavailable',
+    '[(]community-images/[^()[:space:]]+[)]',
+    '(about:blank#attachment-unavailable)',
     'g'
   );
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    uuid_pattern||'/'||uuid_pattern||'([?][^[:space:]<>()]*)?',
-    'about:blank#attachment-unavailable',
+    '[(][0-9A-Fa-f%][0-9A-Fa-f%-]*/[0-9A-Fa-f%][0-9A-Fa-f%-]*([?#][^()[:space:]]*)?[)]',
+    '(about:blank#attachment-unavailable)',
     'g'
   );
+
+  for attachment in
+    select a.id
+      from public.attachments a
+     where a.post_id=p_post_id
+       and a.status='attached'
+       and a.deleted_at is null
+       and a.client_key is not null
+       and a.payload_sha256 is not null
+       and a.storage_path collate "C" =
+         (a.owner_id::text||'/'||a.client_key::text) collate "C"
+  loop
+    rewritten := pg_catalog.replace(
+      rewritten,
+      '(urn:public-attachment-authorized:'||attachment.id::text||')',
+      '(/functions/v1/public-attachment/'||attachment.id::text||')'
+    );
+  end loop;
 
   return rewritten;
 end;

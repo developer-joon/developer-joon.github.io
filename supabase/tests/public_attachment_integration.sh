@@ -15,21 +15,59 @@ tmpdir="$(mktemp -d)"
 cd "$repo_root"
 
 cleanup() {
-  status=$?
+  local test_status=$? cleanup_status=0 storage_status curl_status
   trap - EXIT
   set +e
+
   if [[ -n "${API_URL:-}" && -n "${SERVICE_ROLE_KEY:-}" ]]; then
-    curl --silent --output /dev/null --request DELETE \
+    storage_status="$(curl --silent --show-error --output "$tmpdir/cleanup-storage.json" \
+      --write-out '%{http_code}' --request DELETE \
       "$API_URL/storage/v1/object/community-images" \
       --header "apikey: $SERVICE_ROLE_KEY" \
       --header "authorization: Bearer $SERVICE_ROLE_KEY" \
       --header "content-type: application/json" \
-      --data "{\"prefixes\":[\"$storage_path\"]}"
+      --data "{\"prefixes\":[\"$storage_path\"]}")"
+    curl_status=$?
+    if (( curl_status != 0 )) || [[ "$storage_status" != "200" ]]; then
+      printf 'public attachment integration: Storage cleanup failed (curl=%s, http=%s)\n' \
+        "$curl_status" "${storage_status:-unavailable}" >&2
+      cleanup_status=1
+    fi
   fi
-  docker exec "$db_container" psql -X -U postgres -d postgres \
-    -c "delete from auth.users where id = '$owner_id';" >/dev/null 2>&1
+
+  if ! docker exec -i "$db_container" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres <<'SQL'
+begin;
+delete from public.attachments where id = 'e3000000-0000-4000-8000-000000000001';
+delete from public.posts where id = 'e2000000-0000-4000-8000-000000000001';
+delete from public.profiles where id = 'e1000000-0000-4000-8000-000000000001';
+delete from auth.users where id = 'e1000000-0000-4000-8000-000000000001';
+commit;
+
+do $$
+begin
+  if exists (select 1 from storage.objects where bucket_id = 'community-images' and name = 'e1000000-0000-4000-8000-000000000001/e4000000-0000-4000-8000-000000000001')
+     or exists (select 1 from public.attachments where id = 'e3000000-0000-4000-8000-000000000001')
+     or exists (select 1 from public.posts where id = 'e2000000-0000-4000-8000-000000000001')
+     or exists (select 1 from public.profiles where id = 'e1000000-0000-4000-8000-000000000001')
+     or exists (select 1 from auth.users where id = 'e1000000-0000-4000-8000-000000000001') then
+    raise exception 'public attachment integration fixture rows remain after cleanup';
+  end if;
+end
+$$;
+SQL
+  then
+    printf 'public attachment integration: database cleanup or zero-row assertion failed\n' >&2
+    cleanup_status=1
+  fi
+
   rm -rf "$tmpdir"
-  exit "$status"
+  if (( cleanup_status != 0 )); then
+    printf 'public attachment integration: cleanup failed (test exit=%s)\n' "$test_status" >&2
+  fi
+  if (( test_status != 0 )); then
+    exit "$test_status"
+  fi
+  exit "$cleanup_status"
 }
 trap cleanup EXIT
 
