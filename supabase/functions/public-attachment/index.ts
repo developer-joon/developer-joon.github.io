@@ -15,22 +15,14 @@ const SUCCESS_CACHE_CONTROL = "public, max-age=300, s-maxage=300";
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 export type AttachmentRecord = {
-  id: string;
-  postId: string | null;
   storagePath: string;
   mimeType: string;
   byteSize: number;
-  status: string;
-  deletedAt: string | null;
-  post: {
-    status: string;
-    deletedAt: string | null;
-  } | null;
 };
 
 export type PublicAttachmentDependencies = {
   env(name: string): string | undefined;
-  findAttachment(id: string): Promise<AttachmentRecord | null>;
+  resolveAttachment(id: string): Promise<AttachmentRecord | null>;
   download(path: string): Promise<Blob>;
   log(entry: Record<string, unknown>): void;
 };
@@ -72,7 +64,7 @@ function baseHeaders(
 ): Headers {
   const headers = new Headers({
     "cache-control": cacheControl,
-    "cross-origin-resource-policy": "same-origin",
+    "cross-origin-resource-policy": "cross-origin",
     "vary": "Origin",
     "x-content-type-options": "nosniff",
   });
@@ -108,43 +100,19 @@ function attachmentIdFromRequest(request: Request): string | null {
   return match[1];
 }
 
-function isEligible(record: AttachmentRecord, requestedId: string): boolean {
-  return record.id === requestedId &&
-    record.postId !== null &&
-    record.status === "attached" &&
-    record.deletedAt === null &&
-    typeof record.storagePath === "string" &&
-    record.storagePath.length > 0 &&
-    record.post?.status === "published" &&
-    record.post.deletedAt === null;
-}
-
 function hasSafeMetadata(record: AttachmentRecord): boolean {
-  return ALLOWED_MIME_TYPES.has(record.mimeType) &&
+  return record.storagePath.length > 0 &&
+    ALLOWED_MIME_TYPES.has(record.mimeType) &&
     Number.isSafeInteger(record.byteSize) &&
     record.byteSize >= 1 &&
     record.byteSize <= MAX_ATTACHMENT_BYTES;
 }
 
 function normalizeAttachment(row: Record<string, unknown>): AttachmentRecord {
-  const rawPost = Array.isArray(row.posts) ? row.posts[0] : row.posts;
-  const post = rawPost && typeof rawPost === "object"
-    ? rawPost as Record<string, unknown>
-    : null;
   return {
-    id: typeof row.id === "string" ? row.id : "",
-    postId: typeof row.post_id === "string" ? row.post_id : null,
     storagePath: typeof row.storage_path === "string" ? row.storage_path : "",
     mimeType: typeof row.mime_type === "string" ? row.mime_type : "",
     byteSize: typeof row.byte_size === "number" ? row.byte_size : Number.NaN,
-    status: typeof row.status === "string" ? row.status : "",
-    deletedAt: typeof row.deleted_at === "string" ? row.deleted_at : null,
-    post: post
-      ? {
-        status: typeof post.status === "string" ? post.status : "",
-        deletedAt: typeof post.deleted_at === "string" ? post.deleted_at : null,
-      }
-      : null,
   };
 }
 
@@ -158,14 +126,11 @@ async function runtimeDependencies(
   });
   return {
     env: (name) => Deno.env.get(name),
-    findAttachment: async (id) => {
-      const { data, error } = await serviceClient
-        .from("attachments")
-        .select(
-          "id,post_id,storage_path,mime_type,byte_size,status,deleted_at,posts!inner(status,deleted_at)",
-        )
-        .eq("id", id)
-        .maybeSingle();
+    resolveAttachment: async (id) => {
+      const { data, error } = await serviceClient.rpc(
+        "resolve_public_attachment",
+        { p_attachment_id: id },
+      ).maybeSingle();
       if (error) throw error;
       if (!data) return null;
       return normalizeAttachment(data as Record<string, unknown>);
@@ -199,9 +164,17 @@ export async function handlePublicAttachment(
       result = "origin_forbidden";
       return json(403, requestId, result, null);
     }
+    if (request.method === "OPTIONS") {
+      result = "preflight";
+      const headers = baseHeaders(origin);
+      headers.set("access-control-allow-methods", "GET");
+      headers.set("allow", "GET, OPTIONS");
+      headers.set("x-request-id", requestId);
+      return new Response(null, { status: 204, headers });
+    }
     if (request.method !== "GET") {
       result = "method_not_allowed";
-      return json(405, requestId, result, origin, { allow: "GET" });
+      return json(405, requestId, result, origin, { allow: "GET, OPTIONS" });
     }
 
     const attachmentId = attachmentIdFromRequest(request);
@@ -224,12 +197,12 @@ export async function handlePublicAttachment(
 
     let record: AttachmentRecord | null;
     try {
-      record = await dependencies.findAttachment(attachmentId);
+      record = await dependencies.resolveAttachment(attachmentId);
     } catch {
       result = "metadata_lookup_failed";
       return json(502, requestId, "attachment_unavailable", origin);
     }
-    if (!record || !isEligible(record, attachmentId)) {
+    if (!record) {
       result = "not_found";
       return json(404, requestId, result, origin);
     }

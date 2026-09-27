@@ -15,14 +15,9 @@ function attachment(
   overrides: Partial<AttachmentRecord> = {},
 ): AttachmentRecord {
   return {
-    id: ATTACHMENT_ID,
-    postId: "d1000000-0000-4000-8000-000000000001",
     storagePath: STORAGE_PATH,
     mimeType: "image/png",
     byteSize: IMAGE_BYTES.byteLength,
-    status: "attached",
-    deletedAt: null,
-    post: { status: "published", deletedAt: null },
     ...overrides,
   };
 }
@@ -37,13 +32,13 @@ function dependencies(
       if (name === "SUPABASE_SERVICE_ROLE_KEY") return "service-secret";
       return undefined;
     },
-    findAttachment: async (id) => {
+    resolveAttachment: (id) => {
       events.push(`find:${id}`);
-      return record;
+      return Promise.resolve(record);
     },
-    download: async (path) => {
+    download: (path) => {
       events.push(`download:${path}`);
-      return new Blob([IMAGE_BYTES], { type: "image/png" });
+      return Promise.resolve(new Blob([IMAGE_BYTES], { type: "image/png" }));
     },
     log: (entry) => events.push(`log:${JSON.stringify(entry)}`),
   };
@@ -83,7 +78,7 @@ Deno.test("streams an eligible private object with bounded image headers", async
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(
     response.headers.get("cross-origin-resource-policy"),
-    "same-origin",
+    "cross-origin",
   );
   assert.equal(
     response.headers.get("cache-control"),
@@ -93,17 +88,40 @@ Deno.test("streams an eligible private object with bounded image headers", async
   assert.equal(response.headers.get("vary"), "Origin");
 });
 
-Deno.test("rejects non-GET methods and advertises only GET", async () => {
-  for (const method of ["POST", "HEAD", "OPTIONS"]) {
+Deno.test("rejects non-GET byte methods and advertises GET and OPTIONS", async () => {
+  for (const method of ["POST", "HEAD"]) {
     const events: string[] = [];
     const response = await handlePublicAttachment(
       request(method),
       dependencies(events),
     );
     assert.equal(response.status, 405, method);
-    assert.equal(response.headers.get("allow"), "GET");
+    assert.equal(response.headers.get("allow"), "GET, OPTIONS");
     assert.equal(events.some((event) => event.startsWith("find:")), false);
   }
+});
+
+Deno.test("answers allowed-origin OPTIONS without metadata or Storage access", async () => {
+  const events: string[] = [];
+  const response = await handlePublicAttachment(
+    request("OPTIONS", ATTACHMENT_ID, "https://breadlab.ai"),
+    dependencies(events),
+  );
+
+  assert.equal(response.status, 204);
+  assert.equal(response.body, null);
+  assert.equal(
+    response.headers.get("access-control-allow-origin"),
+    "https://breadlab.ai",
+  );
+  assert.equal(response.headers.get("access-control-allow-methods"), "GET");
+  assert.equal(response.headers.get("allow"), "GET, OPTIONS");
+  assert.equal(
+    response.headers.get("cross-origin-resource-policy"),
+    "cross-origin",
+  );
+  assert.equal(events.some((event) => event.startsWith("find:")), false);
+  assert.equal(events.some((event) => event.startsWith("download:")), false);
 });
 
 Deno.test("rejects non-canonical attachment UUIDs before lookup", async () => {
@@ -142,34 +160,15 @@ Deno.test("fails closed when required server environment is missing", async () =
   }
 });
 
-Deno.test("returns not found for absent, ineligible, deleted, or mismatched rows", async () => {
-  const cases: Array<AttachmentRecord | null> = [
-    null,
-    attachment({ id: "a1000000-0000-4000-8000-000000000002" }),
-    ...["pending", "quarantined", "deleting", "deleted", "cleanup_failed"].map(
-      (status) => attachment({ status }),
-    ),
-    attachment({ deletedAt: "2026-09-27T00:00:00Z" }),
-    attachment({ postId: null }),
-    attachment({ post: { status: "hidden", deletedAt: null } }),
-    attachment({
-      post: { status: "deleted", deletedAt: "2026-09-27T00:00:00Z" },
-    }),
-    attachment({
-      post: { status: "published", deletedAt: "2026-09-27T00:00:00Z" },
-    }),
-  ];
-
-  for (const record of cases) {
-    const events: string[] = [];
-    const response = await handlePublicAttachment(
-      request(),
-      dependencies(events, record),
-    );
-    assert.equal(response.status, 404, JSON.stringify(record));
-    assert.deepEqual(await response.json(), { error: "not_found" });
-    assert.equal(events.some((event) => event.startsWith("download:")), false);
-  }
+Deno.test("does not access Storage when the database resolver returns no row", async () => {
+  const events: string[] = [];
+  const response = await handlePublicAttachment(
+    request(),
+    dependencies(events, null),
+  );
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "not_found" });
+  assert.equal(events.some((event) => event.startsWith("download:")), false);
 });
 
 Deno.test("rejects unsupported expected MIME before Storage download", async () => {
@@ -199,7 +198,7 @@ Deno.test("rejects oversized, wrong-length, and MIME-inconsistent Storage blobs"
 
   for (const [record, blob] of cases) {
     const deps = dependencies([], record);
-    deps.download = async () => blob;
+    deps.download = () => Promise.resolve(blob);
     const response = await handlePublicAttachment(request(), deps);
     assert.equal(response.status, 502);
     assert.deepEqual(await response.json(), {
@@ -257,16 +256,16 @@ Deno.test("redacts service and Storage failures from responses and logs", async 
     const deps = dependencies();
     deps.log = (entry) => logs.push(entry);
     if (operation === "find") {
-      deps.findAttachment = async () => {
-        throw new Error(
+      deps.resolveAttachment = () => {
+        return Promise.reject(new Error(
           `database failed storage_path=${STORAGE_PATH} secret=service-secret`,
-        );
+        ));
       };
     } else {
-      deps.download = async () => {
-        throw new Error(
+      deps.download = () => {
+        return Promise.reject(new Error(
           `storage failed storage_path=${STORAGE_PATH} secret=service-secret`,
-        );
+        ));
       };
     }
 
