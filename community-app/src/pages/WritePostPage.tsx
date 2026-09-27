@@ -5,7 +5,7 @@ import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import { normalizeCommunityReturnPath } from '../auth/auth'
 import type { CommunityRepository } from '../data/communityRepository'
-import { clearDraft, createWriteDraft, loadDraft, readDraftSnapshot, saveDraft, type DraftStorage, type WriteDraft } from '../lib/draftStore'
+import { clearDraft, createWriteDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft, type DraftStorage, type WriteDraft } from '../lib/draftStore'
 import { isStrictUuid, type PostInput } from '../lib/validation'
 import type { CommunityTag } from '../types/community'
 
@@ -37,9 +37,10 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
   const [tagAttempt, setTagAttempt] = useState(0)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [needsLogin, setNeedsLogin] = useState(false)
+  const draftSaveFailed = useRef(false)
 
   useEffect(() => {
-    saveDraft(storage, draftRef.current!)
+    draftSaveFailed.current = !saveDraft(storage, draftRef.current!)
   }, [storage])
 
   useEffect(() => {
@@ -62,19 +63,41 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
     const current = draftRef.current!
     const next: WriteDraft = { ...current, ...value, updatedAt: new Date().toISOString() }
     draftRef.current = next
-    saveDraft(storage, next)
+    const saved = saveDraft(storage, next)
+    draftSaveFailed.current = !saved
+    if (!saved) setSubmitError('초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+    return saved
   }, [storage])
 
   async function publish(value: PostInput) {
-    autosave(value); setSubmitError(null); setNeedsLogin(false)
+    setSubmitError(null); setNeedsLogin(false)
+    if (draftSaveFailed.current) {
+      setSubmitError('초안을 저장할 수 없어 발행하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+      return
+    }
+    const current = draftRef.current!
+    const currentSnapshot = readDraftSnapshot(storage, 'write')
+    if (!currentSnapshot.ok) {
+      setSubmitError('초안 저장소를 확인할 수 없어 발행하지 않았습니다. 브라우저 설정을 확인해 주세요.')
+      return
+    }
+    if (currentSnapshot.raw !== null && !matchesDraftSnapshot(currentSnapshot, current)) {
+      setSubmitError('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')
+      return
+    }
+    const saved = autosave(value)
+    const submitted: WriteDraft = { ...draftRef.current!, tagIds: [...draftRef.current!.tagIds] }
+    const submittedSnapshot = readDraftSnapshot(storage, 'write')
+    if (!saved || !matchesDraftSnapshot(submittedSnapshot, submitted)) {
+      setSubmitError(saved ? '다른 탭에서 초안이 변경되어 발행하지 않았습니다.' : '초안을 저장할 수 없어 발행하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+      return
+    }
     if (!auth.user) {
       await auth.signInWithGitHub(safeWritePath(currentPath))
       return
     }
     const generation = lifecycle.current
     const actorId = auth.user.id
-    const submitted: WriteDraft = { ...draftRef.current!, tagIds: [...draftRef.current!.tagIds] }
-    const submittedSnapshot = readDraftSnapshot(storage, 'write')
     const result = await repository.createPost({ ...value, idempotencyKey: submitted.idempotencyKey })
     if (generation !== lifecycle.current || authUserId.current !== actorId) return
     if (!result.ok) {
@@ -86,8 +109,8 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
       setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.')
       return
     }
-    const currentSnapshot = readDraftSnapshot(storage, 'write')
-    if (!submittedSnapshot.ok || !currentSnapshot.ok || currentSnapshot.raw !== submittedSnapshot.raw) {
+    const completionSnapshot = readDraftSnapshot(storage, 'write')
+    if (!matchesDraftSnapshot(completionSnapshot, submitted)) {
       setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')
       return
     }

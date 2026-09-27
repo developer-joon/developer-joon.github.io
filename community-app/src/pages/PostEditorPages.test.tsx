@@ -103,6 +103,35 @@ describe('WritePostPage', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
+  it('does not call create when the dispatch autosave cannot be persisted', async () => {
+    const local = storage(); let blocked = false
+    const failingStorage = { ...local, setItem: (key: string, value: string) => {
+      if (blocked) { local.values.delete(key); throw new Error('quota') }
+      local.setItem(key, value)
+    } }
+    const createPost = vi.fn(); const navigate = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} storage={failingStorage} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid(); blocked = true
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+
+    expect(await screen.findByText('초안을 저장할 수 없어 발행하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')).toBeInTheDocument()
+    expect(createPost).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('does not overwrite a malformed replacement already present before create dispatch', async () => {
+    const local = storage(); const createPost = vi.fn(); const navigate = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid()
+    local.setItem(draftKey('write'), '{broken')
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+
+    expect(await screen.findByText('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')).toBeInTheDocument()
+    expect(local.values.get(draftKey('write'))).toBe('{broken')
+    expect(createPost).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
   it('preserves draft and does not navigate for auth expiry or malformed success UUID', async () => {
     const local = storage(); const navigate = vi.fn()
     const createPost = vi.fn().mockResolvedValueOnce({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST301', message: '로그인이 필요합니다.' } }).mockResolvedValueOnce({ ok: true, data: 'bad-id' })
@@ -203,6 +232,23 @@ describe('EditPostPage', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
+  it('does not call update after an edit autosave failure', async () => {
+    const local = storage(); let blocked = false
+    const failingStorage = { ...local, setItem: (key: string, value: string) => {
+      if (blocked) throw new Error('quota')
+      local.setItem(key, value)
+    } }
+    const updatePost = vi.fn(); const navigate = vi.fn()
+    wrap(<EditPostPage repository={repository({ updatePost })} search={`?id=${postId}`} storage={failingStorage} navigate={navigate} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목'); blocked = true
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '저장 실패 제목' } })
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+
+    expect(await screen.findByText('초안을 저장할 수 없어 수정하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')).toBeInTheDocument()
+    expect(updatePost).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
   it('retains an edit draft and offers safe re-login when the session expires', async () => {
     const local = storage(); const a = auth(authorId)
     const updatePost = vi.fn().mockResolvedValue({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST301', message: '로그인이 필요합니다.' } })
@@ -238,6 +284,20 @@ describe('EditPostPage', () => {
 
     expect(await screen.findByText('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')).toBeInTheDocument()
     expect(local.values.get(draftKey('edit', postId))).toBe('{broken')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('does not call delete when a malformed replacement exists before dispatch', async () => {
+    const local = storage(); const deletePost = vi.fn(); const navigate = vi.fn()
+    wrap(<EditPostPage repository={repository({ deletePost })} search={`?id=${postId}`} storage={local} navigate={navigate} confirmDelete={() => true} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '삭제 대상 제목' } })
+    local.setItem(draftKey('edit', postId), '{broken')
+    fireEvent.click(screen.getByRole('button', { name: '글 삭제' }))
+
+    expect(await screen.findByText('다른 탭에서 초안이 변경되어 삭제하지 않았습니다.')).toBeInTheDocument()
+    expect(local.values.get(draftKey('edit', postId))).toBe('{broken')
+    expect(deletePost).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })
 })

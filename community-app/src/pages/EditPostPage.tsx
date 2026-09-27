@@ -4,7 +4,7 @@ import { DraftNotice } from '../components/DraftNotice'
 import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import type { CommunityRepository } from '../data/communityRepository'
-import { clearDraft, createEditDraft, loadDraft, readDraftSnapshot, saveDraft, type DraftStorage, type EditDraft } from '../lib/draftStore'
+import { clearDraft, createEditDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft, type DraftStorage, type EditDraft } from '../lib/draftStore'
 import { parsePostId } from '../lib/postQuery'
 import { isStrictUuid, type PostInput } from '../lib/validation'
 import type { CommunityTag, PostDetail, PublicPostRead } from '../types/community'
@@ -45,6 +45,7 @@ export function EditPostPage({ repository, search, storage = window.localStorage
   const [restoredDraft, setRestoredDraft] = useState(false)
   const [deletePending, setDeletePending] = useState(false)
   const deleteLock = useRef(false)
+  const draftSaveFailed = useRef(false)
 
   useEffect(() => {
     const generation = ++lifecycle.current
@@ -75,40 +76,58 @@ export function EditPostPage({ repository, search, storage = window.localStorage
   const autosave = useCallback((value: PostInput) => {
     if (!postId || !draftRef.current) return
     const next: EditDraft = { ...draftRef.current, ...value, updatedAt: new Date().toISOString() }
-    draftRef.current = next; saveDraft(storage, next)
+    draftRef.current = next
+    const saved = saveDraft(storage, next)
+    draftSaveFailed.current = !saved
+    if (!saved) setSubmitError('초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
+    return saved
   }, [postId, storage])
 
   async function update(value: PostInput) {
     if (!postId) return
-    autosave(value); setSubmitError(null); setNeedsLogin(false)
+    setSubmitError(null); setNeedsLogin(false)
+    if (draftSaveFailed.current) { setSubmitError('초안을 저장할 수 없어 수정하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.'); return }
+    const current = draftRef.current
+    const currentSnapshot = readDraftSnapshot(storage, 'edit', postId)
+    if (!current || !currentSnapshot.ok) { setSubmitError('초안 저장소를 확인할 수 없어 수정하지 않았습니다. 브라우저 설정을 확인해 주세요.'); return }
+    if (currentSnapshot.raw !== null && !matchesDraftSnapshot(currentSnapshot, current)) { setSubmitError('다른 탭에서 초안이 변경되어 수정하지 않았습니다.'); return }
+    const saved = autosave(value)
     const generation = lifecycle.current
     const actorId = auth.user?.id ?? null
     const submitted = draftRef.current ? { ...draftRef.current, tagIds: [...draftRef.current.tagIds] } : null
     if (!actorId || !submitted) return
     const submittedSnapshot = readDraftSnapshot(storage, 'edit', postId)
+    if (!saved || !matchesDraftSnapshot(submittedSnapshot, submitted)) { setSubmitError(saved ? '다른 탭에서 초안이 변경되어 수정하지 않았습니다.' : '초안을 저장할 수 없어 수정하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.'); return }
     const result = await repository.updatePost({ postId, ...value })
     if (generation !== lifecycle.current || authUserId.current !== actorId) return
     if (!result.ok) { setSubmitError(result.error.message); setNeedsLogin(result.error.code === 'auth_required'); return }
     if (!isStrictUuid(result.data) || result.data !== postId) { setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.'); return }
-    const currentSnapshot = readDraftSnapshot(storage, 'edit', postId)
-    if (!submittedSnapshot.ok || !currentSnapshot.ok || currentSnapshot.raw !== submittedSnapshot.raw) { setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.'); return }
+    const completionSnapshot = readDraftSnapshot(storage, 'edit', postId)
+    if (!matchesDraftSnapshot(completionSnapshot, submitted)) { setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.'); return }
     clearDraft(storage, 'edit', postId); navigate(`/community/post/?id=${postId}`)
   }
 
   async function remove() {
     if (!postId || deleteLock.current || !confirmDelete('이 글을 삭제하시겠습니까? 삭제 후에는 본문을 복구할 수 없습니다.')) return
     deleteLock.current = true; setDeletePending(true); setSubmitError(null); setNeedsLogin(false)
+    if (draftSaveFailed.current) { setSubmitError('초안을 저장할 수 없어 삭제하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.'); deleteLock.current = false; setDeletePending(false); return }
     const generation = lifecycle.current
     const actorId = auth.user?.id ?? null
     const submitted = draftRef.current ? { ...draftRef.current, tagIds: [...draftRef.current.tagIds] } : null
+    if (!actorId) { setSubmitError('로그인이 필요합니다.'); setNeedsLogin(true); deleteLock.current = false; setDeletePending(false); return }
+    const currentSnapshot = readDraftSnapshot(storage, 'edit', postId)
+    if (!submitted || !currentSnapshot.ok) { setSubmitError('초안 저장소를 확인할 수 없어 삭제하지 않았습니다. 브라우저 설정을 확인해 주세요.'); deleteLock.current = false; setDeletePending(false); return }
+    if (currentSnapshot.raw !== null && !matchesDraftSnapshot(currentSnapshot, submitted)) { setSubmitError('다른 탭에서 초안이 변경되어 삭제하지 않았습니다.'); deleteLock.current = false; setDeletePending(false); return }
+    const saved = currentSnapshot.raw !== null || saveDraft(storage, submitted)
     const submittedSnapshot = readDraftSnapshot(storage, 'edit', postId)
+    if (!saved || !matchesDraftSnapshot(submittedSnapshot, submitted)) { setSubmitError(saved ? '다른 탭에서 초안이 변경되어 삭제하지 않았습니다.' : '초안을 저장할 수 없어 삭제하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.'); deleteLock.current = false; setDeletePending(false); return }
     try {
       const result = await repository.deletePost(postId)
       if (generation !== lifecycle.current || authUserId.current !== actorId) return
       if (!result.ok) { setSubmitError(result.error.message); setNeedsLogin(result.error.code === 'auth_required'); return }
       if (!isStrictUuid(result.data) || result.data !== postId) { setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.'); return }
-      const currentSnapshot = readDraftSnapshot(storage, 'edit', postId)
-      if (!submitted || !submittedSnapshot.ok || !currentSnapshot.ok || currentSnapshot.raw !== submittedSnapshot.raw) { setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.'); return }
+      const completionSnapshot = readDraftSnapshot(storage, 'edit', postId)
+      if (!submitted || !matchesDraftSnapshot(completionSnapshot, submitted)) { setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.'); return }
       clearDraft(storage, 'edit', postId); navigate(`/community/post/?id=${postId}`)
     } finally {
       deleteLock.current = false

@@ -108,6 +108,10 @@ export function readDraftSnapshot(storage: DraftStorage, kind: DraftKind, postId
   }
 }
 
+export function matchesDraftSnapshot(snapshot: DraftSnapshot, draft: PostDraft): boolean {
+  return snapshot.ok && snapshot.raw !== null && snapshot.raw === JSON.stringify(draft)
+}
+
 export function saveDraft(storage: DraftStorage, draft: PostDraft): boolean {
   try {
     storage.setItem(draft.kind === 'write' ? draftKey('write') : draftKey('edit', draft.postId), JSON.stringify(draft))
