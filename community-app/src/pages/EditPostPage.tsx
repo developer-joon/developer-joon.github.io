@@ -20,8 +20,8 @@ interface Props {
   currentPath?: string
 }
 
-function State({ title, children }: { title: string; children?: React.ReactNode }) {
-  return <section className="post-state"><p className="post-detail-kicker">EDITORIAL DESK</p><h1>{title}</h1>{children}<a className="post-list-link" href="/community/">커뮤니티 글 목록으로</a></section>
+function State({ title, children, alert = false }: { title: string; children?: React.ReactNode; alert?: boolean }) {
+  return <section className="post-state" role={alert ? 'alert' : undefined}><p className="post-detail-kicker">EDITORIAL DESK</p><h1>{title}</h1>{children}<a className="post-list-link" href="/community/">커뮤니티 글 목록으로</a></section>
 }
 
 function stateTitle(read: Exclude<PublicPostRead, { kind: 'published' }>) {
@@ -50,6 +50,7 @@ export function EditPostPage({ repository, search, storage = window.localStorage
   const [tags, setTags] = useState<CommunityTag[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  const retryButtonRef = useRef<HTMLButtonElement>(null)
   const [initialDraft, setInitialDraft] = useState<EditDraft | null>(null)
   const draftRef = useRef<EditDraft | null>(null)
   const baseline = useRef<DraftSnapshot>({ ok: false })
@@ -107,6 +108,10 @@ export function EditPostPage({ repository, search, storage = window.localStorage
     })
     return () => { active = false }
   }, [attempt, key, postId, repository, storage])
+
+  useEffect(() => {
+    if (loadError) retryButtonRef.current?.focus()
+  }, [loadError])
 
   const persistExactLocked = useCallback((draft: EditDraft) => {
     if (!isPersistableDraft(draft)) return false
@@ -288,7 +293,7 @@ export function EditPostPage({ repository, search, storage = window.localStorage
 
   let content: React.ReactNode
   if (!postId) content = <State title="올바르지 않은 게시글 주소입니다" />
-  else if (loadError) content = <State title={loadError}><button type="button" className="secondary-action" onClick={() => setAttempt(value => value + 1)}>다시 시도</button></State>
+  else if (loadError) content = <State title={loadError} alert><button ref={retryButtonRef} type="button" className="secondary-action" onClick={() => setAttempt(value => value + 1)}>다시 시도</button></State>
   else if (readState) content = <State title={stateTitle(readState)} />
   else if (!post || !tags || !initialDraft || auth.loading) content = <State title="수정할 글을 불러오고 있습니다" />
   else if (!auth.user) content = <State title="로그인이 필요합니다"><button type="button" className="secondary-action" onClick={() => void auth.signInWithGitHub(safeEditPath(currentPath, postId))}>로그인하고 수정하기</button></State>

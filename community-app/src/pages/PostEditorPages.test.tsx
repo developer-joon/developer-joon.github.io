@@ -306,6 +306,15 @@ describe('WritePostPage', () => {
 })
 
 describe('EditPostPage', () => {
+  it('announces an edit-load lock failure and focuses its retry action', async () => {
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined })
+
+    wrap(<EditPostPage repository={repository()} search={`?id=${postId}`} storage={storage()} navigate={vi.fn()} />, auth(authorId))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('초안 잠금을 사용할 수 없어 수정 화면을 열 수 없습니다. 브라우저 설정을 확인해 주세요.')
+    expect(screen.getByRole('button', { name: '다시 시도' })).toHaveFocus()
+  })
+
   it.each([
     ['?id=bad', '올바르지 않은 게시글 주소입니다', undefined],
     [`?id=${postId}`, '게시글을 찾을 수 없습니다', { kind: 'not_found' }],
