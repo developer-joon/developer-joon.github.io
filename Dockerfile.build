@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1.7
+
+ARG SITE_BUILD_PLATFORM=linux/amd64
+FROM --platform=${SITE_BUILD_PLATFORM} node:24.11.1-bookworm-slim@sha256:44b49d6e2d23f6754fb084ef9d34ff14590343ad1ee168f8acf8f7bc9fccde2f AS node-runtime
+FROM --platform=${SITE_BUILD_PLATFORM} ruby:3.3.10-bookworm@sha256:1e4e79f4d25444ba297adac629f0c9d9b986fb45e8a4faf1296305c5e3d8cc1a AS build
+
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && gem install bundler --version 2.5.22 --no-document
+
+ENV BUNDLE_DEPLOYMENT=true \
+    BUNDLE_PATH=/usr/local/bundle \
+    BUNDLE_WITHOUT=development:test
+WORKDIR /work
+COPY Gemfile Gemfile.lock ./
+RUN bundle install --jobs 4 --retry 3
+
+RUN useradd --create-home --uid 10001 site-builder \
+ && chown site-builder:site-builder /work
+COPY --chown=site-builder:site-builder . .
+USER site-builder
+RUN test "$(id -u)" != 0 && ./scripts/build-site.sh
+
+FROM scratch AS site
+COPY --from=build /work/_site /

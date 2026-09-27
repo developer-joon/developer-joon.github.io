@@ -1,11 +1,11 @@
 _site/
+_site-docker/
 .sass-cache/
 .jekyll-cache/
 .bundle/
 vendor/bundle/
 
 _README.md
-Gemfile.lock
 
 .DS_Store
 

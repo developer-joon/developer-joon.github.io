@@ -38,7 +38,15 @@ http://localhost:4000
 ./scripts/build-site.sh
 ```
 
-이 명령은 커뮤니티 의존성 설치·검사·Vite 빌드, production Jekyll 빌드, `_site/community/` 병합, 최종 artifact 검증을 순서대로 실행합니다. 이미 조립된 artifact만 다시 검사하려면 `node scripts/verify-site.mjs _site`를 실행합니다.
+호스트에 Ruby가 없다면 저장소에 고정된 Node.js 24.11.1, Ruby 3.3.10, Bundler 2.5.22 및 `Gemfile.lock`을 사용하는 Docker 빌드를 실행합니다.
+
+```bash
+./scripts/build-site-docker.sh
+```
+
+Docker 빌드는 고정된 `linux/amd64` 이미지와 UID 10001의 비-root 사용자로 같은 `scripts/build-site.sh`를 실행하고 검증된 artifact를 `_site-docker/`에 복사합니다. 출력 경로를 바꾸려면 첫 번째 인수로 지정합니다(예: `./scripts/build-site-docker.sh /tmp/site-artifact`).
+
+두 명령 모두 커뮤니티 의존성 설치·검사·Vite 빌드, production Jekyll 빌드, community 병합, 최종 artifact 검증을 순서대로 실행합니다. 이미 조립된 artifact만 다시 검사하려면 `node scripts/verify-site.mjs _site`를 실행합니다.
 
 ## 배포
 

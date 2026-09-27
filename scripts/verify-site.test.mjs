@@ -85,7 +85,14 @@ test('accepts a minimal valid generated artifact', async () => {
   })
 })
 
-for (const leakedConfig of ['_config.yml', 'vite.config.js']) {
+for (const leakedConfig of [
+  '_config.yml',
+  '_config.production.yml',
+  'vite.config.js',
+  'next.config.mjs',
+  '.ruby-version',
+  'Rakefile',
+]) {
   test(`rejects leaked build configuration ${leakedConfig}`, async () => {
     await withArtifact(async (root) => {
       await put(root, leakedConfig, 'build configuration')
@@ -104,6 +111,23 @@ test('accepts generated website files whose names merely contain config', async 
     assert.equal(result.status, 0, result.stderr)
   })
 })
+
+for (const leakedSource of [
+  '_data/navigation.yml',
+  '_includes/header.html',
+  '_layouts/default.html',
+  '_posts/2026-09-27-private.md',
+  '.github/workflows/deploy.yml',
+]) {
+  test(`rejects leaked build source ${leakedSource}`, async () => {
+    await withArtifact(async (root) => {
+      await put(root, leakedSource, 'build source')
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${leakedSource}`)
+      assert.match(result.stderr, /implementation\/private path leaked/)
+    })
+  })
+}
 
 test('rejects a secret in a regular file larger than 2 MB', async () => {
   await withArtifact(async (root) => {
@@ -139,6 +163,26 @@ test('rejects a secret split across streaming scan chunks', async () => {
     assert.match(result.stderr, /possible secret leaked/)
   })
 })
+
+for (const encoding of ['utf16le', 'utf16be']) {
+  test(`rejects a ${encoding.toUpperCase()} secret in a large file across scan chunks`, async () => {
+    await withArtifact(async (root) => {
+      const chunkSize = 64 * 1024
+      const secret = 'sb_secret_utf16_cross_chunk_value'
+      const encodedSecret = Buffer.from(secret, 'utf16le')
+      if (encoding === 'utf16be') encodedSecret.swap16()
+      const content = Buffer.concat([
+        Buffer.alloc(chunkSize - 10, 0x20),
+        encodedSecret,
+        Buffer.alloc(2_000_001 - chunkSize - encodedSecret.length + 10, 0x20),
+      ])
+      await put(root, `${encoding}-large-generated.bin`, content)
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly missed a ${encoding} secret`)
+      assert.match(result.stderr, /possible secret leaked/)
+    })
+  })
+}
 
 test('rejects unhashed local JavaScript referenced by every community shell', async () => {
   await withArtifact(async (root) => {
@@ -214,6 +258,35 @@ test('rejects a missing hashed local asset referenced through srcset', async () 
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a missing srcset asset')
     assert.match(result.stderr, /missing community asset/)
+  })
+})
+
+test('rejects an unquoted unhashed asset reference in any generated HTML file', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/assets/extra.png')
+    await put(root, 'nested/generated.html', '<img src=/community/assets/extra.png>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly ignored an unquoted asset outside the six shells')
+    assert.match(result.stderr, /content-hashed/)
+  })
+})
+
+test('rejects a missing unquoted hashed href in any generated HTML file', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'nested/generated.html', '<link href=/community/assets/missing-Ab12Cd34.css>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly ignored an unquoted missing asset outside the six shells')
+    assert.match(result.stderr, /missing community asset/)
+  })
+})
+
+test('rejects comma-adjacent unhashed srcset URLs in any generated HTML file', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/assets/extra.png')
+    await put(root, 'nested/generated.html', '<img srcset="/community/assets/logo-Xy12Za34.png,/community/assets/extra.png">')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly ignored a comma-adjacent srcset URL')
+    assert.match(result.stderr, /content-hashed/)
   })
 })
 

@@ -29,6 +29,11 @@ const requiredFiles = [
 ]
 
 const forbiddenSegments = new Set([
+  '.github',
+  '_data',
+  '_includes',
+  '_layouts',
+  '_posts',
   'community-app',
   'docs',
   'migrations',
@@ -40,12 +45,14 @@ const forbiddenSegments = new Set([
 const forbiddenNames = [
   /^\.env(?:\..*)?$/i,
   /^\.npmrc$/i,
-  /^_config\.ya?ml$/i,
+  /^_config(?:\.[^.]+)*\.ya?ml$/i,
+  /^\.ruby-version$/i,
   /^deno\.lock$/i,
   /^Gemfile(?:\.lock)?$/,
+  /^Rakefile$/,
   /^package(?:-lock)?\.json$/i,
   /^tsconfig(?:\..*)?\.json$/i,
-  /^(?:babel|eslint|postcss|prettier|rollup|tailwind|vite|webpack)\.config\.[cm]?[jt]s$/i,
+  /^(?:babel|eslint|next|postcss|prettier|rollup|tailwind|vite|webpack)\.config\.[cm]?[jt]s$/i,
   /\.(?:sql|ts|tsx|jsx|vue|svelte|scss|sass|less|map)$/i,
   /^(?:id_rsa|id_ed25519)$/i,
   /\.(?:key|pem)$/i,
@@ -99,11 +106,12 @@ function assertIncludes(content, expected, relativePath, behavior) {
 
 function communityAssetReferences(html, shellPath) {
   const references = []
-  const attributePattern = /\b(src|href|srcset)\s*=\s*["']([^"']+)["']/gi
+  const attributePattern = /\b(src|href|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi
   for (const match of html.matchAll(attributePattern)) {
+    const value = match[2] ?? match[3] ?? match[4]
     const candidates = match[1].toLowerCase() === 'srcset'
-      ? srcsetCandidates(match[2])
-      : [match[2]]
+      ? srcsetCandidates(value)
+      : [value]
     for (const candidate of candidates) {
       try {
         const url = new URL(candidate, `https://www.breadlab.ai/${shellPath}`)
@@ -124,8 +132,8 @@ function srcsetCandidates(srcset) {
   while (position < srcset.length) {
     while (/[\s,]/.test(srcset[position] ?? '')) position += 1
     const start = position
-    while (position < srcset.length && !/\s/.test(srcset[position])) position += 1
-    const candidate = srcset.slice(start, position).replace(/,+$/, '')
+    while (position < srcset.length && !/[\s,]/.test(srcset[position])) position += 1
+    const candidate = srcset.slice(start, position)
     if (candidate) candidates.push(candidate)
     while (position < srcset.length && srcset[position] !== ',') position += 1
     if (srcset[position] === ',') position += 1
@@ -136,21 +144,35 @@ function srcsetCandidates(srcset) {
 async function scanFileForSecrets(relativePath) {
   const reportedPatterns = new Set()
   let reportedServiceRole = false
-  let overlap = ''
+  let overlap = Buffer.alloc(0)
+  let bytesRead = 0
 
   for await (const chunk of createReadStream(path.join(siteRoot, relativePath), { highWaterMark: 64 * 1024 })) {
-    const text = overlap + chunk.toString('latin1')
-    for (const pattern of secretPatterns) {
-      if (!reportedPatterns.has(pattern) && pattern.test(text)) {
-        fail(`possible secret leaked into artifact: ${relativePath} (${pattern})`)
-        reportedPatterns.add(pattern)
+    const combined = Buffer.concat([overlap, chunk])
+    const combinedOffset = bytesRead - overlap.length
+    const alignedStart = Math.abs(combinedOffset % 2)
+    const utf16Bytes = combined.subarray(alignedStart, combined.length - (combined.length - alignedStart) % 2)
+    const utf16beBytes = Buffer.from(utf16Bytes)
+    utf16beBytes.swap16()
+    const texts = [
+      combined.toString('latin1'),
+      utf16Bytes.toString('utf16le'),
+      utf16beBytes.toString('utf16le'),
+    ]
+    for (const text of texts) {
+      for (const pattern of secretPatterns) {
+        if (!reportedPatterns.has(pattern) && pattern.test(text)) {
+          fail(`possible secret leaked into artifact: ${relativePath} (${pattern})`)
+          reportedPatterns.add(pattern)
+        }
+      }
+      if (!reportedServiceRole && containsServiceRoleJwt(text)) {
+        fail(`Supabase service-role token leaked into artifact: ${relativePath}`)
+        reportedServiceRole = true
       }
     }
-    if (!reportedServiceRole && containsServiceRoleJwt(text)) {
-      fail(`Supabase service-role token leaked into artifact: ${relativePath}`)
-      reportedServiceRole = true
-    }
-    overlap = text.slice(-64 * 1024)
+    bytesRead += chunk.length
+    overlap = combined.subarray(-64 * 1024)
   }
 }
 
@@ -270,6 +292,13 @@ async function main() {
     if (assetReferences.length === 0) {
       fail(`${relativePath} does not reference a built /community/assets/ file`)
     }
+    if (/\/(?:src|node_modules)\//.test(html)) {
+      fail(`${relativePath} references implementation source`)
+    }
+  }
+  for (const relativePath of files.filter((file) => /\.html?$/i.test(file))) {
+    const html = await readText(relativePath)
+    const assetReferences = communityAssetReferences(html, relativePath)
     for (const assetPath of assetReferences) {
       if (!isContentHashedAsset(assetPath)) {
         fail(`${relativePath} references an asset without a Vite-style content-hashed filename: ${assetPath}`)
@@ -277,9 +306,6 @@ async function main() {
       if (!files.includes(assetPath.slice(1))) {
         fail(`${relativePath} references a missing community asset: ${assetPath}`)
       }
-    }
-    if (/\/(?:src|node_modules)\//.test(html)) {
-      fail(`${relativePath} references implementation source`)
     }
   }
   if (!files.some((file) => /^community\/assets\/.+\.js$/.test(file))) {

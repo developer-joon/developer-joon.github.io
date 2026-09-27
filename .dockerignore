@@ -1,2 +1,12 @@
-.sass-cache/*
-_site/*
+.git
+.github
+.bundle
+.jekyll-cache
+.sass-cache
+_site
+_site-docker
+community-app/.env*
+community-app/coverage
+community-app/dist
+community-app/node_modules
+vendor/bundle
