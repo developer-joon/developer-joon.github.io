@@ -1,6 +1,6 @@
 begin;
 
-select plan(64);
+select plan(80);
 
 insert into auth.users (id, aud, role, email) values
   ('51000000-0000-0000-0000-000000000001','authenticated','authenticated','read-a@example.test'),
@@ -91,6 +91,68 @@ select is(
   (select regexp_count(body_markdown, '/functions/v1/public-attachment/', 1, 'n') from public.get_public_post('52000000-0000-0000-0000-000000000001')),
   3,
   'only identifiers for attached nondeleted rows on this post become public URLs'
+);
+update public.posts
+   set body_markdown = E'<https://project.supabase.co/storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?token=autolink_secret>\n[image-ref]: community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000002#apikey=reference_secret "reference title"\nplain 51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?token=plain_secret end\nunsafe https://project.supabase.co/storage/v1/object/sign/community-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002?token=storage_secret end\nforged https://evil.example/functions/v1/public-attachment/59000000-0000-4000-8000-000000000003?apikey=route_secret end\ncredentials token=loose_secret apikey=loose_key sb_secret_very_private end\nplain-no-suffix 51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001 end\nordinary https://example.com/docs?q=1 and cafe/dead'
+ where id = '52000000-0000-0000-0000-000000000001';
+select is(
+  (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')),
+  E'</functions/v1/public-attachment/56000000-0000-4000-8000-000000000001>\n[image-ref]: /functions/v1/public-attachment/56000000-0000-4000-8000-000000000002 "reference title"\nplain /functions/v1/public-attachment/56000000-0000-4000-8000-000000000001 end\nunsafe about:blank#attachment-unavailable end\nforged about:blank#attachment-unavailable end\ncredentials about:blank#attachment-unavailable about:blank#attachment-unavailable about:blank#attachment-unavailable end\nplain-no-suffix /functions/v1/public-attachment/56000000-0000-4000-8000-000000000001 end\nordinary https://example.com/docs?q=1 and cafe/dead',
+  'detail sanitizer covers autolinks, reference definitions, plain paths, URLs, routes, and credentials'
+);
+select ok(position('autolink_secret' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'autolink credential suffix is removed');
+select ok(position('reference_secret' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'reference credential suffix is removed');
+select ok(position('plain_secret' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'plain-path credential suffix is removed');
+select ok(position('storage_secret' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'plain Storage URL credential suffix is removed');
+select ok(position('route_secret' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'forged-route credential suffix is removed');
+select ok(position('loose_secret' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'loose token credential is removed');
+select ok(position('loose_key' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'loose apikey credential is removed');
+select ok(position('sb_secret_very_private' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'loose Supabase secret is removed');
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    repeat('[ordinary](https://example.com/docs?q=1) ',1500)
+  ),
+  repeat('[ordinary](https://example.com/docs?q=1) ',1500),
+  '1500 ordinary links are preserved'
+);
+select is(
+  regexp_count(pg_get_functiondef('private.public_post_body(uuid,text)'::regprocedure),'from public.attachments',1,'ni'),
+  1,
+  'body sanitizer loads its attachment mapping with one SQL query'
+);
+select ok(
+  to_regprocedure('private.public_attachment_destination(uuid,text,text)') is null,
+  'body sanitizer has no per-destination SQL helper'
+);
+select ok(
+  (
+    select p.prosecdef
+       and p.proconfig = array['search_path=""']
+       and pg_get_userbyid(p.proowner) = 'postgres'
+      from pg_proc p
+     where p.oid = 'private.public_post_body(uuid,text)'::regprocedure
+  ),
+  'body sanitizer is fixed-owner SECURITY DEFINER with empty search_path'
+);
+select has_function('private','public_post_excerpt',array['uuid','text'],'bounded excerpt sanitizer exists');
+select ok(
+  (
+    select p.prosecdef
+       and p.proconfig = array['search_path=""']
+       and pg_get_userbyid(p.proowner) = 'postgres'
+      from pg_proc p
+     where p.oid = 'private.public_post_excerpt(uuid,text)'::regprocedure
+  ),
+  'excerpt sanitizer is fixed-owner SECURITY DEFINER with empty search_path'
+);
+select is(
+  private.public_post_excerpt(
+    '52000000-0000-0000-0000-000000000001',
+    repeat('ordinary ',10)||'token=excerpt_secret '||repeat('after ',8200)
+  ),
+  left(repeat('ordinary ',10)||'about:blank#attachment-unavailable '||repeat('after ',20),180),
+  'excerpt scans a bounded prefix, sanitizes it, and returns at most 180 characters'
 );
 select throws_ok($$select * from public.list_public_posts('bad',10,null,null,null,null,null,null,null)$$,'22023','invalid post sort','invalid sort is rejected');
 select throws_ok($$select * from public.list_public_posts('newest',101,null,null,null,null,null,null,null)$$,'22023','invalid page limit','invalid limit is rejected');

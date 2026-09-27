@@ -123,6 +123,11 @@ returns text language sql stable set search_path='' as $$
   select p_body_markdown
 $$;
 
+create function private.public_post_excerpt(p_post_id uuid,p_body_markdown text)
+returns text language sql stable set search_path='' as $$
+  select pg_catalog.left(p_body_markdown,180)
+$$;
+
 create function public.list_public_posts(
   p_sort text,
   p_limit integer,
@@ -208,7 +213,7 @@ begin
 
   return query
   with candidates as (
-    select p.id,p.title,pg_catalog.left(private.public_post_body(p.id,p.body_markdown),180) excerpt,
+    select p.id,p.title,private.public_post_excerpt(p.id,p.body_markdown) excerpt,
       p.created_at,p.updated_at,p.is_locked,p.is_pinned,
       pr.id author_id,pr.login author_login,pr.display_name author_display_name,pr.avatar_url author_avatar_url,
       coalesce(t.tags,'[]'::jsonb) tags,
@@ -303,10 +308,12 @@ $$;
 alter function private.maintain_public_comment_count() owner to postgres;
 alter function private.maintain_post_reaction_daily_count() owner to postgres;
 alter function private.public_post_counts(uuid) owner to postgres;
+alter function private.public_post_excerpt(uuid,text) owner to postgres;
 alter function public.list_public_posts(text,integer,text,uuid,boolean,timestamptz,bigint,uuid,real) owner to postgres;
 alter function public.get_public_post(uuid) owner to postgres;
 revoke all on table private.post_metrics,private.post_reaction_counts,private.post_reaction_daily_counts from public,anon,authenticated;
 revoke all on function private.maintain_public_comment_count(),private.maintain_post_reaction_daily_count(),private.public_post_counts(uuid) from public,anon,authenticated;
+revoke all on function private.public_post_excerpt(uuid,text) from public,anon,authenticated,service_role;
 revoke all on function public.list_public_posts(text,integer,text,uuid,boolean,timestamptz,bigint,uuid,real) from public,anon,authenticated;
 revoke all on function public.get_public_post(uuid) from public,anon,authenticated;
 grant execute on function public.list_public_posts(text,integer,text,uuid,boolean,timestamptz,bigint,uuid,real) to anon,authenticated;
