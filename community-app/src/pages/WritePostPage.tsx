@@ -5,7 +5,7 @@ import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import { normalizeCommunityReturnPath } from '../auth/auth'
 import type { CommunityRepository } from '../data/communityRepository'
-import { clearDraft, createWriteDraft, loadDraft, saveDraft, type DraftStorage, type WriteDraft } from '../lib/draftStore'
+import { clearDraft, createWriteDraft, loadDraft, readDraftSnapshot, saveDraft, type DraftStorage, type WriteDraft } from '../lib/draftStore'
 import { isStrictUuid, type PostInput } from '../lib/validation'
 import type { CommunityTag } from '../types/community'
 
@@ -22,13 +22,6 @@ function safeWritePath(path: string) {
   const parsed = new URL(safe, 'https://community.invalid')
   if (parsed.pathname !== '/community/write' && parsed.pathname !== '/community/write/') return '/community/write/'
   return `/community/write/${parsed.search}${parsed.hash}`
-}
-
-function sameWriteDraft(draft: WriteDraft, submitted: WriteDraft) {
-  return draft.idempotencyKey === submitted.idempotencyKey
-    && draft.title === submitted.title && draft.bodyMarkdown === submitted.bodyMarkdown
-    && draft.tagIds.length === submitted.tagIds.length
-    && draft.tagIds.every((tagId, index) => tagId === submitted.tagIds[index])
 }
 
 export function WritePostPage({ repository, storage = window.localStorage, navigate = path => window.location.assign(path), currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}` }: Props) {
@@ -81,6 +74,7 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
     const generation = lifecycle.current
     const actorId = auth.user.id
     const submitted: WriteDraft = { ...draftRef.current!, tagIds: [...draftRef.current!.tagIds] }
+    const submittedSnapshot = readDraftSnapshot(storage, 'write')
     const result = await repository.createPost({ ...value, idempotencyKey: submitted.idempotencyKey })
     if (generation !== lifecycle.current || authUserId.current !== actorId) return
     if (!result.ok) {
@@ -92,8 +86,8 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
       setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.')
       return
     }
-    const stored = loadDraft(storage, 'write')
-    if (stored && !sameWriteDraft(stored, submitted)) {
+    const currentSnapshot = readDraftSnapshot(storage, 'write')
+    if (!submittedSnapshot.ok || !currentSnapshot.ok || currentSnapshot.raw !== submittedSnapshot.raw) {
       setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')
       return
     }

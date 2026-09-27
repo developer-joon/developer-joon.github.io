@@ -83,6 +83,26 @@ describe('WritePostPage', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['malformed replacement', '{broken'],
+    ['same content with a new timestamp', null],
+  ])('does not clear a %s after a late create response', async (_case, replacementRaw) => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const createPost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const local = storage(); const navigate = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid()
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    const submitted = JSON.parse(local.values.get(draftKey('write'))!)
+    const replacement = replacementRaw ?? JSON.stringify({ ...submitted, updatedAt: '2026-09-27T04:00:00.000Z' })
+    local.setItem(draftKey('write'), replacement)
+    resolve({ ok: true, data: postId })
+
+    expect(await screen.findByText('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')).toBeInTheDocument()
+    expect(local.values.get(draftKey('write'))).toBe(replacement)
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
   it('preserves draft and does not navigate for auth expiry or malformed success UUID', async () => {
     const local = storage(); const navigate = vi.fn()
     const createPost = vi.fn().mockResolvedValueOnce({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST301', message: '로그인이 필요합니다.' } }).mockResolvedValueOnce({ ok: true, data: 'bad-id' })
@@ -167,6 +187,22 @@ describe('EditPostPage', () => {
     expect(local.values.has(draftKey('edit', postId))).toBe(true)
   })
 
+  it('does not clear a malformed replacement edit draft after a late update response', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const updatePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const local = storage(); const navigate = vi.fn()
+    wrap(<EditPostPage repository={repository({ updatePost })} search={`?id=${postId}`} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '수정 제목' } })
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    local.setItem(draftKey('edit', postId), '{broken')
+    resolve({ ok: true, data: postId })
+
+    expect(await screen.findByText('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')).toBeInTheDocument()
+    expect(local.values.get(draftKey('edit', postId))).toBe('{broken')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
   it('retains an edit draft and offers safe re-login when the session expires', async () => {
     const local = storage(); const a = auth(authorId)
     const updatePost = vi.fn().mockResolvedValue({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST301', message: '로그인이 필요합니다.' } })
@@ -187,5 +223,21 @@ describe('EditPostPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '글 삭제' })); expect(deletePost).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '글 삭제' })); expect(await screen.findByText('네트워크 연결을 확인해 주세요.')).toBeInTheDocument()
     expect(deletePost).toHaveBeenCalledTimes(1); expect(local.values.has(draftKey('edit', postId))).toBe(true)
+  })
+
+  it('does not clear a replacement draft after a late delete response', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const deletePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const local = storage(); const navigate = vi.fn()
+    wrap(<EditPostPage repository={repository({ deletePost })} search={`?id=${postId}`} storage={local} navigate={navigate} confirmDelete={() => true} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '삭제 대상 제목' } })
+    fireEvent.click(screen.getByRole('button', { name: '글 삭제' }))
+    local.setItem(draftKey('edit', postId), '{broken')
+    resolve({ ok: true, data: postId })
+
+    expect(await screen.findByText('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')).toBeInTheDocument()
+    expect(local.values.get(draftKey('edit', postId))).toBe('{broken')
+    expect(navigate).not.toHaveBeenCalled()
   })
 })

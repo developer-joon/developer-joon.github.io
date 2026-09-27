@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { clearDraft, createWriteDraft, draftKey, loadDraft, saveDraft } from './draftStore'
+import { clearDraft, createWriteDraft, draftKey, loadDraft, readDraftSnapshot, saveDraft } from './draftStore'
 
 const postId = '56000000-0000-4000-8000-000000000010'
 const tagId = '56000000-0000-4000-8000-000000000040'
@@ -53,6 +53,14 @@ describe('versioned draft storage', () => {
     expect(loadDraft(storage, 'write')).toBeNull()
     expect(saveDraft(storage, draft)).toBe(false)
     expect(() => clearDraft(storage, 'write')).not.toThrow()
+  })
+
+  it('distinguishes missing, present, and unreadable raw storage snapshots', () => {
+    const storage = memoryStorage()
+    expect(readDraftSnapshot(storage, 'write')).toEqual({ ok: true, raw: null })
+    storage.setItem(draftKey('write'), '{broken')
+    expect(readDraftSnapshot(storage, 'write')).toEqual({ ok: true, raw: '{broken' })
+    expect(readDraftSnapshot({ ...storage, getItem: () => { throw new Error('blocked') } }, 'write')).toEqual({ ok: false })
   })
 
   it('uses a bounded validated UUID in edit keys', () => {

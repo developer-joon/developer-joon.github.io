@@ -4,7 +4,7 @@ import { DraftNotice } from '../components/DraftNotice'
 import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import type { CommunityRepository } from '../data/communityRepository'
-import { clearDraft, createEditDraft, loadDraft, saveDraft, type DraftStorage, type EditDraft } from '../lib/draftStore'
+import { clearDraft, createEditDraft, loadDraft, readDraftSnapshot, saveDraft, type DraftStorage, type EditDraft } from '../lib/draftStore'
 import { parsePostId } from '../lib/postQuery'
 import { isStrictUuid, type PostInput } from '../lib/validation'
 import type { CommunityTag, PostDetail, PublicPostRead } from '../types/community'
@@ -25,13 +25,6 @@ function stateTitle(read: Exclude<PublicPostRead, { kind: 'published' }>) {
   if (read.kind === 'not_found') return '게시글을 찾을 수 없습니다'
   if (read.kind === 'hidden') return '공개되지 않은 글은 수정할 수 없습니다'
   return '삭제된 글은 수정할 수 없습니다'
-}
-
-function sameEditDraft(draft: EditDraft, submitted: EditDraft) {
-  return draft.postId === submitted.postId && draft.updatedAt === submitted.updatedAt
-    && draft.title === submitted.title && draft.bodyMarkdown === submitted.bodyMarkdown
-    && draft.tagIds.length === submitted.tagIds.length
-    && draft.tagIds.every((tagId, index) => tagId === submitted.tagIds[index])
 }
 
 export function EditPostPage({ repository, search, storage = window.localStorage, navigate = path => window.location.assign(path), confirmDelete = message => window.confirm(message) }: Props) {
@@ -92,12 +85,13 @@ export function EditPostPage({ repository, search, storage = window.localStorage
     const actorId = auth.user?.id ?? null
     const submitted = draftRef.current ? { ...draftRef.current, tagIds: [...draftRef.current.tagIds] } : null
     if (!actorId || !submitted) return
+    const submittedSnapshot = readDraftSnapshot(storage, 'edit', postId)
     const result = await repository.updatePost({ postId, ...value })
     if (generation !== lifecycle.current || authUserId.current !== actorId) return
     if (!result.ok) { setSubmitError(result.error.message); setNeedsLogin(result.error.code === 'auth_required'); return }
     if (!isStrictUuid(result.data) || result.data !== postId) { setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.'); return }
-    const stored = loadDraft(storage, 'edit', postId)
-    if (stored && !sameEditDraft(stored, submitted)) { setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.'); return }
+    const currentSnapshot = readDraftSnapshot(storage, 'edit', postId)
+    if (!submittedSnapshot.ok || !currentSnapshot.ok || currentSnapshot.raw !== submittedSnapshot.raw) { setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.'); return }
     clearDraft(storage, 'edit', postId); navigate(`/community/post/?id=${postId}`)
   }
 
@@ -107,13 +101,14 @@ export function EditPostPage({ repository, search, storage = window.localStorage
     const generation = lifecycle.current
     const actorId = auth.user?.id ?? null
     const submitted = draftRef.current ? { ...draftRef.current, tagIds: [...draftRef.current.tagIds] } : null
+    const submittedSnapshot = readDraftSnapshot(storage, 'edit', postId)
     try {
       const result = await repository.deletePost(postId)
       if (generation !== lifecycle.current || authUserId.current !== actorId) return
       if (!result.ok) { setSubmitError(result.error.message); setNeedsLogin(result.error.code === 'auth_required'); return }
       if (!isStrictUuid(result.data) || result.data !== postId) { setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.'); return }
-      const stored = loadDraft(storage, 'edit', postId)
-      if (stored && submitted && !sameEditDraft(stored, submitted)) { setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.'); return }
+      const currentSnapshot = readDraftSnapshot(storage, 'edit', postId)
+      if (!submitted || !submittedSnapshot.ok || !currentSnapshot.ok || currentSnapshot.raw !== submittedSnapshot.raw) { setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.'); return }
       clearDraft(storage, 'edit', postId); navigate(`/community/post/?id=${postId}`)
     } finally {
       deleteLock.current = false

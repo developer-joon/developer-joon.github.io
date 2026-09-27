@@ -6,6 +6,7 @@ export interface WriteDraft extends DraftBase { kind: 'write'; idempotencyKey: s
 export interface EditDraft extends DraftBase { kind: 'edit'; postId: string }
 export type PostDraft = WriteDraft | EditDraft
 export type DraftKind = 'write' | 'edit'
+export type DraftSnapshot = { ok: true; raw: string | null } | { ok: false }
 
 const prefix = 'breadlab:community:draft:v1'
 const maxStoredLength = 210_000
@@ -95,6 +96,16 @@ export function loadDraft(storage: DraftStorage, kind: DraftKind, postId?: strin
     const raw = storage.getItem(kind === 'write' ? draftKey('write') : draftKey('edit', postId!))
     return raw === null ? null : parseDraft(raw, kind, postId)
   } catch { return null }
+}
+
+export function readDraftSnapshot(storage: DraftStorage, kind: 'write'): DraftSnapshot
+export function readDraftSnapshot(storage: DraftStorage, kind: 'edit', postId: string): DraftSnapshot
+export function readDraftSnapshot(storage: DraftStorage, kind: DraftKind, postId?: string): DraftSnapshot {
+  try {
+    return { ok: true, raw: storage.getItem(kind === 'write' ? draftKey('write') : draftKey('edit', postId!)) }
+  } catch {
+    return { ok: false }
+  }
 }
 
 export function saveDraft(storage: DraftStorage, draft: PostDraft): boolean {

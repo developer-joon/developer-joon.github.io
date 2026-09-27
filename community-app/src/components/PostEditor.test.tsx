@@ -66,6 +66,11 @@ describe('PostEditor', () => {
     await waitFor(() => expect(previewTab).toHaveFocus())
     expect(previewTab).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', previewTab.id)
+
+    fireEvent.keyDown(previewTab, { key: 'ArrowRight' })
+    await waitFor(() => expect(writeTab).toHaveFocus())
+    fireEvent.keyDown(writeTab, { key: 'ArrowLeft' })
+    await waitFor(() => expect(previewTab).toHaveFocus())
   })
 
   it('returns to the write panel when hidden body validation fails', async () => {

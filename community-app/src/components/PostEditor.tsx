@@ -39,7 +39,9 @@ export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange
   function handleTabKey(event: KeyboardEvent<HTMLButtonElement>) {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
     event.preventDefault()
-    selectPreview(event.key === 'ArrowRight' || event.key === 'End', true)
+    if (event.key === 'Home') selectPreview(false, true)
+    else if (event.key === 'End') selectPreview(true, true)
+    else selectPreview(!preview, true)
   }
   async function submit(event: FormEvent) {
     event.preventDefault()
