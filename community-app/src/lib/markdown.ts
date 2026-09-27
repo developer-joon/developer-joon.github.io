@@ -5,7 +5,12 @@ const allowedTags = [
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'li', 'blockquote',
   'strong', 'em', 'del', 'code', 'pre', 'a', 'img', 'br', 'hr',
 ]
-const publicAttachmentImage = /^https:\/\/[^/]+\/functions\/v1\/public-attachment\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:[?#].*)?$/i
+const publicAttachmentPath = /^\/functions\/v1\/public-attachment\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+interface MarkdownOptions {
+  allowImages?: boolean
+  allowedImageOrigin?: string
+}
 
 function escapeHtml(value: string) {
   return value
@@ -24,6 +29,14 @@ function unwrap(element: Element) {
   element.replaceWith(...Array.from(element.childNodes))
 }
 
+function parseAbsoluteUrl(value: string): URL | null {
+  try {
+    return new URL(value)
+  } catch {
+    return null
+  }
+}
+
 function safeLink(value: string) {
   const normalized = Array.from(value)
     .filter((character) => {
@@ -39,7 +52,8 @@ function safeLink(value: string) {
   }
 }
 
-export function renderMarkdown(markdown: string, allowImages = true): string {
+export function renderMarkdown(markdown: string, options: MarkdownOptions = {}): string {
+  const { allowImages = true, allowedImageOrigin } = options
   const generated = parser.parse(markdown) as string
   const sanitized = DOMPurify.sanitize(generated, {
     ALLOWED_TAGS: allowedTags,
@@ -69,7 +83,10 @@ export function renderMarkdown(markdown: string, allowImages = true): string {
 
   for (const image of template.content.querySelectorAll('img')) {
     const src = image.getAttribute('src') ?? ''
-    if (!allowImages || !publicAttachmentImage.test(src)) {
+    const imageUrl = parseAbsoluteUrl(src)
+    if (!allowImages || !allowedImageOrigin || imageUrl?.origin !== allowedImageOrigin
+      || imageUrl.username !== '' || imageUrl.password !== ''
+      || !publicAttachmentPath.test(imageUrl.pathname)) {
       image.remove()
       continue
     }

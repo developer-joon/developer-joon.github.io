@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from './markdown'
 
+const attachmentOrigin = 'https://abcdefghijklmnopqrst.supabase.co'
+
 function documentFor(markdown: string) {
   const container = document.createElement('div')
-  container.innerHTML = renderMarkdown(markdown)
+  container.innerHTML = renderMarkdown(markdown, { allowedImageOrigin: attachmentOrigin })
   return container
 }
 
@@ -49,7 +51,7 @@ describe('renderMarkdown', () => {
 
   it('allows only HTTPS public attachment images and gives them safe attributes', () => {
     const id = '56000000-0000-4000-8000-000000000001'
-    const output = documentFor(`![설명](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${id})\n\n![외부](https://example.com/image.png)\n\n![데이터](data:image/png;base64,AAAA)`)
+    const output = documentFor(`![설명](${attachmentOrigin}/functions/v1/public-attachment/${id})\n\n![위장](https://evil.example/functions/v1/public-attachment/${id})\n\n![외부](https://example.com/image.png)\n\n![데이터](data:image/png;base64,AAAA)`)
     const images = output.querySelectorAll('img')
 
     expect(images).toHaveLength(1)
@@ -63,7 +65,7 @@ describe('renderMarkdown', () => {
     const output = document.createElement('div')
     output.innerHTML = renderMarkdown(
       `![설명](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${id})`,
-      false,
+      { allowImages: false, allowedImageOrigin: attachmentOrigin },
     )
 
     expect(output.querySelector('img')).toBeNull()
@@ -71,8 +73,8 @@ describe('renderMarkdown', () => {
 
   it('adds noopener and noreferrer to external target links without changing deterministic output', () => {
     const markdown = '[외부 문서](https://example.com)'
-    const first = renderMarkdown(markdown)
-    const second = renderMarkdown(markdown)
+    const first = renderMarkdown(markdown, { allowedImageOrigin: attachmentOrigin })
+    const second = renderMarkdown(markdown, { allowedImageOrigin: attachmentOrigin })
     const output = documentFor(markdown)
 
     expect(first).toBe(second)

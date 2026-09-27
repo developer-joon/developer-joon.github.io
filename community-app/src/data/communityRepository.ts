@@ -149,15 +149,18 @@ function isTag(value: unknown): value is RawTag {
   return isRecord(value) && hasExactKeys(value, ['id', 'slug', 'label'])
     && typeof value.id === 'string' && typeof value.slug === 'string' && typeof value.label === 'string'
 }
+function isDetailTag(value: unknown): value is RawTag {
+  return isTag(value) && isUuid(value.id)
+}
 function isPublicPostDetail(value: unknown): value is PublicPostDetailRow {
   if (!isRecord(value) || !hasExactKeys(value, detailKeys)) return false
-  return typeof value.id === 'string' && typeof value.title === 'string'
-    && typeof value.body_markdown === 'string' && typeof value.created_at === 'string'
-    && typeof value.updated_at === 'string' && typeof value.is_locked === 'boolean'
-    && typeof value.is_pinned === 'boolean' && typeof value.author_id === 'string'
+  return isUuid(value.id) && typeof value.title === 'string'
+    && typeof value.body_markdown === 'string' && isIsoTimestamp(value.created_at)
+    && isIsoTimestamp(value.updated_at) && typeof value.is_locked === 'boolean'
+    && typeof value.is_pinned === 'boolean' && isUuid(value.author_id)
     && typeof value.author_login === 'string' && isNullableString(value.author_display_name)
     && isNullableString(value.author_avatar_url) && Array.isArray(value.tags)
-    && value.tags.every(isTag) && isSafeCount(value.comment_count)
+    && value.tags.every(isDetailTag) && isSafeCount(value.comment_count)
     && isSafeCount(value.reaction_count) && isSafeCount(value.popularity_score)
 }
 function mapPublicPostRead(data: unknown, publicAttachmentUrl: (attachmentId: string) => string): PublicPostRead {
@@ -231,7 +234,9 @@ function mapCommentPage(data: unknown): CommentPage {
 }
 
 export function createCommunityRepository(client: CommunityClient) {
+  const publicAttachmentOrigin = new URL(client.publicAttachmentUrl('00000000-0000-4000-8000-000000000000')).origin
   return {
+    publicAttachmentOrigin,
     async listPosts(input: PostListInput): Promise<CommunityResult<PostPage>> {
       const sort = input.sort ?? 'newest'
       return execute(() => client.rpc('list_public_posts', {
@@ -259,6 +264,9 @@ export function createCommunityRepository(client: CommunityClient) {
       )
     },
     async listComments(input: CommentListInput): Promise<CommunityResult<CommentPage>> {
+      if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+        return failure({ code: 'validation', sourceCode: 'INVALID_COMMENT_LIMIT', message: '입력 내용을 확인해 주세요.' })
+      }
       return execute(() => client.rpc('list_public_post_comments', {
         p_post_id: input.postId,
         p_limit: input.limit,

@@ -25,12 +25,15 @@ const row = {
 }
 
 const detailRow = {
-  id: row.id, title: row.title, body_markdown: '전체 본문',
+  id: '56000000-0000-4000-8000-000000000010', title: row.title, body_markdown: '전체 본문',
   created_at: row.created_at, updated_at: row.updated_at,
   is_locked: row.is_locked, is_pinned: row.is_pinned,
-  author_id: row.author_id, author_login: row.author_login,
+  author_id: '56000000-0000-4000-8000-000000000030', author_login: row.author_login,
   author_display_name: row.author_display_name, author_avatar_url: row.author_avatar_url,
-  tags: row.tags, comment_count: row.comment_count,
+  tags: [
+    { id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' },
+    { id: '56000000-0000-4000-8000-000000000041', slug: 'testing', label: 'Testing' },
+  ], comment_count: row.comment_count,
   reaction_count: row.reaction_count, popularity_score: row.popularity_score,
 }
 
@@ -204,12 +207,15 @@ describe('community repository public list contract', () => {
       data: {
         kind: 'published',
         post: {
-          id: 'post-1',
+          id: '56000000-0000-4000-8000-000000000010',
           bodyMarkdown: '전체 본문\n\n![one](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)\n![two](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002)',
           commentCount: 3,
           reactionCount: 4,
           popularityScore: 11,
-          tags: [{ id: 'tag-1' }, { id: 'tag-2' }],
+          tags: [
+            { id: '56000000-0000-4000-8000-000000000040' },
+            { id: '56000000-0000-4000-8000-000000000041' },
+          ],
         },
       },
     })
@@ -240,6 +246,11 @@ describe('community repository public list contract', () => {
     { kind: 'deleted', comment_count: Number.MAX_SAFE_INTEGER + 1 },
     { kind: 'deleted', comment_count: 1, body_markdown: 'leak' },
     { kind: 'published', post: { ...detailRow, body_markdown: undefined } },
+    { kind: 'published', post: { ...detailRow, id: 'not-a-uuid' } },
+    { kind: 'published', post: { ...detailRow, author_id: 'not-a-uuid' } },
+    { kind: 'published', post: { ...detailRow, created_at: 'not-a-date' } },
+    { kind: 'published', post: { ...detailRow, updated_at: '2026-13-99T00:00:00Z' } },
+    { kind: 'published', post: { ...detailRow, tags: [{ id: 'not-a-uuid', slug: 'bad', label: 'Bad' }] } },
     { kind: 'published', post: { ...detailRow, body_markdown: 'body' }, leak: true },
   ])('rejects malformed or leaky detail payload %o as INVALID_RESPONSE', async (data) => {
     const value = setup()

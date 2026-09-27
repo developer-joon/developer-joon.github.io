@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CommunityRepository } from '../data/communityRepository'
 import { parsePostId } from '../lib/postQuery'
 import type { CommentCursor, PublicComment, PublicPostRead } from '../types/community'
@@ -45,9 +45,11 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
   const [commentsError, setCommentsError] = useState<string | null>(null)
   const [nextCursor, setNextCursor] = useState<CommentCursor | null>(null)
   const [hasMore, setHasMore] = useState(false)
+  const commentRequestGeneration = useRef(0)
 
   useEffect(() => {
     if (!postId) return
+    commentRequestGeneration.current += 1
     let active = true
     setRead(null)
     setPostError(null)
@@ -84,9 +86,11 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
 
   function loadMoreComments() {
     if (!postId || !nextCursor || commentsLoading) return
+    const requestGeneration = commentRequestGeneration.current
     setCommentsLoading(true)
     setCommentsError(null)
     void repository.listComments({ postId, limit: commentPageSize, cursor: nextCursor }).then((result) => {
+      if (requestGeneration !== commentRequestGeneration.current) return
       if (result.ok) {
         setComments((current) => appendUnique(current, result.data.items))
         setHasMore(result.data.hasMore)
@@ -144,7 +148,11 @@ export function PostDetailPage({ repository, search }: PostDetailPageProps) {
                 </div>
                 <ReactionButton count={read.post.reactionCount} />
               </header>
-              <MarkdownContent markdown={read.post.bodyMarkdown} className="post-detail-body" />
+              <MarkdownContent
+                markdown={read.post.bodyMarkdown}
+                className="post-detail-body"
+                allowedImageOrigin={repository.publicAttachmentOrigin}
+              />
             </>
           )}
         </article>
