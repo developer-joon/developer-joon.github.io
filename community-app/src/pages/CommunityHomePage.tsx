@@ -23,6 +23,7 @@ interface CommunityHistorySnapshot {
   query: string
   posts: PostListItem[]
   nextCursor: PostCursor | null
+  hasPreviousListing: boolean
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -70,8 +71,8 @@ function isPostListItem(value: unknown): value is PostListItem {
     })
 }
 
-function snapshotFromHistoryState(state: unknown, query: CommunityQueryState): Pick<CommunityHistorySnapshot, 'posts' | 'nextCursor'> {
-  const empty = { posts: [], nextCursor: null }
+function snapshotFromHistoryState(state: unknown, query: CommunityQueryState): Pick<CommunityHistorySnapshot, 'posts' | 'nextCursor' | 'hasPreviousListing'> {
+  const empty = { posts: [], nextCursor: null, hasPreviousListing: false }
   if (typeof state !== 'object' || state === null) return empty
   const snapshot = (state as Record<string, unknown>)[historyStateKey]
   if (typeof snapshot !== 'object' || snapshot === null) return empty
@@ -83,26 +84,41 @@ function snapshotFromHistoryState(state: unknown, query: CommunityQueryState): P
     && candidate.posts.length <= pageSize
     && candidate.posts.every(isPostListItem)
     && (candidate.nextCursor === null || isValidPostCursor(candidate.nextCursor, query.sort))
-    ? { posts: candidate.posts, nextCursor: candidate.nextCursor }
+    ? { posts: candidate.posts, nextCursor: candidate.nextCursor, hasPreviousListing: candidate.hasPreviousListing === true }
     : empty
 }
 
-function withPostsSnapshot(state: unknown, query: string, posts: PostListItem[], nextCursor: PostCursor | null) {
+function withPostsSnapshot(
+  state: unknown,
+  query: string,
+  posts: PostListItem[],
+  nextCursor: PostCursor | null,
+  hasPreviousListing: boolean,
+) {
   const current = typeof state === 'object' && state !== null ? state : {}
   return {
     ...current,
-    [historyStateKey]: { version: 2, query, posts: posts.slice(0, pageSize), nextCursor } satisfies CommunityHistorySnapshot,
+    [historyStateKey]: {
+      version: 2,
+      query,
+      posts: posts.slice(0, pageSize),
+      nextCursor,
+      hasPreviousListing,
+    } satisfies CommunityHistorySnapshot,
   }
 }
 
 function safeHistoryWrite(method: 'pushState' | 'replaceState', state: unknown, url?: string) {
   try {
     window.history[method](state, '', url)
+    return true
   } catch {
     try {
       window.history[method]({}, '', url)
+      return true
     } catch {
       // Browsing still works in-memory when a browser rejects all History API writes.
+      return false
     }
   }
 }
@@ -123,22 +139,33 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
   const [query, setQuery] = useState<CommunityQueryState>(() => parseCommunityQuery(initialSearch ?? window.location.search))
   const [initialSnapshot] = useState(() => usesCurrentLocation
     ? snapshotFromHistoryState(window.history.state, parseCommunityQuery(window.location.search))
-    : { posts: [], nextCursor: null })
+    : { posts: [], nextCursor: null, hasPreviousListing: false })
   const [tags, setTags] = useState<CommunityTag[]>([])
   const [posts, setPosts] = useState<PostListItem[]>(initialSnapshot.posts)
   const [postsQuery, setPostsQuery] = useState(() => initialSnapshot.posts.length > 0 ? serializeCommunityQuery(query) : '')
   const [nextCursor, setNextCursor] = useState<PostCursor | null>(initialSnapshot.nextCursor)
+  const [hasPreviousListing, setHasPreviousListing] = useState(initialSnapshot.hasPreviousListing)
   const [error, setError] = useState<CommunityError | null>(null)
   const [loading, setLoading] = useState(true)
   const [attempt, setAttempt] = useState(0)
   const [tagError, setTagError] = useState<CommunityError | null>(null)
   const [tagAttempt, setTagAttempt] = useState(0)
 
-  const applyQuery = useCallback((next: CommunityQueryState) => {
+  const applyQuery = useCallback((next: CommunityQueryState, ownsPreviousListing = false) => {
     const search = serializeCommunityQuery(next)
-    setQuery(next)
-    if (onQueryChange) onQueryChange(search)
-    else safeHistoryWrite('pushState', withPostsSnapshot(window.history.state, search, [], null), `${window.location.pathname}${search}`)
+    const normalized = parseCommunityQuery(search)
+    setQuery(normalized)
+    if (onQueryChange) {
+      onQueryChange(search)
+      setHasPreviousListing(false)
+    } else {
+      const wroteHistory = safeHistoryWrite(
+        'pushState',
+        withPostsSnapshot(window.history.state, search, [], null, ownsPreviousListing),
+        `${window.location.pathname}${search}`,
+      )
+      setHasPreviousListing(ownsPreviousListing && wroteHistory)
+    }
   }, [onQueryChange])
 
   const applyFilters = useCallback((next: CommunityQueryState) => {
@@ -155,6 +182,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
       setPosts(snapshot.posts)
       setPostsQuery(snapshot.posts.length > 0 ? serializeCommunityQuery(restoredQuery) : '')
       setNextCursor(snapshot.nextCursor)
+      setHasPreviousListing(snapshot.hasPreviousListing)
       setError(null)
       setQuery(restoredQuery)
     }
@@ -168,10 +196,16 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
     const snapshotPosts = postsQuery === search ? posts : []
     safeHistoryWrite(
       'replaceState',
-      withPostsSnapshot(window.history.state, search, snapshotPosts, postsQuery === search ? nextCursor : null),
+      withPostsSnapshot(
+        window.history.state,
+        search,
+        snapshotPosts,
+        postsQuery === search ? nextCursor : null,
+        hasPreviousListing,
+      ),
       `${window.location.pathname}${search}`,
     )
-  }, [nextCursor, onQueryChange, posts, postsQuery, query, usesCurrentLocation])
+  }, [hasPreviousListing, nextCursor, onQueryChange, posts, postsQuery, query, usesCurrentLocation])
 
   useEffect(() => {
     let active = true
@@ -248,6 +282,9 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
             : <StatePanel title="아직 공개된 글이 없습니다"><p>첫 번째 경험과 질문을 공유해 보세요.</p></StatePanel>
         )}
         {posts.length > 0 && <PostList posts={posts} />}
+        {loading && posts.length > 0 && query.cursor && (
+          <p role="status" aria-live="polite" aria-label="다음 페이지를 불러오고 있습니다">다음 페이지를 불러오고 있습니다.</p>
+        )}
         {error && posts.length > 0 && (
           <div className="load-more-state" role="alert">
             <p>{error.message}</p>
@@ -257,8 +294,16 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
         {!error && (query.cursor || nextCursor) && (
           <div className="load-more-state">
             {query.cursor && (
-              <button className="secondary-action" type="button" disabled={loading} onClick={() => window.history.back()}>
-                이전 페이지
+              <button
+                className="secondary-action"
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  if (hasPreviousListing) window.history.back()
+                  else applyQuery({ ...query, cursor: null })
+                }}
+              >
+                {hasPreviousListing ? '이전 페이지' : '첫 페이지'}
               </button>
             )}
             {nextCursor && (
@@ -268,7 +313,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
               disabled={loading}
               onClick={() => {
                 setNextCursor(null)
-                applyQuery({ ...query, cursor: nextCursor })
+                applyQuery({ ...query, cursor: nextCursor }, true)
               }}
             >
               {loading ? '불러오는 중' : '다음 페이지'}

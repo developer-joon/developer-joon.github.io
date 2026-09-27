@@ -9,10 +9,18 @@ export interface CommunityQueryState {
 
 const sorts = new Set<PostSort>(['newest', 'popular', 'comments'])
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const maxSearchLength = 200
+export const maxCommunitySearchLength = 200
+
+export function normalizeCommunitySearch(value: string) {
+  return value.trim().slice(0, maxCommunitySearchLength)
+}
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 export function isValidPostCursor(value: unknown, sort: PostSort): value is PostCursor {
@@ -28,7 +36,7 @@ export function isValidPostCursor(value: unknown, sort: PostSort): value is Post
     && uuidPattern.test(cursor.id)
     && (sort === 'newest'
       ? cursor.rank === null
-      : isFiniteNumber(cursor.rank))
+      : isNonnegativeSafeInteger(cursor.rank))
 }
 
 function parseCursor(value: string | null, sort: PostSort): PostCursor | null {
@@ -47,7 +55,7 @@ export function parseCommunityQuery(search: string): CommunityQueryState {
   const sort = candidate && sorts.has(candidate) ? candidate : 'newest'
   const tag = params.get('tag')?.trim() ?? ''
   return {
-    search: (params.get('q')?.trim() ?? '').slice(0, maxSearchLength),
+    search: normalizeCommunitySearch(params.get('q') ?? ''),
     tagId: uuidPattern.test(tag) ? tag : null,
     sort,
     cursor: parseCursor(params.get('cursor'), sort),
@@ -56,7 +64,8 @@ export function parseCommunityQuery(search: string): CommunityQueryState {
 
 export function serializeCommunityQuery(state: CommunityQueryState): string {
   const params = new URLSearchParams()
-  if (state.search.trim()) params.set('q', state.search.trim())
+  const search = normalizeCommunitySearch(state.search)
+  if (search) params.set('q', search)
   if (state.tagId) params.set('tag', state.tagId)
   if (state.sort !== 'newest') params.set('sort', state.sort)
   if (state.cursor) params.set('cursor', JSON.stringify(state.cursor))

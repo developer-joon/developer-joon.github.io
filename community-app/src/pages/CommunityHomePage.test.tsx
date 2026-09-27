@@ -43,7 +43,10 @@ function repository(overrides: Partial<CommunityRepository> = {}): CommunityRepo
 }
 
 describe('CommunityHomePage', () => {
-  afterEach(() => window.history.replaceState({}, '', '/'))
+  afterEach(() => {
+    vi.restoreAllMocks()
+    window.history.replaceState({}, '', '/')
+  })
 
   it('lets anonymous visitors read the public post list', async () => {
     render(<CommunityHomePage repository={repository()} initialSearch="" />)
@@ -64,6 +67,22 @@ describe('CommunityHomePage', () => {
     fireEvent.click(screen.getByRole('button', { name: '검색' }))
 
     expect(onQueryChange).toHaveBeenCalledWith('?q=%EB%B3%B4%EC%95%88&sort=popular')
+  })
+
+  it('enforces the 200-character search limit in the input and submitted state', async () => {
+    const onQueryChange = vi.fn()
+    const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } })
+    render(<CommunityHomePage repository={repository({ listPosts })} initialSearch="" onQueryChange={onQueryChange} />)
+    await screen.findByRole('heading', { name: post.title })
+
+    const searchbox = screen.getByRole('searchbox', { name: '게시글 검색' })
+    expect(searchbox).toHaveAttribute('maxlength', '200')
+    fireEvent.change(searchbox, { target: { value: 'x'.repeat(201) } })
+    expect(searchbox).toHaveValue('x'.repeat(200))
+    fireEvent.click(screen.getByRole('button', { name: '검색' }))
+
+    expect(onQueryChange).toHaveBeenCalledWith(`?q=${'x'.repeat(200)}`)
+    await waitFor(() => expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'x'.repeat(200) })))
   })
 
   it('exposes the selected tag and sort as pressed buttons', async () => {
@@ -189,6 +208,35 @@ describe('CommunityHomePage', () => {
     expect(reload).toHaveBeenCalledWith(expect.objectContaining({ cursor }))
   })
 
+  it('clears a shared cursor URL instead of leaving the app through browser history', async () => {
+    const cursorSearch = serializeCommunityQuery({ search: '', tagId: null, sort: 'newest', cursor })
+    window.history.replaceState({}, '', `/${cursorSearch}`)
+    const back = vi.spyOn(window.history, 'back')
+    const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [secondPost], nextCursor: null } })
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+    await screen.findByRole('heading', { name: secondPost.title })
+
+    fireEvent.click(screen.getByRole('button', { name: '첫 페이지' }))
+
+    await waitFor(() => expect(window.location.search).toBe(''))
+    expect(back).not.toHaveBeenCalled()
+    expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: undefined }))
+  })
+
+  it('uses browser back only for a previous listing page owned by this app', async () => {
+    const listPosts = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined)
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '다음 페이지' }))
+    await screen.findByRole('heading', { name: secondPost.title })
+    fireEvent.click(screen.getByRole('button', { name: '이전 페이지' }))
+
+    expect(back).toHaveBeenCalledOnce()
+  })
+
   it('discards a history snapshot containing a malformed post', async () => {
     const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } })
     window.history.replaceState({
@@ -236,6 +284,24 @@ describe('CommunityHomePage', () => {
 
     expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
     expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ cursor }))
+  })
+
+  it('announces next-page loading while keeping the current posts visible', async () => {
+    let resolveNextPage: ((value: { ok: true; data: { items: (typeof post)[]; nextCursor: null } }) => void) | undefined
+    const nextPage = new Promise<{ ok: true; data: { items: (typeof post)[]; nextCursor: null } }>((resolve) => {
+      resolveNextPage = resolve
+    })
+    const listPosts = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
+      .mockReturnValueOnce(nextPage)
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '다음 페이지' }))
+
+    expect(screen.getByRole('heading', { name: post.title })).toBeInTheDocument()
+    expect(await screen.findByRole('status', { name: '다음 페이지를 불러오고 있습니다' })).toHaveAttribute('aria-live', 'polite')
+    resolveNextPage?.({ ok: true, data: { items: [secondPost], nextCursor: null } })
+    expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
   })
 
   it('resets the cursor and replaces posts when the sort changes', async () => {

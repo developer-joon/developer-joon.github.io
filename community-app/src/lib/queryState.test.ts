@@ -36,6 +36,15 @@ describe('community query state', () => {
     expect(serializeCommunityQuery({ search: '', tagId, sort: 'comments', cursor: null })).toBe(`?tag=${tagId}&sort=comments`)
   })
 
+  it('bounds serialized search values to the database limit', () => {
+    expect(serializeCommunityQuery({
+      search: `  ${'a'.repeat(201)}  `,
+      tagId: null,
+      sort: 'newest',
+      cursor: null,
+    })).toBe(`?q=${'a'.repeat(200)}`)
+  })
+
   it('round-trips a complete cursor', () => {
     const state = { search: 'RLS', tagId, sort: 'popular' as const, cursor }
     expect(parseCommunityQuery(serializeCommunityQuery(state))).toEqual(state)
@@ -63,6 +72,9 @@ describe('community query state', () => {
     ['search rank below zero', 'popular', { ...cursor, searchRank: -0.01 }],
     ['search rank equal to one', 'popular', { ...cursor, searchRank: 1 }],
     ['null ranked cursor for ranked sort', 'comments', { ...cursor, rank: null }],
+    ['negative rank for ranked sort', 'popular', { ...cursor, rank: -1 }],
+    ['fractional rank for ranked sort', 'comments', { ...cursor, rank: 1.5 }],
+    ['unsafe integer rank for ranked sort', 'popular', { ...cursor, rank: Number.MAX_SAFE_INTEGER + 1 }],
     ['ranked cursor for newest sort', 'newest', { ...cursor, rank: 3 }],
   ])('rejects a semantically invalid %s', (_label, sort, value) => {
     const search = `?sort=${sort}&cursor=${encodeURIComponent(JSON.stringify(value))}`
