@@ -153,7 +153,8 @@ describe('CommunityHomePage', () => {
       await screen.findByRole('heading', { name: pages[index + 1].title })
       expect(screen.queryByRole('heading', { name: pages[index].title })).not.toBeInTheDocument()
       expect(document.querySelectorAll('.post-card')).toHaveLength(1)
-      expect(window.history.state.communityListing.posts).toHaveLength(1)
+      await waitFor(() => expect(window.history.state.communityListing.posts.map((item: typeof post) => item.id))
+        .toEqual([pages[index + 1].id]))
     }
 
     expect(screen.getByRole('button', { name: '이전 페이지' })).toBeInTheDocument()
