@@ -8,33 +8,34 @@ export interface CommunityQueryState {
 }
 
 const sorts = new Set<PostSort>(['newest', 'popular', 'comments'])
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const maxSearchLength = 200
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
-function parseCursor(value: string | null): PostCursor | null {
+export function isValidPostCursor(value: unknown, sort: PostSort): value is PostCursor {
+  if (typeof value !== 'object' || value === null) return false
+  const cursor = value as Record<string, unknown>
+  const timestamp = typeof cursor.createdAt === 'string' ? Date.parse(cursor.createdAt) : Number.NaN
+  return typeof cursor.isPinned === 'boolean'
+    && isFiniteNumber(cursor.searchRank)
+    && cursor.searchRank >= 0
+    && cursor.searchRank < 1
+    && Number.isFinite(timestamp)
+    && typeof cursor.id === 'string'
+    && uuidPattern.test(cursor.id)
+    && (sort === 'newest'
+      ? cursor.rank === null
+      : isFiniteNumber(cursor.rank))
+}
+
+function parseCursor(value: string | null, sort: PostSort): PostCursor | null {
   if (!value) return null
   try {
     const candidate: unknown = JSON.parse(value)
-    if (typeof candidate !== 'object' || candidate === null) return null
-    const cursor = candidate as Record<string, unknown>
-    if (
-      typeof cursor.isPinned !== 'boolean'
-      || !isFiniteNumber(cursor.searchRank)
-      || typeof cursor.createdAt !== 'string'
-      || cursor.createdAt.trim() === ''
-      || typeof cursor.id !== 'string'
-      || cursor.id.trim() === ''
-      || (cursor.rank !== null && !isFiniteNumber(cursor.rank))
-    ) return null
-    return {
-      isPinned: cursor.isPinned,
-      searchRank: cursor.searchRank,
-      createdAt: cursor.createdAt,
-      id: cursor.id,
-      rank: cursor.rank,
-    }
+    return isValidPostCursor(candidate, sort) ? candidate : null
   } catch {
     return null
   }
@@ -43,11 +44,13 @@ function parseCursor(value: string | null): PostCursor | null {
 export function parseCommunityQuery(search: string): CommunityQueryState {
   const params = new URLSearchParams(search)
   const candidate = params.get('sort') as PostSort | null
+  const sort = candidate && sorts.has(candidate) ? candidate : 'newest'
+  const tag = params.get('tag')?.trim() ?? ''
   return {
-    search: params.get('q')?.trim() ?? '',
-    tagId: params.get('tag')?.trim() || null,
-    sort: candidate && sorts.has(candidate) ? candidate : 'newest',
-    cursor: parseCursor(params.get('cursor')),
+    search: (params.get('q')?.trim() ?? '').slice(0, maxSearchLength),
+    tagId: uuidPattern.test(tag) ? tag : null,
+    sort,
+    cursor: parseCursor(params.get('cursor'), sort),
   }
 }
 

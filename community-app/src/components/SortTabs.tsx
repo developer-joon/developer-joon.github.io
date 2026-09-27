@@ -8,7 +8,7 @@ const options: Array<{ value: PostSort; label: string }> = [
 
 export function SortTabs({ value, onChange }: { value: PostSort; onChange: (sort: PostSort) => void }) {
   return (
-    <div className="sort-tabs" aria-label="게시글 정렬">
+    <div className="sort-tabs" role="group" aria-label="게시글 정렬">
       {options.map((option) => (
         <button type="button" aria-pressed={value === option.value} key={option.value} onClick={() => onChange(option.value)}>{option.label}</button>
       ))}

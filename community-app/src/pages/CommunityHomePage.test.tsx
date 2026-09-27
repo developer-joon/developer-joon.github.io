@@ -4,6 +4,8 @@ import type { CommunityRepository } from '../data/communityRepository'
 import { parseCommunityQuery, serializeCommunityQuery } from '../lib/queryState'
 import { CommunityHomePage } from './CommunityHomePage'
 
+const tagId = '11111111-1111-4111-8111-111111111111'
+
 const post = {
   id: 'post-1',
   title: 'RLS를 운영하며 배운 점',
@@ -16,7 +18,7 @@ const post = {
   reactionCount: 9,
   popularityScore: 22,
   author: { id: 'author-1', login: 'breaddev', displayName: '브레드 개발자', avatarUrl: null },
-  tags: [{ id: 'tag-1', slug: 'development', label: '개발' }],
+  tags: [{ id: tagId, slug: 'development', label: '개발' }],
 }
 
 const secondPost = { ...post, id: 'post-2', title: '두 번째 글', isPinned: false }
@@ -24,14 +26,14 @@ const cursor = {
   isPinned: true,
   searchRank: 0.8,
   createdAt: post.createdAt,
-  id: post.id,
+  id: '22222222-2222-4222-8222-222222222222',
   rank: null,
 }
 
 function repository(overrides: Partial<CommunityRepository> = {}): CommunityRepository {
   return {
     listPosts: vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } }),
-    listTags: vi.fn().mockResolvedValue({ ok: true, data: [{ id: 'tag-1', slug: 'development', label: '개발' }] }),
+    listTags: vi.fn().mockResolvedValue({ ok: true, data: [{ id: tagId, slug: 'development', label: '개발' }] }),
     getPost: vi.fn(),
     createPost: vi.fn(),
     updatePost: vi.fn(),
@@ -65,13 +67,21 @@ describe('CommunityHomePage', () => {
   })
 
   it('exposes the selected tag and sort as pressed buttons', async () => {
-    render(<CommunityHomePage repository={repository()} initialSearch="?tag=tag-1&sort=popular" />)
+    render(<CommunityHomePage repository={repository()} initialSearch={`?tag=${tagId}&sort=popular`} />)
 
     await screen.findByRole('heading', { name: post.title })
     expect(screen.getByRole('button', { name: '개발' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: '전체' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByRole('button', { name: '인기순' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: '최신순' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('groups tag and sort controls with accessible labels', async () => {
+    render(<CommunityHomePage repository={repository()} initialSearch="" />)
+    await screen.findByRole('heading', { name: post.title })
+
+    expect(screen.getByRole('group', { name: '태그 필터' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: '게시글 정렬' })).toBeInTheDocument()
   })
 
   it('restores filters and the search draft from browser navigation', async () => {
@@ -92,21 +102,62 @@ describe('CommunityHomePage', () => {
     const onQueryChange = vi.fn()
     const listPosts = vi.fn()
       .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
-      .mockResolvedValueOnce({ ok: true, data: { items: [post, secondPost], nextCursor: null } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [secondPost, secondPost], nextCursor: null } })
     render(<CommunityHomePage repository={repository({ listPosts })} initialSearch="" onQueryChange={onQueryChange} />)
 
-    await screen.findByRole('button', { name: '더 불러오기' })
-    fireEvent.click(screen.getByRole('button', { name: '더 불러오기' }))
+    await screen.findByRole('button', { name: '다음 페이지' })
+    fireEvent.click(screen.getByRole('button', { name: '다음 페이지' }))
 
     expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
-    expect(screen.getAllByRole('heading', { name: post.title })).toHaveLength(1)
+    expect(screen.queryByRole('heading', { name: post.title })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { name: secondPost.title })).toHaveLength(1)
     expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ cursor }))
     expect(parseCommunityQuery(onQueryChange.mock.lastCall?.[0] ?? '').cursor).toEqual(cursor)
     const postLinks = screen.getAllByRole('link').filter((link) => link.getAttribute('href')?.startsWith('/community/post/'))
-    expect(postLinks.map((link) => link.textContent)).toEqual([post.title, secondPost.title])
+    expect(postLinks.map((link) => link.textContent)).toEqual([secondPost.title])
   })
 
-  it('restores accumulated posts on forward navigation and cursor URL reload', async () => {
+  it('keeps long pagination bounded to one page and offers previous navigation', async () => {
+    const pages = Array.from({ length: 12 }, (_, index) => ({ ...post, id: `post-${index}`, title: `페이지 ${index + 1}` }))
+    const cursors = pages.slice(1).map((_, index) => ({
+      ...cursor,
+      id: `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    }))
+    const listPosts = vi.fn()
+    pages.forEach((item, index) => {
+      listPosts.mockResolvedValueOnce({ ok: true, data: { items: [item], nextCursor: cursors[index] ?? null } })
+    })
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+
+    for (let index = 0; index < pages.length - 1; index += 1) {
+      fireEvent.click(await screen.findByRole('button', { name: '다음 페이지' }))
+      await screen.findByRole('heading', { name: pages[index + 1].title })
+      expect(screen.queryByRole('heading', { name: pages[index].title })).not.toBeInTheDocument()
+      expect(document.querySelectorAll('.post-card')).toHaveLength(1)
+      expect(window.history.state.communityListing.posts).toHaveLength(1)
+    }
+
+    expect(screen.getByRole('button', { name: '이전 페이지' })).toBeInTheDocument()
+    expect(listPosts).toHaveBeenCalledTimes(12)
+  })
+
+  it('continues pagination when History API snapshot writes exceed quota', async () => {
+    const listPosts = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
+    const originalPushState = window.history.pushState.bind(window.history)
+    const pushState = vi.spyOn(window.history, 'pushState')
+      .mockImplementationOnce(() => { throw new DOMException('quota', 'DataCloneError') })
+      .mockImplementation(originalPushState)
+
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+    fireEvent.click(await screen.findByRole('button', { name: '다음 페이지' }))
+
+    expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    expect(pushState).toHaveBeenCalledTimes(2)
+  })
+
+  it('restores bounded pages on back, forward, and cursor URL reload', async () => {
     const firstVisit = vi.fn()
       .mockResolvedValueOnce({ ok: true, data: { items: [post], nextCursor: cursor } })
       .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
@@ -114,25 +165,27 @@ describe('CommunityHomePage', () => {
       .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
     const firstRender = render(<CommunityHomePage repository={repository({ listPosts: firstVisit })} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '더 불러오기' }))
+    const pageOne = { search: window.location.search, state: window.history.state }
+    fireEvent.click(await screen.findByRole('button', { name: '다음 페이지' }))
     expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
     const pageTwo = { search: window.location.search, state: window.history.state }
 
-    window.history.replaceState({}, '', '/')
-    window.dispatchEvent(new PopStateEvent('popstate', { state: {} }))
-    await waitFor(() => expect(screen.queryByRole('heading', { name: secondPost.title })).not.toBeInTheDocument())
+    window.history.replaceState(pageOne.state, '', pageOne.search)
+    window.dispatchEvent(new PopStateEvent('popstate', { state: pageOne.state }))
+    expect(await screen.findByRole('heading', { name: post.title })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: secondPost.title })).not.toBeInTheDocument()
 
     window.history.replaceState(pageTwo.state, '', pageTwo.search)
     window.dispatchEvent(new PopStateEvent('popstate', { state: pageTwo.state }))
     expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: post.title })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: post.title })).not.toBeInTheDocument()
     firstRender.unmount()
 
     const reload = vi.fn().mockResolvedValue({ ok: true, data: { items: [secondPost], nextCursor: null } })
     render(<CommunityHomePage repository={repository({ listPosts: reload })} />)
 
-    expect(await screen.findByRole('heading', { name: post.title })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: secondPost.title })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: post.title })).not.toBeInTheDocument()
     expect(reload).toHaveBeenCalledWith(expect.objectContaining({ cursor }))
   })
 
@@ -149,11 +202,12 @@ describe('CommunityHomePage', () => {
   })
 
   it('discards a history snapshot bound to a different serialized query', async () => {
-    const currentSearch = serializeCommunityQuery({ search: 'fresh', tagId: 'tag-1', sort: 'popular', cursor })
-    const staleSearch = serializeCommunityQuery({ search: 'stale', tagId: null, sort: 'comments', cursor })
+    const rankedCursor = { ...cursor, rank: 22 }
+    const currentSearch = serializeCommunityQuery({ search: 'fresh', tagId, sort: 'popular', cursor: rankedCursor })
+    const staleSearch = serializeCommunityQuery({ search: 'stale', tagId: null, sort: 'comments', cursor: rankedCursor })
     const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } })
     window.history.replaceState({
-      communityListing: { version: 1, query: staleSearch, posts: [secondPost] },
+      communityListing: { version: 2, query: staleSearch, posts: [secondPost], nextCursor: null },
     }, '', `/${currentSearch}`)
 
     render(<CommunityHomePage repository={repository({ listPosts })} />)
@@ -162,9 +216,9 @@ describe('CommunityHomePage', () => {
     expect(screen.queryByRole('heading', { name: secondPost.title })).not.toBeInTheDocument()
     expect(listPosts).toHaveBeenCalledWith(expect.objectContaining({
       search: 'fresh',
-      tagId: 'tag-1',
+      tagId,
       sort: 'popular',
-      cursor,
+      cursor: rankedCursor,
     }))
   })
 
@@ -175,7 +229,7 @@ describe('CommunityHomePage', () => {
       .mockResolvedValueOnce({ ok: true, data: { items: [secondPost], nextCursor: null } })
     render(<CommunityHomePage repository={repository({ listPosts })} initialSearch="" />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '더 불러오기' }))
+    fireEvent.click(await screen.findByRole('button', { name: '다음 페이지' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('네트워크 연결을 확인해 주세요.')
     expect(screen.getByRole('heading', { name: post.title })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
@@ -201,7 +255,46 @@ describe('CommunityHomePage', () => {
   it('renders an accessible empty state', async () => {
     const repo = repository({ listPosts: vi.fn().mockResolvedValue({ ok: true, data: { items: [], nextCursor: null } }) })
     render(<CommunityHomePage repository={repo} initialSearch="" />)
-    expect(await screen.findByText('조건에 맞는 글이 없습니다')).toBeInTheDocument()
+    expect(await screen.findByText('아직 공개된 글이 없습니다')).toBeInTheDocument()
+  })
+
+  it('explains how to recover from an empty filtered result', async () => {
+    const repo = repository({ listPosts: vi.fn().mockResolvedValue({ ok: true, data: { items: [], nextCursor: null } }) })
+    render(<CommunityHomePage repository={repo} initialSearch="?q=missing" />)
+
+    expect(await screen.findByText('검색 결과가 없습니다')).toBeInTheDocument()
+    expect(screen.getByText('검색어를 지우거나 다른 태그를 선택해 보세요.')).toBeInTheDocument()
+  })
+
+  it('shows and retries tag loading errors while preserving a selected URL tag', async () => {
+    const selectedTag = '11111111-1111-4111-8111-111111111111'
+    const listTags = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR', message: '네트워크 연결을 확인해 주세요.' } })
+      .mockResolvedValueOnce({ ok: true, data: [{ id: selectedTag, slug: 'development', label: '개발' }] })
+    render(<CommunityHomePage repository={repository({ listTags })} initialSearch={`?tag=${selectedTag}`} />)
+
+    expect(await screen.findByRole('alert', { name: '태그를 불러오지 못했습니다' })).toHaveTextContent('네트워크 연결을 확인해 주세요.')
+    expect(screen.getByRole('button', { name: `선택한 태그 ${selectedTag}` })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: '태그 다시 시도' }))
+
+    expect(await screen.findByRole('button', { name: '개발' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('alert', { name: '태그를 불러오지 못했습니다' })).not.toBeInTheDocument()
+  })
+
+  it('normalizes invalid URL state before calling the repository', async () => {
+    const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } })
+    window.history.replaceState({}, '', `/?tag=bad&q=${'x'.repeat(201)}&sort=popular&cursor=${encodeURIComponent(JSON.stringify({ ...cursor, rank: null }))}`)
+
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+    await screen.findByRole('heading', { name: post.title })
+
+    expect(listPosts).toHaveBeenCalledWith(expect.objectContaining({
+      search: 'x'.repeat(200),
+      tagId: undefined,
+      sort: 'popular',
+      cursor: undefined,
+    }))
+    expect(window.location.search).toBe(`?q=${'x'.repeat(200)}&sort=popular`)
   })
 
   it('renders a retryable Korean error state', async () => {

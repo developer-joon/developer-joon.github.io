@@ -6,7 +6,7 @@ import { SearchBar } from '../components/SearchBar'
 import { SortTabs } from '../components/SortTabs'
 import { StatePanel } from '../components/StatePanel'
 import { TagFilter } from '../components/TagFilter'
-import { parseCommunityQuery, serializeCommunityQuery, type CommunityQueryState } from '../lib/queryState'
+import { isValidPostCursor, parseCommunityQuery, serializeCommunityQuery, type CommunityQueryState } from '../lib/queryState'
 import type { CommunityError, CommunityTag, PostCursor, PostListItem } from '../types/community'
 
 interface CommunityHomePageProps {
@@ -16,11 +16,13 @@ interface CommunityHomePageProps {
 }
 
 const historyStateKey = 'communityListing'
+const pageSize = 21
 
 interface CommunityHistorySnapshot {
-  version: 1
+  version: 2
   query: string
   posts: PostListItem[]
+  nextCursor: PostCursor | null
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -68,62 +70,91 @@ function isPostListItem(value: unknown): value is PostListItem {
     })
 }
 
-function postsFromHistoryState(state: unknown, query: string): PostListItem[] {
-  if (typeof state !== 'object' || state === null) return []
+function snapshotFromHistoryState(state: unknown, query: CommunityQueryState): Pick<CommunityHistorySnapshot, 'posts' | 'nextCursor'> {
+  const empty = { posts: [], nextCursor: null }
+  if (typeof state !== 'object' || state === null) return empty
   const snapshot = (state as Record<string, unknown>)[historyStateKey]
-  if (typeof snapshot !== 'object' || snapshot === null) return []
+  if (typeof snapshot !== 'object' || snapshot === null) return empty
   const candidate = snapshot as Partial<CommunityHistorySnapshot>
-  return candidate.version === 1
-    && candidate.query === query
+  const serializedQuery = serializeCommunityQuery(query)
+  return candidate.version === 2
+    && candidate.query === serializedQuery
     && Array.isArray(candidate.posts)
+    && candidate.posts.length <= pageSize
     && candidate.posts.every(isPostListItem)
-    ? candidate.posts
-    : []
+    && (candidate.nextCursor === null || isValidPostCursor(candidate.nextCursor, query.sort))
+    ? { posts: candidate.posts, nextCursor: candidate.nextCursor }
+    : empty
 }
 
-function withPostsSnapshot(state: unknown, query: string, posts: PostListItem[]) {
+function withPostsSnapshot(state: unknown, query: string, posts: PostListItem[], nextCursor: PostCursor | null) {
   const current = typeof state === 'object' && state !== null ? state : {}
-  return { ...current, [historyStateKey]: { version: 1, query, posts } satisfies CommunityHistorySnapshot }
+  return {
+    ...current,
+    [historyStateKey]: { version: 2, query, posts: posts.slice(0, pageSize), nextCursor } satisfies CommunityHistorySnapshot,
+  }
+}
+
+function safeHistoryWrite(method: 'pushState' | 'replaceState', state: unknown, url?: string) {
+  try {
+    window.history[method](state, '', url)
+  } catch {
+    try {
+      window.history[method]({}, '', url)
+    } catch {
+      // Browsing still works in-memory when a browser rejects all History API writes.
+    }
+  }
 }
 
 function appendUniquePosts(current: PostListItem[], incoming: PostListItem[]) {
+  const result = [...current]
   const knownIds = new Set(current.map((post) => post.id))
-  return [...current, ...incoming.filter((post) => !knownIds.has(post.id))]
+  for (const post of incoming) {
+    if (knownIds.has(post.id)) continue
+    knownIds.add(post.id)
+    result.push(post)
+  }
+  return result
 }
 
 export function CommunityHomePage({ repository, initialSearch, onQueryChange }: CommunityHomePageProps) {
   const [usesCurrentLocation] = useState(() => initialSearch === undefined || initialSearch === window.location.search)
   const [query, setQuery] = useState<CommunityQueryState>(() => parseCommunityQuery(initialSearch ?? window.location.search))
+  const [initialSnapshot] = useState(() => usesCurrentLocation
+    ? snapshotFromHistoryState(window.history.state, parseCommunityQuery(window.location.search))
+    : { posts: [], nextCursor: null })
   const [tags, setTags] = useState<CommunityTag[]>([])
-  const [posts, setPosts] = useState<PostListItem[]>(() => {
-    if (!usesCurrentLocation) return []
-    const currentQuery = serializeCommunityQuery(parseCommunityQuery(window.location.search))
-    return postsFromHistoryState(window.history.state, currentQuery)
-  })
-  const [nextCursor, setNextCursor] = useState<PostCursor | null>(null)
+  const [posts, setPosts] = useState<PostListItem[]>(initialSnapshot.posts)
+  const [postsQuery, setPostsQuery] = useState(() => initialSnapshot.posts.length > 0 ? serializeCommunityQuery(query) : '')
+  const [nextCursor, setNextCursor] = useState<PostCursor | null>(initialSnapshot.nextCursor)
   const [error, setError] = useState<CommunityError | null>(null)
   const [loading, setLoading] = useState(true)
   const [attempt, setAttempt] = useState(0)
+  const [tagError, setTagError] = useState<CommunityError | null>(null)
+  const [tagAttempt, setTagAttempt] = useState(0)
 
-  const applyQuery = useCallback((next: CommunityQueryState, historyPosts = posts) => {
+  const applyQuery = useCallback((next: CommunityQueryState) => {
     const search = serializeCommunityQuery(next)
     setQuery(next)
     if (onQueryChange) onQueryChange(search)
-    else window.history.pushState(withPostsSnapshot(window.history.state, search, historyPosts), '', `${window.location.pathname}${search}`)
-  }, [onQueryChange, posts])
+    else safeHistoryWrite('pushState', withPostsSnapshot(window.history.state, search, [], null), `${window.location.pathname}${search}`)
+  }, [onQueryChange])
 
   const applyFilters = useCallback((next: CommunityQueryState) => {
     setPosts([])
+    setPostsQuery('')
     setNextCursor(null)
-    applyQuery({ ...next, cursor: null }, [])
+    applyQuery({ ...next, cursor: null })
   }, [applyQuery])
 
   useEffect(() => {
     function restoreQueryFromHistory(event: PopStateEvent) {
       const restoredQuery = parseCommunityQuery(window.location.search)
-      const restoredSearch = serializeCommunityQuery(restoredQuery)
-      setPosts(postsFromHistoryState(event.state, restoredSearch))
-      setNextCursor(null)
+      const snapshot = snapshotFromHistoryState(event.state, restoredQuery)
+      setPosts(snapshot.posts)
+      setPostsQuery(snapshot.posts.length > 0 ? serializeCommunityQuery(restoredQuery) : '')
+      setNextCursor(snapshot.nextCursor)
       setError(null)
       setQuery(restoredQuery)
     }
@@ -134,23 +165,31 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
   useEffect(() => {
     if (onQueryChange || !usesCurrentLocation) return
     const search = serializeCommunityQuery(query)
-    window.history.replaceState(withPostsSnapshot(window.history.state, search, posts), '')
-  }, [onQueryChange, posts, query, usesCurrentLocation])
+    const snapshotPosts = postsQuery === search ? posts : []
+    safeHistoryWrite(
+      'replaceState',
+      withPostsSnapshot(window.history.state, search, snapshotPosts, postsQuery === search ? nextCursor : null),
+      `${window.location.pathname}${search}`,
+    )
+  }, [nextCursor, onQueryChange, posts, postsQuery, query, usesCurrentLocation])
 
   useEffect(() => {
     let active = true
+    setTagError(null)
     void repository.listTags().then((result) => {
-      if (active && result.ok) setTags(result.data)
+      if (!active) return
+      if (result.ok) setTags(result.data)
+      else setTagError(result.error)
     })
     return () => { active = false }
-  }, [repository])
+  }, [repository, tagAttempt])
 
   useEffect(() => {
     let active = true
     setLoading(true)
     setError(null)
     void repository.listPosts({
-      limit: 21,
+      limit: pageSize,
       sort: query.sort,
       search: query.search || undefined,
       tagId: query.tagId || undefined,
@@ -158,7 +197,8 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
     }).then((result) => {
       if (!active) return
       if (result.ok) {
-        setPosts((current) => query.cursor ? appendUniquePosts(current, result.data.items) : result.data.items)
+        setPosts(appendUniquePosts([], result.data.items).slice(0, pageSize))
+        setPostsQuery(serializeCommunityQuery(query))
         setNextCursor(result.data.nextCursor)
       } else {
         setError(result.error)
@@ -184,6 +224,12 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
         <section className="community-tools" aria-label="게시글 탐색">
           <SearchBar value={query.search} onSubmit={(search) => applyFilters({ ...query, search })} />
           <TagFilter tags={tags} selected={query.tagId} onChange={(tagId) => applyFilters({ ...query, tagId })} />
+          {tagError && (
+            <div className="tag-load-error" role="alert" aria-label="태그를 불러오지 못했습니다">
+              <span>{tagError.message}</span>
+              <button type="button" onClick={() => setTagAttempt((value) => value + 1)}>태그 다시 시도</button>
+            </div>
+          )}
           <div className="list-heading">
             <div><span>PUBLIC DESK</span><h2>커뮤니티 글</h2></div>
             <SortTabs value={query.sort} onChange={(sort) => applyFilters({ ...query, sort })} />
@@ -197,7 +243,9 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
           </StatePanel>
         )}
         {!loading && !error && posts.length === 0 && (
-          <StatePanel title="조건에 맞는 글이 없습니다"><p>검색어를 바꾸거나 전체 태그를 확인해 보세요.</p></StatePanel>
+          query.search || query.tagId
+            ? <StatePanel title="검색 결과가 없습니다"><p>검색어를 지우거나 다른 태그를 선택해 보세요.</p></StatePanel>
+            : <StatePanel title="아직 공개된 글이 없습니다"><p>첫 번째 경험과 질문을 공유해 보세요.</p></StatePanel>
         )}
         {posts.length > 0 && <PostList posts={posts} />}
         {error && posts.length > 0 && (
@@ -206,16 +254,26 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
             <button className="secondary-action" type="button" onClick={() => setAttempt((value) => value + 1)}>다시 시도</button>
           </div>
         )}
-        {!error && nextCursor && (
+        {!error && (query.cursor || nextCursor) && (
           <div className="load-more-state">
+            {query.cursor && (
+              <button className="secondary-action" type="button" disabled={loading} onClick={() => window.history.back()}>
+                이전 페이지
+              </button>
+            )}
+            {nextCursor && (
             <button
               className="secondary-action"
               type="button"
               disabled={loading}
-              onClick={() => applyQuery({ ...query, cursor: nextCursor })}
+              onClick={() => {
+                setNextCursor(null)
+                applyQuery({ ...query, cursor: nextCursor })
+              }}
             >
-              {loading ? '불러오는 중' : '더 불러오기'}
+              {loading ? '불러오는 중' : '다음 페이지'}
             </button>
+            )}
           </div>
         )}
       </main>
