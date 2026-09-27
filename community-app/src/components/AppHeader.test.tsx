@@ -26,16 +26,17 @@ describe('AppHeader authentication', () => {
 
   it('shows safe user identity and logout while signed in', async () => {
     const signOut = vi.fn().mockResolvedValue({ error: null })
+    const longIdentity = '<img src=x onerror=alert(1)>'.repeat(12)
     const session = {
       user: {
         id: 'user-1',
         email: 'dev@example.com',
-        user_metadata: { user_name: '<img src=x onerror=alert(1)>' },
+        user_metadata: { user_name: longIdentity },
       },
     }
     render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
 
-    expect(await screen.findByText('<img src=x onerror=alert(1)>')).toBeInTheDocument()
+    expect(await screen.findByText(longIdentity)).toHaveAttribute('title', longIdentity)
     expect(document.querySelector('.auth-identity img')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '로그아웃' }))
     expect(signOut).toHaveBeenCalledOnce()
@@ -46,5 +47,15 @@ describe('AppHeader authentication', () => {
     render(<AuthProvider client={client(null, { getSession: getSession as AuthClient['getSession'] })}><AppHeader /></AuthProvider>)
 
     expect(screen.getByRole('button', { name: '로그인 상태 확인 중' })).toBeDisabled()
+  })
+
+  it('announces the pending GitHub connection state through the button name', async () => {
+    const signInWithOAuth = vi.fn(() => new Promise(() => undefined))
+    render(<AuthProvider client={client(null, { signInWithOAuth: signInWithOAuth as AuthClient['signInWithOAuth'] })}><AppHeader /></AuthProvider>)
+    const login = await screen.findByRole('button', { name: 'GitHub로 로그인' })
+
+    fireEvent.click(login)
+
+    expect(screen.getByRole('button', { name: 'GitHub 연결 중' })).toBeDisabled()
   })
 })

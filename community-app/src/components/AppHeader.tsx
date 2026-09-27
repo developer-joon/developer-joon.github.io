@@ -9,6 +9,7 @@ function userLabel(user: ReturnType<typeof useAuth>['user']) {
 export function AppHeader() {
   const auth = useAuth()
   const disabled = auth.loading || auth.pending
+  const loginLabel = auth.loading ? '로그인 상태 확인 중' : auth.pending ? 'GitHub 연결 중' : 'GitHub로 로그인'
 
   return (
     <header className="community-header">
@@ -19,7 +20,7 @@ export function AppHeader() {
         <div className="header-auth">
           {auth.user ? (
             <>
-              <span className="auth-identity">{userLabel(auth.user)}</span>
+              <span className="auth-identity" title={userLabel(auth.user)}>{userLabel(auth.user)}</span>
               <button type="button" disabled={disabled} onClick={() => void auth.signOut()}>
                 {auth.pending ? '로그아웃 중' : '로그아웃'}
               </button>
@@ -28,7 +29,7 @@ export function AppHeader() {
             <button
               type="button"
               disabled={disabled}
-              aria-label={auth.loading ? '로그인 상태 확인 중' : 'GitHub로 로그인'}
+              aria-label={loginLabel}
               onClick={() => void auth.signInWithGitHub()}
             >
               {auth.loading ? '확인 중' : auth.pending ? 'GitHub 연결 중' : 'GitHub 로그인'}
