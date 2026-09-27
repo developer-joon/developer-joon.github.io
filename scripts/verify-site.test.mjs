@@ -38,7 +38,7 @@ async function makeValidArtifact() {
     await put(root, relativePath, `${title}<link rel="canonical" href="${canonical}">${body}`)
   }
   for (const [relativePath, title] of shellTitles) {
-    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img srcset="/community/assets/logo-Xy12Za34.png 1x, https://cdn.example/logo.png 2x, data:image/png;base64,AA== 3x"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
   }
   await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">GitHub OAuth 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
@@ -82,6 +82,61 @@ test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+for (const leakedConfig of ['_config.yml', 'vite.config.js']) {
+  test(`rejects leaked build configuration ${leakedConfig}`, async () => {
+    await withArtifact(async (root) => {
+      await put(root, leakedConfig, 'build configuration')
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${leakedConfig}`)
+      assert.match(result.stderr, /implementation\/private file leaked/)
+    })
+  })
+}
+
+test('accepts generated website files whose names merely contain config', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/assets/configurator-Ab12Cd34.js', 'generated website code')
+    await put(root, 'downloads/site-config.json', '{"theme":"dark"}')
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects a secret in a regular file larger than 2 MB', async () => {
+  await withArtifact(async (root) => {
+    const secret = 'sb_secret_leaked_from_large_file'
+    const content = Buffer.concat([
+      Buffer.alloc(2_000_001 - Buffer.byteLength(secret), 0x61),
+      Buffer.from(secret),
+    ])
+    content[content.length - Buffer.byteLength(secret) - 1] = 0x0a
+    await put(root, 'large-generated.txt', content)
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly skipped a secret in a file larger than 2 MB')
+    assert.match(result.stderr, /possible secret leaked/)
+  })
+})
+
+test('rejects a secret split across streaming scan chunks', async () => {
+  await withArtifact(async (root) => {
+    const chunkSize = 64 * 1024
+    const prefix = 'sb_secret_'
+    const suffix = 'cross_chunk_value'
+    const content = Buffer.concat([
+      Buffer.alloc(chunkSize - prefix.length + 3, 0x61),
+      Buffer.from(prefix),
+      Buffer.from(suffix),
+      Buffer.alloc(2_000_001 - chunkSize - 3 - suffix.length, 0x61),
+    ])
+    content[0] = 0x00
+    content[chunkSize - prefix.length + 2] = 0x0a
+    await put(root, 'cross-chunk-generated.bin', content)
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly missed a secret spanning scan chunks')
+    assert.match(result.stderr, /possible secret leaked/)
   })
 })
 
@@ -137,6 +192,27 @@ test('rejects a hashed non-JS/CSS community asset reference when the file is mis
     await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/missing-Xy12Za34.png">`)
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a missing hashed asset')
+    assert.match(result.stderr, /missing community asset/)
+  })
+})
+
+test('rejects an unhashed local asset referenced through srcset', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/assets/logo.png')
+    const [relativePath, title] = shellTitles.entries().next().value
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img srcset="https://cdn.example/logo.png 1x, /community/assets/logo.png 2x, data:image/png;base64,AA== 3x">`)
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unhashed srcset asset')
+    assert.match(result.stderr, /content-hashed/)
+  })
+})
+
+test('rejects a missing hashed local asset referenced through srcset', async () => {
+  await withArtifact(async (root) => {
+    const [relativePath, title] = shellTitles.entries().next().value
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><source srcset="/community/assets/missing-Xy12Za34.webp 640w, https://cdn.example/image.webp 1280w">`)
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a missing srcset asset')
     assert.match(result.stderr, /missing community asset/)
   })
 })

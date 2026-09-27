@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createReadStream } from 'node:fs'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
@@ -39,10 +40,12 @@ const forbiddenSegments = new Set([
 const forbiddenNames = [
   /^\.env(?:\..*)?$/i,
   /^\.npmrc$/i,
+  /^_config\.ya?ml$/i,
   /^deno\.lock$/i,
   /^Gemfile(?:\.lock)?$/,
   /^package(?:-lock)?\.json$/i,
   /^tsconfig(?:\..*)?\.json$/i,
+  /^(?:babel|eslint|postcss|prettier|rollup|tailwind|vite|webpack)\.config\.[cm]?[jt]s$/i,
   /\.(?:sql|ts|tsx|jsx|vue|svelte|scss|sass|less|map)$/i,
   /^(?:id_rsa|id_ed25519)$/i,
   /\.(?:key|pem)$/i,
@@ -96,18 +99,59 @@ function assertIncludes(content, expected, relativePath, behavior) {
 
 function communityAssetReferences(html, shellPath) {
   const references = []
-  const attributePattern = /\b(?:src|href)=["']([^"']+)["']/gi
+  const attributePattern = /\b(src|href|srcset)\s*=\s*["']([^"']+)["']/gi
   for (const match of html.matchAll(attributePattern)) {
-    try {
-      const url = new URL(match[1], `https://www.breadlab.ai/${shellPath}`)
-      if (url.origin === 'https://www.breadlab.ai' && url.pathname.startsWith('/community/assets/')) {
-        references.push(url.pathname)
+    const candidates = match[1].toLowerCase() === 'srcset'
+      ? srcsetCandidates(match[2])
+      : [match[2]]
+    for (const candidate of candidates) {
+      try {
+        const url = new URL(candidate, `https://www.breadlab.ai/${shellPath}`)
+        if (url.origin === 'https://www.breadlab.ai' && url.pathname.startsWith('/community/assets/')) {
+          references.push(url.pathname)
+        }
+      } catch {
+        // Other verifier checks handle malformed or missing asset references.
       }
-    } catch {
-      // Other verifier checks handle malformed or missing asset references.
     }
   }
   return references
+}
+
+function srcsetCandidates(srcset) {
+  const candidates = []
+  let position = 0
+  while (position < srcset.length) {
+    while (/[\s,]/.test(srcset[position] ?? '')) position += 1
+    const start = position
+    while (position < srcset.length && !/\s/.test(srcset[position])) position += 1
+    const candidate = srcset.slice(start, position).replace(/,+$/, '')
+    if (candidate) candidates.push(candidate)
+    while (position < srcset.length && srcset[position] !== ',') position += 1
+    if (srcset[position] === ',') position += 1
+  }
+  return candidates
+}
+
+async function scanFileForSecrets(relativePath) {
+  const reportedPatterns = new Set()
+  let reportedServiceRole = false
+  let overlap = ''
+
+  for await (const chunk of createReadStream(path.join(siteRoot, relativePath), { highWaterMark: 64 * 1024 })) {
+    const text = overlap + chunk.toString('latin1')
+    for (const pattern of secretPatterns) {
+      if (!reportedPatterns.has(pattern) && pattern.test(text)) {
+        fail(`possible secret leaked into artifact: ${relativePath} (${pattern})`)
+        reportedPatterns.add(pattern)
+      }
+    }
+    if (!reportedServiceRole && containsServiceRoleJwt(text)) {
+      fail(`Supabase service-role token leaked into artifact: ${relativePath}`)
+      reportedServiceRole = true
+    }
+    overlap = text.slice(-64 * 1024)
+  }
 }
 
 function isContentHashedAsset(assetPath) {
@@ -264,19 +308,7 @@ async function main() {
   )
 
   for (const relativePath of files) {
-    const fileStat = await lstat(path.join(siteRoot, relativePath))
-    if (fileStat.size > 2_000_000) continue
-    const content = await readFile(path.join(siteRoot, relativePath))
-    if (content.includes(0)) continue
-    const text = content.toString('utf8')
-    for (const pattern of secretPatterns) {
-      if (pattern.test(text)) {
-        fail(`possible secret leaked into artifact: ${relativePath} (${pattern})`)
-      }
-    }
-    if (containsServiceRoleJwt(text)) {
-      fail(`Supabase service-role token leaked into artifact: ${relativePath}`)
-    }
+    await scanFileForSecrets(relativePath)
   }
 
   if (errors.length > 0) {
