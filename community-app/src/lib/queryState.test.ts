@@ -81,6 +81,27 @@ describe('community query state', () => {
     expect(parseCommunityQuery(search).cursor).toBeNull()
   })
 
+  it.each([
+    ['overflow date', '2026-02-30T00:00:00Z'],
+    ['shorthand date', '0'],
+    ['timezone-less timestamp', '2026-09-27T00:00:00'],
+    ['invalid leap day', '2025-02-29T00:00:00Z'],
+  ])('rejects a cursor with an %s', (_label, createdAt) => {
+    const value = { ...cursor, createdAt }
+    const search = `?sort=popular&cursor=${encodeURIComponent(JSON.stringify(value))}`
+    expect(parseCommunityQuery(search).cursor).toBeNull()
+  })
+
+  it.each([
+    '2026-09-27T00:00:00.123456Z',
+    '2026-09-27T09:30:00.123456+09:30',
+    '2026-09-26T16:30:00-07:30',
+  ])('accepts a canonical timestamptz cursor: %s', (createdAt) => {
+    const value = { ...cursor, createdAt }
+    const search = `?sort=popular&cursor=${encodeURIComponent(JSON.stringify(value))}`
+    expect(parseCommunityQuery(search).cursor).toEqual(value)
+  })
+
   it('accepts a null rank only for newest sorting', () => {
     const newestCursor = { ...cursor, rank: null }
     const search = `?cursor=${encodeURIComponent(JSON.stringify(newestCursor))}`
