@@ -274,16 +274,46 @@ describe('community repository public list contract', () => {
       publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
       listTags: () => {
         calls.push('listTags')
-        return Promise.resolve({ data: [{ id: 'tag-1', slug: 'typescript', label: 'TypeScript' }], error: null })
+        return Promise.resolve({ data: [{ id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' }], error: null })
       },
       rpc: () => Promise.resolve({ data: null, error: null }),
     }
 
     expect(await createCommunityRepository(client).listTags()).toEqual({
       ok: true,
-      data: [{ id: 'tag-1', slug: 'typescript', label: 'TypeScript' }],
+      data: [{ id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' }],
     })
     expect(calls).toEqual(['listTags'])
+  })
+
+  it.each([
+    [{ id: 'not-a-uuid', slug: 'bad', label: 'Bad' }],
+    [{ id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript', leak: true }],
+    [{ id: '56000000-0000-4000-8000-000000000040', slug: 3, label: 'TypeScript' }],
+  ])('rejects malformed active tag rows as INVALID_RESPONSE', async (row) => {
+    const client: CommunityClient = {
+      publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
+      listTags: () => Promise.resolve({ data: [row], error: null }),
+      rpc: () => Promise.resolve({ data: null, error: null }),
+    }
+
+    expect(await createCommunityRepository(client).listTags()).toEqual({
+      ok: false,
+      error: { code: 'unknown', sourceCode: 'INVALID_RESPONSE', message: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' },
+    })
+  })
+})
+
+describe('community repository mutation response validation', () => {
+  it.each(['createPost', 'updatePost', 'deletePost'] as const)('rejects malformed %s success UUIDs', async (method) => {
+    const value = setup()
+    value.setMutationResponse({ data: 'not-a-uuid', error: null })
+    const input = method === 'createPost'
+      ? { title: '제목', bodyMarkdown: '본문', tagIds: ['tag-1'], idempotencyKey: 'key' }
+      : method === 'updatePost'
+        ? { postId: '56000000-0000-4000-8000-000000000010', title: '제목', bodyMarkdown: '본문', tagIds: ['tag-1'] }
+        : '56000000-0000-4000-8000-000000000010'
+    expect(await (value.repository[method] as (arg: never) => Promise<unknown>)(input as never)).toMatchObject({ ok: false, error: { sourceCode: 'INVALID_RESPONSE' } })
   })
 })
 

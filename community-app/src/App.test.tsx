@@ -5,8 +5,6 @@ import type { AuthClient } from './auth/AuthProvider'
 import type { CommunityRepository } from './data/communityRepository'
 
 const routeCases = [
-  ['/community/write/', '글쓰기 화면을 준비하고 있습니다'],
-  ['/community/edit/', '글 수정 화면을 준비하고 있습니다'],
   ['/community/admin/reports/', '신고 관리 화면을 준비하고 있습니다'],
 ] as const
 
@@ -49,6 +47,19 @@ describe('App', () => {
 
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/community/'))
     expect(exchangeCodeForSession).toHaveBeenCalledWith('callback-code')
+  })
+
+  it('routes write and edit shells to lazy real editor pages', async () => {
+    const repository = {
+      publicAttachmentOrigin: 'https://example.com',
+      listTags: async () => ({ ok: true, data: [] }),
+      getPost: async () => ({ ok: true, data: { kind: 'not_found' } }),
+    } as unknown as CommunityRepository
+    const write = render(<App pathname="/community/write/" repository={repository} />)
+    expect(await screen.findByRole('heading', { name: '새 글 쓰기' })).toBeInTheDocument()
+    write.unmount()
+    render(<App pathname="/community/edit/" search="?id=56000000-0000-4000-8000-000000000010" repository={repository} />)
+    expect(await screen.findByRole('heading', { name: '게시글을 찾을 수 없습니다' })).toBeInTheDocument()
   })
 
   it.each(routeCases)('renders the route-aware placeholder for %s', (pathname, statusTitle) => {

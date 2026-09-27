@@ -9,6 +9,14 @@ const PostDetailPage = lazy(async () => {
   const module = await import('./pages/PostDetailPage')
   return { default: module.PostDetailPage }
 })
+const WritePostPage = lazy(async () => {
+  const module = await import('./pages/WritePostPage')
+  return { default: module.WritePostPage }
+})
+const EditPostPage = lazy(async () => {
+  const module = await import('./pages/EditPostPage')
+  return { default: module.EditPostPage }
+})
 
 const sharedStyles = `
   :root { color: #20201d; background: #f4f0e7; font-family: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif; font-synthesis: none; }
@@ -67,6 +75,12 @@ export function App({ pathname = window.location.pathname, search = window.locat
         <PostDetailPage repository={repository ?? getCommunityRepository()} search={search} />
       </Suspense>
     )
+  }
+  if (normalizedPathname === '/community/write') {
+    return <Suspense fallback={<div className="page" role="status">글쓰기 화면을 준비하고 있습니다.</div>}><WritePostPage repository={repository ?? getCommunityRepository()} currentPath={`${pathname}${search}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/edit') {
+    return <Suspense fallback={<div className="page" role="status">글 수정 화면을 준비하고 있습니다.</div>}><EditPostPage repository={repository ?? getCommunityRepository()} search={search} /></Suspense>
   }
   if (normalizedPathname === '/community/auth/callback') {
     return <AuthCallbackPage client={authClient} search={search} navigate={onAuthCallbackNavigate} />

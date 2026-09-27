@@ -247,6 +247,11 @@ function mapCommentPage(data: unknown): CommentPage {
   }
 }
 
+function mapMutationUuid(data: unknown): string {
+  if (!isUuid(data)) throw new Error('invalid mutation response')
+  return data.toLowerCase()
+}
+
 export function createCommunityRepository(client: CommunityClient) {
   const publicAttachmentOrigin = new URL(client.publicAttachmentUrl('00000000-0000-4000-8000-000000000000')).origin
   return {
@@ -292,16 +297,19 @@ export function createCommunityRepository(client: CommunityClient) {
       }), mapCommentPage)
     },
     async listTags(): Promise<CommunityResult<CommunityTag[]>> {
-      return execute(() => client.listTags(), data => ((data ?? []) as RawTag[]).map(mapTag))
+      return execute(() => client.listTags(), data => {
+        if (!Array.isArray(data) || !data.every(isDetailTag)) throw new Error('invalid tag response')
+        return data.map(mapTag)
+      })
     },
     async createPost(input: CreatePostInput): Promise<CommunityResult<string>> {
-      return execute(() => client.rpc('create_post', { p_title: input.title, p_body_markdown: input.bodyMarkdown, p_tag_ids: input.tagIds, p_idempotency_key: input.idempotencyKey }), data => data as string)
+      return execute(() => client.rpc('create_post', { p_title: input.title, p_body_markdown: input.bodyMarkdown, p_tag_ids: input.tagIds, p_idempotency_key: input.idempotencyKey }), mapMutationUuid)
     },
     async updatePost(input: UpdatePostInput): Promise<CommunityResult<string>> {
-      return execute(() => client.rpc('update_post', { p_post_id: input.postId, p_title: input.title, p_body_markdown: input.bodyMarkdown, p_tag_ids: input.tagIds }), data => data as string)
+      return execute(() => client.rpc('update_post', { p_post_id: input.postId, p_title: input.title, p_body_markdown: input.bodyMarkdown, p_tag_ids: input.tagIds }), mapMutationUuid)
     },
     async deletePost(postId: string): Promise<CommunityResult<string>> {
-      return execute(() => client.rpc('soft_delete_post', { p_post_id: postId }), data => data as string)
+      return execute(() => client.rpc('soft_delete_post', { p_post_id: postId }), mapMutationUuid)
     },
   }
 }

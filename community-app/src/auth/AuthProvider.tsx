@@ -14,7 +14,7 @@ export interface AuthClient extends OAuthClient {
   exchangeCodeForSession(code: string): Promise<{ data: { session: Session | null }; error: AuthErrorLike }>
 }
 
-interface AuthContextValue {
+export interface AuthContextValue {
   loading: boolean
   pending: boolean
   session: Session | null
@@ -34,7 +34,7 @@ const defaultAuth: AuthContextValue = {
   signOut: async () => undefined,
 }
 
-const AuthContext = createContext<AuthContextValue>(defaultAuth)
+export const AuthContext = createContext<AuthContextValue>(defaultAuth)
 
 interface AuthProviderProps {
   children: ReactNode
