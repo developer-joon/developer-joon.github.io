@@ -31,6 +31,7 @@
 	<meta property="og:description" content="{{ page.description | strip_html | xml_escape }}" />
 	<meta property="og:image" content="{{ page.featured_image | default: '/images/demo/about.jpg' | absolute_url }}" />
 	<meta property="og:url" content="{{site.url}}{{page.url}}">
+	<link rel="canonical" href="{{ site.url }}{{ page.url }}">
 
 	{% if site.data.settings.font_settings.font_embed %}
 	<!-- Font Embed Code -->

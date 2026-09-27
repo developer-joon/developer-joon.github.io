@@ -1,7 +1,11 @@
 site: Ria & Seoa PaPa
 
-url: https://breadlab.ai
+url: https://www.breadlab.ai
 baseurl: /
+
+exclude:
+  - docs
+  - README.md
 
 collections:
   pages:
