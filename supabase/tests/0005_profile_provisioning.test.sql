@@ -1,6 +1,6 @@
 begin;
 
-select plan(40);
+select plan(44);
 
 select has_function(
   'private',
@@ -240,6 +240,46 @@ select is(
   (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000005'),
   0,
   'non-positive GitHub id fails closed at profile provisioning'
+);
+select lives_ok(
+  $$
+    insert into auth.users (
+      id, aud, role, email, raw_app_meta_data, raw_user_meta_data
+    ) values (
+      '61000000-0000-0000-0000-000000000009',
+      'authenticated',
+      'authenticated',
+      'nonnumeric-id@example.test',
+      '{"provider":"github"}'::jsonb,
+      '{"provider_id":"not-a-number","user_name":"nonnumeric-id"}'::jsonb
+    )
+  $$,
+  'nonnumeric GitHub id does not block the auth platform insert'
+);
+select is(
+  (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000009'),
+  0,
+  'nonnumeric GitHub id fails closed at profile provisioning'
+);
+select lives_ok(
+  $$
+    insert into auth.users (
+      id, aud, role, email, raw_app_meta_data, raw_user_meta_data
+    ) values (
+      '61000000-0000-0000-0000-000000000010',
+      'authenticated',
+      'authenticated',
+      'negative-id@example.test',
+      '{"provider":"github"}'::jsonb,
+      '{"provider_id":"-96010","user_name":"negative-id"}'::jsonb
+    )
+  $$,
+  'negative GitHub id does not block the auth platform insert'
+);
+select is(
+  (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000010'),
+  0,
+  'negative GitHub id fails closed at profile provisioning'
 );
 select lives_ok(
   $$
