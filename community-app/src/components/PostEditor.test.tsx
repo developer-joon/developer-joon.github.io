@@ -10,6 +10,15 @@ const tags = [
 ]
 
 describe('PostEditor', () => {
+  it('does not re-date an untouched initial value and only emits real edits', () => {
+    const change = vi.fn()
+    render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '본문', tagIds: [tags[0].id] }} tags={tags} onChange={change} onSubmit={vi.fn()} submitLabel="수정" />)
+    expect(change).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '바뀐 제목' } })
+    expect(change).toHaveBeenCalledWith({ title: '바뀐 제목', bodyMarkdown: '본문', tagIds: [tags[0].id] })
+  })
+
   it('shows field errors, links them to controls, and does not publish invalid input', async () => {
     const submit = vi.fn()
     render(<PostEditor initialValue={{ title: '', bodyMarkdown: '', tagIds: [] }} tags={tags} onSubmit={submit} submitLabel="발행" />)
@@ -43,6 +52,29 @@ describe('PostEditor', () => {
     fireEvent.click(screen.getByRole('tab', { name: '미리보기' }))
     expect(screen.queryByText('alert(1)', { selector: 'script' })).not.toBeInTheDocument()
     expect(screen.getByText('안전')).toBeInTheDocument()
+  })
+
+  it('implements roving keyboard tabs with an associated tabpanel', async () => {
+    render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '본문', tagIds: [tags[0].id] }} tags={tags} onSubmit={vi.fn()} submitLabel="발행" />)
+    const writeTab = screen.getByRole('tab', { name: '작성' })
+    const previewTab = screen.getByRole('tab', { name: '미리보기' })
+    expect(writeTab).toHaveAttribute('aria-controls', 'post-editor-panel')
+    expect(writeTab).toHaveAttribute('tabindex', '0')
+    expect(previewTab).toHaveAttribute('tabindex', '-1')
+
+    fireEvent.keyDown(writeTab, { key: 'ArrowRight' })
+    await waitFor(() => expect(previewTab).toHaveFocus())
+    expect(previewTab).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', previewTab.id)
+  })
+
+  it('returns to the write panel when hidden body validation fails', async () => {
+    render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '', tagIds: [tags[0].id] }} tags={tags} onSubmit={vi.fn()} submitLabel="발행" />)
+    fireEvent.click(screen.getByRole('tab', { name: '미리보기' }))
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+
+    expect(screen.getByRole('tab', { name: '작성' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText('본문을 1자 이상 50,000자 이하로 입력해 주세요.')).toBeInTheDocument()
   })
 
   it('blocks unavailable edit tags until active replacements are chosen', () => {

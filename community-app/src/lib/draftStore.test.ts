@@ -38,6 +38,15 @@ describe('versioned draft storage', () => {
     expect(loadDraft(memoryStorage({ [draftKey('write')]: invalid }), 'write')).toBeNull()
   })
 
+  it.each([
+    { version: 1, kind: 'write', title: '제목', bodyMarkdown: '본문', tagIds: [tagId], updatedAt: '2026-09-27T00:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000099', extra: true },
+    JSON.parse('{"version":1,"kind":"write","title":"제목","bodyMarkdown":"본문","tagIds":["56000000-0000-4000-8000-000000000040"],"updatedAt":"2026-09-27T00:00:00.000Z","idempotencyKey":"56000000-0000-4000-8000-000000000099","__proto__":{"polluted":true}}'),
+    { version: 1, kind: 'write', title: '제목', bodyMarkdown: '본문', tagIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'], updatedAt: '2026-09-27T00:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000099' },
+    { version: 1, kind: 'write', title: '제목', bodyMarkdown: '본문', tagIds: [tagId], updatedAt: '9999-01-01T00:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000099' },
+  ])('rejects non-canonical or future draft data %#', (draft) => {
+    expect(loadDraft(memoryStorage({ [draftKey('write')]: JSON.stringify(draft) }), 'write')).toBeNull()
+  })
+
   it('fails safely when storage throws or quota is unavailable', () => {
     const storage = { getItem: () => { throw new Error('blocked') }, setItem: () => { throw new Error('quota') }, removeItem: () => { throw new Error('blocked') } }
     const draft = createWriteDraft(() => '56000000-0000-4000-8000-000000000099')

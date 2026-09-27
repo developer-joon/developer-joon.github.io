@@ -10,6 +10,7 @@ export type DraftKind = 'write' | 'edit'
 const prefix = 'breadlab:community:draft:v1'
 const maxStoredLength = 210_000
 const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/
+const maxClockSkewMs = 5 * 60 * 1000
 
 function isLeapYear(year: number) {
   return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
@@ -25,10 +26,17 @@ function isStrictTimestamp(value: unknown): value is string {
   const match = timestampPattern.exec(value)
   if (!match) return false
   const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = match.slice(1).map(Number)
-  return year >= 1 && month >= 1 && month <= 12
+  const valid = year >= 1 && month >= 1 && month <= 12
     && day >= 1 && day <= daysInMonth(year, month)
     && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59
     && (Number.isNaN(offsetHour) || (offsetHour <= 23 && offsetMinute <= 59))
+  return valid && Date.parse(value) <= Date.now() + maxClockSkewMs
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]) {
+  const actual = Object.keys(value).sort()
+  const keys = [...expected].sort()
+  return actual.length === keys.length && actual.every((key, index) => key === keys[index])
 }
 
 export function draftKey(kind: 'write'): string
@@ -61,7 +69,7 @@ function validCommon(value: Record<string, unknown>) {
   return value.version === 1 && typeof value.title === 'string' && value.title.length <= 120
     && typeof value.bodyMarkdown === 'string' && value.bodyMarkdown.length <= 50_000
     && Array.isArray(value.tagIds) && value.tagIds.length <= 3 && value.tagIds.every(isStrictUuid)
-    && new Set(value.tagIds).size === value.tagIds.length
+    && new Set(value.tagIds.map(tagId => tagId.toLowerCase())).size === value.tagIds.length
     && isStrictTimestamp(value.updatedAt)
 }
 
@@ -73,11 +81,11 @@ function parseDraft(raw: string, kind: DraftKind, postId?: string): PostDraft | 
   const record = value as Record<string, unknown>
   if (!validCommon(record) || record.kind !== kind) return null
   if (kind === 'write') {
-    if (!isStrictUuid(record.idempotencyKey)) return null
-    return record as unknown as WriteDraft
+    if (!hasExactKeys(record, ['version', 'kind', 'title', 'bodyMarkdown', 'tagIds', 'updatedAt', 'idempotencyKey']) || !isStrictUuid(record.idempotencyKey)) return null
+    return { version: 1, kind: 'write', title: record.title as string, bodyMarkdown: record.bodyMarkdown as string, tagIds: (record.tagIds as string[]).map(id => id.toLowerCase()), updatedAt: record.updatedAt as string, idempotencyKey: record.idempotencyKey.toLowerCase() }
   }
-  if (!isStrictUuid(postId) || record.postId !== postId.toLowerCase()) return null
-  return record as unknown as EditDraft
+  if (!hasExactKeys(record, ['version', 'kind', 'postId', 'title', 'bodyMarkdown', 'tagIds', 'updatedAt']) || !isStrictUuid(postId) || record.postId !== postId.toLowerCase()) return null
+  return { version: 1, kind: 'edit', postId: record.postId, title: record.title as string, bodyMarkdown: record.bodyMarkdown as string, tagIds: (record.tagIds as string[]).map(id => id.toLowerCase()), updatedAt: record.updatedAt as string }
 }
 
 export function loadDraft(storage: DraftStorage, kind: 'write'): WriteDraft | null

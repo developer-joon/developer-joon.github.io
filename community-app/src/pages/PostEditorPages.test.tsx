@@ -58,13 +58,29 @@ describe('WritePostPage', () => {
     view.unmount()
   })
 
-  it('keeps an anonymous draft and logs in with the exact safe write path', async () => {
+  it('keeps an anonymous draft and canonicalizes the full query and hash return path', async () => {
     const local = storage(); const a = auth(null)
-    wrap(<WritePostPage repository={repository()} storage={local} navigate={vi.fn()} currentPath="/community/write/?from=home" />, a)
+    wrap(<WritePostPage repository={repository()} storage={local} navigate={vi.fn()} currentPath="/community/write?from=home#draft" />, a)
     await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid()
     fireEvent.click(screen.getByRole('button', { name: '발행' }))
-    expect(a.signInWithGitHub).toHaveBeenCalledWith('/community/write/?from=home')
+    expect(a.signInWithGitHub).toHaveBeenCalledWith('/community/write/?from=home#draft')
     expect(local.values.has(draftKey('write'))).toBe(true)
+  })
+
+  it('does not let a stale create response clear a replacement draft or navigate', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const createPost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const local = storage(); const navigate = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid()
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    const replacement = { version: 1, kind: 'write', title: '다른 글', bodyMarkdown: '다른 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000098' }
+    local.setItem(draftKey('write'), JSON.stringify(replacement))
+    resolve({ ok: true, data: postId })
+
+    expect(await screen.findByText('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')).toBeInTheDocument()
+    expect(JSON.parse(local.values.get(draftKey('write'))!)).toEqual(replacement)
+    expect(navigate).not.toHaveBeenCalled()
   })
 
   it('preserves draft and does not navigate for auth expiry or malformed success UUID', async () => {
@@ -121,6 +137,36 @@ describe('EditPostPage', () => {
     expect(navigate).not.toHaveBeenCalled()
   })
 
+  it('ignores an update completion after the editor unmounts', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const updatePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const local = storage(); const navigate = vi.fn()
+    const view = wrap(<EditPostPage repository={repository({ updatePost })} search={`?id=${postId}`} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    view.unmount()
+    resolve({ ok: true, data: postId })
+    await Promise.resolve()
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect(local.values.has(draftKey('edit', postId))).toBe(true)
+  })
+
+  it('ignores an update completion after the authenticated user changes', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const updatePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const repo = repository({ updatePost }); const local = storage(); const navigate = vi.fn()
+    const view = wrap(<EditPostPage repository={repo} search={`?id=${postId}`} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    view.rerender(<AuthContext.Provider value={auth('56000000-0000-4000-8000-000000000031')}><EditPostPage repository={repo} search={`?id=${postId}`} storage={local} navigate={navigate} /></AuthContext.Provider>)
+    resolve({ ok: true, data: postId })
+    await Promise.resolve()
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect(local.values.has(draftKey('edit', postId))).toBe(true)
+  })
+
   it('retains an edit draft and offers safe re-login when the session expires', async () => {
     const local = storage(); const a = auth(authorId)
     const updatePost = vi.fn().mockResolvedValue({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST301', message: '로그인이 필요합니다.' } })
@@ -137,6 +183,7 @@ describe('EditPostPage', () => {
     const local = storage(); const deletePost = vi.fn().mockResolvedValue({ ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR', message: '네트워크 연결을 확인해 주세요.' } }); const confirmDelete = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
     wrap(<EditPostPage repository={repository({ deletePost })} search={`?id=${postId}`} storage={local} navigate={vi.fn()} confirmDelete={confirmDelete} />, auth(authorId))
     await screen.findByDisplayValue('서버 제목')
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '삭제 전 수정한 제목' } })
     fireEvent.click(screen.getByRole('button', { name: '글 삭제' })); expect(deletePost).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '글 삭제' })); expect(await screen.findByText('네트워크 연결을 확인해 주세요.')).toBeInTheDocument()
     expect(deletePost).toHaveBeenCalledTimes(1); expect(local.values.has(draftKey('edit', postId))).toBe(true)

@@ -59,12 +59,13 @@ function Masthead() {
 interface AppProps {
   pathname?: string
   search?: string
+  hash?: string
   repository?: CommunityRepository
   authClient?: AuthClient
   onAuthCallbackNavigate?: (path: string) => void
 }
 
-export function App({ pathname = window.location.pathname, search = window.location.search, repository, authClient, onAuthCallbackNavigate }: AppProps) {
+export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, authClient, onAuthCallbackNavigate }: AppProps) {
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
@@ -77,7 +78,7 @@ export function App({ pathname = window.location.pathname, search = window.locat
     )
   }
   if (normalizedPathname === '/community/write') {
-    return <Suspense fallback={<div className="page" role="status">글쓰기 화면을 준비하고 있습니다.</div>}><WritePostPage repository={repository ?? getCommunityRepository()} currentPath={`${pathname}${search}`} /></Suspense>
+    return <Suspense fallback={<div className="page" role="status">글쓰기 화면을 준비하고 있습니다.</div>}><WritePostPage repository={repository ?? getCommunityRepository()} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/edit') {
     return <Suspense fallback={<div className="page" role="status">글 수정 화면을 준비하고 있습니다.</div>}><EditPostPage repository={repository ?? getCommunityRepository()} search={search} /></Suspense>

@@ -3,6 +3,7 @@ import { AppHeader } from '../components/AppHeader'
 import { DraftNotice } from '../components/DraftNotice'
 import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
+import { normalizeCommunityReturnPath } from '../auth/auth'
 import type { CommunityRepository } from '../data/communityRepository'
 import { clearDraft, createWriteDraft, loadDraft, saveDraft, type DraftStorage, type WriteDraft } from '../lib/draftStore'
 import { isStrictUuid, type PostInput } from '../lib/validation'
@@ -16,12 +17,26 @@ interface Props {
 }
 
 function safeWritePath(path: string) {
-  return /^\/community\/write\/(?:[?#].*)?$/.test(path) ? path : '/community/write/'
+  const safe = normalizeCommunityReturnPath(path)
+  if (!safe) return '/community/write/'
+  const parsed = new URL(safe, 'https://community.invalid')
+  if (parsed.pathname !== '/community/write' && parsed.pathname !== '/community/write/') return '/community/write/'
+  return `/community/write/${parsed.search}${parsed.hash}`
+}
+
+function sameWriteDraft(draft: WriteDraft, submitted: WriteDraft) {
+  return draft.idempotencyKey === submitted.idempotencyKey
+    && draft.title === submitted.title && draft.bodyMarkdown === submitted.bodyMarkdown
+    && draft.tagIds.length === submitted.tagIds.length
+    && draft.tagIds.every((tagId, index) => tagId === submitted.tagIds[index])
 }
 
 export function WritePostPage({ repository, storage = window.localStorage, navigate = path => window.location.assign(path), currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}` }: Props) {
   const auth = useAuth()
   const draftRef = useRef<WriteDraft | null>(null)
+  const lifecycle = useRef(0)
+  const authUserId = useRef(auth.user?.id ?? null)
+  authUserId.current = auth.user?.id ?? null
   if (!draftRef.current) draftRef.current = loadDraft(storage, 'write') ?? createWriteDraft()
   const restored = loadDraft(storage, 'write') !== null
   const [tags, setTags] = useState<CommunityTag[] | null>(null)
@@ -33,6 +48,11 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
   useEffect(() => {
     saveDraft(storage, draftRef.current!)
   }, [storage])
+
+  useEffect(() => {
+    const generation = ++lifecycle.current
+    return () => { if (lifecycle.current === generation) lifecycle.current += 1 }
+  }, [repository, storage])
 
   useEffect(() => {
     let active = true
@@ -58,7 +78,11 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
       await auth.signInWithGitHub(safeWritePath(currentPath))
       return
     }
-    const result = await repository.createPost({ ...value, idempotencyKey: draftRef.current!.idempotencyKey })
+    const generation = lifecycle.current
+    const actorId = auth.user.id
+    const submitted: WriteDraft = { ...draftRef.current!, tagIds: [...draftRef.current!.tagIds] }
+    const result = await repository.createPost({ ...value, idempotencyKey: submitted.idempotencyKey })
+    if (generation !== lifecycle.current || authUserId.current !== actorId) return
     if (!result.ok) {
       setSubmitError(result.error.message)
       setNeedsLogin(result.error.code === 'auth_required')
@@ -66,6 +90,11 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
     }
     if (!isStrictUuid(result.data)) {
       setSubmitError('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.')
+      return
+    }
+    const stored = loadDraft(storage, 'write')
+    if (stored && !sameWriteDraft(stored, submitted)) {
+      setSubmitError('다른 탭에서 초안이 변경되어 현재 화면을 이동하지 않았습니다.')
       return
     }
     clearDraft(storage, 'write')
