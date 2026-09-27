@@ -14,8 +14,8 @@ set search_path = ''
 as $$
 declare
   uuid_pattern constant text := '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
-  token_end constant text := $re$([?#][^[:space:]<>"')]*)?(?=$|[[:space:]<>"')])$re$;
-  bare_end constant text := $re$(?=$|[[:space:]<>"')])$re$;
+  token_end constant text := $re$([?#][^[:space:]<>"')]*)?(?=$|[[:space:]<>"'),.;:!?])$re$;
+  bare_end constant text := $re$(?=$|[[:space:]<>"'),.;:!?])$re$;
   unavailable constant text := 'about:blank#attachment-unavailable';
   attachment_ids uuid[];
   storage_paths text[];
@@ -47,9 +47,9 @@ begin
     placeholder := 'urn:public-attachment:'||attachment_ids[i]::text;
     rewritten := pg_catalog.regexp_replace(
       rewritten,
-      $re$(https?://[^/[:space:]<>]+)?/storage/v1/object/(public/|sign/|authenticated/)?community-images/$re$
+      $re$(^|[[:space:]<(])((https?://[^/[:space:]<>]+)?/)?storage/v1/object/(public/|sign/|authenticated/)?community-images/$re$
         ||storage_paths[i]||token_end,
-      placeholder,'g'
+      E'\\1'||placeholder,'g'
     );
     rewritten := pg_catalog.regexp_replace(
       rewritten,
@@ -73,7 +73,7 @@ begin
   -- title rather than retaining a secret suffix beside a neutralized target.
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    $re$[[:space:]]+("[^"\r\n]*(token|api[_-]?key|signature|signed|secret|service[_-]?role|x-amz-(credential|signature))[^"\r\n]*"|'[^'\r\n]*(token|api[_-]?key|signature|signed|secret|service[_-]?role|x-amz-(credential|signature))[^'\r\n]*'|\([^()\r\n]*(token|api[_-]?key|signature|signed|secret|service[_-]?role|x-amz-(credential|signature))[^()\r\n]*\))(?=\))$re$,
+    $re$[[:space:]]+("[^"\r\n]*(?<![[:alnum:]_-])(token|api[_-]?key|signature|signed|secret|service[_-]?role|x-amz-(credential|signature))[[:space:]]*=[^"\r\n]*"|'[^'\r\n]*(?<![[:alnum:]_-])(token|api[_-]?key|signature|signed|secret|service[_-]?role|x-amz-(credential|signature))[[:space:]]*=[^'\r\n]*'|\([^()\r\n]*(?<![[:alnum:]_-])(token|api[_-]?key|signature|signed|secret|service[_-]?role|x-amz-(credential|signature))[[:space:]]*=[^()\r\n]*\))(?=\))$re$,
     '','gi'
   );
 
@@ -81,8 +81,8 @@ begin
   -- whether they occur inline, in a reference, in an autolink, or as text.
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    $re$(https?://[^/[:space:]<>]+)?/storage/v1/object/[^[:space:]<>"')]*$re$,
-    unavailable,'g'
+    $re$(^|[[:space:]<(])((https?://[^/[:space:]<>]+)?/)?storage/v1/object/[^[:space:]<>"')]*$re$,
+    E'\\1'||unavailable,'g'
   );
   rewritten := pg_catalog.regexp_replace(
     rewritten,
@@ -106,13 +106,13 @@ begin
   -- value so no query/fragment suffix remains after replacement.
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    $re$https?://[^[:space:]<>"')]*(token|api[_-]?key|signature|service[_-]?role|x-amz-(credential|signature)|sb_secret)[^[:space:]<>"')]*$re$,
+    $re$https?://[^[:space:]<>"')]*[?&#](token|api[_-]?key|signature|signed|secret|service[_-]?role|x-amz-(credential|signature))[[:space:]]*=[^[:space:]<>"')]*$re$,
     unavailable,'gi'
   );
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    $re$(token|api[_-]?key|signature|service[_-]?role|x-amz-(credential|signature))[[:space:]]*=[^[:space:]<>"')]*$re$,
-    unavailable,'gi'
+    $re$(^|[^[:alnum:]_-])(token|api[_-]?key|signature|signed|secret|service[_-]?role|x-amz-(credential|signature))[[:space:]]*=[^[:space:]<>"')]*$re$,
+    E'\\1'||unavailable,'gi'
   );
   rewritten := pg_catalog.regexp_replace(
     rewritten,$re$sb_secret_[[:alnum:]_-]+$re$,unavailable,'gi'

@@ -1,6 +1,6 @@
 begin;
 
-select plan(80);
+select plan(83);
 
 insert into auth.users (id, aud, role, email) values
   ('51000000-0000-0000-0000-000000000001','authenticated','authenticated','read-a@example.test'),
@@ -108,6 +108,30 @@ select ok(position('route_secret' in (select body_markdown from public.get_publi
 select ok(position('loose_secret' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'loose token credential is removed');
 select ok(position('loose_key' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'loose apikey credential is removed');
 select ok(position('sb_secret_very_private' in (select body_markdown from public.get_public_post('52000000-0000-0000-0000-000000000001')))=0,'loose Supabase secret is removed');
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    '51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001, next'
+  ),
+  '/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001, next',
+  'canonical raw paths next to ordinary punctuation are rewritten without consuming punctuation'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    '[x](storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001)'
+  ),
+  '[x](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)',
+  'relative managed Storage routes are rewritten'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    'secret=very_private [docs](https://example.com/tokenization)'
+  ),
+  'about:blank#attachment-unavailable [docs](https://example.com/tokenization)',
+  'credential assignments are removed without matching key-name substrings'
+);
 select is(
   private.public_post_body(
     '52000000-0000-0000-0000-000000000001',
