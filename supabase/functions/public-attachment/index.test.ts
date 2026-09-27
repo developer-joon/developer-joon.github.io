@@ -7,14 +7,18 @@ import {
 } from "./index.ts";
 
 const ATTACHMENT_ID = "a1000000-0000-4000-8000-000000000001";
-const STORAGE_PATH =
-  "b1000000-0000-4000-8000-000000000001/c1000000-0000-4000-8000-000000000001";
+const OWNER_ID = "b1000000-0000-4000-8000-000000000001";
+const OBJECT_TOKEN = "c1000000-0000-4000-8000-000000000001";
+const STORAGE_PATH = `${OWNER_ID}/${OBJECT_TOKEN}`;
 const IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 
 function attachment(
   overrides: Partial<AttachmentRecord> = {},
 ): AttachmentRecord {
   return {
+    id: ATTACHMENT_ID,
+    ownerId: OWNER_ID,
+    objectToken: OBJECT_TOKEN,
     storagePath: STORAGE_PATH,
     mimeType: "image/png",
     byteSize: IMAGE_BYTES.byteLength,
@@ -180,6 +184,39 @@ Deno.test("rejects unsupported expected MIME before Storage download", async () 
   assert.equal(response.status, 502);
   assert.deepEqual(await response.json(), { error: "attachment_unavailable" });
   assert.equal(events.some((event) => event.startsWith("download:")), false);
+});
+
+Deno.test("rejects non-canonical or unrelated Storage paths before download", async () => {
+  const invalidRecords: AttachmentRecord[] = [
+    attachment({ storagePath: `not-a-uuid/${OBJECT_TOKEN}` }),
+    attachment({ storagePath: `${OWNER_ID}/../${OBJECT_TOKEN}` }),
+    attachment({ storagePath: `${OWNER_ID}%2F${OBJECT_TOKEN}` }),
+    attachment({ storagePath: `${OWNER_ID}/${OBJECT_TOKEN.toUpperCase()}` }),
+    attachment({ storagePath: `${OWNER_ID}//${OBJECT_TOKEN}` }),
+    attachment({ storagePath: `${OWNER_ID}\\${OBJECT_TOKEN}` }),
+    attachment({ storagePath: `${OWNER_ID}/${OBJECT_TOKEN}/extra` }),
+    attachment({ storagePath: `${OBJECT_TOKEN}/${OWNER_ID}` }),
+    attachment({ ownerId: OBJECT_TOKEN }),
+    attachment({ objectToken: OWNER_ID }),
+    attachment({ id: "a1000000-0000-4000-8000-000000000002" }),
+  ];
+
+  for (const record of invalidRecords) {
+    const events: string[] = [];
+    const response = await handlePublicAttachment(
+      request(),
+      dependencies(events, record),
+    );
+    assert.equal(response.status, 502, JSON.stringify(record));
+    assert.deepEqual(await response.json(), {
+      error: "attachment_unavailable",
+    });
+    assert.equal(
+      events.some((event) => event.startsWith("download:")),
+      false,
+      JSON.stringify(record),
+    );
+  }
 });
 
 Deno.test("rejects oversized, wrong-length, and MIME-inconsistent Storage blobs", async () => {

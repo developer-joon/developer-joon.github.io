@@ -15,6 +15,9 @@ const SUCCESS_CACHE_CONTROL = "public, max-age=300, s-maxage=300";
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 export type AttachmentRecord = {
+  id: string;
+  ownerId: string;
+  objectToken: string;
   storagePath: string;
   mimeType: string;
   byteSize: number;
@@ -100,8 +103,15 @@ function attachmentIdFromRequest(request: Request): string | null {
   return match[1];
 }
 
-function hasSafeMetadata(record: AttachmentRecord): boolean {
-  return record.storagePath.length > 0 &&
+function hasSafeMetadata(
+  record: AttachmentRecord,
+  requestedId: string,
+): boolean {
+  return record.id === requestedId &&
+    UUID_PATTERN.test(record.id) &&
+    UUID_PATTERN.test(record.ownerId) &&
+    UUID_PATTERN.test(record.objectToken) &&
+    record.storagePath === `${record.ownerId}/${record.objectToken}` &&
     ALLOWED_MIME_TYPES.has(record.mimeType) &&
     Number.isSafeInteger(record.byteSize) &&
     record.byteSize >= 1 &&
@@ -110,6 +120,9 @@ function hasSafeMetadata(record: AttachmentRecord): boolean {
 
 function normalizeAttachment(row: Record<string, unknown>): AttachmentRecord {
   return {
+    id: typeof row.attachment_id === "string" ? row.attachment_id : "",
+    ownerId: typeof row.owner_id === "string" ? row.owner_id : "",
+    objectToken: typeof row.object_token === "string" ? row.object_token : "",
     storagePath: typeof row.storage_path === "string" ? row.storage_path : "",
     mimeType: typeof row.mime_type === "string" ? row.mime_type : "",
     byteSize: typeof row.byte_size === "number" ? row.byte_size : Number.NaN,
@@ -206,7 +219,7 @@ export async function handlePublicAttachment(
       result = "not_found";
       return json(404, requestId, result, origin);
     }
-    if (!hasSafeMetadata(record)) {
+    if (!hasSafeMetadata(record, attachmentId)) {
       result = "unsafe_attachment_metadata";
       return json(502, requestId, "attachment_unavailable", origin);
     }
