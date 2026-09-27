@@ -131,6 +131,8 @@
 **Files:**
 - Create: `supabase/functions/public-attachment/index.ts`
 - Create: `supabase/functions/public-attachment/index.test.ts`
+- Create: `supabase/migrations/202609270001_public_attachment_resolver.sql`
+- Create: `supabase/migrations/202609270003_public_attachment_body_urls.sql`
 - Modify: `supabase/config.toml`
 - Modify: `community-app/src/data/communityRepository.ts`
 
@@ -146,7 +148,7 @@
 **Objective:** 댓글이 남은 삭제 글을 본문·작성자 개인정보 없이 안전한 tombstone으로 읽게 한다.
 
 **Files:**
-- Create: `supabase/migrations/202609260006_post_tombstones.sql`
+- Create: `supabase/migrations/202609270004_post_tombstones.sql`
 - Modify: `supabase/tests/database/public_post_read_model.test.sql`
 - Modify: `community-app/src/types/community.ts`
 - Modify: `community-app/src/data/communityRepository.ts`
@@ -154,17 +156,18 @@
 
 **Steps:**
 1. missing/hidden/deleted-with-comments/deleted-without-comments 상태 계약 RED를 작성한다.
-2. read RPC가 허용된 tombstone에 상태와 최소 메타데이터만 반환하고 원문·작성자 정보는 반환하지 않도록 구현한다.
-3. repository가 `not_found`, `hidden`, `deleted`를 구분하도록 타입과 mapping을 갱신한다.
-4. DB·프런트 전체 검사를 통과시킨다.
-5. Commit: `fix: add safe deleted-post tombstones`.
+2. versioned scalar JSON read RPC가 `published`, 내용 없는 `hidden`, 공개 댓글 수만 포함한 `deleted`, `not_found`를 구분하고 tombstone에 원문·작성자·태그·시각·첨부 정보를 반환하지 않도록 구현한다.
+3. 삭제 글에 남은 기존 공개 댓글만 읽는 제한된 RPC를 추가한다. base-table RLS를 넓히지 않고 새 댓글·대댓글·반응은 계속 거부한다.
+4. repository가 runtime discriminator 검증으로 `published`, `not_found`, `hidden`, `deleted`를 구분하고 `.maybeSingle()`의 zero-row ambiguity를 사용하지 않도록 타입과 mapping을 갱신한다.
+5. DB·프런트 전체 검사와 삭제/댓글 전이 race 검사를 통과시킨다.
+6. Commit: `fix: add safe deleted-post tombstones`.
 
 ### Task 5D: 무제한 cursor 목록
 
 **Objective:** 공개 게시글이 5,000개를 넘어도 목록이 중단되지 않게 한다.
 
 **Files:**
-- Create: `supabase/migrations/202609260007_unbounded_public_listing.sql`
+- Create: `supabase/migrations/202609270005_unbounded_public_listing.sql`
 - Modify: `supabase/tests/database/public_post_read_model.test.sql`
 
 **Steps:**
