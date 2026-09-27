@@ -114,13 +114,15 @@
 
 **Files:**
 - Create: `supabase/migrations/202609260005_profile_provisioning.sql`
-- Create: `supabase/tests/database/profile_provisioning.test.sql`
+- Create: `supabase/migrations/202609270002_trusted_github_profile_provisioning.sql`
+- Modify: `supabase/tests/0005_profile_provisioning.test.sql`
 
 **Steps:**
-1. GitHub provider metadata의 불변 numeric ID와 login을 사용한 생성·갱신, 잘못된 provider와 누락 metadata 거부 pgTAP RED를 작성한다.
-2. `auth.users`의 insert/update trigger가 `public.profiles`를 idempotent하게 provision하되 일반 browser role에는 직접 쓰기 권한을 주지 않도록 구현한다.
-3. 기존 수동 fixture와 신규 실제 OAuth 형태 fixture를 모두 포함해 DB 전체 테스트·lint를 통과시킨다.
-4. Commit: `fix: provision community profiles from GitHub auth`.
+1. 신뢰 가능한 `auth.identities.provider_id`의 GitHub numeric ID와 provider 생성 `identity_data`를 사용한 생성·갱신, 잘못된 provider와 필수 metadata 거부 pgTAP RED를 작성한다.
+2. 기존의 안전하지 않은 `auth.users.raw_user_meta_data` trigger를 제거하고 `auth.identities` insert/update trigger가 `public.profiles`를 transaction 안에서 idempotent하게 provision하도록 forward migration을 작성한다.
+3. 직접 `raw_user_meta_data` 변경은 프로필을 생성·변경하지 못하고, trusted identity 갱신만 presentation metadata를 refresh하며, 선택 metadata의 blank/invalid 값은 null로 degrade함을 검증한다.
+4. identity 재바인딩·충돌 방지, non-GitHub 무시, 양의 numeric ID 검증, browser profile write 거부, 기존 수동 fixture를 포함해 DB 전체 테스트·lint를 통과시킨다.
+5. Commit: `fix: trust GitHub identity records for profiles`.
 
 ### Task 5B: 공개 이미지 전달 경계
 
