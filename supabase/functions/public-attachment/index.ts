@@ -10,7 +10,7 @@ const DEFAULT_ALLOWED_ORIGINS = new Set([
   "https://breadlab.ai",
   "https://www.breadlab.ai",
 ]);
-const SUCCESS_CACHE_CONTROL = "public, max-age=300, s-maxage=300";
+const PRIVATE_NO_STORE = "private, no-store, max-age=0, must-revalidate";
 
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
@@ -26,7 +26,7 @@ export type AttachmentRecord = {
 export type PublicAttachmentDependencies = {
   env(name: string): string | undefined;
   resolveAttachment(id: string): Promise<AttachmentRecord | null>;
-  download(path: string): Promise<Blob>;
+  fetchStorage(path: string, signal: AbortSignal): Promise<Response>;
   log(entry: Record<string, unknown>): void;
 };
 
@@ -61,13 +61,12 @@ function isAllowedOrigin(
   return origin === null || configuredOrigins(dependencies).has(origin);
 }
 
-function baseHeaders(
-  origin: string | null,
-  cacheControl = "no-store",
-): Headers {
+function baseHeaders(origin: string | null): Headers {
   const headers = new Headers({
-    "cache-control": cacheControl,
+    "cache-control": PRIVATE_NO_STORE,
     "cross-origin-resource-policy": "cross-origin",
+    "expires": "0",
+    "pragma": "no-cache",
     "vary": "Origin",
     "x-content-type-options": "nosniff",
   });
@@ -118,6 +117,60 @@ function hasSafeMetadata(
     record.byteSize <= MAX_ATTACHMENT_BYTES;
 }
 
+function encodedStorageObjectUrl(supabaseUrl: string, path: string): string {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return new URL(
+    `/storage/v1/object/${encodeURIComponent(BUCKET)}/${encodedPath}`,
+    supabaseUrl,
+  ).toString();
+}
+
+function cancelUpstream(response: Response, controller: AbortController): void {
+  controller.abort();
+  response.body?.cancel().catch(() => undefined);
+}
+
+function boundedStorageStream(
+  body: ReadableStream<Uint8Array>,
+  expectedBytes: number,
+  abortController: AbortController,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let receivedBytes = 0;
+
+  function fail(controller: ReadableStreamDefaultController<Uint8Array>): void {
+    abortController.abort();
+    reader.cancel().catch(() => undefined);
+    controller.error(new Error("storage_metadata_mismatch"));
+  }
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          if (receivedBytes !== expectedBytes) return fail(controller);
+          controller.close();
+          return;
+        }
+        if (!(value instanceof Uint8Array)) return fail(controller);
+        receivedBytes += value.byteLength;
+        if (
+          receivedBytes > expectedBytes ||
+          receivedBytes > MAX_ATTACHMENT_BYTES
+        ) return fail(controller);
+        controller.enqueue(value);
+      } catch {
+        fail(controller);
+      }
+    },
+    cancel(reason) {
+      abortController.abort();
+      return reader.cancel(reason);
+    },
+  });
+}
+
 function normalizeAttachment(row: Record<string, unknown>): AttachmentRecord {
   return {
     id: typeof row.attachment_id === "string" ? row.attachment_id : "",
@@ -148,12 +201,17 @@ async function runtimeDependencies(
       if (!data) return null;
       return normalizeAttachment(data as Record<string, unknown>);
     },
-    download: async (path) => {
-      const { data, error } = await serviceClient.storage.from(BUCKET).download(
-        path,
-      );
-      if (error || !data) throw error ?? new Error("storage_download_failed");
-      return data;
+    fetchStorage: (path, signal) => {
+      return fetch(encodedStorageObjectUrl(supabaseUrl, path), {
+        method: "GET",
+        headers: {
+          "apikey": serviceRoleKey,
+          "authorization": `Bearer ${serviceRoleKey}`,
+        },
+        cache: "no-store",
+        redirect: "error",
+        signal,
+      });
     },
     log: (entry) => console.log(JSON.stringify(entry)),
   };
@@ -224,27 +282,44 @@ export async function handlePublicAttachment(
       return json(502, requestId, "attachment_unavailable", origin);
     }
 
-    let blob: Blob;
+    const abortController = new AbortController();
+    let storageResponse: Response;
     try {
-      blob = await dependencies.download(record.storagePath);
+      storageResponse = await dependencies.fetchStorage(
+        record.storagePath,
+        abortController.signal,
+      );
     } catch {
       result = "storage_download_failed";
       return json(502, requestId, "attachment_unavailable", origin);
     }
+    const contentLength = storageResponse.headers.get("content-length");
+    const contentType = storageResponse.headers.get("content-type");
     if (
-      blob.size !== record.byteSize || blob.size > MAX_ATTACHMENT_BYTES ||
-      blob.type !== record.mimeType || !ALLOWED_MIME_TYPES.has(blob.type)
+      storageResponse.status !== 200 || storageResponse.body === null ||
+      contentLength === null || !/^(0|[1-9][0-9]*)$/.test(contentLength) ||
+      Number(contentLength) !== record.byteSize ||
+      Number(contentLength) > MAX_ATTACHMENT_BYTES ||
+      contentType !== record.mimeType || !ALLOWED_MIME_TYPES.has(contentType)
     ) {
+      cancelUpstream(storageResponse, abortController);
       result = "storage_metadata_mismatch";
       return json(502, requestId, "attachment_unavailable", origin);
     }
 
     result = "served";
-    const headers = baseHeaders(origin, SUCCESS_CACHE_CONTROL);
+    const headers = baseHeaders(origin);
     headers.set("content-type", record.mimeType);
     headers.set("content-length", String(record.byteSize));
     headers.set("x-request-id", requestId);
-    return new Response(blob.stream(), { status: 200, headers });
+    return new Response(
+      boundedStorageStream(
+        storageResponse.body,
+        record.byteSize,
+        abortController,
+      ),
+      { status: 200, headers },
+    );
   } catch {
     result = "internal_error";
     return json(500, requestId, result, origin);

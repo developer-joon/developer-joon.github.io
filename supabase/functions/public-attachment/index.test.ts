@@ -40,12 +40,27 @@ function dependencies(
       events.push(`find:${id}`);
       return Promise.resolve(record);
     },
-    download: (path) => {
+    fetchStorage: (path) => {
       events.push(`download:${path}`);
-      return Promise.resolve(new Blob([IMAGE_BYTES], { type: "image/png" }));
+      return Promise.resolve(storageResponse(IMAGE_BYTES));
     },
     log: (entry) => events.push(`log:${JSON.stringify(entry)}`),
   };
+}
+
+function storageResponse(
+  body: BodyInit | null,
+  contentType = "image/png",
+  contentLength = String(IMAGE_BYTES.byteLength),
+  status = 200,
+): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "content-length": contentLength,
+      "content-type": contentType,
+    },
+  });
 }
 
 function request(
@@ -61,7 +76,7 @@ function request(
   );
 }
 
-Deno.test("streams an eligible private object with bounded image headers", async () => {
+Deno.test("streams an eligible private object with no-store image headers", async () => {
   const events: string[] = [];
   const response = await handlePublicAttachment(
     request(),
@@ -86,8 +101,10 @@ Deno.test("streams an eligible private object with bounded image headers", async
   );
   assert.equal(
     response.headers.get("cache-control"),
-    "public, max-age=300, s-maxage=300",
+    "private, no-store, max-age=0, must-revalidate",
   );
+  assert.equal(response.headers.get("pragma"), "no-cache");
+  assert.equal(response.headers.get("expires"), "0");
   assert.equal(response.headers.get("access-control-allow-credentials"), null);
   assert.equal(response.headers.get("vary"), "Origin");
 });
@@ -235,14 +252,82 @@ Deno.test("rejects oversized, wrong-length, and MIME-inconsistent Storage blobs"
 
   for (const [record, blob] of cases) {
     const deps = dependencies([], record);
-    deps.download = () => Promise.resolve(blob);
+    deps.fetchStorage = () => {
+      return Promise.resolve(storageResponse(
+        blob,
+        blob.type,
+        String(blob.size),
+      ));
+    };
     const response = await handlePublicAttachment(request(), deps);
     assert.equal(response.status, 502);
     assert.deepEqual(await response.json(), {
       error: "attachment_unavailable",
     });
-    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(
+      response.headers.get("cache-control"),
+      "private, no-store, max-age=0, must-revalidate",
+    );
   }
+});
+
+Deno.test("rejects malformed upstream status and headers before streaming", async () => {
+  const cases: Array<[string, Response]> = [
+    ["non-success", storageResponse("private upstream detail", "text/plain", "23", 500)],
+    ["missing body", storageResponse(null)],
+    ["missing length", storageResponse(IMAGE_BYTES, "image/png", "")],
+    ["malformed length", storageResponse(IMAGE_BYTES, "image/png", "4.0")],
+    ["wrong length", storageResponse(IMAGE_BYTES, "image/png", "5")],
+    ["oversized length", storageResponse(IMAGE_BYTES, "image/png", String(MAX_ATTACHMENT_BYTES + 1))],
+    ["wrong MIME", storageResponse(IMAGE_BYTES, "image/jpeg")],
+    ["parameterized MIME", storageResponse(IMAGE_BYTES, "image/png; charset=utf-8")],
+  ];
+
+  for (const [name, upstream] of cases) {
+    const deps = dependencies();
+    deps.fetchStorage = () => Promise.resolve(upstream);
+    const response = await handlePublicAttachment(request(), deps);
+    assert.equal(response.status, 502, name);
+    const body = await response.text();
+    assert.deepEqual(JSON.parse(body), { error: "attachment_unavailable" }, name);
+    assert.equal(body.includes("private upstream detail"), false, name);
+    assert.equal(response.headers.get("cache-control")?.includes("no-store"), true, name);
+  }
+});
+
+Deno.test("aborts an upstream stream that exceeds its declared bound", async () => {
+  let signal: AbortSignal | undefined;
+  const deps = dependencies();
+  deps.fetchStorage = (_path, requestSignal) => {
+    signal = requestSignal;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(IMAGE_BYTES);
+        controller.enqueue(new Uint8Array([0xff]));
+        controller.close();
+      },
+    });
+    return Promise.resolve(storageResponse(body));
+  };
+
+  const response = await handlePublicAttachment(request(), deps);
+  assert.equal(response.status, 200);
+  await assert.rejects(() => response.arrayBuffer(), /storage_metadata_mismatch/);
+  assert.equal(signal?.aborted, true);
+});
+
+Deno.test("aborts an upstream stream shorter than its declared length", async () => {
+  let signal: AbortSignal | undefined;
+  const deps = dependencies();
+  deps.fetchStorage = (_path, requestSignal) => {
+    signal = requestSignal;
+    return Promise.resolve(storageResponse(new Uint8Array([0x89])));
+  };
+
+  const response = await handlePublicAttachment(request(), deps);
+  assert.equal(response.status, 200);
+  await assert.rejects(() => response.arrayBuffer(), /storage_metadata_mismatch/);
+  assert.equal(signal?.aborted, true);
 });
 
 Deno.test("allows production and explicitly configured CORS origins without credentials", async () => {
@@ -299,7 +384,7 @@ Deno.test("redacts service and Storage failures from responses and logs", async 
         ));
       };
     } else {
-      deps.download = () => {
+      deps.fetchStorage = () => {
         return Promise.reject(new Error(
           `storage failed storage_path=${STORAGE_PATH} secret=service-secret`,
         ));

@@ -13,6 +13,7 @@
     "db:start": "supabase start",
     "db:reset": "supabase db reset",
     "db:test": "supabase test db",
+    "db:test:public-attachment-integration": "bash ../supabase/tests/public_attachment_integration.sh",
     "db:test:storage-upgrade": "bash ../supabase/tests/storage_upgrade.sh",
     "db:lint": "supabase db lint --level error",
     "db:stop": "supabase stop"
