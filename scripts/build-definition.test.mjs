@@ -22,12 +22,13 @@ test('pins a non-root unified Docker build toolchain', async () => {
   assert.match(dockerfile, /RUN test "\$\(id -u\)" != 0 && \.\/scripts\/build-site\.sh/)
 })
 
-test('aligns the workflow and package engine with the supported Docker Node pin', async () => {
+test('aligns the workflow and package engine with the supported Docker toolchain pins', async () => {
   const workflow = await readFile(path.join(repoRoot, '.github/workflows/jekyll.yml'), 'utf8')
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'community-app/package.json'), 'utf8'))
   const packageLock = JSON.parse(await readFile(path.join(repoRoot, 'community-app/package-lock.json'), 'utf8'))
 
   assert.match(workflow, /node-version: ['"]24\.15\.0['"]/, 'workflow must use the exact Docker Node version')
+  assert.match(workflow, /ruby-version: ['"]3\.3\.10['"]/, 'workflow must use the exact Docker Ruby version')
   assert.equal(packageJson.engines.node, '^24.15.0')
   assert.equal(packageLock.packages[''].engines.node, '^24.15.0')
 })
