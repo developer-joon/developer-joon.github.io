@@ -1,6 +1,6 @@
 begin;
 
-select plan(121);
+select plan(144);
 
 insert into auth.users (id, aud, role, email) values
   ('51000000-0000-0000-0000-000000000001','authenticated','authenticated','read-a@example.test'),
@@ -11,11 +11,12 @@ insert into public.profiles(id,github_user_id,login,display_name) values
 insert into public.tags(id,slug,label,sort_order) values
   ('53000000-0000-0000-0000-000000000001','read-one','Read One',951),
   ('53000000-0000-0000-0000-000000000002','read-two','Read Two',952);
-insert into public.posts(id,author_id,title,body_markdown,status,is_pinned,created_at,updated_at) values
-  ('52000000-0000-0000-0000-000000000001','51000000-0000-0000-0000-000000000001','weighted needle','short body','published',false,'2026-09-01','2026-09-01'),
-  ('52000000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000001','newest',E'needle [leak](<https://project.supabase.co/storage/v1/object/sign/community-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002?token=list_secret> "safe list") [ordinary](cafe/dead)','published',false,'2026-09-03','2026-09-03'),
-  ('52000000-0000-0000-0000-000000000003','51000000-0000-0000-0000-000000000001','pinned','other','published',true,'2026-09-02','2026-09-02'),
-  ('52000000-0000-0000-0000-000000000004','51000000-0000-0000-0000-000000000001','hidden needle','secret','hidden',false,'2026-09-04','2026-09-04');
+insert into public.posts(id,author_id,title,body_markdown,status,is_pinned,created_at,updated_at,deleted_at) values
+  ('52000000-0000-0000-0000-000000000001','51000000-0000-0000-0000-000000000001','weighted needle','short body','published',false,'2026-09-01','2026-09-01',null),
+  ('52000000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000001','newest',E'needle [leak](<https://project.supabase.co/storage/v1/object/sign/community-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002?token=list_secret> "safe list") [ordinary](cafe/dead)','published',false,'2026-09-03','2026-09-03',null),
+  ('52000000-0000-0000-0000-000000000003','51000000-0000-0000-0000-000000000001','pinned','other','published',true,'2026-09-02','2026-09-02',null),
+  ('52000000-0000-0000-0000-000000000004','51000000-0000-0000-0000-000000000001','hidden needle','secret','hidden',false,'2026-09-04','2026-09-04',null),
+  ('52000000-0000-0000-0000-000000000005','51000000-0000-0000-0000-000000000001','deleted needle','secret','deleted',false,'2026-09-05','2026-09-05','2026-09-05');
 insert into public.post_tags(post_id,tag_id) values
   ('52000000-0000-0000-0000-000000000001','53000000-0000-0000-0000-000000000001'),
   ('52000000-0000-0000-0000-000000000001','53000000-0000-0000-0000-000000000002'),
@@ -46,6 +47,7 @@ select ok(has_function_privilege('anon','public.get_public_post(uuid)','EXECUTE'
 set local role anon;
 create temporary table read_rows as select * from public.list_public_posts('newest',10,null,null,null,null,null,null,null);
 select is((select count(*)::integer from read_rows),3,'only public posts are listed');
+select ok(not exists(select 1 from read_rows where id='52000000-0000-0000-0000-000000000005'),'deleted posts are excluded from listing');
 select is((select id from read_rows order by row_number limit 1),'52000000-0000-0000-0000-000000000003'::uuid,'pinned post sorts first');
 select ok(not exists(select 1 from information_schema.columns where table_schema like 'pg_temp%' and table_name='read_rows' and column_name='body_markdown'),'list transfers no full body');
 select is((select excerpt from read_rows where id='52000000-0000-0000-0000-000000000002'),E'needle [leak](about:blank#attachment-unavailable "safe list") [ordinary](cafe/dead)','list excerpt is derived from the sanitized public body');
@@ -57,6 +59,15 @@ select is((select popularity_score from read_rows where id='52000000-0000-0000-0
 select is((select jsonb_array_length(tags) from public.list_public_posts('newest',10,null,'53000000-0000-0000-0000-000000000001',null,null,null,null,null) where id='52000000-0000-0000-0000-000000000001'),2,'tag filtering preserves all post tags');
 select is((select count(*)::integer from public.list_public_posts('newest',10,'needle',null,null,null,null,null,null)),2,'FTS searches title and body and excludes hidden posts');
 select is((select id from public.list_public_posts('newest',10,'needle',null,null,null,null,null,null) order by row_number limit 1),'52000000-0000-0000-0000-000000000001'::uuid,'title-weighted relevance outranks a newer body-only match');
+create temporary table search_first as select * from public.list_public_posts('newest',1,'needle',null,null,null,null,null,null) where row_number=1;
+create temporary table search_second as
+select * from public.list_public_posts(
+  'newest',1,'needle',null,
+  (select is_pinned from search_first),(select created_at from search_first),null,
+  (select id from search_first),(select search_rank from search_first)
+) where row_number=1;
+select is((select id from search_first),'52000000-0000-0000-0000-000000000001'::uuid,'search cursor exposes the first relevance-ranked key');
+select is((select id from search_second),'52000000-0000-0000-0000-000000000002'::uuid,'search cursor continues without skipping the lower relevance rank');
 select is((select id from public.list_public_posts('comments',10,null,null,null,null,null,null,null) where not is_pinned order by row_number limit 1),'52000000-0000-0000-0000-000000000001'::uuid,'comments sort uses public comment count');
 select is((select id from public.list_public_posts('popular',10,null,null,null,null,null,null,null) where not is_pinned order by row_number limit 1),'52000000-0000-0000-0000-000000000001'::uuid,'popular sort uses recent likes times two plus comments');
 select is((select count(*)::integer from public.get_public_post('52000000-0000-0000-0000-000000000004')),0,'detail RPC does not expose hidden posts or their metrics');
@@ -646,14 +657,107 @@ select md5('capacity-post-'||g::text)::uuid,
        'Capacity body',
        'published'
 from generate_series(1,5001) g;
+insert into public.post_tags(post_id,tag_id)
+select md5('capacity-post-'||g::text)::uuid,
+       '53000000-0000-0000-0000-000000000001'
+from generate_series(1,5001) g;
 set local role anon;
-select throws_ok(
-  $$select * from public.list_public_posts('popular',10,null,null,null,null,null,null,null)$$,
-  '54000',
-  'public post list capacity exceeded',
-  'broad aggregate queries are rejected above the explicit candidate cap'
-);
+create temporary table scale_newest_first as
+select * from public.list_public_posts('newest',10,null,null,null,null,null,null,null) where row_number<=10;
+create temporary table scale_newest_second as
+select * from public.list_public_posts(
+  'newest',10,null,null,
+  (select is_pinned from scale_newest_first order by row_number desc limit 1),
+  (select created_at from scale_newest_first order by row_number desc limit 1),null,
+  (select id from scale_newest_first order by row_number desc limit 1),
+  (select search_rank from scale_newest_first order by row_number desc limit 1)
+) where row_number<=10;
+select is((select count(*)::integer from scale_newest_first),10,'newest returns a full first page above 5000 posts');
+select is((select count(*)::integer from scale_newest_second),10,'newest returns a full second page above 5000 posts');
+select is((select count(*)::integer from scale_newest_first join scale_newest_second using(id)),0,'newest keyset has no duplicate across large tied pages');
+
+create temporary table scale_tag_first as
+select * from public.list_public_posts('newest',10,null,'53000000-0000-0000-0000-000000000001',null,null,null,null,null) where row_number<=10;
+create temporary table scale_tag_second as
+select * from public.list_public_posts(
+  'newest',10,null,'53000000-0000-0000-0000-000000000001',
+  (select is_pinned from scale_tag_first order by row_number desc limit 1),
+  (select created_at from scale_tag_first order by row_number desc limit 1),null,
+  (select id from scale_tag_first order by row_number desc limit 1),
+  (select search_rank from scale_tag_first order by row_number desc limit 1)
+) where row_number<=10;
+select is((select count(*)::integer from scale_tag_first),10,'tag filter returns a full page above 5000 matches');
+select is((select count(*)::integer from scale_tag_second),10,'tag filter returns a second page above 5000 matches');
+select is((select count(*)::integer from scale_tag_first join scale_tag_second using(id)),0,'tag keyset has no duplicate across large tied pages');
+
+create temporary table scale_comments_first as
+select * from public.list_public_posts('comments',10,null,null,null,null,null,null,null) where row_number<=10;
+create temporary table scale_comments_second as
+select * from public.list_public_posts(
+  'comments',10,null,null,
+  (select is_pinned from scale_comments_first order by row_number desc limit 1),
+  (select created_at from scale_comments_first order by row_number desc limit 1),
+  (select rank_key from scale_comments_first order by row_number desc limit 1),
+  (select id from scale_comments_first order by row_number desc limit 1),
+  (select search_rank from scale_comments_first order by row_number desc limit 1)
+) where row_number<=10;
+select is((select count(*)::integer from scale_comments_first),10,'comments returns a full first page above 5000 tied metrics');
+select is((select count(*)::integer from scale_comments_second),10,'comments returns a full second page above 5000 tied metrics');
+select is((select count(*)::integer from scale_comments_first join scale_comments_second using(id)),0,'comments keyset has no duplicate across large ties');
+
+create temporary table scale_popular_first as
+select * from public.list_public_posts('popular',10,null,null,null,null,null,null,null) where row_number<=10;
+create temporary table scale_popular_second as
+select * from public.list_public_posts(
+  'popular',10,null,null,
+  (select is_pinned from scale_popular_first order by row_number desc limit 1),
+  (select created_at from scale_popular_first order by row_number desc limit 1),
+  (select rank_key from scale_popular_first order by row_number desc limit 1),
+  (select id from scale_popular_first order by row_number desc limit 1),
+  (select search_rank from scale_popular_first order by row_number desc limit 1)
+) where row_number<=10;
+select is((select count(*)::integer from scale_popular_first),10,'popular returns a full first page above 5000 tied metrics');
+select is((select count(*)::integer from scale_popular_second),10,'popular returns a full second page above 5000 tied metrics');
+select is((select count(*)::integer from scale_popular_first join scale_popular_second using(id)),0,'popular keyset has no duplicate across large ties');
+
+create temporary table scale_boundaries as
+select sort_name, first_row.id first_id, second_row.id second_id,
+       first_row.is_pinned first_pinned, second_row.is_pinned second_pinned
+from unnest(array['newest','comments','popular']) sort_name
+cross join lateral public.list_public_posts(sort_name,1,null,null,null,null,null,null,null) first_row
+cross join lateral public.list_public_posts(
+  sort_name,1,null,null,first_row.is_pinned,first_row.created_at,first_row.rank_key,
+  first_row.id,first_row.search_rank
+) second_row
+where first_row.row_number=1 and second_row.row_number=1;
+select is((select count(*)::integer from scale_boundaries),3,'every sort returns rows across the pinned boundary');
+select is((select count(*)::integer from scale_boundaries where first_pinned),3,'every sort places the pinned row first');
+select is((select count(*)::integer from scale_boundaries where not second_pinned),3,'every sort continues with unpinned rows');
+select is((select count(*)::integer from scale_boundaries where first_id=second_id),0,'no sort duplicates the pinned cursor row');
+select is((select count(*)::integer from scale_boundaries where first_id<>second_id),3,'every sort advances beyond its pinned cursor row');
+select is((select count(*)::integer from scale_boundaries where first_id is null or second_id is null),0,'every sort supplies both sides of the pinned boundary');
 reset role;
+
+select ok(
+  regexp_count(
+    pg_get_functiondef('private.public_post_page_keys(text,integer,tsquery,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure),
+    'limit p_limit\+1',1,'ni'
+  )=4
+  and position('private.public_post_excerpt' in pg_get_functiondef('private.public_post_page_keys(text,integer,tsquery,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure))=0
+  and position('private.public_post_counts' in pg_get_functiondef('private.public_post_page_keys(text,integer,tsquery,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure))=0
+  and position('private.public_post_excerpt' in pg_get_functiondef('public.list_public_posts(text,integer,text,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure))>0,
+  'all ranking branches limit IDs before invoking page-only metrics and excerpt hydration'
+);
+select ok(
+  (select p.prosecdef and p.proconfig=array['search_path=""'] and pg_get_userbyid(p.proowner)='postgres'
+     from pg_proc p where p.oid='public.list_public_posts(text,integer,text,uuid,boolean,timestamp with time zone,bigint,uuid,real)'::regprocedure),
+  'large-list RPC retains fixed-owner SECURITY DEFINER and empty search_path'
+);
+select is(
+  (select count(*)::integer from pg_proc where pronamespace='public'::regnamespace and proname='list_public_posts'),
+  1,
+  'large-list migration creates no ambiguous RPC overload'
+);
 
 select * from finish();
 rollback;
