@@ -5,7 +5,6 @@ import type { CommunityRepository } from './data/communityRepository'
 
 const routeCases = [
   ['/community/write/', '글쓰기 화면을 준비하고 있습니다'],
-  ['/community/post/', '게시글 화면을 준비하고 있습니다'],
   ['/community/edit/', '글 수정 화면을 준비하고 있습니다'],
   ['/community/admin/reports/', '신고 관리 화면을 준비하고 있습니다'],
   ['/community/auth/callback/', '로그인 확인 화면을 준비하고 있습니다'],
@@ -20,6 +19,18 @@ describe('App', () => {
     render(<App pathname="/community/" search="?q=missing" repository={repository} />)
     expect(screen.getByRole('heading', { name: '개발자가 쓰고 답하는 공간' })).toBeInTheDocument()
     expect(await screen.findByText('검색 결과가 없습니다')).toBeInTheDocument()
+  })
+
+  it('routes the post shell to the real detail page with its search and repository', async () => {
+    const repository = {
+      getPost: async () => ({ ok: true, data: { kind: 'not_found' } }),
+      listComments: async () => ({ ok: true, data: { items: [], hasMore: false, nextCursor: null } }),
+    } as unknown as CommunityRepository
+
+    render(<App pathname="/community/post/" search="?id=56000000-0000-4000-8000-000000000010" repository={repository} />)
+
+    expect(await screen.findByRole('heading', { name: '게시글을 찾을 수 없습니다' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '커뮤니티 글 목록으로' })).toHaveAttribute('href', '/community/')
   })
 
   it.each(routeCases)('renders the route-aware placeholder for %s', (pathname, statusTitle) => {

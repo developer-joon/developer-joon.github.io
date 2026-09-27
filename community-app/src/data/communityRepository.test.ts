@@ -38,6 +38,7 @@ function setup() {
   const calls: Array<{ method: string; args: unknown }> = []
   let listResponse: QueryResponse = { data: [], error: null }
   let detailResponse: QueryResponse = { data: null, error: null }
+  let commentsResponse: QueryResponse = { data: { items: [], has_more: false, next_cursor: null }, error: null }
   let mutationResponse: QueryResponse = { data: 'post-1', error: null }
   const client: CommunityClient = {
     publicAttachmentUrl(attachmentId) { return `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}` },
@@ -46,6 +47,7 @@ function setup() {
       calls.push({ method: fn, args })
       if (fn === 'list_public_posts') return Promise.resolve(listResponse)
       if (fn === 'get_public_post_v2') return Promise.resolve(detailResponse)
+      if (fn === 'list_public_post_comments') return Promise.resolve(commentsResponse)
       return Promise.resolve(mutationResponse)
     },
   }
@@ -53,11 +55,95 @@ function setup() {
     repository: createCommunityRepository(client), calls,
     setListResponse(value: QueryResponse) { listResponse = value },
     setDetailResponse(value: QueryResponse) { detailResponse = value },
+    setCommentsResponse(value: QueryResponse) { commentsResponse = value },
     setMutationResponse(value: QueryResponse) { mutationResponse = value },
   }
 }
 
 describe('community repository public list contract', () => {
+  it('calls the bounded public comment RPC with an explicit first-page cursor', async () => {
+    const value = setup()
+    const repository = value.repository as unknown as {
+      listComments(input: { postId: string; limit: number }): Promise<unknown>
+    }
+
+    await repository.listComments({ postId: '56000000-0000-4000-8000-000000000010', limit: 50 })
+
+    expect(value.calls).toEqual([{ method: 'list_public_post_comments', args: {
+      p_post_id: '56000000-0000-4000-8000-000000000010',
+      p_limit: 50,
+      p_cursor_root_created_at: undefined,
+      p_cursor_root_id: undefined,
+      p_cursor_is_reply: undefined,
+      p_cursor_created_at: undefined,
+      p_cursor_id: undefined,
+    } }])
+  })
+
+  it('maps a comment page and sends every keyset cursor field exactly', async () => {
+    const value = setup()
+    const cursor = {
+      rootCreatedAt: '2026-09-27T00:00:00Z',
+      rootId: '56000000-0000-4000-8000-000000000020',
+      isReply: true,
+      createdAt: '2026-09-27T00:01:00Z',
+      id: '56000000-0000-4000-8000-000000000021',
+    }
+    value.setCommentsResponse({ data: {
+      items: [{
+        id: cursor.id, parent_id: cursor.rootId, body_markdown: '**답글**',
+        created_at: cursor.createdAt, updated_at: cursor.createdAt,
+        author_id: '56000000-0000-4000-8000-000000000030', author_login: 'reply-author',
+        author_display_name: null, author_avatar_url: null,
+      }],
+      has_more: true,
+      next_cursor: {
+        root_created_at: cursor.rootCreatedAt, root_id: cursor.rootId, is_reply: cursor.isReply,
+        created_at: cursor.createdAt, id: cursor.id,
+      },
+    }, error: null })
+
+    const result = await value.repository.listComments({
+      postId: '56000000-0000-4000-8000-000000000010', limit: 50, cursor,
+    })
+
+    expect(value.calls).toEqual([{ method: 'list_public_post_comments', args: {
+      p_post_id: '56000000-0000-4000-8000-000000000010', p_limit: 50,
+      p_cursor_root_created_at: cursor.rootCreatedAt, p_cursor_root_id: cursor.rootId,
+      p_cursor_is_reply: true, p_cursor_created_at: cursor.createdAt, p_cursor_id: cursor.id,
+    } }])
+    expect(result).toEqual({ ok: true, data: {
+      items: [{
+        id: cursor.id, parentId: cursor.rootId, bodyMarkdown: '**답글**',
+        createdAt: cursor.createdAt, updatedAt: cursor.createdAt,
+        author: { id: '56000000-0000-4000-8000-000000000030', login: 'reply-author', displayName: null, avatarUrl: null },
+      }],
+      hasMore: true,
+      nextCursor: cursor,
+    } })
+  })
+
+  it.each([
+    { items: [], has_more: false, next_cursor: null, extra: true },
+    { items: [], has_more: true, next_cursor: null },
+    { items: [], has_more: false, next_cursor: { root_created_at: 'bad', root_id: 'x', is_reply: false, created_at: 'bad', id: 'x' } },
+    { items: [{ id: 'bad' }], has_more: false, next_cursor: null },
+    { items: [{
+      id: '56000000-0000-4000-8000-000000000021', parent_id: null, body_markdown: 'ok',
+      created_at: '2026-09-27T00:00:00Z', updated_at: '2026-09-27T00:00:00Z',
+      author_id: '56000000-0000-4000-8000-000000000030', author_login: 'author',
+      author_display_name: null, author_avatar_url: null, leak: true,
+    }], has_more: false, next_cursor: null },
+  ])('rejects malformed comment payload %o as INVALID_RESPONSE', async (data) => {
+    const value = setup()
+    value.setCommentsResponse({ data, error: null })
+
+    expect(await value.repository.listComments({ postId: '56000000-0000-4000-8000-000000000010', limit: 50 })).toEqual({
+      ok: false,
+      error: { code: 'unknown', sourceCode: 'INVALID_RESPONSE', message: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' },
+    })
+  })
+
   it('calls only the typed list RPC and maps server excerpt, counters, and every tag', async () => {
     const value = setup()
     value.setListResponse({ data: [row], error: null })

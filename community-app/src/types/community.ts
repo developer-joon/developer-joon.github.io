@@ -32,6 +32,35 @@ export type PublicPostRead =
   | { kind: 'deleted'; commentCount: number }
   | { kind: 'not_found' }
 
+export interface PublicComment {
+  id: string
+  parentId: string | null
+  bodyMarkdown: string
+  createdAt: string
+  updatedAt: string
+  author: ProfileSummary
+}
+
+export interface CommentCursor {
+  rootCreatedAt: string
+  rootId: string
+  isReply: boolean
+  createdAt: string
+  id: string
+}
+
+export interface CommentListInput {
+  postId: string
+  limit: number
+  cursor?: CommentCursor
+}
+
+export interface CommentPage {
+  items: PublicComment[]
+  hasMore: boolean
+  nextCursor: CommentCursor | null
+}
+
 export interface PostCursor {
   isPinned: boolean
   searchRank: number

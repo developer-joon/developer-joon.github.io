@@ -1,6 +1,7 @@
 import { resolveCommunityRoute } from './routes'
 import { getCommunityRepository, type CommunityRepository } from './data/communityRepository'
 import { CommunityHomePage } from './pages/CommunityHomePage'
+import { PostDetailPage } from './pages/PostDetailPage'
 
 const sharedStyles = `
   :root { color: #20201d; background: #f4f0e7; font-family: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif; font-synthesis: none; }
@@ -50,6 +51,9 @@ export function App({ pathname = window.location.pathname, search = window.locat
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
+  }
+  if (normalizedPathname === '/community/post') {
+    return <PostDetailPage repository={repository ?? getCommunityRepository()} search={search} />
   }
   const route = resolveCommunityRoute(pathname)
 
