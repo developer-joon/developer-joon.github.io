@@ -46,7 +46,7 @@ http://localhost:4000
 
 Docker 빌드는 고정된 `linux/amd64` 이미지와 UID 10001의 비-root 사용자로 같은 `scripts/build-site.sh`를 실행하고 검증된 artifact를 `_site-docker/`에 복사합니다. 출력 경로를 바꾸려면 첫 번째 인수로 지정합니다(예: `./scripts/build-site-docker.sh /tmp/site-artifact`).
 
-두 명령 모두 커뮤니티 의존성 설치·검사·Vite 빌드, production Jekyll 빌드, community 병합, 최종 artifact 검증을 순서대로 실행합니다. 이미 조립된 artifact만 다시 검사하려면 `node scripts/verify-site.mjs _site`를 실행합니다.
+두 명령 모두 커뮤니티 의존성 설치·검사·Vite 빌드, production Jekyll 빌드, community 병합, 최종 artifact 검증을 순서대로 실행합니다. Jekyll의 빌드 시각은 현재 Git commit의 committer timestamp로 고정됩니다. Git metadata가 없는 환경은 명시적인 ISO 8601 값(예: `SITE_BUILD_TIME=2026-01-02T03:04:05+00:00 ./scripts/build-site.sh`)을 전달해야 하며, 값이 없거나 잘못되면 빌드가 중단됩니다. 이미 조립된 artifact만 다시 검사하려면 `node scripts/verify-site.mjs _site`를 실행합니다. 두 artifact의 byte 재현성을 확인하고 정렬된 SHA256 manifest를 남기려면 `./scripts/verify-site-reproducibility.sh BUILD_1_DIR BUILD_2_DIR EVIDENCE_DIR`를 실행합니다.
 
 ## 배포
 

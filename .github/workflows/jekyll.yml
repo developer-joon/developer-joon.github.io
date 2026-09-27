@@ -34,6 +34,8 @@ jobs:
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5
+      - name: Set deterministic site build time
+        run: echo "SITE_BUILD_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
       - name: Build and verify site artifact
         run: ./scripts/build-site.sh
       - name: Upload artifact
