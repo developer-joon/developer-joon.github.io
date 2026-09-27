@@ -1,6 +1,6 @@
 begin;
 
-select plan(95);
+select plan(121);
 
 insert into auth.users (id, aud, role, email) values
   ('51000000-0000-0000-0000-000000000001','authenticated','authenticated','read-a@example.test'),
@@ -153,8 +153,8 @@ select is(
     '52000000-0000-0000-0000-000000000001',
     'raw:51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001'
   ),
-  'raw:/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001',
-  'colons do not hide canonical raw paths'
+  'raw:51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001',
+  'an opaque absolute URI outranks canonical raw-path matching'
 );
 select is(
   private.public_post_body(
@@ -269,10 +269,10 @@ select is(
 select is(
   private.public_post_body(
     '52000000-0000-0000-0000-000000000001',
-    repeat('[ordinary](https://example.com/docs?q=1) ',1500)
+    repeat('[ordinary](https://example.com/docs?q=1) ',1200)
   ),
-  repeat('[ordinary](https://example.com/docs?q=1) ',1500),
-  '1500 ordinary links are preserved'
+  repeat('[ordinary](https://example.com/docs?q=1) ',1200),
+  '1200 ordinary links within the body capacity are preserved'
 );
 select is(
   regexp_count(pg_get_functiondef('private.public_post_body(uuid,text)'::regprocedure),'from public.attachments',1,'ni'),
@@ -312,6 +312,269 @@ select is(
   left(repeat('ordinary ',10)||'about:blank#attachment-unavailable '||repeat('after ',20),180),
   'excerpt scans a bounded prefix, sanitizes it, and returns at most 180 characters'
 );
+select has_function(
+  'private','scan_public_post_body',array['text','uuid[]','text[]'],
+  'query-free bounded body scanner exists'
+);
+select is(
+  regexp_count(
+    pg_get_functiondef(to_regprocedure('private.scan_public_post_body(text,uuid[],text[])')),
+    '\m(from|join)\M',1,'ni'
+  ),
+  0,
+  'bounded body scanner has no relation access'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    'urn:public-attachment:56000000-0000-4000-8000-000000000001'
+  ),
+  'urn:public-attachment:56000000-0000-4000-8000-000000000001',
+  'user text resembling the retired placeholder is never promoted'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[
+        'https://example.com/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002?ok=1#fine',
+        'https://example.com/?next=59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002',
+        'ftp://example.com/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002',
+        'custom+v1://host/path/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002'
+      ]) uri
+     where private.public_post_body('52000000-0000-0000-0000-000000000001',uri) <> uri
+  ),
+  0,
+  'ordinary absolute URIs preserve UUID-pair paths and query values byte-for-byte'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    'https://example.com/archive/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?ok=1'
+  ),
+  'https://example.com/archive/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?ok=1',
+  'a mapped raw path nested inside an ordinary external URI is preserved'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    'https://example.com/download?token=credential_value'
+  ),
+  'about:blank#attachment-unavailable',
+  'an ordinary absolute URI carrying a recognized credential is redacted whole'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    '51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001#'
+  ),
+  '/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001#',
+  'a bare final fragment marker remains punctuation'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    E'안전한 본문 []{}(),.;!?\nordinary https://example.com/a?b=1#c'
+  ),
+  E'안전한 본문 []{}(),.;!?\nordinary https://example.com/a?b=1#c',
+  'safe multilingual input is an exact identity transformation'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    private.public_post_body(
+      '52000000-0000-0000-0000-000000000001',
+      '51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001 token=once'
+    )
+  ),
+  '/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001 about:blank#attachment-unavailable',
+  'body sanitization is idempotent'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    'xsb_secret_keep sb_secret_drop _sb_secret_keep'
+  ),
+  'xsb_secret_keep about:blank#attachment-unavailable _sb_secret_keep',
+  'Supabase secret recognition requires identifier boundaries'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    E'prefix "token=one\\"still-secret" suffix'
+  ),
+  'prefix about:blank#attachment-unavailable suffix',
+  'a quoted credential with an escaped quote is redacted as one span'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    E'prefix "token=unterminated\nnext'
+  ),
+  E'prefix about:blank#attachment-unavailable\nnext',
+  'an unterminated quoted credential is consumed only to end of line'
+);
+select is(
+  array[
+    private.public_post_body('52000000-0000-0000-0000-000000000001',$input$prefix token="quoted secret value" suffix$input$),
+    private.public_post_body('52000000-0000-0000-0000-000000000001',$input$prefix token='quoted secret value' suffix$input$),
+    private.public_post_body('52000000-0000-0000-0000-000000000001',$input$prefix token="one\"still secret" suffix$input$),
+    private.public_post_body('52000000-0000-0000-0000-000000000001',$input$prefix token="unterminated secret
+next$input$)
+  ],
+  array[
+    'prefix about:blank#attachment-unavailable suffix',
+    'prefix about:blank#attachment-unavailable suffix',
+    'prefix about:blank#attachment-unavailable suffix',
+    E'prefix about:blank#attachment-unavailable\nnext'
+  ]::text[],
+  'credential assignments consume double, single, escaped, and unterminated quoted values'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    'prefix,"token=quoted secret value" suffix'
+  ),
+  'prefix,about:blank#attachment-unavailable suffix',
+  'a punctuation-prefixed quote establishes credential value context'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) p(prefix)
+     cross join (values ('"','token'),('''','token'),('"','apikey'),('''','apikey')) v(quote_mark,key_name)
+     where private.public_post_body(
+       '52000000-0000-0000-0000-000000000001',
+       prefix||quote_mark||key_name||'=quoted secret value'||quote_mark||' suffix'
+     ) <> prefix||'about:blank#attachment-unavailable suffix'
+  ),
+  0,
+  'quoted credential assignments leave no secret remainder after practical ASCII punctuation prefixes'
+);
+select is(
+  array[
+    private.public_post_body('52000000-0000-0000-0000-000000000001','prefix,"ordinary quoted prose" suffix'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','prefix,"ordinary quoted prose" token="quoted secret value" suffix'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','prefix,"/functions/v1/public-attachment/59000000-0000-4000-8000-000000000003" suffix')
+  ],
+  array[
+    'prefix,"ordinary quoted prose" suffix',
+    'prefix,"ordinary quoted prose" about:blank#attachment-unavailable suffix',
+    'prefix,"about:blank#attachment-unavailable" suffix'
+  ]::text[],
+  'ordinary quoted prose is preserved while inner and following sensitive tokens are scanned'
+);
+select is(
+  array[
+    private.public_post_body('52000000-0000-0000-0000-000000000001',$input$"51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001"$input$),
+    private.public_post_body('52000000-0000-0000-0000-000000000001',$input$'/functions/v1/public-attachment/59000000-0000-4000-8000-000000000003'$input$)
+  ],
+  array[
+    '"/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001"',
+    '''about:blank#attachment-unavailable'''
+  ]::text[],
+  'quoted managed tokens are sanitized inside their preserved quotes'
+);
+select is(
+  array[
+    private.public_post_body('52000000-0000-0000-0000-000000000001','custom:59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','ftp:59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','urn:59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','custom:/functions/v1/public-attachment/59000000-0000-4000-8000-000000000003'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','custom:functions/v1/public-attachment/59000000-0000-4000-8000-000000000003'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','custom:opaque?token=secret')
+  ],
+  array[
+    'custom:59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002',
+    'ftp:59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002',
+    'urn:59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002',
+    'about:blank#attachment-unavailable',
+    'about:blank#attachment-unavailable',
+    'about:blank#attachment-unavailable'
+  ]::text[],
+  'all absolute URI schemes outrank path scanning but managed and credential-bearing URIs fail closed'
+);
+select is(
+  array[
+    private.public_post_body('52000000-0000-0000-0000-000000000001','mystorage/v1/object/ordinary'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','xcommunity-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','storage/v1/object/ordinary'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','prefix storage/v1/object/ordinary'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','"storage/v1/object/ordinary"'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001',':storage/v1/object/ordinary'),
+    private.public_post_body('52000000-0000-0000-0000-000000000001','=storage/v1/object/ordinary')
+  ],
+  array[
+    'mystorage/v1/object/ordinary',
+    'xcommunity-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002',
+    'about:blank#attachment-unavailable',
+    'prefix about:blank#attachment-unavailable',
+    '"about:blank#attachment-unavailable"',
+    ':about:blank#attachment-unavailable',
+    '=about:blank#attachment-unavailable'
+  ]::text[],
+  'relative managed tokens require a lexical left boundary'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    repeat('(',33)||'token=nested_secret'
+  ),
+  'about:blank#attachment-unavailable',
+  'nesting beyond 32 levels fails closed'
+);
+select throws_ok(
+  $$select private.public_post_body('52000000-0000-0000-0000-000000000001',repeat('x',50001))$$,
+  '54000','public post body capacity exceeded',
+  'direct body sanitization rejects input above the 50000-character bound'
+);
+select throws_like(
+  $$update public.posts set body_markdown='x'||repeat(' ',50000) where id='52000000-0000-0000-0000-000000000001'$$,
+  '%posts_body_length_check%',
+  'stored post bodies enforce actual length rather than trimmed length'
+);
+insert into public.attachments(
+  id,owner_id,post_id,client_key,payload_sha256,storage_path,mime_type,byte_size,status,deleted_at,attached_at
+) values
+  ('56000000-0000-4000-8000-000000000011','51000000-0000-0000-0000-000000000001','52000000-0000-0000-0000-000000000001','57000000-0000-4000-8000-000000000011',repeat('1',64),'51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000011','image/png',123,'attached',null,now()),
+  ('56000000-0000-4000-8000-000000000012','51000000-0000-0000-0000-000000000001','52000000-0000-0000-0000-000000000001','57000000-0000-4000-8000-000000000012',repeat('2',64),'51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000012','image/png',123,'attached',null,now()),
+  ('56000000-0000-4000-8000-000000000013','51000000-0000-0000-0000-000000000001','52000000-0000-0000-0000-000000000001','57000000-0000-4000-8000-000000000013',repeat('3',64),'51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000013','image/png',123,'attached',null,now()),
+  ('56000000-0000-4000-8000-000000000014','51000000-0000-0000-0000-000000000001','52000000-0000-0000-0000-000000000001','57000000-0000-4000-8000-000000000014',repeat('4',64),'51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000014','image/png',123,'attached',null,now());
+select throws_ok(
+  $$select private.public_post_body('52000000-0000-0000-0000-000000000001','safe')$$,
+  '54000','public post attachment capacity exceeded',
+  'six eligible attachment rows fail closed after the bounded mapping query'
+);
+delete from public.attachments where id in (
+  '56000000-0000-4000-8000-000000000011','56000000-0000-4000-8000-000000000012',
+  '56000000-0000-4000-8000-000000000013','56000000-0000-4000-8000-000000000014'
+);
+set local statement_timeout='2s';
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    repeat(E'한a[]()!? ',5000)
+  ),
+  repeat(E'한a[]()!? ',5000),
+  'the maximum-size multibyte punctuation workload terminates and remains unchanged'
+);
+select is(
+  private.scan_public_post_body(
+    private.scan_public_post_body(
+      repeat('token=xxxxxxxxxxxxxxxxxxxxxxxxxxxx ',256)||repeat('z',41040),array[]::uuid[],array[]::text[]
+    ),
+    array[]::uuid[],array[]::text[]
+  ),
+  repeat('about:blank#attachment-unavailable ',256)||repeat('z',41040),
+  'a maximum-size body permits 256 transformations and its output is idempotent'
+);
+select throws_ok(
+  $$select private.scan_public_post_body(
+    repeat('token=xxxxxxxxxxxxxxxxxxxxxxxxxxxx ',257)||repeat('z',41005),array[]::uuid[],array[]::text[]
+  )$$,
+  '54000','public post body transformation capacity exceeded',
+  'a 257th transformation is rejected at the fixed scanner bound'
+);
+set local statement_timeout=default;
 select throws_ok($$select * from public.list_public_posts('bad',10,null,null,null,null,null,null,null)$$,'22023','invalid post sort','invalid sort is rejected');
 select throws_ok($$select * from public.list_public_posts('newest',101,null,null,null,null,null,null,null)$$,'22023','invalid page limit','invalid limit is rejected');
 select throws_ok($$select * from public.list_public_posts('comments',10,null,null,false,'2026-09-01',null,'52000000-0000-0000-0000-000000000001',0)$$,'22023','invalid cursor','incomplete cursor is rejected');
