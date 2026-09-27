@@ -133,12 +133,26 @@ function isSafeCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const isoTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+const isoTimestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/
 function isUuid(value: unknown): value is string {
   return typeof value === 'string' && uuidPattern.test(value)
 }
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+}
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28
+  return [4, 6, 9, 11].includes(month) ? 30 : 31
+}
 function isIsoTimestamp(value: unknown): value is string {
-  return typeof value === 'string' && isoTimestampPattern.test(value) && Number.isFinite(Date.parse(value))
+  if (typeof value !== 'string') return false
+  const match = isoTimestampPattern.exec(value)
+  if (!match) return false
+  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = match.slice(1).map(Number)
+  return year >= 1 && month >= 1 && month <= 12
+    && day >= 1 && day <= daysInMonth(year, month)
+    && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59
+    && (Number.isNaN(offsetHour) || (offsetHour <= 23 && offsetMinute <= 59))
 }
 const detailKeys = [
   'id', 'title', 'body_markdown', 'created_at', 'updated_at', 'is_locked', 'is_pinned',

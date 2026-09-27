@@ -249,6 +249,8 @@ describe('community repository public list contract', () => {
     { kind: 'published', post: { ...detailRow, id: 'not-a-uuid' } },
     { kind: 'published', post: { ...detailRow, author_id: 'not-a-uuid' } },
     { kind: 'published', post: { ...detailRow, created_at: 'not-a-date' } },
+    { kind: 'published', post: { ...detailRow, created_at: '2026-02-29T00:00:00Z' } },
+    { kind: 'published', post: { ...detailRow, updated_at: '2026-04-31T00:00:00Z' } },
     { kind: 'published', post: { ...detailRow, updated_at: '2026-13-99T00:00:00Z' } },
     { kind: 'published', post: { ...detailRow, tags: [{ id: 'not-a-uuid', slug: 'bad', label: 'Bad' }] } },
     { kind: 'published', post: { ...detailRow, body_markdown: 'body' }, leak: true },
