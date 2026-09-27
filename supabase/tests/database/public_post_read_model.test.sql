@@ -1,6 +1,6 @@
 begin;
 
-select plan(83);
+select plan(95);
 
 insert into auth.users (id, aud, role, email) values
   ('51000000-0000-0000-0000-000000000001','authenticated','authenticated','read-a@example.test'),
@@ -131,6 +131,140 @@ select is(
   ),
   'about:blank#attachment-unavailable [docs](https://example.com/tokenization)',
   'credential assignments are removed without matching key-name substrings'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    '[ref]:storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001'
+  ),
+  '[ref]:/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001',
+  'Markdown reference colons do not hide managed Storage routes'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    'key=/storage/v1/object/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001'
+  ),
+  'key=/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001',
+  'equals signs do not hide managed Storage routes'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    'raw:51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001'
+  ),
+  'raw:/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001',
+  'colons do not hide canonical raw paths'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    '51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001? next'
+  ),
+  '/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001? next',
+  'a bare trailing question mark is punctuation rather than a URL suffix'
+);
+select is(
+  private.public_post_body(
+    '52000000-0000-0000-0000-000000000001',
+    '51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?'
+  ),
+  '/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001?',
+  'a bare final question mark is preserved'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) p(prefix)
+     where private.public_post_body(
+       '52000000-0000-0000-0000-000000000001',
+       prefix||'51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001'
+     ) <> prefix||'/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001'
+  ),
+  0,
+  'canonical raw paths are rewritten after practical ASCII punctuation prefixes'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) p(prefix)
+     where private.public_post_body(
+       '52000000-0000-0000-0000-000000000001',
+       prefix||'/storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001'
+     ) <> prefix||'/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001'
+  ),
+  0,
+  'managed Storage routes are rewritten after practical ASCII punctuation prefixes'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) s(suffix)
+     where private.public_post_body(
+       '52000000-0000-0000-0000-000000000001',
+       '51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001'||suffix||' next'
+     ) <> '/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001'||suffix||' next'
+  ),
+  0,
+  'canonical raw paths preserve practical ASCII punctuation suffixes'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) s(suffix)
+     where private.public_post_body(
+       '52000000-0000-0000-0000-000000000001',
+       '/storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001'||suffix||' next'
+     ) <> '/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001'||suffix||' next'
+  ),
+  0,
+  'managed Storage routes preserve practical ASCII punctuation suffixes'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) p(prefix)
+     cross join unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) s(suffix)
+     cross join lateral (
+       values
+         (prefix||'59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002'||suffix||' next'),
+         (prefix||'/storage/v1/object/sign/community-images/59000000-0000-4000-8000-000000000001/59000000-0000-4000-8000-000000000002'||suffix||' next')
+     ) sample(input)
+     where private.public_post_body(
+       '52000000-0000-0000-0000-000000000001',sample.input
+     ) <> prefix||'about:blank#attachment-unavailable'||suffix||' next'
+  ),
+  0,
+  'unmapped raw and managed paths are removed while surrounding punctuation survives'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) p(prefix)
+     where position('51000000-0000-0000-0000-000000000001/57000000' in private.public_post_body(
+             '52000000-0000-0000-0000-000000000001',
+             prefix||'/storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?token=prefix_secret'
+           )) > 0
+        or position('prefix_secret' in private.public_post_body(
+             '52000000-0000-0000-0000-000000000001',
+             prefix||'/storage/v1/object/sign/community-images/51000000-0000-0000-0000-000000000001/57000000-0000-4000-8000-000000000001?token=prefix_secret'
+           )) > 0
+  ),
+  0,
+  'punctuation-prefixed managed paths and credential suffixes never leak'
+);
+select is(
+  (
+    select count(*)::integer
+      from unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) p(prefix)
+     cross join unnest(array[':', '=', ',', '.', ';', '!', '?', '[', ']']) s(suffix)
+     where private.public_post_body(
+       '52000000-0000-0000-0000-000000000001',
+       prefix||'https://example.com/docs?q=1'||suffix||' cafe/dead'
+     ) <> prefix||'https://example.com/docs?q=1'||suffix||' cafe/dead'
+  ),
+  0,
+  'ordinary URLs and prose remain unchanged across punctuation boundaries'
 );
 select is(
   private.public_post_body(

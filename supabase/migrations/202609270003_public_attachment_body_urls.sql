@@ -14,8 +14,7 @@ set search_path = ''
 as $$
 declare
   uuid_pattern constant text := '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
-  token_end constant text := $re$([?#][^[:space:]<>"')]*)?(?=$|[[:space:]<>"'),.;:!?])$re$;
-  bare_end constant text := $re$(?=$|[[:space:]<>"'),.;:!?])$re$;
+  token_end constant text := $re$([?#][^[:space:]<>"')]+)?(?=$|[^[:alnum:]_-])$re$;
   unavailable constant text := 'about:blank#attachment-unavailable';
   attachment_ids uuid[];
   storage_paths text[];
@@ -47,9 +46,9 @@ begin
     placeholder := 'urn:public-attachment:'||attachment_ids[i]::text;
     rewritten := pg_catalog.regexp_replace(
       rewritten,
-      $re$(^|[[:space:]<(])((https?://[^/[:space:]<>]+)?/)?storage/v1/object/(public/|sign/|authenticated/)?community-images/$re$
+      $re$((https?://[^/[:space:]<>]+)?/)?storage/v1/object/(public/|sign/|authenticated/)?community-images/$re$
         ||storage_paths[i]||token_end,
-      E'\\1'||placeholder,'g'
+      placeholder,'g'
     );
     rewritten := pg_catalog.regexp_replace(
       rewritten,
@@ -59,13 +58,13 @@ begin
     );
     rewritten := pg_catalog.regexp_replace(
       rewritten,
-      $re$(^|[[:space:]<(])community-images/$re$||storage_paths[i]||token_end,
-      E'\\1'||placeholder,'g'
+      $re$community-images/$re$||storage_paths[i]||token_end,
+      placeholder,'g'
     );
     rewritten := pg_catalog.regexp_replace(
       rewritten,
-      $re$(^|[[:space:]<(])$re$||storage_paths[i]||token_end,
-      E'\\1'||placeholder,'g'
+      storage_paths[i]||token_end,
+      placeholder,'g'
     );
   end loop;
 
@@ -81,25 +80,23 @@ begin
   -- whether they occur inline, in a reference, in an autolink, or as text.
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    $re$(^|[[:space:]<(])((https?://[^/[:space:]<>]+)?/)?storage/v1/object/[^[:space:]<>"')]*$re$,
-    E'\\1'||unavailable,'g'
-  );
-  rewritten := pg_catalog.regexp_replace(
-    rewritten,
-    $re$(https?://[^/[:space:]<>]+)?/functions/v1/public-attachment/[^[:space:]<>"')]*$re$,
+    $re$((https?://[^/[:space:]<>]+)?/)?storage/v1/object/[^[:space:]<>"')?#,.;:!\[\]=]*$re$||token_end,
     unavailable,'g'
   );
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    $re$(^|[[:space:]<(])community-images/$re$||uuid_pattern||'/'||uuid_pattern||
-      $re$([?#][^[:space:]<>"')]*)?$re$||bare_end,
-    E'\\1'||unavailable,'g'
+    $re$(https?://[^/[:space:]<>]+)?/functions/v1/public-attachment/[^[:space:]<>"')?#,.;:!\[\]=]*$re$||token_end,
+    unavailable,'g'
   );
   rewritten := pg_catalog.regexp_replace(
     rewritten,
-    $re$(^|[[:space:]<(])$re$||uuid_pattern||'/'||uuid_pattern||
-      $re$([?#][^[:space:]<>"')]*)?$re$||bare_end,
-    E'\\1'||unavailable,'g'
+    $re$community-images/$re$||uuid_pattern||'/'||uuid_pattern||token_end,
+    unavailable,'g'
+  );
+  rewritten := pg_catalog.regexp_replace(
+    rewritten,
+    uuid_pattern||'/'||uuid_pattern||token_end,
+    unavailable,'g'
   );
 
   -- Credential material is unsafe even outside a URL. Consume the complete
