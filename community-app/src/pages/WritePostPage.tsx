@@ -5,7 +5,7 @@ import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import { normalizeCommunityReturnPath } from '../auth/auth'
 import type { CommunityRepository } from '../data/communityRepository'
-import { clearDraft, createWriteDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft, type DraftStorage, type WriteDraft } from '../lib/draftStore'
+import { clearDraft, createWriteDraft, isPersistableDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft, type DraftSnapshot, type DraftStorage, type WriteDraft } from '../lib/draftStore'
 import { isStrictUuid, type PostInput } from '../lib/validation'
 import type { CommunityTag } from '../types/community'
 
@@ -26,20 +26,20 @@ function safeWritePath(path: string) {
 
 export function WritePostPage({ repository, storage = window.localStorage, navigate = path => window.location.assign(path), currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}` }: Props) {
   const auth = useAuth()
-  const initial = useRef<{ draft: WriteDraft; restored: boolean; raw: string | null; conflict: boolean; storageFailed: boolean } | null>(null)
+  const initial = useRef<{ draft: WriteDraft; restored: boolean; snapshot: DraftSnapshot; conflict: boolean; storageFailed: boolean } | null>(null)
   if (!initial.current) {
     const snapshot = readDraftSnapshot(storage, 'write')
     const loaded = loadDraft(storage, 'write')
     initial.current = {
       draft: loaded ?? createWriteDraft(),
       restored: loaded !== null,
-      raw: snapshot.ok ? snapshot.raw : null,
-      conflict: snapshot.ok && snapshot.raw !== null && loaded === null,
+      snapshot,
+      conflict: !snapshot.ok || (snapshot.raw !== null && loaded === null),
       storageFailed: !snapshot.ok,
     }
   }
   const draftRef = useRef<WriteDraft>(initial.current.draft)
-  const persistedRaw = useRef<string | null>(initial.current.raw)
+  const baseline = useRef<DraftSnapshot>(initial.current.snapshot)
   const draftSaveFailed = useRef(initial.current.storageFailed)
   const conflictRef = useRef(initial.current.conflict)
   const lifecycle = useRef(0)
@@ -48,23 +48,30 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
   const [tags, setTags] = useState<CommunityTag[] | null>(null)
   const [tagError, setTagError] = useState<string | null>(null)
   const [tagAttempt, setTagAttempt] = useState(0)
-  const [submitError, setSubmitError] = useState<string | null>(initial.current.conflict ? '다른 탭의 초안과 충돌했습니다. 사용할 내용을 선택해 주세요.' : null)
+  const [submitError, setSubmitError] = useState<string | null>(initial.current.conflict ? '로컬 초안 상태를 확인할 수 없습니다. 사용할 내용을 선택해 주세요.' : null)
   const [needsLogin, setNeedsLogin] = useState(false)
   const [conflict, setConflict] = useState(initial.current.conflict)
   const [editorRevision, setEditorRevision] = useState(0)
 
   const persistExact = useCallback((draft: WriteDraft) => {
+    if (!isPersistableDraft(draft)) return false
     const saved = saveDraft(storage, draft)
     const snapshot = readDraftSnapshot(storage, 'write')
     const verified = saved && matchesDraftSnapshot(snapshot, draft)
-    if (verified) persistedRaw.current = snapshot.ok ? snapshot.raw : null
+    if (verified) baseline.current = snapshot
     draftSaveFailed.current = !verified
     return verified
   }, [storage])
 
   useEffect(() => {
-    if (persistedRaw.current === null && !conflictRef.current) persistExact(draftRef.current)
-  }, [persistExact])
+    if (conflictRef.current || !baseline.current.ok || baseline.current.raw !== null) return
+    const before = readDraftSnapshot(storage, 'write')
+    if (!before.ok || before.raw !== baseline.current.raw) {
+      enterConflict('다른 탭에서 초안 상태가 변경되었습니다. 사용할 내용을 선택해 주세요.')
+      return
+    }
+    persistExact(draftRef.current)
+  }, [persistExact, storage])
 
   useEffect(() => {
     const generation = ++lifecycle.current
@@ -92,10 +99,15 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
     const next: WriteDraft = { ...draftRef.current, ...value, updatedAt: new Date().toISOString() }
     draftRef.current = next
     if (conflictRef.current) return false
+    const before = readDraftSnapshot(storage, 'write')
+    if (!baseline.current.ok || !before.ok || before.raw !== baseline.current.raw) {
+      enterConflict('다른 탭에서 초안이 변경되었습니다. 사용할 내용을 선택해 주세요.')
+      return false
+    }
     const saved = persistExact(next)
     if (!saved) setSubmitError('초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
     return saved
-  }, [persistExact])
+  }, [persistExact, storage])
 
   function loadConflictingDraft() {
     const snapshot = readDraftSnapshot(storage, 'write')
@@ -105,7 +117,7 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
       return
     }
     draftRef.current = loaded
-    persistedRaw.current = snapshot.raw
+    baseline.current = snapshot
     draftSaveFailed.current = false
     conflictRef.current = false
     setConflict(false)
@@ -114,6 +126,10 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
   }
 
   function overwriteConflictingDraft() {
+    if (!isPersistableDraft(draftRef.current)) {
+      setSubmitError('현재 내용은 로컬 초안으로 저장할 수 없습니다. 입력 길이를 확인해 주세요.')
+      return
+    }
     if (!persistExact(draftRef.current)) {
       setSubmitError('현재 초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
       return
@@ -134,18 +150,15 @@ export function WritePostPage({ repository, storage = window.localStorage, navig
       setSubmitError('초안 저장소를 확인할 수 없어 발행하지 않았습니다. 브라우저 설정을 확인해 주세요.')
       return
     }
+    if (!baseline.current.ok || before.raw !== baseline.current.raw) {
+      enterConflict('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')
+      return
+    }
     if (draftSaveFailed.current) {
-      if (before.raw !== null && persistedRaw.current !== null && before.raw !== persistedRaw.current) {
-        enterConflict('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')
-        return
-      }
       if (!persistExact(draftRef.current)) {
         setSubmitError('초안을 저장할 수 없어 발행하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
         return
       }
-    } else if (before.raw !== null && !matchesDraftSnapshot(before, draftRef.current)) {
-      enterConflict('다른 탭에서 초안이 변경되어 발행하지 않았습니다.')
-      return
     }
     const saved = autosave(value)
     const submitted: WriteDraft = { ...draftRef.current, tagIds: [...draftRef.current.tagIds] }

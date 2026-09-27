@@ -89,6 +89,10 @@ function parseDraft(raw: string, kind: DraftKind, postId?: string): PostDraft | 
   return { version: 1, kind: 'edit', postId: record.postId, title: record.title as string, bodyMarkdown: record.bodyMarkdown as string, tagIds: (record.tagIds as string[]).map(id => id.toLowerCase()), updatedAt: record.updatedAt as string }
 }
 
+export function isPersistableDraft(draft: PostDraft): boolean {
+  return parseDraft(JSON.stringify(draft), draft.kind, draft.kind === 'edit' ? draft.postId : undefined) !== null
+}
+
 export function loadDraft(storage: DraftStorage, kind: 'write'): WriteDraft | null
 export function loadDraft(storage: DraftStorage, kind: 'edit', postId: string): EditDraft | null
 export function loadDraft(storage: DraftStorage, kind: DraftKind, postId?: string): PostDraft | null {

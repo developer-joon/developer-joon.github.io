@@ -5,7 +5,7 @@ import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import { normalizeCommunityReturnPath } from '../auth/auth'
 import type { CommunityRepository } from '../data/communityRepository'
-import { clearDraft, createEditDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft, type DraftStorage, type EditDraft } from '../lib/draftStore'
+import { clearDraft, createEditDraft, isPersistableDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft, type DraftSnapshot, type DraftStorage, type EditDraft } from '../lib/draftStore'
 import { parsePostId } from '../lib/postQuery'
 import { isStrictUuid, type PostInput } from '../lib/validation'
 import type { CommunityTag, PostDetail, PublicPostRead } from '../types/community'
@@ -48,7 +48,7 @@ export function EditPostPage({ repository, search, storage = window.localStorage
   const [attempt, setAttempt] = useState(0)
   const [initialDraft, setInitialDraft] = useState<EditDraft | null>(null)
   const draftRef = useRef<EditDraft | null>(null)
-  const persistedRaw = useRef<string | null>(null)
+  const baseline = useRef<DraftSnapshot>({ ok: false })
   const lifecycle = useRef(0)
   const authUserId = useRef(auth.user?.id ?? null)
   authUserId.current = auth.user?.id ?? null
@@ -71,7 +71,7 @@ export function EditPostPage({ repository, search, storage = window.localStorage
     if (!postId) return
     let active = true
     setLoadError(null); setPost(null); setReadState(null); setTags(null); setInitialDraft(null); setRestoredDraft(false)
-    setSubmitError(null); setConflict(false); conflictRef.current = false; persistedRaw.current = null; draftSaveFailed.current = false
+    setSubmitError(null); setConflict(false); conflictRef.current = false; baseline.current = { ok: false }; draftSaveFailed.current = false
     void Promise.all([repository.getPost(postId), repository.listTags()]).then(([postResult, tagResult]) => {
       if (!active) return
       if (!postResult.ok) { setLoadError(postResult.error.message); return }
@@ -85,12 +85,12 @@ export function EditPostPage({ repository, search, storage = window.localStorage
       const serverDraft = createEditDraft(postId, serverPost.title, serverPost.bodyMarkdown, serverPost.tags.map(tag => tag.id), serverPost.updatedAt)
       const hasNewerDraft = Boolean(saved && Date.parse(saved.updatedAt) > Date.parse(serverPost.updatedAt))
       const chosen = hasNewerDraft ? saved! : serverDraft
-      persistedRaw.current = snapshot.ok ? snapshot.raw : null
+      baseline.current = snapshot
       draftSaveFailed.current = !snapshot.ok
-      if (snapshot.ok && snapshot.raw !== null && !saved) {
+      if (!snapshot.ok || (snapshot.raw !== null && !saved)) {
         conflictRef.current = true
         setConflict(true)
-        setSubmitError('다른 탭의 초안과 충돌했습니다. 사용할 내용을 선택해 주세요.')
+        setSubmitError('로컬 초안 상태를 확인할 수 없습니다. 사용할 내용을 선택해 주세요.')
       }
       draftRef.current = chosen; setRestoredDraft(hasNewerDraft); setPost(serverPost); setInitialDraft(chosen)
     })
@@ -98,10 +98,11 @@ export function EditPostPage({ repository, search, storage = window.localStorage
   }, [attempt, postId, repository, storage])
 
   const persistExact = useCallback((draft: EditDraft) => {
+    if (!isPersistableDraft(draft)) return false
     const saved = saveDraft(storage, draft)
     const snapshot = readDraftSnapshot(storage, 'edit', draft.postId)
     const verified = saved && matchesDraftSnapshot(snapshot, draft)
-    if (verified) persistedRaw.current = snapshot.ok ? snapshot.raw : null
+    if (verified) baseline.current = snapshot
     draftSaveFailed.current = !verified
     return verified
   }, [storage])
@@ -117,10 +118,15 @@ export function EditPostPage({ repository, search, storage = window.localStorage
     const next: EditDraft = { ...draftRef.current, ...value, updatedAt: new Date().toISOString() }
     draftRef.current = next
     if (conflictRef.current) return false
+    const before = readDraftSnapshot(storage, 'edit', postId)
+    if (!baseline.current.ok || !before.ok || before.raw !== baseline.current.raw) {
+      enterConflict('다른 탭에서 초안이 변경되었습니다. 사용할 내용을 선택해 주세요.')
+      return false
+    }
     const saved = persistExact(next)
     if (!saved) setSubmitError('초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
     return saved
-  }, [persistExact, postId])
+  }, [persistExact, postId, storage])
 
   function loadConflictingDraft() {
     if (!postId) return
@@ -131,7 +137,7 @@ export function EditPostPage({ repository, search, storage = window.localStorage
       return
     }
     draftRef.current = loaded
-    persistedRaw.current = snapshot.raw
+    baseline.current = snapshot
     draftSaveFailed.current = false
     conflictRef.current = false
     setInitialDraft(loaded)
@@ -142,7 +148,11 @@ export function EditPostPage({ repository, search, storage = window.localStorage
   }
 
   function overwriteConflictingDraft() {
-    if (!draftRef.current || !persistExact(draftRef.current)) {
+    if (!draftRef.current || !isPersistableDraft(draftRef.current)) {
+      setSubmitError('현재 내용은 로컬 초안으로 저장할 수 없습니다. 입력 길이를 확인해 주세요.')
+      return
+    }
+    if (!persistExact(draftRef.current)) {
       setSubmitError('현재 초안을 저장할 수 없습니다. 저장 공간과 브라우저 설정을 확인해 주세요.')
       return
     }
@@ -160,11 +170,11 @@ export function EditPostPage({ repository, search, storage = window.localStorage
       const current = draftRef.current
       const before = readDraftSnapshot(storage, 'edit', postId)
       if (!current || !before.ok) { setSubmitError('초안 저장소를 확인할 수 없어 수정하지 않았습니다. 브라우저 설정을 확인해 주세요.'); return }
-      if (draftSaveFailed.current) {
-        if (before.raw !== null && persistedRaw.current !== null && before.raw !== persistedRaw.current) { enterConflict('다른 탭에서 초안이 변경되어 수정하지 않았습니다.'); return }
-        if (!persistExact(current)) { setSubmitError('초안을 저장할 수 없어 수정하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.'); return }
-      } else if (before.raw !== null && !matchesDraftSnapshot(before, current)) {
+      if (!baseline.current.ok || before.raw !== baseline.current.raw) {
         enterConflict('다른 탭에서 초안이 변경되어 수정하지 않았습니다.'); return
+      }
+      if (draftSaveFailed.current && !persistExact(current)) {
+        setSubmitError('초안을 저장할 수 없어 수정하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.'); return
       }
       const saved = autosave(value)
       const actorId = auth.user?.id ?? null
@@ -200,12 +210,10 @@ export function EditPostPage({ repository, search, storage = window.localStorage
       if (!actorId) { setSubmitError('로그인이 필요합니다.'); setNeedsLogin(true); return }
       const before = readDraftSnapshot(storage, 'edit', postId)
       if (!submitted || !before.ok) { setSubmitError('초안 저장소를 확인할 수 없어 삭제하지 않았습니다. 브라우저 설정을 확인해 주세요.'); return }
-      if (draftSaveFailed.current) {
-        if (before.raw !== null && persistedRaw.current !== null && before.raw !== persistedRaw.current) { enterConflict('다른 탭에서 초안이 변경되어 삭제하지 않았습니다.'); return }
-        if (!persistExact(submitted)) { setSubmitError('초안을 저장할 수 없어 삭제하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.'); return }
-      } else if (before.raw !== null && !matchesDraftSnapshot(before, submitted)) {
+      if (!baseline.current.ok || before.raw !== baseline.current.raw) {
         enterConflict('다른 탭에서 초안이 변경되어 삭제하지 않았습니다.'); return
-      } else if (before.raw === null && !persistExact(submitted)) {
+      }
+      if (!persistExact(submitted)) {
         setSubmitError('초안을 저장할 수 없어 삭제하지 않았습니다. 저장 공간과 브라우저 설정을 확인해 주세요.'); return
       }
       const submittedSnapshot = readDraftSnapshot(storage, 'edit', postId)

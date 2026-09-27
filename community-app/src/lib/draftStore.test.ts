@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { clearDraft, createWriteDraft, draftKey, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft } from './draftStore'
+import { clearDraft, createWriteDraft, draftKey, isPersistableDraft, loadDraft, matchesDraftSnapshot, readDraftSnapshot, saveDraft } from './draftStore'
 
 const postId = '56000000-0000-4000-8000-000000000010'
 const tagId = '56000000-0000-4000-8000-000000000040'
@@ -15,6 +15,13 @@ function memoryStorage(initial?: Record<string, string>) {
 }
 
 describe('versioned draft storage', () => {
+  it('validates drafts with the same strict envelope used when loading', () => {
+    const valid = createWriteDraft(() => '56000000-0000-4000-8000-000000000099', () => '2026-09-27T01:00:00.000Z')
+    expect(isPersistableDraft(valid)).toBe(true)
+    expect(isPersistableDraft({ ...valid, title: '가'.repeat(121) })).toBe(false)
+    expect(isPersistableDraft({ ...valid, bodyMarkdown: '가'.repeat(50_001) })).toBe(false)
+  })
+
   it('keeps a stable cryptographic idempotency key through save and restore', () => {
     const storage = memoryStorage()
     const draft = createWriteDraft(() => '56000000-0000-4000-8000-000000000099', () => '2026-09-27T00:00:00.000Z')

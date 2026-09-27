@@ -127,6 +127,7 @@
 .editor-heading > p:last-child { max-width: 42rem; color: var(--muted); line-height: 1.7; word-break: keep-all; }
 .draft-notice, .editor-auth-note, .editor-load-state { margin: 18px 0; border-left: 4px solid var(--blue); background: var(--paper-deep); padding: 14px 16px; color: var(--blue-dark); font-weight: 700; line-height: 1.6; }
 .post-editor { display: grid; gap: 28px; padding: 34px 0 64px; }
+.editor-controls { min-width: 0; margin: 0; border: 0; padding: 0; display: grid; gap: 28px; }
 .editor-field { min-width: 0; display: grid; gap: 9px; }
 .editor-field > label, .tag-selector legend { font-family: var(--serif); font-size: 22px; font-weight: 800; }
 .editor-field input, .editor-field textarea { width: 100%; min-width: 0; border: 1px solid var(--ink); border-radius: 0; background: #faf7f0; padding: 15px 16px; color: var(--ink); font: inherit; font-size: 16px; }

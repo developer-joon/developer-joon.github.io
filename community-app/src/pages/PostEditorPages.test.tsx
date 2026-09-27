@@ -161,6 +161,53 @@ describe('WritePostPage', () => {
     expect(await screen.findByDisplayValue('다른 탭 제목')).toBeInTheDocument()
   })
 
+  it('detects a write replacement before the next autosave and does not overwrite it', async () => {
+    const local = storage()
+    wrap(<WritePostPage repository={repository()} storage={local} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' })
+    const replacement = { version: 1, kind: 'write', title: '다른 탭 제목', bodyMarkdown: '다른 탭 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000098' }
+    local.setItem(draftKey('write'), JSON.stringify(replacement))
+
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '현재 탭 제목' } })
+
+    expect(await screen.findByRole('button', { name: '현재 내용으로 덮어쓰기' })).toBeInTheDocument()
+    expect(JSON.parse(local.values.get(draftKey('write'))!)).toEqual(replacement)
+  })
+
+  it('treats an initially unreadable write baseline as a conflict after storage recovers', async () => {
+    const local = storage(); let unreadable = true
+    const recoveringStorage = { ...local, getItem: (key: string) => {
+      if (unreadable) throw new Error('blocked')
+      return local.getItem(key)
+    } }
+    wrap(<WritePostPage repository={repository()} storage={recoveringStorage} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' })
+    unreadable = false
+    const replacement = { version: 1, kind: 'write', title: '복구된 다른 초안', bodyMarkdown: '다른 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000098' }
+    local.setItem(draftKey('write'), JSON.stringify(replacement))
+
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '현재 탭 제목' } })
+
+    expect(await screen.findByRole('button', { name: '현재 내용으로 덮어쓰기' })).toBeInTheDocument()
+    expect(JSON.parse(local.values.get(draftKey('write'))!)).toEqual(replacement)
+  })
+
+  it('keeps write conflict active when explicit overwrite content is not persistable', async () => {
+    const local = storage()
+    wrap(<WritePostPage repository={repository()} storage={local} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' })
+    const replacement = { version: 1, kind: 'write', title: '다른 탭', bodyMarkdown: '다른 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000098' }
+    local.setItem(draftKey('write'), JSON.stringify(replacement))
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '가'.repeat(121) } })
+    const overwrite = await screen.findByRole('button', { name: '현재 내용으로 덮어쓰기' })
+
+    fireEvent.click(overwrite)
+
+    expect(await screen.findByText('현재 내용은 로컬 초안으로 저장할 수 없습니다. 입력 길이를 확인해 주세요.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '현재 내용으로 덮어쓰기' })).toBeInTheDocument()
+    expect(JSON.parse(local.values.get(draftKey('write'))!)).toEqual(replacement)
+  })
+
   it('does not overwrite a malformed replacement already present before create dispatch', async () => {
     const local = storage(); const createPost = vi.fn(); const navigate = vi.fn()
     wrap(<WritePostPage repository={repository({ createPost })} storage={local} navigate={navigate} />, auth(authorId))
@@ -361,6 +408,40 @@ describe('EditPostPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '현재 내용으로 덮어쓰기' }))
     expect(JSON.parse(local.values.get(draftKey('edit', postId))!).title).toBe('충돌 뒤 현재 제목')
     expect(screen.queryByRole('button', { name: '현재 내용으로 덮어쓰기' })).not.toBeInTheDocument()
+  })
+
+  it('detects an edit replacement before the next autosave and does not overwrite it', async () => {
+    const local = storage()
+    wrap(<EditPostPage repository={repository()} search={`?id=${postId}`} storage={local} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '첫 현재 제목' } })
+    const replacement = { version: 1, kind: 'edit', postId, title: '다른 탭 제목', bodyMarkdown: '다른 탭 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z' }
+    local.setItem(draftKey('edit', postId), JSON.stringify(replacement))
+
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '두 번째 현재 제목' } })
+
+    expect(await screen.findByRole('button', { name: '현재 내용으로 덮어쓰기' })).toBeInTheDocument()
+    expect(JSON.parse(local.values.get(draftKey('edit', postId))!)).toEqual(replacement)
+  })
+
+  it('does not overwrite a replacement that appears after a failed edit autosave', async () => {
+    const local = storage(); let blocked = false
+    const flakyStorage = { ...local, setItem: (key: string, value: string) => {
+      if (blocked) throw new Error('quota')
+      local.setItem(key, value)
+    } }
+    wrap(<EditPostPage repository={repository()} search={`?id=${postId}`} storage={flakyStorage} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByDisplayValue('서버 제목')
+    blocked = true
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '저장 실패 제목' } })
+    blocked = false
+    const replacement = { version: 1, kind: 'edit', postId, title: '다른 탭 제목', bodyMarkdown: '다른 탭 본문', tagIds: [tag.id], updatedAt: '2026-09-27T04:00:00.000Z' }
+    local.setItem(draftKey('edit', postId), JSON.stringify(replacement))
+
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+
+    expect(await screen.findByRole('button', { name: '현재 내용으로 덮어쓰기' })).toBeInTheDocument()
+    expect(JSON.parse(local.values.get(draftKey('edit', postId))!)).toEqual(replacement)
   })
 
   it('retains an edit draft and offers safe re-login when the session expires', async () => {
