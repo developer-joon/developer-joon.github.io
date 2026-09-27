@@ -86,6 +86,13 @@ test('accepts a minimal valid generated artifact', async () => {
 })
 
 for (const leakedConfig of [
+  'Dockerfile',
+  'Dockerfile.build',
+  'Dockerfile.release',
+  'Dockerfile-dev',
+  '.dockerignore',
+  'docker-compose.yml',
+  'compose.yaml',
   '_config.yml',
   '_config.production.yml',
   'vite.config.js',
@@ -113,10 +120,17 @@ test('accepts generated website files whose names merely contain config', async 
 })
 
 for (const leakedSource of [
+  '.git/config',
+  '.idea/workspace.xml',
   '_data/navigation.yml',
+  '_drafts/private.md',
   '_includes/header.html',
   '_layouts/default.html',
+  '_plugins/private.rb',
   '_posts/2026-09-27-private.md',
+  '_pages/private.md',
+  '_projects/private.md',
+  '_sass/private.scss',
   '.github/workflows/deploy.yml',
 ]) {
   test(`rejects leaked build source ${leakedSource}`, async () => {
@@ -128,6 +142,23 @@ for (const leakedSource of [
     })
   })
 }
+
+test('allows only the explicitly supported generated dotfile', async () => {
+  await withArtifact(async (root) => {
+    await put(root, '.nojekyll')
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects an unapproved generated dotfile', async () => {
+  await withArtifact(async (root) => {
+    await put(root, '.unexpected-metadata', 'source metadata')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unapproved dotfile')
+    assert.match(result.stderr, /implementation\/private file leaked/)
+  })
+})
 
 test('rejects a secret in a regular file larger than 2 MB', async () => {
   await withArtifact(async (root) => {

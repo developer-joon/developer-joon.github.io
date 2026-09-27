@@ -4,10 +4,14 @@ url: https://www.breadlab.ai
 baseurl: /
 
 exclude:
+  - .dockerignore
   - community-app
   - docs
   - scripts
   - supabase
+  - Dockerfile.build
+  - Gemfile
+  - Gemfile.lock
   - README.md
   - deno.lock
   - dockerRun.sh

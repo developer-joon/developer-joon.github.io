@@ -29,11 +29,18 @@ const requiredFiles = [
 ]
 
 const forbiddenSegments = new Set([
+  '.git',
   '.github',
+  '.idea',
   '_data',
+  '_drafts',
   '_includes',
   '_layouts',
+  '_pages',
+  '_plugins',
   '_posts',
+  '_projects',
+  '_sass',
   'community-app',
   'docs',
   'migrations',
@@ -43,6 +50,9 @@ const forbiddenSegments = new Set([
   'supabase',
 ])
 const forbiddenNames = [
+  /^Dockerfile.*$/i,
+  /^(?:docker-)?compose(?:\.[^.]+)?\.ya?ml$/i,
+  /^\.dockerignore$/i,
   /^\.env(?:\..*)?$/i,
   /^\.npmrc$/i,
   /^_config(?:\.[^.]+)*\.ya?ml$/i,
@@ -63,6 +73,7 @@ const secretPatterns = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
   /\bpostgres(?:ql)?:\/\/[^\s"'<>]+/i,
 ]
+const allowedDotfiles = new Set(['.nojekyll'])
 
 function containsServiceRoleJwt(text) {
   const candidates = text.match(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g) ?? []
@@ -200,10 +211,14 @@ async function walk(relativeDirectory = '') {
     }
 
     const segments = relativePath.split('/')
-    if (segments.some((segment) => forbiddenSegments.has(segment))) {
+    const hasForbiddenPathSegment = segments.some((segment) => forbiddenSegments.has(segment))
+    if (hasForbiddenPathSegment) {
       fail(`implementation/private path leaked into artifact: ${relativePath}`)
     }
-    if (forbiddenNames.some((pattern) => pattern.test(entry.name))) {
+    if (!hasForbiddenPathSegment && entry.name.startsWith('.') && !allowedDotfiles.has(entry.name)) {
+      const kind = entryStat.isDirectory() ? 'path' : 'file'
+      fail(`implementation/private ${kind} leaked into artifact: ${relativePath}`)
+    } else if (forbiddenNames.some((pattern) => pattern.test(entry.name))) {
       fail(`implementation/private file leaked into artifact: ${relativePath}`)
     }
 
