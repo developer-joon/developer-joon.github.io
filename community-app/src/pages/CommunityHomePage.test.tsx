@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommunityRepository } from '../data/communityRepository'
-import { parseCommunityQuery } from '../lib/queryState'
+import { parseCommunityQuery, serializeCommunityQuery } from '../lib/queryState'
 import { CommunityHomePage } from './CommunityHomePage'
 
 const post = {
@@ -134,6 +134,38 @@ describe('CommunityHomePage', () => {
     expect(await screen.findByRole('heading', { name: post.title })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: secondPost.title })).toBeInTheDocument()
     expect(reload).toHaveBeenCalledWith(expect.objectContaining({ cursor }))
+  })
+
+  it('discards a history snapshot containing a malformed post', async () => {
+    const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } })
+    window.history.replaceState({
+      communityListing: { version: 1, query: '', posts: [null] },
+    }, '', '/')
+
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+
+    expect(await screen.findByRole('heading', { name: post.title })).toBeInTheDocument()
+    expect(listPosts).toHaveBeenCalledWith(expect.objectContaining({ cursor: undefined }))
+  })
+
+  it('discards a history snapshot bound to a different serialized query', async () => {
+    const currentSearch = serializeCommunityQuery({ search: 'fresh', tagId: 'tag-1', sort: 'popular', cursor })
+    const staleSearch = serializeCommunityQuery({ search: 'stale', tagId: null, sort: 'comments', cursor })
+    const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } })
+    window.history.replaceState({
+      communityListing: { version: 1, query: staleSearch, posts: [secondPost] },
+    }, '', `/${currentSearch}`)
+
+    render(<CommunityHomePage repository={repository({ listPosts })} />)
+
+    expect(await screen.findByRole('heading', { name: post.title })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: secondPost.title })).not.toBeInTheDocument()
+    expect(listPosts).toHaveBeenCalledWith(expect.objectContaining({
+      search: 'fresh',
+      tagId: 'tag-1',
+      sort: 'popular',
+      cursor,
+    }))
   })
 
   it('keeps loaded posts while a next page fails and retries that cursor', async () => {
