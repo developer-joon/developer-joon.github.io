@@ -44,7 +44,8 @@ begin
   github_login := pg_catalog.btrim(new.identity_data ->> 'user_name');
   if github_login is null
      or pg_catalog.char_length(github_login) not between 1 and 39
-     or github_login !~ '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$' then
+     or github_login !~ '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'
+     or github_login ~ '--' then
     return new;
   end if;
 

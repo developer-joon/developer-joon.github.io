@@ -1,6 +1,6 @@
 begin;
 
-select plan(68);
+select plan(71);
 
 select has_function(
   'private',
@@ -360,6 +360,18 @@ select lives_ok(
   'invalid GitHub login does not block identity insert'
 );
 select is((select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000006'), 0, 'invalid GitHub login fails closed');
+
+select lives_ok(
+  $$insert into auth.users (id, aud, role, email)
+     values ('61000000-0000-0000-0000-000000000012', 'authenticated', 'authenticated', 'consecutive-hyphens@example.test')$$,
+  'consecutive-hyphen login auth user remains insertable'
+);
+select lives_ok(
+  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
+     values ('96012', '61000000-0000-0000-0000-000000000012', '{"user_name":"octo--cat"}'::jsonb, 'github')$$,
+  'consecutive-hyphen GitHub login does not block identity insert'
+);
+select is((select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000012'), 0, 'consecutive-hyphen GitHub login fails closed');
 
 select lives_ok(
   $$insert into auth.users (id, aud, role, email)
