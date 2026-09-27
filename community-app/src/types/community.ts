@@ -26,6 +26,12 @@ export interface PostDetail extends PostListItem {
   bodyMarkdown: string
 }
 
+export type PublicPostRead =
+  | { kind: 'published'; post: PostDetail }
+  | { kind: 'hidden' }
+  | { kind: 'deleted'; commentCount: number }
+  | { kind: 'not_found' }
+
 export interface PostCursor {
   isPinned: boolean
   searchRank: number

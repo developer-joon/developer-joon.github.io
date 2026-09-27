@@ -361,8 +361,16 @@ isOneToOne: true
               "author_avatar_url": string,"author_display_name": string,"author_id": string,"author_login": string,"body_markdown": string,"comment_count": number,"created_at": string,"id": string,"is_locked": boolean,"is_pinned": boolean,"popularity_score": number,"reaction_count": number,"tags": Json,"title": string,"updated_at": string
             }[]
                            },
+"get_public_post_v2":
+{ Args: { "p_post_id": string }; Returns: Json
+                           },
 "is_admin":
 { Args: Record<PropertyKey, never>; Returns: boolean
+                           },
+"list_public_post_comments":
+{ Args: { "p_post_id": string }; Returns: {
+              "author_avatar_url": string,"author_display_name": string,"author_id": string,"author_login": string,"body_markdown": string,"created_at": string,"id": string,"parent_id": string,"row_number": number,"updated_at": string
+            }[]
                            },
 "list_public_posts":
 { Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_pinned"?: boolean,"p_cursor_rank"?: number,"p_cursor_search_rank"?: number,"p_limit": number,"p_search"?: string,"p_sort": string,"p_tag_id"?: string }; Returns: {
@@ -380,6 +388,11 @@ isOneToOne: true
                            },
 "reserve_attachment_upload":
 { Args: { "p_idempotency_key": string }; Returns: string
+                           },
+"resolve_public_attachment":
+{ Args: { "p_attachment_id": string }; Returns: {
+              "attachment_id": string,"byte_size": number,"mime_type": string,"object_token": string,"owner_id": string,"storage_path": string
+            }[]
                            },
 "soft_delete_comment":
 { Args: { "p_comment_id": string }; Returns: string

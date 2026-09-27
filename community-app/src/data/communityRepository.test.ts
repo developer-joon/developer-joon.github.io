@@ -14,6 +14,16 @@ const row = {
   comment_count: 3, reaction_count: 4, popularity_score: 11, rank_key: 11, search_rank: 0.8,
 }
 
+const detailRow = {
+  id: row.id, title: row.title, body_markdown: '전체 본문',
+  created_at: row.created_at, updated_at: row.updated_at,
+  is_locked: row.is_locked, is_pinned: row.is_pinned,
+  author_id: row.author_id, author_login: row.author_login,
+  author_display_name: row.author_display_name, author_avatar_url: row.author_avatar_url,
+  tags: row.tags, comment_count: row.comment_count,
+  reaction_count: row.reaction_count, popularity_score: row.popularity_score,
+}
+
 function setup() {
   const calls: Array<{ method: string; args: unknown }> = []
   let listResponse: QueryResponse = { data: [], error: null }
@@ -72,10 +82,10 @@ describe('community repository public list contract', () => {
   it('maps detail body, counters, and all tags from the controlled detail RPC', async () => {
     const value = setup()
     value.setDetailResponse({
-      data: {
-        ...row,
+      data: { kind: 'published', post: {
+        ...detailRow,
         body_markdown: '전체 본문\n\n![one](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)\n![two](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002)',
-      },
+      } },
       error: null,
     })
 
@@ -85,28 +95,44 @@ describe('community repository public list contract', () => {
     expect(result).toMatchObject({
       ok: true,
       data: {
-        id: 'post-1',
-        bodyMarkdown: '전체 본문\n\n![one](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)\n![two](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002)',
-        commentCount: 3,
-        reactionCount: 4,
-        popularityScore: 11,
-        tags: [{ id: 'tag-1' }, { id: 'tag-2' }],
+        kind: 'published',
+        post: {
+          id: 'post-1',
+          bodyMarkdown: '전체 본문\n\n![one](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001)\n![two](https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002)',
+          commentCount: 3,
+          reactionCount: 4,
+          popularityScore: 11,
+          tags: [{ id: 'tag-1' }, { id: 'tag-2' }],
+        },
       },
     })
   })
 
-  it('maps a missing public detail to the stable not-found error', async () => {
+  it.each([
+    [{ kind: 'not_found' }, { kind: 'not_found' }],
+    [{ kind: 'hidden' }, { kind: 'hidden' }],
+    [{ kind: 'deleted', comment_count: 2 }, { kind: 'deleted', commentCount: 2 }],
+  ])('returns expected content state %o as successful data', async (wire, expected) => {
     const value = setup()
+    value.setDetailResponse({ data: wire, error: null })
 
-    expect(await value.repository.getPost('missing')).toEqual({
-      ok: false,
-      error: { code: 'not_found', sourceCode: 'PGRST116', message: '게시글을 찾을 수 없습니다.' },
-    })
+    expect(await value.repository.getPost('post-1')).toEqual({ ok: true, data: expected })
   })
 
-  it('does not misclassify a malformed RPC response as a network failure', async () => {
+  it.each([
+    null,
+    { kind: 'unknown' },
+    { kind: 'hidden', title: 'leak' },
+    { kind: 'not_found', id: 'leak' },
+    { kind: 'deleted', comment_count: -1 },
+    { kind: 'deleted', comment_count: 1.5 },
+    { kind: 'deleted', comment_count: Number.MAX_SAFE_INTEGER + 1 },
+    { kind: 'deleted', comment_count: 1, body_markdown: 'leak' },
+    { kind: 'published', post: { ...detailRow, body_markdown: undefined } },
+    { kind: 'published', post: { ...detailRow, body_markdown: 'body' }, leak: true },
+  ])('rejects malformed or leaky detail payload %o as INVALID_RESPONSE', async (data) => {
     const value = setup()
-    value.setDetailResponse({ data: { ...row, body_markdown: undefined }, error: null })
+    value.setDetailResponse({ data, error: null })
 
     expect(await value.repository.getPost('post-1')).toEqual({
       ok: false,

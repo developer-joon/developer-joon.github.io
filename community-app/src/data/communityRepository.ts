@@ -7,6 +7,7 @@ import type {
   PostListInput,
   PostListItem,
   PostPage,
+  PublicPostRead,
   UpdatePostInput,
 } from '../types/community'
 import type { Database } from '../types/database'
@@ -116,6 +117,57 @@ function mapDetailPost(row: PublicPostDetailRow, publicAttachmentUrl: (attachmen
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort()
+  const expected = [...keys].sort()
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index])
+}
+function isNullableString(value: unknown): value is string | null {
+  return typeof value === 'string' || value === null
+}
+function isSafeCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+const detailKeys = [
+  'id', 'title', 'body_markdown', 'created_at', 'updated_at', 'is_locked', 'is_pinned',
+  'author_id', 'author_login', 'author_display_name', 'author_avatar_url', 'tags',
+  'comment_count', 'reaction_count', 'popularity_score',
+] as const
+function isTag(value: unknown): value is RawTag {
+  return isRecord(value) && hasExactKeys(value, ['id', 'slug', 'label'])
+    && typeof value.id === 'string' && typeof value.slug === 'string' && typeof value.label === 'string'
+}
+function isPublicPostDetail(value: unknown): value is PublicPostDetailRow {
+  if (!isRecord(value) || !hasExactKeys(value, detailKeys)) return false
+  return typeof value.id === 'string' && typeof value.title === 'string'
+    && typeof value.body_markdown === 'string' && typeof value.created_at === 'string'
+    && typeof value.updated_at === 'string' && typeof value.is_locked === 'boolean'
+    && typeof value.is_pinned === 'boolean' && typeof value.author_id === 'string'
+    && typeof value.author_login === 'string' && isNullableString(value.author_display_name)
+    && isNullableString(value.author_avatar_url) && Array.isArray(value.tags)
+    && value.tags.every(isTag) && isSafeCount(value.comment_count)
+    && isSafeCount(value.reaction_count) && isSafeCount(value.popularity_score)
+}
+function mapPublicPostRead(data: unknown, publicAttachmentUrl: (attachmentId: string) => string): PublicPostRead {
+  if (!isRecord(data) || typeof data.kind !== 'string') throw new Error('invalid public post response')
+  if (data.kind === 'not_found' || data.kind === 'hidden') {
+    if (!hasExactKeys(data, ['kind'])) throw new Error('invalid public post response')
+    return { kind: data.kind }
+  }
+  if (data.kind === 'deleted') {
+    if (!hasExactKeys(data, ['kind', 'comment_count']) || !isSafeCount(data.comment_count)) throw new Error('invalid public post response')
+    return { kind: 'deleted', commentCount: data.comment_count }
+  }
+  if (data.kind === 'published') {
+    if (!hasExactKeys(data, ['kind', 'post']) || !isPublicPostDetail(data.post)) throw new Error('invalid public post response')
+    return { kind: 'published', post: mapDetailPost(data.post, publicAttachmentUrl) }
+  }
+  throw new Error('invalid public post response')
+}
+
 export function createCommunityRepository(client: CommunityClient) {
   return {
     async listPosts(input: PostListInput): Promise<CommunityResult<PostPage>> {
@@ -138,13 +190,11 @@ export function createCommunityRepository(client: CommunityClient) {
         }
       })
     },
-    async getPost(postId: string): Promise<CommunityResult<PostDetail>> {
-      const result = await execute(
+    async getPost(postId: string): Promise<CommunityResult<PublicPostRead>> {
+      return execute(
         () => client.getPost(postId),
-        data => data === null ? null : mapDetailPost(data as PublicPostDetailRow, client.publicAttachmentUrl),
+        data => mapPublicPostRead(data, client.publicAttachmentUrl),
       )
-      if (!result.ok) return result
-      return result.data ? { ok: true, data: result.data } : failure({ code: 'not_found', sourceCode: 'PGRST116', message: '게시글을 찾을 수 없습니다.' })
     },
     async listTags(): Promise<CommunityResult<CommunityTag[]>> {
       return execute(() => client.listTags(), data => ((data ?? []) as RawTag[]).map(mapTag))
@@ -167,7 +217,7 @@ function createBrowserCommunityClient(): CommunityClient {
   const { supabaseUrl } = parseEnv(import.meta.env)
   return {
     listPublicPosts: args => client.rpc('list_public_posts', args),
-    getPost: postId => client.rpc('get_public_post', { p_post_id: postId }).maybeSingle(),
+    getPost: postId => client.rpc('get_public_post_v2', { p_post_id: postId }),
     publicAttachmentUrl: attachmentId => new URL(`/functions/v1/public-attachment/${attachmentId}`, supabaseUrl).toString(),
     listTags: () => client.from('tags').select('id,slug,label').eq('is_active', true).order('sort_order', { ascending: true }).order('label', { ascending: true }),
     rpc: (name, args) => client.rpc(name, args),
