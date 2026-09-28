@@ -1,4 +1,3 @@
-
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
 export type Database = {
@@ -328,6 +327,9 @@ isOneToOne: true
             "attach_attachments":
 { Args: { "p_attachment_ids": (string)[],"p_expected_total": number,"p_post_id": string }; Returns: number
                            },
+"attach_attachments_legacy":
+{ Args: { "p_attachment_ids": (string)[],"p_post_id": string }; Returns: number
+                           },
 "claim_attachment_cleanup":
 { Args: { "p_limit"?: number }; Returns: {
               "claim_token": string,"id": string,"storage_path": string
@@ -347,6 +349,9 @@ isOneToOne: true
 "create_comment":
 { Args: { "p_body_markdown": string,"p_idempotency_key": string,"p_parent_id": string,"p_post_id": string }; Returns: string
                            },
+"create_comment_v2":
+{ Args: { "p_body_markdown": string,"p_idempotency_key": string,"p_parent_id": string,"p_post_id": string }; Returns: Json
+                           },
 "create_post":
 { Args: { "p_body_markdown": string,"p_idempotency_key": string,"p_tag_ids": (string)[],"p_title": string }; Returns: string
                            },
@@ -364,11 +369,17 @@ isOneToOne: true
 "get_public_post_v2":
 { Args: { "p_post_id": string }; Returns: Json
                            },
+"get_public_post_v3":
+{ Args: { "p_post_id": string }; Returns: Json
+                           },
 "is_admin":
 { Args: Record<PropertyKey, never>; Returns: boolean
                            },
 "list_public_post_comments":
-{ Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_reply"?: boolean,"p_cursor_root_created_at"?: string,"p_cursor_root_id"?: string,"p_limit"?: number,"p_post_id": string }; Returns: { "items": { "id": string,"parent_id": string | null,"body_markdown": string,"created_at": string,"updated_at": string,"author_id": string,"author_login": string,"author_display_name": string | null,"author_avatar_url": string | null }[],"has_more": boolean,"next_cursor": { "root_created_at": string,"root_id": string,"is_reply": boolean,"created_at": string,"id": string } | null }
+{ Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_reply"?: boolean,"p_cursor_root_created_at"?: string,"p_cursor_root_id"?: string,"p_limit"?: number,"p_post_id": string }; Returns: Json
+                           },
+"list_public_post_comments_v2":
+{ Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_reply"?: boolean,"p_cursor_root_created_at"?: string,"p_cursor_root_id"?: string,"p_limit"?: number,"p_post_id": string }; Returns: Json
                            },
 "list_public_posts":
 { Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_pinned"?: boolean,"p_cursor_rank"?: number,"p_cursor_search_rank"?: number,"p_limit": number,"p_search"?: string,"p_sort": string,"p_tag_id"?: string }; Returns: {
@@ -391,6 +402,12 @@ isOneToOne: true
 { Args: { "p_attachment_id": string }; Returns: {
               "attachment_id": string,"byte_size": number,"mime_type": string,"object_token": string,"owner_id": string,"storage_path": string
             }[]
+                           },
+"set_comment_reaction":
+{ Args: { "p_comment_id": string,"p_reacted": boolean }; Returns: Json
+                           },
+"set_post_reaction":
+{ Args: { "p_post_id": string,"p_reacted": boolean }; Returns: Json
                            },
 "soft_delete_comment":
 { Args: { "p_comment_id": string }; Returns: string

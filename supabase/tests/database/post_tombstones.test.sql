@@ -138,8 +138,8 @@ select is(public.get_public_post_v2('72000000-0000-0000-0000-000000000003'),'{"k
 select is(pg_catalog.jsonb_array_length(public.list_public_post_comments('72000000-0000-0000-0000-000000000003')->'items'),3,'authenticated can read tombstone comments');
 select throws_ok($$select public.create_comment('72000000-0000-0000-0000-000000000003',null,'new comment','tomb-create')$$,'22023','post not found, visible, or unlocked','deleted post rejects new comments');
 select throws_ok($$select public.create_comment('72000000-0000-0000-0000-000000000003','74000000-0000-0000-0000-000000000001','new reply','tomb-reply')$$,'22023','post not found, visible, or unlocked','deleted post rejects new replies');
-select throws_ok($$select public.toggle_post_reaction('72000000-0000-0000-0000-000000000003')$$,'22023','post not found or visible','deleted post rejects reactions');
-select throws_ok($$select public.toggle_comment_reaction('74000000-0000-0000-0000-000000000001')$$,'22023','comment not found or visible','deleted post comment rejects reactions');
+select throws_ok($$select public.set_post_reaction('72000000-0000-0000-0000-000000000003',true)$$,'22023','post not found or visible','deleted post rejects reactions');
+select throws_ok($$select public.set_comment_reaction('74000000-0000-0000-0000-000000000001',true)$$,'22023','comment not found or visible','deleted post comment rejects reactions');
 reset role;
 
 update public.comments set status='hidden' where id='74000000-0000-0000-0000-000000000001';

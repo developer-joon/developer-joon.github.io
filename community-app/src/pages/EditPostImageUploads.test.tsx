@@ -51,6 +51,7 @@ function post(bodyMarkdown = '서버 본문'): PostDetail {
     reactionCount: 0,
     popularityScore: 0,
     attachmentCount,
+    viewerReacted: false,
     author: { id: ownerId, login: 'bread', displayName: null, avatarUrl: null },
     tags: [tag],
   }

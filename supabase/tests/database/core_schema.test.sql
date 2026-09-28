@@ -51,8 +51,8 @@ select is(
        'moderation_audit_logs', 'idempotency_keys', 'rate_limit_rules',
        'rate_limit_events'
      ])),
-  8,
-  'Task 3 installs only eight table-level public-read grants'
+  6,
+  'browser table reads exclude canonical comments and reaction identities'
 );
 
 -- Production migrations, not optional local seed data, own security limits.

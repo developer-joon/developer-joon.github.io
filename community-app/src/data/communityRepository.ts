@@ -4,8 +4,11 @@ import type {
   CommunityTag,
   CommentListInput,
   CommentPage,
+  CreateCommentInput,
   CreatePostInput,
   PostDetail,
+  PublicComment,
+  ReactionState,
   PostListInput,
   PostListItem,
   PostPage,
@@ -18,14 +21,20 @@ import { parseEnv } from '../config/env'
 
 export interface QueryResponse { data: unknown; error: unknown }
 type Functions = Database['public']['Functions']
-type MutationName = 'create_post' | 'update_post' | 'soft_delete_post'
-type ReadName = 'list_public_posts' | 'get_public_post_v2' | 'list_public_post_comments'
-type RpcName = ReadName | MutationName
+type ExistingMutationName = 'create_post' | 'update_post' | 'soft_delete_post'
+type NewMutationName = 'create_comment_v2' | 'set_post_reaction' | 'set_comment_reaction'
+type ReadName = 'list_public_posts' | 'get_public_post_v3' | 'list_public_post_comments_v2'
+type RpcName = ReadName | ExistingMutationName | NewMutationName
+type RpcArgs<Name extends RpcName> = Name extends 'create_comment_v2'
+  ? Omit<Functions['create_comment_v2']['Args'], 'p_parent_id'> & { p_parent_id: string | null }
+  : Name extends keyof Functions
+    ? Functions[Name] extends { Args: infer Args } ? Args : never
+    : never
 
 export interface CommunityClient {
   publicAttachmentUrl(attachmentId: string): string
   listTags(): PromiseLike<QueryResponse>
-  rpc<Name extends RpcName>(name: Name, args: Functions[Name]['Args']): PromiseLike<QueryResponse>
+  rpc<Name extends RpcName>(name: Name, args: RpcArgs<Name>): PromiseLike<QueryResponse>
 }
 
 interface RawTag { id: string; slug: string; label: string }
@@ -40,6 +49,7 @@ type PublicPostDetailRow = Omit<GeneratedPublicPostDetailRow, 'author_avatar_url
   author_avatar_url: string | null
   author_display_name: string | null
   attachment_count: number
+  viewer_reacted: boolean
 }
 
 function failure(error: CommunityError): CommunityResult<never> { return { ok: false, error } }
@@ -114,6 +124,7 @@ function mapDetailPost(row: PublicPostDetailRow, publicAttachmentUrl: (attachmen
     id: row.id, title: row.title, excerpt: bodyMarkdown.slice(0, 180), bodyMarkdown,
     createdAt: row.created_at, updatedAt: row.updated_at, isLocked: row.is_locked, isPinned: row.is_pinned,
     commentCount: row.comment_count, reactionCount: row.reaction_count, popularityScore: row.popularity_score, attachmentCount: row.attachment_count,
+    viewerReacted: row.viewer_reacted,
     author: { id: row.author_id, login: row.author_login, displayName: row.author_display_name, avatarUrl: row.author_avatar_url },
     tags: tagsFrom(row.tags),
   }
@@ -159,7 +170,7 @@ const detailKeys = [
   'id', 'title', 'body_markdown', 'created_at', 'updated_at', 'is_locked', 'is_pinned',
   'author_id', 'author_login', 'author_display_name', 'author_avatar_url', 'tags',
   'comment_count', 'reaction_count', 'popularity_score',
-  'attachment_count',
+  'attachment_count', 'viewer_reacted',
 ] as const
 function isTag(value: unknown): value is RawTag {
   return isRecord(value) && hasExactKeys(value, ['id', 'slug', 'label'])
@@ -179,6 +190,7 @@ function isPublicPostDetail(value: unknown): value is PublicPostDetailRow {
     && value.tags.every(isDetailTag) && isSafeCount(value.comment_count)
     && isSafeCount(value.reaction_count) && isSafeCount(value.popularity_score)
     && isSafeCount(value.attachment_count) && value.attachment_count <= 5
+    && typeof value.viewer_reacted === 'boolean'
 }
 function mapPublicPostRead(data: unknown, publicAttachmentUrl: (attachmentId: string) => string): PublicPostRead {
   if (!isRecord(data) || typeof data.kind !== 'string') throw new Error('invalid public post response')
@@ -197,18 +209,26 @@ function mapPublicPostRead(data: unknown, publicAttachmentUrl: (attachmentId: st
   throw new Error('invalid public post response')
 }
 
-const commentKeys = [
-  'id', 'parent_id', 'body_markdown', 'created_at', 'updated_at', 'author_id',
-  'author_login', 'author_display_name', 'author_avatar_url',
+const publishedCommentKeys = [
+  'kind', 'id', 'parent_id', 'body_markdown', 'created_at', 'updated_at', 'author_id',
+  'author_login', 'author_display_name', 'author_avatar_url', 'reaction_count', 'viewer_reacted',
 ] as const
+const placeholderCommentKeys = ['kind', 'id', 'parent_id'] as const
 const commentCursorKeys = ['root_created_at', 'root_id', 'is_reply', 'created_at', 'id'] as const
-function isComment(value: unknown): value is Record<(typeof commentKeys)[number], unknown> {
-  return isRecord(value) && hasExactKeys(value, commentKeys)
-    && isUuid(value.id) && (value.parent_id === null || isUuid(value.parent_id))
-    && typeof value.body_markdown === 'string'
-    && isIsoTimestamp(value.created_at) && isIsoTimestamp(value.updated_at)
-    && isUuid(value.author_id) && typeof value.author_login === 'string'
-    && isNullableString(value.author_display_name) && isNullableString(value.author_avatar_url)
+function isParentId(value: unknown): value is string | null { return value === null || isUuid(value) }
+function mapComment(value: unknown): PublicComment {
+  if (!isRecord(value) || (value.kind !== 'published' && value.kind !== 'hidden' && value.kind !== 'deleted')) throw new Error('invalid comment')
+  if (value.kind === 'hidden' || value.kind === 'deleted') {
+    if (!hasExactKeys(value, placeholderCommentKeys) || !isUuid(value.id) || !isParentId(value.parent_id)) throw new Error('invalid comment')
+    return { kind: value.kind, id: value.id, parentId: value.parent_id }
+  }
+  if (!hasExactKeys(value, publishedCommentKeys) || !isUuid(value.id) || !isParentId(value.parent_id)
+    || typeof value.body_markdown !== 'string' || !isIsoTimestamp(value.created_at) || !isIsoTimestamp(value.updated_at)
+    || !isUuid(value.author_id) || typeof value.author_login !== 'string' || !isNullableString(value.author_display_name)
+    || !isNullableString(value.author_avatar_url) || !isSafeCount(value.reaction_count) || typeof value.viewer_reacted !== 'boolean') throw new Error('invalid comment')
+  return { kind:'published', id:value.id, parentId:value.parent_id, bodyMarkdown:value.body_markdown,
+    createdAt:value.created_at, updatedAt:value.updated_at, reactionCount:value.reaction_count, viewerReacted:value.viewer_reacted,
+    author:{ id:value.author_id, login:value.author_login, displayName:value.author_display_name, avatarUrl:value.author_avatar_url } }
 }
 function isCommentCursor(value: unknown): value is Record<(typeof commentCursorKeys)[number], unknown> {
   return isRecord(value) && hasExactKeys(value, commentCursorKeys)
@@ -218,36 +238,20 @@ function isCommentCursor(value: unknown): value is Record<(typeof commentCursorK
     && (!value.is_reply || value.root_id !== value.id)
 }
 function mapCommentPage(data: unknown): CommentPage {
-  if (!isRecord(data) || !hasExactKeys(data, ['items', 'has_more', 'next_cursor'])
-    || !Array.isArray(data.items) || !data.items.every(isComment)
-    || typeof data.has_more !== 'boolean'
-    || (data.next_cursor !== null && !isCommentCursor(data.next_cursor))
-    || data.has_more !== (data.next_cursor !== null)) {
-    throw new Error('invalid comment response')
-  }
+  if (!isRecord(data) || !hasExactKeys(data, ['items', 'has_more', 'next_cursor']) || !Array.isArray(data.items)
+    || typeof data.has_more !== 'boolean' || (data.next_cursor !== null && !isCommentCursor(data.next_cursor))
+    || data.has_more !== (data.next_cursor !== null)) throw new Error('invalid comment response')
+  const items = data.items.map(mapComment)
   return {
-    items: data.items.map((comment) => ({
-      id: comment.id as string,
-      parentId: comment.parent_id as string | null,
-      bodyMarkdown: comment.body_markdown as string,
-      createdAt: comment.created_at as string,
-      updatedAt: comment.updated_at as string,
-      author: {
-        id: comment.author_id as string,
-        login: comment.author_login as string,
-        displayName: comment.author_display_name as string | null,
-        avatarUrl: comment.author_avatar_url as string | null,
-      },
-    })),
-    hasMore: data.has_more,
-    nextCursor: data.next_cursor === null ? null : {
-      rootCreatedAt: data.next_cursor.root_created_at as string,
-      rootId: data.next_cursor.root_id as string,
-      isReply: data.next_cursor.is_reply as boolean,
-      createdAt: data.next_cursor.created_at as string,
-      id: data.next_cursor.id as string,
-    },
+    items, hasMore:data.has_more,
+    nextCursor:data.next_cursor === null ? null : { rootCreatedAt:data.next_cursor.root_created_at as string,
+      rootId:data.next_cursor.root_id as string, isReply:data.next_cursor.is_reply as boolean,
+      createdAt:data.next_cursor.created_at as string, id:data.next_cursor.id as string },
   }
+}
+function mapReactionState(data: unknown): ReactionState {
+  if (!isRecord(data) || !hasExactKeys(data, ['reacted','reaction_count']) || typeof data.reacted !== 'boolean' || !isSafeCount(data.reaction_count)) throw new Error('invalid reaction response')
+  return { reacted:data.reacted, reactionCount:data.reaction_count }
 }
 
 function mapMutationUuid(data: unknown): string {
@@ -281,7 +285,7 @@ export function createCommunityRepository(client: CommunityClient) {
     },
     async getPost(postId: string): Promise<CommunityResult<PublicPostRead>> {
       return execute(
-        () => client.rpc('get_public_post_v2', { p_post_id: postId }),
+        () => client.rpc('get_public_post_v3', { p_post_id: postId }),
         data => mapPublicPostRead(data, client.publicAttachmentUrl),
       )
     },
@@ -289,7 +293,7 @@ export function createCommunityRepository(client: CommunityClient) {
       if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
         return failure({ code: 'validation', sourceCode: 'INVALID_COMMENT_LIMIT', message: '입력 내용을 확인해 주세요.' })
       }
-      return execute(() => client.rpc('list_public_post_comments', {
+      return execute(() => client.rpc('list_public_post_comments_v2', {
         p_post_id: input.postId,
         p_limit: input.limit,
         p_cursor_root_created_at: input.cursor?.rootCreatedAt,
@@ -304,6 +308,19 @@ export function createCommunityRepository(client: CommunityClient) {
         if (!Array.isArray(data) || !data.every(isDetailTag)) throw new Error('invalid tag response')
         return data.map(mapTag)
       })
+    },
+    async createComment(input: CreateCommentInput): Promise<CommunityResult<Extract<PublicComment, { kind:'published' }>>> {
+      return execute(() => client.rpc('create_comment_v2', { p_post_id:input.postId, p_parent_id:input.parentId, p_body_markdown:input.bodyMarkdown, p_idempotency_key:input.idempotencyKey }), data => {
+        const comment = mapComment(data)
+        if (comment.kind !== 'published') throw new Error('invalid create response')
+        return comment
+      })
+    },
+    async setPostReaction(postId: string, reacted: boolean): Promise<CommunityResult<ReactionState>> {
+      return execute(() => client.rpc('set_post_reaction', { p_post_id:postId, p_reacted:reacted }), mapReactionState)
+    },
+    async setCommentReaction(commentId: string, reacted: boolean): Promise<CommunityResult<ReactionState>> {
+      return execute(() => client.rpc('set_comment_reaction', { p_comment_id:commentId, p_reacted:reacted }), mapReactionState)
     },
     async createPost(input: CreatePostInput): Promise<CommunityResult<string>> {
       return execute(() => client.rpc('create_post', { p_title: input.title, p_body_markdown: input.bodyMarkdown, p_tag_ids: input.tagIds, p_idempotency_key: input.idempotencyKey }), mapMutationUuid)
@@ -324,7 +341,7 @@ function createBrowserCommunityClient(): CommunityClient {
   return {
     publicAttachmentUrl: attachmentId => new URL(`/functions/v1/public-attachment/${attachmentId}`, supabaseUrl).toString(),
     listTags: () => client.from('tags').select('id,slug,label').eq('is_active', true).order('sort_order', { ascending: true }).order('label', { ascending: true }),
-    rpc: (name, args) => client.rpc(name, args),
+    rpc: (name, args) => client.rpc(name as never, args as never),
   }
 }
 let browserRepository: CommunityRepository | undefined

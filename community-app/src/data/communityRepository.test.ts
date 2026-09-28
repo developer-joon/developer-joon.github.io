@@ -34,7 +34,7 @@ const detailRow = {
     { id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' },
     { id: '56000000-0000-4000-8000-000000000041', slug: 'testing', label: 'Testing' },
   ], comment_count: row.comment_count,
-  reaction_count: row.reaction_count, popularity_score: row.popularity_score, attachment_count: 4,
+  reaction_count: row.reaction_count, popularity_score: row.popularity_score, attachment_count: 4, viewer_reacted: false,
 }
 
 function setup() {
@@ -49,8 +49,8 @@ function setup() {
     rpc(fn, args) {
       calls.push({ method: fn, args })
       if (fn === 'list_public_posts') return Promise.resolve(listResponse)
-      if (fn === 'get_public_post_v2') return Promise.resolve(detailResponse)
-      if (fn === 'list_public_post_comments') return Promise.resolve(commentsResponse)
+      if (fn === 'get_public_post_v3') return Promise.resolve(detailResponse)
+      if (fn === 'list_public_post_comments_v2') return Promise.resolve(commentsResponse)
       return Promise.resolve(mutationResponse)
     },
   }
@@ -72,7 +72,7 @@ describe('community repository public list contract', () => {
 
     await repository.listComments({ postId: '56000000-0000-4000-8000-000000000010', limit: 50 })
 
-    expect(value.calls).toEqual([{ method: 'list_public_post_comments', args: {
+    expect(value.calls).toEqual([{ method: 'list_public_post_comments_v2', args: {
       p_post_id: '56000000-0000-4000-8000-000000000010',
       p_limit: 50,
       p_cursor_root_created_at: undefined,
@@ -94,10 +94,10 @@ describe('community repository public list contract', () => {
     }
     value.setCommentsResponse({ data: {
       items: [{
-        id: cursor.id, parent_id: cursor.rootId, body_markdown: '**답글**',
+        kind: 'published', id: cursor.id, parent_id: cursor.rootId, body_markdown: '**답글**',
         created_at: cursor.createdAt, updated_at: cursor.createdAt,
         author_id: '56000000-0000-4000-8000-000000000030', author_login: 'reply-author',
-        author_display_name: null, author_avatar_url: null,
+        author_display_name: null, author_avatar_url: null, reaction_count: 2, viewer_reacted: true,
       }],
       has_more: true,
       next_cursor: {
@@ -110,16 +110,17 @@ describe('community repository public list contract', () => {
       postId: '56000000-0000-4000-8000-000000000010', limit: 50, cursor,
     })
 
-    expect(value.calls).toEqual([{ method: 'list_public_post_comments', args: {
+    expect(value.calls).toEqual([{ method: 'list_public_post_comments_v2', args: {
       p_post_id: '56000000-0000-4000-8000-000000000010', p_limit: 50,
       p_cursor_root_created_at: cursor.rootCreatedAt, p_cursor_root_id: cursor.rootId,
       p_cursor_is_reply: true, p_cursor_created_at: cursor.createdAt, p_cursor_id: cursor.id,
     } }])
     expect(result).toEqual({ ok: true, data: {
       items: [{
-        id: cursor.id, parentId: cursor.rootId, bodyMarkdown: '**답글**',
+        kind: 'published', id: cursor.id, parentId: cursor.rootId, bodyMarkdown: '**답글**',
         createdAt: cursor.createdAt, updatedAt: cursor.createdAt,
         author: { id: '56000000-0000-4000-8000-000000000030', login: 'reply-author', displayName: null, avatarUrl: null },
+        reactionCount: 2, viewerReacted: true,
       }],
       hasMore: true,
       nextCursor: cursor,
@@ -132,10 +133,10 @@ describe('community repository public list contract', () => {
     { items: [], has_more: false, next_cursor: { root_created_at: 'bad', root_id: 'x', is_reply: false, created_at: 'bad', id: 'x' } },
     { items: [{ id: 'bad' }], has_more: false, next_cursor: null },
     { items: [{
-      id: '56000000-0000-4000-8000-000000000021', parent_id: null, body_markdown: 'ok',
+      kind: 'published', id: '56000000-0000-4000-8000-000000000021', parent_id: null, body_markdown: 'ok',
       created_at: '2026-09-27T00:00:00Z', updated_at: '2026-09-27T00:00:00Z',
       author_id: '56000000-0000-4000-8000-000000000030', author_login: 'author',
-      author_display_name: null, author_avatar_url: null, leak: true,
+      author_display_name: null, author_avatar_url: null, reaction_count: 0, viewer_reacted: false, leak: true,
     }], has_more: false, next_cursor: null },
   ])('rejects malformed comment payload %o as INVALID_RESPONSE', async (data) => {
     const value = setup()
@@ -201,7 +202,7 @@ describe('community repository public list contract', () => {
 
     const result = await value.repository.getPost('post-1')
 
-    expect(value.calls).toEqual([{ method: 'get_public_post_v2', args: { p_post_id: 'post-1' } }])
+    expect(value.calls).toEqual([{ method: 'get_public_post_v3', args: { p_post_id: 'post-1' } }])
     expect(result).toMatchObject({
       ok: true,
       data: {
@@ -213,6 +214,7 @@ describe('community repository public list contract', () => {
           reactionCount: 4,
           popularityScore: 11,
           attachmentCount: 4,
+          viewerReacted: false,
           tags: [
             { id: '56000000-0000-4000-8000-000000000040' },
             { id: '56000000-0000-4000-8000-000000000041' },
@@ -223,7 +225,7 @@ describe('community repository public list contract', () => {
 
     browserClient.rpc.mockResolvedValueOnce({ data: { kind: 'published', post: detailRow }, error: null })
     await getCommunityRepository().getPost('post-1')
-    expect(browserClient.rpc).toHaveBeenLastCalledWith('get_public_post_v2', { p_post_id: 'post-1' })
+    expect(browserClient.rpc).toHaveBeenLastCalledWith('get_public_post_v3', { p_post_id: 'post-1' })
   })
 
   it.each([
@@ -359,5 +361,48 @@ describe('community repository mutation failures', () => {
       ok: false,
       error: { code: 'network', sourceCode: 'NETWORK_ERROR', message: '네트워크 연결을 확인해 주세요.' },
     })
+  })
+})
+
+
+
+describe('community discussion interaction contract', () => {
+  const publishedCommentWire = {
+    kind: 'published', id: '56000000-0000-4000-8000-000000000021', parent_id: null,
+    body_markdown: '댓글', created_at: '2026-09-27T00:00:00Z', updated_at: '2026-09-27T00:00:00Z',
+    author_id: '56000000-0000-4000-8000-000000000030', author_login: 'bread', author_display_name: null,
+    author_avatar_url: null, reaction_count: 3, viewer_reacted: true,
+  }
+
+  it('passes exact create/reaction args and maps strict canonical responses', async () => {
+    const value = setup()
+    value.setMutationResponse({ data: publishedCommentWire, error: null })
+    expect(await value.repository.createComment({ postId: detailRow.id, parentId: null, bodyMarkdown: '댓글', idempotencyKey: 'intent-1' })).toMatchObject({ ok:true, data:{ kind:'published', reactionCount:3, viewerReacted:true } })
+    expect(value.calls.at(-1)).toEqual({ method:'create_comment_v2', args:{ p_post_id:detailRow.id, p_parent_id:null, p_body_markdown:'댓글', p_idempotency_key:'intent-1' } })
+
+    value.setMutationResponse({ data:{ reacted:true, reaction_count:9 }, error:null })
+    expect(await value.repository.setPostReaction(detailRow.id, true)).toEqual({ ok:true, data:{ reacted:true, reactionCount:9 } })
+    expect(value.calls.at(-1)).toEqual({ method:'set_post_reaction', args:{ p_post_id:detailRow.id, p_reacted:true } })
+    expect(await value.repository.setCommentReaction(publishedCommentWire.id, false)).toEqual({ ok:true, data:{ reacted:true, reactionCount:9 } })
+    expect(value.calls.at(-1)).toEqual({ method:'set_comment_reaction', args:{ p_comment_id:publishedCommentWire.id, p_reacted:false } })
+  })
+
+  it.each([
+    { kind:'hidden', id:'56000000-0000-4000-8000-000000000021', parent_id:null, body_markdown:'leak' },
+    { kind:'deleted', id:'56000000-0000-4000-8000-000000000021', parent_id:null, author_login:'leak' },
+    { ...publishedCommentWire, reaction_count:-1 },
+    { ...publishedCommentWire, viewer_reacted:'yes' },
+  ])('fails closed on malformed or leaky comment %o', async (item) => {
+    const value=setup(); value.setCommentsResponse({data:{items:[item],has_more:false,next_cursor:null},error:null})
+    expect(await value.repository.listComments({postId:detailRow.id,limit:50})).toMatchObject({ok:false,error:{sourceCode:'INVALID_RESPONSE'}})
+  })
+
+  it.each([
+    { reacted:true, reaction_count:-1 },
+    { reacted:true, reaction_count:1, extra:true },
+    { reacted:'true', reaction_count:1 },
+  ])('rejects malformed reaction state %o', async (data) => {
+    const value=setup(); value.setMutationResponse({data,error:null})
+    expect(await value.repository.setPostReaction(detailRow.id,true)).toMatchObject({ok:false,error:{sourceCode:'INVALID_RESPONSE'}})
   })
 })

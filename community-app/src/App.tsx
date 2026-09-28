@@ -75,7 +75,7 @@ export function App({ pathname = window.location.pathname, search = window.locat
   if (normalizedPathname === '/community/post') {
     return (
       <Suspense fallback={<div className="page" role="status">게시글 화면을 준비하고 있습니다.</div>}>
-        <PostDetailPage repository={repository ?? getCommunityRepository()} search={search} />
+        <PostDetailPage repository={repository ?? getCommunityRepository()} search={search} currentPath={`${pathname}${search}${hash}`} />
       </Suspense>
     )
   }

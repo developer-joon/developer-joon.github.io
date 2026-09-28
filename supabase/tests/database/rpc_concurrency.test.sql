@@ -157,7 +157,7 @@ select extensions.dblink_exec('rpc_mod_post',format($sql$update public.posts set
 select extensions.dblink_exec('rpc_react','begin');
 select extensions.dblink_exec('rpc_react','set local role authenticated');
 select extensions.dblink_exec('rpc_react',format('set local request.jwt.claim.sub=%L',user_id)) from rpc_fixture;
-select extensions.dblink_send_query('rpc_react',format($q$select public.toggle_post_reaction(%L)::text$q$,post_id)) from rpc_fixture;
+select extensions.dblink_send_query('rpc_react',format($q$select public.set_post_reaction(%L,true)::text$q$,post_id)) from rpc_fixture;
 select is(extensions.dblink_is_busy('rpc_react'),1,'reaction waits behind post visibility transition');
 select extensions.dblink_exec('rpc_mod_post','commit');
 select pg_temp.collect_rpc_error('rpc_react');
@@ -176,11 +176,11 @@ select extensions.dblink_connect('rpc_share_two',connection_string) from rpc_fix
 select extensions.dblink_exec('rpc_share_one','begin');
 select extensions.dblink_exec('rpc_share_one','set local role authenticated');
 select extensions.dblink_exec('rpc_share_one',format('set local request.jwt.claim.sub=%L',user_id)) from rpc_fixture;
-select extensions.dblink_exec('rpc_share_one',format($q$do $do$ begin perform public.toggle_post_reaction(%L); end $do$$q$,post_id)) from rpc_fixture;
+select extensions.dblink_exec('rpc_share_one',format($q$do $do$ begin perform public.set_post_reaction(%L,true); end $do$$q$,post_id)) from rpc_fixture;
 select extensions.dblink_exec('rpc_share_two','begin');
 select extensions.dblink_exec('rpc_share_two','set local role authenticated');
 select extensions.dblink_exec('rpc_share_two',format('set local request.jwt.claim.sub=%L',user_two_id)) from rpc_fixture;
-select extensions.dblink_send_query('rpc_share_two',format($q$select public.toggle_post_reaction(%L)::text$q$,post_id)) from rpc_fixture;
+select extensions.dblink_send_query('rpc_share_two',format($q$select public.set_post_reaction(%L,true)::text$q$,post_id)) from rpc_fixture;
 select pg_catalog.pg_sleep(0.05);
 select is(extensions.dblink_is_busy('rpc_share_two'),0,'different users do not serialize on the same visible post');
 select pg_temp.collect_rpc_error('rpc_share_two');

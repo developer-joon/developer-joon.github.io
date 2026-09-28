@@ -62,15 +62,15 @@ select ok(not exists(select 1 from information_schema.columns where table_schema
 select is((select excerpt from read_rows where id='52000000-0000-0000-0000-000000000002'),E'needle [leak](about:blank#attachment-unavailable "safe list") [ordinary](cafe/dead)','list excerpt is derived from the sanitized public body');
 select ok(position('storage/v1/object' in (select excerpt from read_rows where id='52000000-0000-0000-0000-000000000002'))=0,'list excerpt exposes no Storage API URL');
 select ok(position('token=' in (select excerpt from read_rows where id='52000000-0000-0000-0000-000000000002'))=0,'list excerpt exposes no credential suffix');
-select is((select comment_count from read_rows where id='52000000-0000-0000-0000-000000000001'),2::bigint,'initial comment metric backfill excludes hidden comments');
+select is((select comment_count from read_rows where id='52000000-0000-0000-0000-000000000001'),3::bigint,'initial comment metric backfill counts all discussion slots');
 select is((select reaction_count from read_rows where id='52000000-0000-0000-0000-000000000001'),2::bigint,'display reaction count includes all-time likes');
-select is((select popularity_score from read_rows where id='52000000-0000-0000-0000-000000000001'),4::bigint,'popularity excludes likes older than 30 UTC days');
+select is((select popularity_score from read_rows where id='52000000-0000-0000-0000-000000000001'),5::bigint,'popularity combines all slots with recent likes');
 reset role;
 insert into private.post_reaction_daily_counts(post_id,reaction_date,reaction_bucket,reaction_count)
 values ('52000000-0000-0000-0000-000000000001',current_date-1,63,0);
 select is(
   (select popularity_score from private.public_post_counts('52000000-0000-0000-0000-000000000001')),
-  4::bigint,
+  5::bigint,
   'zero-count recent buckets do not change popularity'
 );
 set local role anon;
@@ -113,7 +113,7 @@ select is(
      from public.get_public_post('52000000-0000-0000-0000-000000000001')),
   jsonb_build_object(
     'body', E'앞 문단 **그대로**\n\n![첫 이미지](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001 "첫 제목")\n[둘째 파일](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000002 ''둘째 제목'')\n![정식 공개 URL](/functions/v1/public-attachment/56000000-0000-4000-8000-000000000001 (셋째 제목))\n![격리](about:blank#attachment-unavailable)\n![임의 경로](about:blank#attachment-unavailable "안전 제목")\n[위조 공개 URL](about:blank#attachment-unavailable)\n![대문자 UUID](about:blank#attachment-unavailable)\n![인코딩 UUID](about:blank#attachment-unavailable)\n![잘못된 UUID](about:blank#attachment-unavailable)\n[자격증명 링크](about:blank#attachment-unavailable (다운로드))\n\n[일반 링크](https://example.com/docs?q=1) [ordinary](cafe/dead)',
-    'comments', 2, 'reactions', 2, 'popularity', 4, 'tags', 2
+    'comments', 3, 'reactions', 2, 'popularity', 5, 'tags', 2
   ),
   'detail RPC rewrites multiple eligible images to attachment-ID URLs and preserves ordinary Markdown'
 );
@@ -637,11 +637,11 @@ reset role;
 insert into public.comments(id,post_id,author_id,body_markdown,status) values ('54000000-0000-0000-0000-000000000004','52000000-0000-0000-0000-000000000002','51000000-0000-0000-0000-000000000002','transition','published');
 select is((select comment_count from private.post_metrics where post_id='52000000-0000-0000-0000-000000000002'),2::bigint,'comment insert increments metric');
 update public.comments set status='hidden' where id='54000000-0000-0000-0000-000000000004';
-select is((select comment_count from private.post_metrics where post_id='52000000-0000-0000-0000-000000000002'),1::bigint,'comment hiding decrements metric');
+select is((select comment_count from private.post_metrics where post_id='52000000-0000-0000-0000-000000000002'),2::bigint,'comment hiding preserves physical slot metric');
 update public.comments set status='published' where id='54000000-0000-0000-0000-000000000004';
 select is((select comment_count from private.post_metrics where post_id='52000000-0000-0000-0000-000000000002'),2::bigint,'comment restore increments metric');
 update public.comments set status='deleted',deleted_at=statement_timestamp() where id='54000000-0000-0000-0000-000000000004';
-select is((select comment_count from private.post_metrics where post_id='52000000-0000-0000-0000-000000000002'),1::bigint,'comment soft delete decrements metric');
+select is((select comment_count from private.post_metrics where post_id='52000000-0000-0000-0000-000000000002'),2::bigint,'comment soft delete preserves physical slot metric');
 update public.comments set status='published',deleted_at=null where id='54000000-0000-0000-0000-000000000004';
 select is((select comment_count from private.post_metrics where post_id='52000000-0000-0000-0000-000000000002'),2::bigint,'comment undelete restores metric');
 delete from public.post_reactions where id='55000000-0000-0000-0000-000000000001';

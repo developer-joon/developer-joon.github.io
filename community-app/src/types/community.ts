@@ -25,6 +25,7 @@ export interface PostListItem {
 export interface PostDetail extends PostListItem {
   bodyMarkdown: string
   attachmentCount: number
+  viewerReacted: boolean
 }
 
 export type PublicPostRead =
@@ -33,13 +34,36 @@ export type PublicPostRead =
   | { kind: 'deleted'; commentCount: number }
   | { kind: 'not_found' }
 
-export interface PublicComment {
+export interface PublishedComment {
+  kind: 'published'
   id: string
   parentId: string | null
   bodyMarkdown: string
   createdAt: string
   updatedAt: string
   author: ProfileSummary
+  reactionCount: number
+  viewerReacted: boolean
+}
+
+export interface CommentPlaceholder {
+  kind: 'hidden' | 'deleted'
+  id: string
+  parentId: string | null
+}
+
+export type PublicComment = PublishedComment | CommentPlaceholder
+
+export interface CreateCommentInput {
+  postId: string
+  parentId: string | null
+  bodyMarkdown: string
+  idempotencyKey: string
+}
+
+export interface ReactionState {
+  reacted: boolean
+  reactionCount: number
 }
 
 export interface CommentCursor {

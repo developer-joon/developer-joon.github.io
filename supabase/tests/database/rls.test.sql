@@ -44,7 +44,7 @@ select ok(not has_column_privilege('anon', 'public.profiles', 'github_user_id', 
 
 set local role anon;
 select is((select count(*)::integer from public.posts where id::text like '92000000-%'), 1, 'anon sees only published non-deleted post');
-select is((select count(*)::integer from public.comments where id::text like '94000000-%'), 1, 'anon sees only published comment on visible post');
+select throws_ok($$select * from public.comments$$, '42501', 'permission denied for table comments', 'anon cannot bypass the canonical comment projection');
 select is((select count(*)::integer from public.tags where id::text like '93000000-%'), 1, 'anon sees only active tag');
 select is((select count(*)::integer from public.post_tags where post_id::text like '92000000-%'), 1, 'anon sees tags only for visible posts');
 select throws_ok($$select * from public.post_reactions$$, '42501', 'permission denied for table post_reactions', 'anon cannot read raw post reaction identities');
@@ -110,7 +110,7 @@ cross join (values
 ) resources(table_name)
 cross join (values ('SELECT'),('INSERT'),('UPDATE'),('DELETE')) operations(operation)
 cross join lateral (
-  select operation='SELECT' and table_name in ('posts','comments') as expected,
+  select operation='SELECT' and table_name='posts' as expected,
          pg_catalog.set_config('request.jwt.claim.sub', coalesce(actor_id::text,''), true)
 ) expectation;
 
