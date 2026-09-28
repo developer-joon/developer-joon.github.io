@@ -39,6 +39,7 @@ type GeneratedPublicPostDetailRow = Functions['get_public_post']['Returns'][numb
 type PublicPostDetailRow = Omit<GeneratedPublicPostDetailRow, 'author_avatar_url' | 'author_display_name'> & {
   author_avatar_url: string | null
   author_display_name: string | null
+  attachment_count: number
 }
 
 function failure(error: CommunityError): CommunityResult<never> { return { ok: false, error } }
@@ -112,7 +113,7 @@ function mapDetailPost(row: PublicPostDetailRow, publicAttachmentUrl: (attachmen
   return {
     id: row.id, title: row.title, excerpt: bodyMarkdown.slice(0, 180), bodyMarkdown,
     createdAt: row.created_at, updatedAt: row.updated_at, isLocked: row.is_locked, isPinned: row.is_pinned,
-    commentCount: row.comment_count, reactionCount: row.reaction_count, popularityScore: row.popularity_score,
+    commentCount: row.comment_count, reactionCount: row.reaction_count, popularityScore: row.popularity_score, attachmentCount: row.attachment_count,
     author: { id: row.author_id, login: row.author_login, displayName: row.author_display_name, avatarUrl: row.author_avatar_url },
     tags: tagsFrom(row.tags),
   }
@@ -158,6 +159,7 @@ const detailKeys = [
   'id', 'title', 'body_markdown', 'created_at', 'updated_at', 'is_locked', 'is_pinned',
   'author_id', 'author_login', 'author_display_name', 'author_avatar_url', 'tags',
   'comment_count', 'reaction_count', 'popularity_score',
+  'attachment_count',
 ] as const
 function isTag(value: unknown): value is RawTag {
   return isRecord(value) && hasExactKeys(value, ['id', 'slug', 'label'])
@@ -176,6 +178,7 @@ function isPublicPostDetail(value: unknown): value is PublicPostDetailRow {
     && isNullableString(value.author_avatar_url) && Array.isArray(value.tags)
     && value.tags.every(isDetailTag) && isSafeCount(value.comment_count)
     && isSafeCount(value.reaction_count) && isSafeCount(value.popularity_score)
+    && isSafeCount(value.attachment_count) && value.attachment_count <= 5
 }
 function mapPublicPostRead(data: unknown, publicAttachmentUrl: (attachmentId: string) => string): PublicPostRead {
   if (!isRecord(data) || typeof data.kind !== 'string') throw new Error('invalid public post response')

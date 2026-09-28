@@ -3,6 +3,9 @@ import type { CommunityTag } from '../types/community'
 import { validatePostInput, type PostErrors, type PostInput } from '../lib/validation'
 import { MarkdownPreview } from './MarkdownPreview'
 import { TagSelector } from './TagSelector'
+import { ImageUploader, type ImageUploaderState } from './ImageUploader'
+import type { UploadRepository } from '../data/uploadRepository'
+import type { DraftAttachment } from '../lib/draftStore'
 
 interface PostEditorProps {
   initialValue: PostInput
@@ -16,13 +19,19 @@ interface PostEditorProps {
   auxiliaryActions?: ReactNode
   disabled?: boolean
   submissionActions?: ReactNode
+  uploadRepository?: UploadRepository
+  uploadActorId?: string
+  initialAttachments?: DraftAttachment[]
+  existingAttachmentCount?: number
+  onUploadStateChange?(state: ImageUploaderState): void
 }
 
-export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange, unavailableTagLabels = [], allowedImageOrigin, submissionError, auxiliaryActions, disabled = false, submissionActions }: PostEditorProps) {
+export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange, unavailableTagLabels = [], allowedImageOrigin, submissionError, auxiliaryActions, disabled = false, submissionActions, uploadRepository, uploadActorId, initialAttachments = [], existingAttachmentCount = 0, onUploadStateChange }: PostEditorProps) {
   const [value, setValue] = useState(initialValue)
   const [errors, setErrors] = useState<PostErrors>({})
   const [preview, setPreview] = useState(false)
   const [pending, setPending] = useState(false)
+  const [uploadBlocked, setUploadBlocked] = useState(false)
   const submitting = useRef(false)
   const errorSummary = useRef<HTMLDivElement>(null)
   const submissionAlert = useRef<HTMLDivElement>(null)
@@ -57,7 +66,7 @@ export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange
   }
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (submitting.current || disabled) return
+    if (submitting.current || disabled || uploadBlocked) return
     const result = validatePostInput(value)
     const nextErrors = result.ok ? {} : result.errors
     if (hasUnavailableTags) nextErrors.tagIds = '현재 사용할 수 없는 태그를 해제하고 활성 태그를 선택해 주세요.'
@@ -73,6 +82,8 @@ export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange
   }
 
   const hasErrors = Object.keys(errors).length > 0
+  function imageStateChanged(state: ImageUploaderState) { setUploadBlocked(state.blocked); onUploadStateChange?.(state) }
+  function insertImage(markdown: string) { update({ ...value, bodyMarkdown: `${value.bodyMarkdown}${value.bodyMarkdown.endsWith('\n') || value.bodyMarkdown.length === 0 ? '' : '\n\n'}${markdown}` }) }
   return (
     <form className="post-editor" onSubmit={submit} noValidate>
       {hasErrors && <div ref={errorSummary} className="editor-error-summary" role="alert" tabIndex={-1}>입력 내용을 확인해 주세요.</div>}
@@ -96,9 +107,10 @@ export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange
         {errors.bodyMarkdown && <p id="body-error" className="field-error">{errors.bodyMarkdown}</p>}
       </div>}
       </div>
+      {uploadRepository && uploadActorId && <ImageUploader repository={uploadRepository} actorId={uploadActorId} bodyLength={value.bodyMarkdown.length} onInsert={insertImage} onStateChange={imageStateChanged} initialAttachments={initialAttachments} existingCount={existingAttachmentCount} disabled={busy} />}
       <TagSelector tags={tags} selected={value.tagIds} onChange={tagIds => update({ ...value, tagIds })} error={errors.tagIds} unavailableLabels={unavailableTagLabels} />
       <div className="editor-actions">
-        <button className="editor-submit" type="submit">{pending ? '처리 중' : submitLabel}</button>
+        <button className="editor-submit" type="submit" disabled={uploadBlocked}>{pending ? '처리 중' : submitLabel}</button>
         {auxiliaryActions}
       </div>
       </fieldset>

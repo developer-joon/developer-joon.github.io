@@ -34,7 +34,7 @@ const detailRow = {
     { id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' },
     { id: '56000000-0000-4000-8000-000000000041', slug: 'testing', label: 'Testing' },
   ], comment_count: row.comment_count,
-  reaction_count: row.reaction_count, popularity_score: row.popularity_score,
+  reaction_count: row.reaction_count, popularity_score: row.popularity_score, attachment_count: 4,
 }
 
 function setup() {
@@ -212,6 +212,7 @@ describe('community repository public list contract', () => {
           commentCount: 3,
           reactionCount: 4,
           popularityScore: 11,
+          attachmentCount: 4,
           tags: [
             { id: '56000000-0000-4000-8000-000000000040' },
             { id: '56000000-0000-4000-8000-000000000041' },

@@ -22,6 +22,7 @@ const published: Extract<PublicPostRead, { kind: 'published' }> = {
     updatedAt: '2026-09-27T01:00:00Z',
     isLocked: false, isPinned: false,
     commentCount: 2, reactionCount: 7, popularityScore: 9,
+    attachmentCount: 0,
     author: { id: '56000000-0000-4000-8000-000000000030', login: 'bread', displayName: null, avatarUrl: null },
     tags: [{ id: '56000000-0000-4000-8000-000000000040', slug: 'security', label: '보안' }],
   },

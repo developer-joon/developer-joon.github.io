@@ -24,6 +24,7 @@ export interface PostListItem {
 
 export interface PostDetail extends PostListItem {
   bodyMarkdown: string
+  attachmentCount: number
 }
 
 export type PublicPostRead =

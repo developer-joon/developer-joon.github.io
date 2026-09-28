@@ -3,10 +3,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { App, ConfigurationErrorScreen } from './App'
 import type { AuthClient } from './auth/AuthProvider'
 import type { CommunityRepository } from './data/communityRepository'
+import type { UploadRepository } from './data/uploadRepository'
+import { AuthContext, type AuthContextValue } from './auth/AuthProvider'
 
 const routeCases = [
   ['/community/admin/reports/', '신고 관리 화면을 준비하고 있습니다'],
 ] as const
+
+function uploadRepositoryStub() {
+  return { publicAttachmentUrl: vi.fn(), upload: vi.fn(), attach: vi.fn(), discard: vi.fn() } as unknown as UploadRepository
+}
 
 describe('App', () => {
   it('renders the public community home route', async () => {
@@ -55,11 +61,28 @@ describe('App', () => {
       listTags: async () => ({ ok: true, data: [] }),
       getPost: async () => ({ ok: true, data: { kind: 'not_found' } }),
     } as unknown as CommunityRepository
-    const write = render(<App pathname="/community/write/" repository={repository} />)
+    const uploadRepository = uploadRepositoryStub()
+    const write = render(<App pathname="/community/write/" repository={repository} uploadRepository={uploadRepository} />)
     expect(await screen.findByRole('heading', { name: '새 글 쓰기' })).toBeInTheDocument()
     write.unmount()
-    render(<App pathname="/community/edit/" search="?id=56000000-0000-4000-8000-000000000010" repository={repository} />)
+    render(<App pathname="/community/edit/" search="?id=56000000-0000-4000-8000-000000000010" repository={repository} uploadRepository={uploadRepository} />)
     expect(await screen.findByRole('heading', { name: '게시글을 찾을 수 없습니다' })).toBeInTheDocument()
+  })
+
+  it('injects the upload repository into the write route', async () => {
+    const repository = {
+      publicAttachmentOrigin: 'https://example.com',
+      listTags: async () => ({ ok: true, data: [] }),
+    } as unknown as CommunityRepository
+    const uploadRepository = uploadRepositoryStub()
+    const auth = {
+      loading: false, pending: false, session: {} as never, user: { id: '56000000-0000-4000-8000-000000000030' } as never,
+      error: null, signInWithGitHub: vi.fn(), signOut: vi.fn(),
+    } satisfies AuthContextValue
+
+    render(<AuthContext.Provider value={auth}><App pathname="/community/write/" repository={repository} uploadRepository={uploadRepository} /></AuthContext.Provider>)
+
+    expect(await screen.findByLabelText('이미지 파일 선택')).toBeInTheDocument()
   })
 
   it('accepts a hash-bearing write route without falling back to the placeholder shell', async () => {
@@ -67,7 +90,7 @@ describe('App', () => {
       publicAttachmentOrigin: 'https://example.com',
       listTags: async () => ({ ok: true, data: [] }),
     } as unknown as CommunityRepository
-    render(<App pathname="/community/write" search="?from=home" hash="#draft" repository={repository} />)
+    render(<App pathname="/community/write" search="?from=home" hash="#draft" repository={repository} uploadRepository={uploadRepositoryStub()} />)
     expect(await screen.findByRole('heading', { name: '새 글 쓰기' })).toBeInTheDocument()
   })
 
@@ -77,7 +100,7 @@ describe('App', () => {
       listTags: async () => ({ ok: true, data: [] }),
       getPost: async () => ({ ok: true, data: { kind: 'not_found' } }),
     } as unknown as CommunityRepository
-    render(<App pathname="/community/edit" search="?id=56000000-0000-4000-8000-000000000010&from=list" hash="#editor" repository={repository} />)
+    render(<App pathname="/community/edit" search="?id=56000000-0000-4000-8000-000000000010&from=list" hash="#editor" repository={repository} uploadRepository={uploadRepositoryStub()} />)
     expect(await screen.findByRole('heading', { name: '게시글을 찾을 수 없습니다' })).toBeInTheDocument()
   })
 

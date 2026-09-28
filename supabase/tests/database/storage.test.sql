@@ -61,7 +61,8 @@ select has_function('public','reserve_attachment_upload',array['uuid'],'authenti
 select has_function('public','refund_attachment_upload_replay',array['uuid','uuid','text','text','bigint'],'validated replay refund RPC exists');
 select has_function('public','create_attachment_upload_intent',array['uuid','text','text','bigint'],'intent-first upload RPC accepts client key and payload fingerprint');
 select has_function('public','fail_attachment_upload',array['uuid','text'],'upload failure RPC exists');
-select has_function('public','attach_attachments',array['uuid','uuid[]'],'attachment linking RPC exists');
+select has_function('public','attach_attachments',array['uuid','uuid[]','integer'],'attachment linking RPC requires an expected total');
+select ok(not has_function_privilege('public','public.attach_attachments_legacy(uuid,uuid[])','EXECUTE') and not has_function_privilege('authenticated','public.attach_attachments_legacy(uuid,uuid[])','EXECUTE') and not has_function_privilege('service_role','public.attach_attachments_legacy(uuid,uuid[])','EXECUTE'),'legacy attachment implementation is not client executable');
 select has_function('public','claim_attachment_cleanup',array['integer'],'cleanup claim RPC exists');
 select has_function('public','prepare_attachment_cleanup',array['uuid','text','uuid'],'cleanup prepare RPC exists');
 select has_function('public','complete_attachment_cleanup',array['uuid','text','uuid'],'token-bound cleanup completion exists');
@@ -73,7 +74,7 @@ from unnest(array[
  'public.reserve_attachment_upload(uuid)','public.refund_attachment_upload_replay(uuid,uuid,text,text,bigint)',
  'public.create_attachment_upload_intent(uuid,text,text,bigint)',
  'public.fail_attachment_upload(uuid,text)',
- 'public.attach_attachments(uuid,uuid[])',
+ 'public.attach_attachments(uuid,uuid[],integer)',
  'public.claim_attachment_cleanup(integer)',
  'public.prepare_attachment_cleanup(uuid,text,uuid)',
  'public.complete_attachment_cleanup(uuid,text,uuid)',
@@ -84,14 +85,14 @@ from unnest(array[
  'public.reserve_attachment_upload(uuid)','public.refund_attachment_upload_replay(uuid,uuid,text,text,bigint)',
  'public.create_attachment_upload_intent(uuid,text,text,bigint)',
  'public.fail_attachment_upload(uuid,text)',
- 'public.attach_attachments(uuid,uuid[])',
+ 'public.attach_attachments(uuid,uuid[],integer)',
  'public.claim_attachment_cleanup(integer)',
  'public.prepare_attachment_cleanup(uuid,text,uuid)',
  'public.complete_attachment_cleanup(uuid,text,uuid)',
  'public.release_attachment_cleanup(uuid,text,uuid,text)'
 ]) signature;
 select ok(has_function_privilege('authenticated',signature,'EXECUTE') and not has_function_privilege('service_role',signature,'EXECUTE'),signature||' is authenticated-only')
-from unnest(array['public.reserve_attachment_upload(uuid)','public.refund_attachment_upload_replay(uuid,uuid,text,text,bigint)','public.create_attachment_upload_intent(uuid,text,text,bigint)','public.fail_attachment_upload(uuid,text)','public.attach_attachments(uuid,uuid[])']) signature;
+from unnest(array['public.reserve_attachment_upload(uuid)','public.refund_attachment_upload_replay(uuid,uuid,text,text,bigint)','public.create_attachment_upload_intent(uuid,text,text,bigint)','public.fail_attachment_upload(uuid,text)','public.attach_attachments(uuid,uuid[],integer)']) signature;
 select ok(has_function_privilege('service_role',signature,'EXECUTE') and not has_function_privilege('authenticated',signature,'EXECUTE'),signature||' is service-only')
 from unnest(array['public.claim_attachment_cleanup(integer)','public.prepare_attachment_cleanup(uuid,text,uuid)','public.complete_attachment_cleanup(uuid,text,uuid)','public.release_attachment_cleanup(uuid,text,uuid,text)']) signature;
 
@@ -227,7 +228,7 @@ insert into storage.objects(bucket_id,name,metadata) values (
 set local role authenticated;
 select set_config('request.jwt.claim.sub','b1000000-0000-0000-0000-000000000001',true);
 select throws_like(
-  $$select public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from archived_path_intent)])$$,
+  $$select public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from archived_path_intent)],1)$$,
   '%storage object metadata does not match intent%',
   'matching archived metadata cannot authorize a mismatching current object'
 );
@@ -236,12 +237,12 @@ reset role;
 -- A missing object cannot be attached; successful exact metadata can be attached.
 set local role authenticated;
 select set_config('request.jwt.claim.sub','b1000000-0000-0000-0000-000000000001',true);
-select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from intent_results)])$$,'%storage object metadata does not match intent%','intent cannot attach before storage upload');
+select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from intent_results)],1)$$,'%storage object metadata does not match intent%','intent cannot attach before storage upload');
 reset role;
 insert into storage.objects(bucket_id,name,metadata) select 'community-images',storage_path,'{"size":78,"mimetype":"image/png"}'::jsonb from intent_results;
 set local role authenticated;
 select set_config('request.jwt.claim.sub','b1000000-0000-0000-0000-000000000001',true);
-select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from intent_results)])$$,'%storage object metadata does not match intent%','wrong uploaded object size cannot attach');
+select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from intent_results)],1)$$,'%storage object metadata does not match intent%','wrong uploaded object size cannot attach');
 reset role;
 update storage.objects set metadata='{"size":77,"mimetype":"image/png","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'::jsonb where bucket_id='community-images' and name=(select storage_path from intent_results);
 set local role authenticated;
@@ -260,7 +261,8 @@ reset role;
 select is((select count(*)::integer from public.rate_limit_events where user_id='b1000000-0000-0000-0000-000000000001' and action='attachment.upload' and idempotency_key='01000000-0000-4000-8000-000000000001'),4,'malformed successful-key reuse stays charged while validated replay is refunded');
 set local role authenticated;
 select set_config('request.jwt.claim.sub','b1000000-0000-0000-0000-000000000001',true);
-select is(public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from intent_results)]),1,'exact uploaded object attaches to own published post');
+select is(public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from intent_results)],1),1,'exact uploaded object attaches to own published post');
+select is(public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from intent_results)],1),1,'lost attach response can be retried idempotently with the same expected total');
 insert into upload_reservations values
  ('attached-reuse',public.reserve_attachment_upload('01000000-0000-4000-8000-000000000001'));
 select is(public.refund_attachment_upload_replay(
@@ -270,9 +272,9 @@ select is(public.refund_attachment_upload_replay(
   'image/png',77
 ),false,'an attached non-retryable intent cannot refund pre-decode rate accounting');
 select throws_like($$select * from public.create_attachment_upload_intent('01000000-0000-4000-8000-000000000001','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','image/png',77)$$,'%no longer retryable%','attached intent cannot be replayed as an upload');
-select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000002',array[(select id from intent_results)])$$,'%post not found or not attachable%','hidden post is not attachable');
+select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000002',array[(select id from intent_results)],1)$$,'%post not found or not attachable%','hidden post is not attachable');
 select set_config('request.jwt.claim.sub','b1000000-0000-0000-0000-000000000002',true);
-select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000004',array[(select id from intent_results)])$$,'%attachment not found or not linkable%','other owner cannot attach intent');
+select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000004',array[(select id from intent_results)],1)$$,'%attachment not found or not linkable%','other owner cannot attach intent');
 reset role;
 
 -- The sixth real attachment is rejected after five are already attached.
@@ -290,8 +292,10 @@ insert into storage.objects(bucket_id,name,metadata)
 select 'community-images',storage_path,'{"size":66,"mimetype":"image/png","sha256":"6666666666666666666666666666666666666666666666666666666666666666"}'::jsonb from sixth_intent;
 set local role authenticated;
 select set_config('request.jwt.claim.sub','b1000000-0000-0000-0000-000000000001',true);
-select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from sixth_intent)])$$,'%at most 5 attachments%','actual sixth attachment is rejected');
+select throws_like($$select public.attach_attachments('b2000000-0000-0000-0000-000000000001',array[(select id from sixth_intent)],5)$$,'%attachment total changed concurrently%','stale expected total rejects a sixth attachment before mutation');
 reset role;
+select is((select status from public.attachments where id=(select id from sixth_intent)),'pending','stale expected total leaves the attachment pending');
+select is((select post_id from public.attachments where id=(select id from sixth_intent)),null::uuid,'stale expected total does not link the attachment');
 
 -- Upload failure immediately becomes cleanup eligible while preserving its tracked path.
 set local role authenticated;
@@ -733,7 +737,7 @@ select extensions.dblink_exec('s_two',$q$
   create or replace function pg_temp.try_attach(p_post uuid,p_attachment uuid)
   returns text language plpgsql as $f$
   begin
-    perform public.attach_attachments(p_post,array[p_attachment]);
+    perform public.attach_attachments(p_post,array[p_attachment],1);
     return 'ok';
   exception when others then
     return sqlstate;
@@ -872,7 +876,7 @@ insert into attached_before_claim
 select * from extensions.dblink(
   's_two',
   format(
-    'select public.attach_attachments(%L,array[%L::uuid])::text',
+    'select public.attach_attachments(%L,array[%L::uuid],1)::text',
     (select post_id from race_fixture),
     '09000000-0000-4000-8000-000000000022'
   )

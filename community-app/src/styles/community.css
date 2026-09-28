@@ -141,6 +141,29 @@
 .editor-tabs button { min-height: 44px; border: 0; border-bottom: 3px solid transparent; background: transparent; padding: 10px 18px; color: var(--muted); font-weight: 800; cursor: pointer; }
 .editor-tabs button[aria-selected="true"] { border-color: var(--blue); color: var(--ink); }
 .editor-preview { min-height: 24rem; border: 1px solid var(--line); background: #faf7f0; padding: clamp(18px, 4vw, 36px); overflow: hidden; }
+.image-uploader { min-width: 0; border-top: 1px solid var(--line); padding-top: 25px; }
+.image-uploader-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.image-uploader-heading h2 { margin: 0; font-family: var(--serif); font-size: 22px; }
+.image-uploader-heading p { margin: 0; color: var(--muted); font-size: 13px; text-align: right; overflow-wrap: anywhere; }
+.image-dropzone { min-width: 0; margin-top: 16px; border: 1px dashed var(--ink); background: #faf7f0; padding: 22px 16px; text-align: center; cursor: pointer; }
+.image-dropzone:focus-visible, .image-upload-actions button:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.image-dropzone[aria-disabled="true"] { cursor: not-allowed; opacity: .6; }
+.image-dropzone > span { display: block; min-width: 0; overflow-wrap: anywhere; cursor: inherit; }
+.image-dropzone > span strong { color: var(--blue-dark); font-weight: 900; text-decoration: underline; text-underline-offset: 3px; }
+.image-dropzone-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+.image-uploader-error { margin: 12px 0 0; color: #8f251d; font-weight: 800; overflow-wrap: anywhere; }
+.image-upload-list { min-width: 0; margin: 16px 0 0; padding: 0; list-style: none; }
+.image-upload-item { min-width: 0; display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 14px; align-items: center; border-top: 1px solid var(--line); padding: 14px 0; }
+.image-upload-item.without-preview { grid-template-columns: minmax(0, 1fr) auto; }
+.image-upload-item:last-child { border-bottom: 1px solid var(--line); }
+.image-upload-item img { width: 72px; height: 72px; border: 1px solid var(--line); object-fit: cover; }
+.image-upload-copy { min-width: 0; display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.image-upload-copy strong { min-width: 0; color: var(--ink); overflow-wrap: anywhere; word-break: break-word; }
+.image-upload-copy progress { width: min(100%, 16rem); }
+.image-upload-success { color: var(--blue-dark); font-weight: 800; }
+.image-upload-actions { min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.image-upload-actions button { min-height: 42px; border: 1px solid var(--ink); background: transparent; padding: 8px 11px; color: var(--ink); font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
+.image-upload-actions button:disabled { cursor: not-allowed; opacity: .5; }
 .tag-selector { min-width: 0; margin: 0; border: 0; border-top: 1px solid var(--line); padding: 25px 0 0; }
 .tag-selector legend { padding: 0; }
 .tag-options { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
@@ -161,6 +184,13 @@
   .editor-page main { width: min(100% - 32px, 920px); }
   .editor-heading { padding-top: 42px; }
   .editor-field textarea { min-height: 20rem; }
+  .image-uploader-heading { align-items: flex-start; flex-direction: column; gap: 7px; }
+  .image-uploader-heading p { text-align: left; }
+  .image-upload-item { grid-template-columns: 56px minmax(0, 1fr); align-items: start; }
+  .image-upload-item.without-preview { grid-template-columns: minmax(0, 1fr); }
+  .image-upload-item img { width: 56px; height: 56px; }
+  .image-upload-actions { grid-column: 1 / -1; justify-content: stretch; }
+  .image-upload-actions button { flex: 1 1 9rem; }
   .editor-actions { align-items: stretch; flex-direction: column; }
   .editor-actions button, .danger-action { width: 100%; margin-left: 0; }
   .tag-options { display: grid; grid-template-columns: minmax(0, 1fr); }
@@ -170,4 +200,6 @@
   .editor-page main { width: calc(100% - 24px); }
   .editor-heading h1 { font-size: 42px; }
   .editor-field input, .editor-field textarea, .editor-preview { padding-inline: 12px; }
+  .image-dropzone { padding-inline: 12px; }
+  .image-upload-actions button { flex-basis: 100%; width: 100%; }
 }

@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '@supabase/supabase-js'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import type { CommunityRepository } from '../data/communityRepository'
+import type { UploadRepository } from '../data/uploadRepository'
 import { draftKey } from '../lib/draftStore'
 import { withDraftLock } from '../lib/draftLock'
 import { WritePostPage } from './WritePostPage'
@@ -11,7 +12,9 @@ import { EditPostPage } from './EditPostPage'
 const postId = '56000000-0000-4000-8000-000000000010'
 const authorId = '56000000-0000-4000-8000-000000000030'
 const tag = { id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' }
-const post = { id: postId, title: '서버 제목', excerpt: '', bodyMarkdown: '서버 본문', createdAt: '2026-09-27T00:00:00Z', updatedAt: '2026-09-27T00:00:00Z', isLocked: false, isPinned: false, commentCount: 0, reactionCount: 0, popularityScore: 0, author: { id: authorId, login: 'bread', displayName: null, avatarUrl: null }, tags: [tag] }
+const post = { id: postId, title: '서버 제목', excerpt: '', bodyMarkdown: '서버 본문', createdAt: '2026-09-27T00:00:00Z', updatedAt: '2026-09-27T00:00:00Z', isLocked: false, isPinned: false, commentCount: 0, reactionCount: 0, popularityScore: 0, attachmentCount: 0, author: { id: authorId, login: 'bread', displayName: null, avatarUrl: null }, tags: [tag] }
+const attachmentId = '56000000-0000-4000-8000-000000000070'
+const uploadKey = '56000000-0000-4000-8000-000000000080'
 
 function storage() {
   const values = new Map<string, string>()
@@ -24,6 +27,22 @@ function wrap(ui: React.ReactNode, value: AuthContextValue) { return render(<Aut
 function repository(overrides: Partial<CommunityRepository> = {}) {
   return { publicAttachmentOrigin: 'https://example.com', listTags: vi.fn().mockResolvedValue({ ok: true, data: [tag] }), getPost: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'published', post } }), createPost: vi.fn(), updatePost: vi.fn(), deletePost: vi.fn(), ...overrides } as unknown as CommunityRepository
 }
+function uploads(overrides: Partial<UploadRepository> = {}) {
+  return {
+    publicAttachmentUrl: (id: string) => `https://example.com/functions/v1/public-attachment/${id}`,
+    upload: vi.fn().mockResolvedValue({ ok: true, data: { attachmentId, storagePath: `${authorId}/${uploadKey}`, mimeType: 'image/png', byteSize: 1, width: 1, height: 1, publicUrl: `https://example.com/functions/v1/public-attachment/${attachmentId}` } }),
+    attach: vi.fn().mockResolvedValue({ ok: true, data: 1 }),
+    discard: vi.fn().mockResolvedValue({ ok: true, data: true }),
+    ...overrides,
+  } as UploadRepository
+}
+function chooseImage(name = 'bread.png') {
+  fireEvent.change(screen.getByLabelText('이미지 파일 선택'), { target: { files: [new File(['x'], name, { type: 'image/png' })] } })
+}
+beforeEach(() => {
+  URL.createObjectURL = vi.fn((value: Blob) => `blob:${(value as File).name}`)
+  URL.revokeObjectURL = vi.fn()
+})
 function fillValid() {
   fireEvent.change(screen.getByLabelText('제목'), { target: { value: '새 제목' } })
   fireEvent.change(screen.getByLabelText('본문'), { target: { value: '새 본문' } })
@@ -303,6 +322,148 @@ describe('WritePostPage', () => {
     expect(createPost).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })
+
+  it('blocks direct submit while an upload is pending', async () => {
+    const upload = vi.fn<UploadRepository['upload']>(() => new Promise(() => undefined)); const createPost = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} uploadRepository={uploads({ upload })} storage={storage()} navigate={vi.fn()} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid(); chooseImage()
+    await waitFor(() => expect(upload).toHaveBeenCalledTimes(1))
+    fireEvent.submit(screen.getByRole('button', { name: '발행' }).closest('form')!)
+    expect(createPost).not.toHaveBeenCalled()
+  })
+
+  it('remounts the uploader on actor switch without reporting or replacing the prior actor attachment', async () => {
+    const local = storage(); const uploadRepo = uploads()
+    const firstActor = auth(authorId); const secondActorId = '56000000-0000-4000-8000-000000000031'; const secondActor = auth(secondActorId)
+    const view = wrap(<WritePostPage repository={repository()} uploadRepository={uploadRepo} storage={local} navigate={vi.fn()} />, firstActor)
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); chooseImage()
+    await screen.findByText('업로드 완료')
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.ownerId).toBe(authorId))
+
+    view.rerender(<AuthContext.Provider value={secondActor}><WritePostPage repository={repository()} uploadRepository={uploadRepo} storage={local} navigate={vi.fn()} /></AuthContext.Provider>)
+
+    await waitFor(() => expect(screen.queryByText('bread.png')).not.toBeInTheDocument())
+    expect(screen.getByLabelText('이미지 파일 선택')).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('다른 계정에서 업로드')
+    fireEvent.click(screen.getByRole('button', { name: '계정 바꾸기' }))
+    expect(secondActor.signOut).toHaveBeenCalledOnce()
+    expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.ownerId).toBe(authorId)
+  })
+
+  it('persists attach failure and resumes exact IDs without creating twice after reload', async () => {
+    const local = storage(); const navigate = vi.fn(); const createPost = vi.fn().mockResolvedValue({ ok: true, data: postId })
+    const attach = vi.fn().mockResolvedValueOnce({ ok: false, error: { code: 'network', message: '연결 실패' } }).mockResolvedValueOnce({ ok: true, data: 1 })
+    const uploadRepo = uploads({ attach })
+    const first = wrap(<WritePostPage repository={repository({ createPost })} uploadRepository={uploadRepo} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid(); chooseImage()
+    await screen.findByText('업로드 완료')
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.phase).toBe('uploaded'))
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('연결 실패')
+    expect(navigate).not.toHaveBeenCalled()
+    expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.phase).toBe('attaching')
+    first.unmount()
+
+    wrap(<WritePostPage repository={repository({ createPost })} uploadRepository={uploadRepo} storage={local} navigate={navigate} />, auth(authorId))
+    await waitFor(() => expect(attach).toHaveBeenCalledTimes(2))
+    expect(createPost).toHaveBeenCalledTimes(1)
+    expect(attach.mock.calls[1][1]).toEqual([attachmentId])
+    expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`)
+  })
+
+  it('retries a failed attach checkpoint in the current write session', async () => {
+    const local = storage(); const navigate = vi.fn(); const createPost = vi.fn().mockResolvedValue({ ok: true, data: postId })
+    let resolveRetry!: (value: { ok: true; data: number }) => void
+    const retry = new Promise<{ ok: true; data: number }>(resolve => { resolveRetry = resolve })
+    const attach = vi.fn().mockResolvedValueOnce({ ok: false, error: { code: 'network', message: '연결 실패' } }).mockImplementationOnce(() => retry)
+    wrap(<WritePostPage repository={repository({ createPost })} uploadRepository={uploads({ attach })} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid(); chooseImage(); await screen.findByText('업로드 완료')
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.phase).toBe('uploaded'))
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('연결 실패')
+
+    const retryButton = screen.getByRole('button', { name: '첨부 연결 다시 시도' })
+    fireEvent.click(retryButton)
+    await waitFor(() => expect(retryButton).toBeDisabled())
+    fireEvent.click(retryButton)
+    resolveRetry({ ok: true, data: 1 })
+
+    await waitFor(() => expect(attach).toHaveBeenCalledTimes(2))
+    expect(createPost).toHaveBeenCalledTimes(1)
+    expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`)
+  })
+
+  it('ignores an in-flight attach after upload repository replacement and resumes with the new repository', async () => {
+    const local = storage(); const navigate = vi.fn(); const createPost = vi.fn().mockResolvedValue({ ok: true, data: postId }); const communityRepo = repository({ createPost }); const actor = auth(authorId)
+    let resolveOld!: (value: { ok: true; data: number }) => void
+    const oldAttach = vi.fn(() => new Promise<{ ok: true; data: number }>(resolve => { resolveOld = resolve }))
+    const newAttach = vi.fn().mockResolvedValue({ ok: true, data: 1 })
+    const oldDiscard = vi.fn().mockResolvedValue({ ok: true, data: true })
+    const firstUploadRepo = uploads({ attach: oldAttach, discard: oldDiscard }); const secondUploadRepo = uploads({ attach: newAttach })
+    const view = wrap(<WritePostPage repository={communityRepo} uploadRepository={firstUploadRepo} storage={local} navigate={navigate} />, actor)
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid(); chooseImage(); await screen.findByText('업로드 완료')
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.phase).toBe('uploaded'))
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    await waitFor(() => expect(oldAttach).toHaveBeenCalledOnce())
+
+    view.rerender(<AuthContext.Provider value={actor}><WritePostPage repository={communityRepo} uploadRepository={secondUploadRepo} storage={local} navigate={navigate} /></AuthContext.Provider>)
+    resolveOld({ ok: true, data: 1 })
+
+    await waitFor(() => expect(newAttach).toHaveBeenCalledOnce())
+    expect(oldDiscard).not.toHaveBeenCalled()
+    expect(newAttach.mock.calls[0][1]).toEqual([attachmentId])
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`))
+  })
+
+  it('preserves a replacement draft that appears while write attach is pending', async () => {
+    const local = storage(); const navigate = vi.fn(); const createPost = vi.fn().mockResolvedValue({ ok: true, data: postId })
+    let resolveAttach!: (value: { ok: true; data: number }) => void
+    const pending = new Promise<{ ok: true; data: number }>(resolve => { resolveAttach = resolve })
+    const attach = vi.fn(() => pending)
+    wrap(<WritePostPage repository={repository({ createPost })} uploadRepository={uploads({ attach })} storage={local} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid(); chooseImage(); await screen.findByText('업로드 완료')
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.phase).toBe('uploaded'))
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    await waitFor(() => expect(attach).toHaveBeenCalledOnce())
+    local.setItem(draftKey('write'), '{"replacement":true}')
+    resolveAttach({ ok: true, data: 1 })
+
+    await screen.findByRole('alert')
+    expect(local.values.get(draftKey('write'))).toBe('{"replacement":true}')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('rolls back to uploaded and retries create when the post-created checkpoint cannot be verified', async () => {
+    const local = storage(); const createPost = vi.fn().mockResolvedValue({ ok: true, data: postId }); const attach = vi.fn().mockResolvedValue({ ok: true, data: 1 }); const navigate = vi.fn()
+    let rejectCheckpoint = false
+    const guarded = { ...local, setItem: (key: string, value: string) => {
+      if (rejectCheckpoint && value.includes('post-created')) { rejectCheckpoint = false; throw new Error('quota') }
+      local.setItem(key, value)
+    } }
+    wrap(<WritePostPage repository={repository({ createPost })} uploadRepository={uploads({ attach })} storage={guarded} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid(); chooseImage(); await screen.findByText('업로드 완료')
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.phase).toBe('uploaded'))
+    rejectCheckpoint = true
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    await waitFor(() => expect(createPost).toHaveBeenCalledTimes(1))
+    expect(attach).not.toHaveBeenCalled(); expect(navigate).not.toHaveBeenCalled()
+    expect(JSON.parse(local.values.get(draftKey('write'))!).uploadWorkflow.phase).toBe('uploaded')
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    await waitFor(() => expect(createPost).toHaveBeenCalledTimes(2))
+    expect(createPost.mock.calls[1][0].idempotencyKey).toBe(createPost.mock.calls[0][0].idempotencyKey)
+    expect(attach).toHaveBeenCalledOnce()
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`))
+  })
+
+  it('skips attach for manual image Markdown and for a no-upload post', async () => {
+    const createPost = vi.fn().mockResolvedValue({ ok: true, data: postId }); const attach = vi.fn(); const navigate = vi.fn()
+    wrap(<WritePostPage repository={repository({ createPost })} uploadRepository={uploads({ attach })} storage={storage()} navigate={navigate} />, auth(authorId))
+    await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid()
+    fireEvent.change(screen.getByLabelText('본문'), { target: { value: '![수동](https://example.com/functions/v1/public-attachment/56000000-0000-4000-8000-000000000071)' } })
+    fireEvent.click(screen.getByRole('button', { name: '발행' }))
+    await waitFor(() => expect(navigate).toHaveBeenCalled())
+    expect(attach).not.toHaveBeenCalled()
+  })
 })
 
 describe('EditPostPage', () => {
@@ -379,16 +540,32 @@ describe('EditPostPage', () => {
   it('ignores an update completion after the authenticated user changes', async () => {
     let resolve!: (value: { ok: true; data: string }) => void
     const updatePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
-    const repo = repository({ updatePost }); const local = storage(); const navigate = vi.fn()
-    const view = wrap(<EditPostPage repository={repo} search={`?id=${postId}`} storage={local} navigate={navigate} />, auth(authorId))
+    const repo = repository({ updatePost }); const local = storage(); const navigate = vi.fn(); const firstActor = auth(authorId); const secondActor = auth('56000000-0000-4000-8000-000000000031')
+    const view = wrap(<EditPostPage repository={repo} search={`?id=${postId}`} storage={local} navigate={navigate} />, firstActor)
     await screen.findByDisplayValue('서버 제목')
     fireEvent.click(screen.getByRole('button', { name: '수정' }))
-    view.rerender(<AuthContext.Provider value={auth('56000000-0000-4000-8000-000000000031')}><EditPostPage repository={repo} search={`?id=${postId}`} storage={local} navigate={navigate} /></AuthContext.Provider>)
+    view.rerender(<AuthContext.Provider value={secondActor}><EditPostPage repository={repo} search={`?id=${postId}`} storage={local} navigate={navigate} /></AuthContext.Provider>)
     resolve({ ok: true, data: postId })
     await Promise.resolve()
 
     expect(navigate).not.toHaveBeenCalled()
     expect(local.values.has(draftKey('edit', postId))).toBe(true)
+    view.rerender(<AuthContext.Provider value={firstActor}><EditPostPage repository={repo} search={`?id=${postId}`} storage={local} navigate={navigate} /></AuthContext.Provider>)
+    expect(await screen.findByRole('button', { name: '수정' })).toBeEnabled()
+  })
+
+  it('releases only its own pending state after repository replacement', async () => {
+    let resolve!: (value: { ok: true; data: string }) => void
+    const updatePost = vi.fn(() => new Promise<{ ok: true; data: string }>(done => { resolve = done }))
+    const firstRepository = repository({ updatePost }); const secondRepository = repository(); const local = storage(); const navigate = vi.fn(); const actor = auth(authorId)
+    const view = wrap(<EditPostPage repository={firstRepository} search={`?id=${postId}`} storage={local} navigate={navigate} />, actor)
+    await screen.findByDisplayValue('서버 제목')
+    fireEvent.click(screen.getByRole('button', { name: '수정' }))
+    view.rerender(<AuthContext.Provider value={actor}><EditPostPage repository={secondRepository} search={`?id=${postId}`} storage={local} navigate={navigate} /></AuthContext.Provider>)
+    resolve({ ok: true, data: postId })
+
+    expect(await screen.findByRole('button', { name: '수정' })).toBeEnabled()
+    expect(navigate).not.toHaveBeenCalled()
   })
 
   it('does not clear a malformed replacement edit draft after a late update response', async () => {

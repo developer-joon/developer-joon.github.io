@@ -326,7 +326,7 @@ isOneToOne: true
           }
           Functions: {
             "attach_attachments":
-{ Args: { "p_attachment_ids": (string)[],"p_post_id": string }; Returns: number
+{ Args: { "p_attachment_ids": (string)[],"p_expected_total": number,"p_post_id": string }; Returns: number
                            },
 "claim_attachment_cleanup":
 { Args: { "p_limit"?: number }; Returns: {

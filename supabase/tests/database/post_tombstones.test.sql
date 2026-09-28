@@ -1,6 +1,6 @@
 begin;
 
-select plan(58);
+select plan(59);
 
 insert into auth.users (id,aud,role,email) values
   ('71000000-0000-0000-0000-000000000001','authenticated','authenticated','tomb-a@example.test'),
@@ -15,6 +15,10 @@ insert into public.posts(id,author_id,title,body_markdown,status,deleted_at,crea
   ('72000000-0000-0000-0000-000000000004','71000000-0000-0000-0000-000000000001','Deleted empty','empty secret body','deleted','2026-09-04','2026-09-04','2026-09-04'),
   ('72000000-0000-0000-0000-000000000005','71000000-0000-0000-0000-000000000001','Deleted private comments','private secret body','deleted','2026-09-05','2026-09-05','2026-09-05'),
   ('72000000-0000-0000-0000-000000000006','71000000-0000-0000-0000-000000000001','Continuation boundary','continuation body','published',null,'2026-09-06','2026-09-06');
+insert into public.attachments(id,owner_id,post_id,storage_path,mime_type,byte_size,status,created_at,attached_at) values
+  ('76000000-0000-0000-0000-000000000001','71000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000001','legacy/attached.png','image/png',1,'attached','2026-09-01','2026-09-01');
+insert into public.attachments(id,owner_id,post_id,storage_path,mime_type,byte_size,status,created_at) values
+  ('76000000-0000-0000-0000-000000000002','71000000-0000-0000-0000-000000000001',null,'legacy/pending.png','image/png',1,'pending','2026-09-01');
 insert into public.comments(id,post_id,author_id,parent_id,body_markdown,status,deleted_at,created_at,updated_at) values
   ('74000000-0000-0000-0000-000000000001','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000002',null,'top one','published',null,'2026-09-03 01:00','2026-09-03 01:00'),
   ('74000000-0000-0000-0000-000000000002','72000000-0000-0000-0000-000000000003','71000000-0000-0000-0000-000000000001','74000000-0000-0000-0000-000000000001','reply one','published',null,'2026-09-03 01:01','2026-09-03 01:01'),
@@ -56,6 +60,7 @@ select is(public.get_public_post_v2('72000000-0000-0000-0000-000000000005'),'{"k
 select is(public.get_public_post_v2('72000000-0000-0000-0000-000000000003'),'{"kind":"deleted","comment_count":3}'::jsonb,'deleted count excludes replies whose hidden or deleted root is not visible');
 select is((public.get_public_post_v2('72000000-0000-0000-0000-000000000001')->>'kind'),'published','published post returns published state');
 select is((public.get_public_post_v2('72000000-0000-0000-0000-000000000001')->'post'->>'body_markdown'),'published body','published body is returned through the sanitizer');
+select is((public.get_public_post_v2('72000000-0000-0000-0000-000000000001')->'post'->>'attachment_count'),'1','published post counts attached rows and excludes pending rows');
 
 select is(public.list_public_post_comments('72000000-0000-0000-0000-000000000002'),'{"items":[],"has_more":false,"next_cursor":null}'::jsonb,'hidden parent comments are inaccessible with an exact empty envelope');
 select is(public.list_public_post_comments('72000000-0000-0000-0000-000000000004'),'{"items":[],"has_more":false,"next_cursor":null}'::jsonb,'invalid deleted tombstone comments are inaccessible');
