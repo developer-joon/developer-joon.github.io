@@ -252,6 +252,63 @@ describe('PostDetailPage interactions', () => {
     expect(setPostReaction).not.toHaveBeenCalled()
   })
 
+  it('uses explicit signed-out report login controls without report RPCs and disables them during auth', async () => {
+    const createReport = vi.fn()
+    const repo = repository(
+      () => Promise.resolve(success(published)),
+      () => Promise.resolve(success({ items: [rootComment], hasMore: false, nextCursor: null })),
+      { createReport },
+    )
+    const currentPath = `/community/post?id=${postId}#discussion`
+    const auth = authValue()
+    const { rerender } = render(
+      <AuthContext.Provider value={auth}>
+        <PostDetailPage repository={repo} search={`?id=${postId}`} currentPath={currentPath} />
+      </AuthContext.Provider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '로그인하고 게시글 신고하기' }))
+    fireEvent.click(await screen.findByRole('button', { name: '로그인하고 댓글 신고하기' }))
+    expect(auth.signInWithGitHub).toHaveBeenNthCalledWith(1, currentPath)
+    expect(auth.signInWithGitHub).toHaveBeenNthCalledWith(2, currentPath)
+    expect(createReport).not.toHaveBeenCalled()
+
+    rerender(
+      <AuthContext.Provider value={authValue({ pending: true })}>
+        <PostDetailPage repository={repo} search={`?id=${postId}`} currentPath={currentPath} />
+      </AuthContext.Provider>,
+    )
+    expect(screen.getByRole('button', { name: '로그인하고 게시글 신고하기' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '로그인하고 댓글 신고하기' })).toBeDisabled()
+  })
+
+  it('submits exact post and comment report targets', async () => {
+    const createReport = vi.fn().mockResolvedValue(success('76000000-0000-4000-8000-000000000001'))
+    const repo = repository(
+      () => Promise.resolve(success(published)),
+      () => Promise.resolve(success({ items: [rootComment], hasMore: false, nextCursor: null })),
+      { createReport },
+    )
+    const auth = authValue({ user: { id: 'actor-a' } as AuthContextValue['user'] })
+    render(
+      <AuthContext.Provider value={auth}>
+        <PostDetailPage repository={repo} search={`?id=${postId}`} currentPath="/community/post" />
+      </AuthContext.Provider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '게시글 신고하기' }))
+    fireEvent.click(screen.getByRole('button', { name: '신고 제출' }))
+    await screen.findByRole('status', { name: '신고 접수 완료' })
+    expect(createReport.mock.calls[0][0]).toMatchObject({ targetType: 'post', targetId: postId, reasonCode: 'spam', detail: null })
+    fireEvent.click(screen.getByRole('button', { name: '닫기' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '댓글 신고하기' }))
+    fireEvent.change(screen.getByRole('combobox', { name: '신고 사유' }), { target: { value: 'harassment' } })
+    fireEvent.click(screen.getByRole('button', { name: '신고 제출' }))
+    await screen.findByRole('status', { name: '신고 접수 완료' })
+    expect(createReport.mock.calls[1][0]).toMatchObject({ targetType: 'comment', targetId: rootId, reasonCode: 'harassment', detail: null })
+  })
+
   it('optimistically toggles post reaction, accepts authoritative count and guards rapid clicks', async () => {
     let resolve!: (value: CommunityResult<ReactionState>) => void
     const promise = new Promise<CommunityResult<ReactionState>>((r)=>{resolve=r})
@@ -399,7 +456,7 @@ describe('PostDetailPage interactions', () => {
 
     const status = await screen.findByRole('status', { name: '댓글 작성 완료' })
     expect(status).toHaveTextContent('댓글을 등록했습니다.')
-    expect(document.activeElement).toBe(status)
+    await waitFor(() => expect(document.activeElement).toBe(status))
   })
 
   it('announces and focuses a successful reply submission', async () => {
@@ -419,7 +476,7 @@ describe('PostDetailPage interactions', () => {
 
     const status = await screen.findByRole('status', { name: '답글 작성 완료' })
     expect(status).toHaveTextContent('답글을 등록했습니다.')
-    expect(document.activeElement).toBe(status)
+    await waitFor(() => expect(document.activeElement).toBe(status))
   })
 
   it.each(['actor', 'route', 'repository'] as const)('clears a successful comment announcement when the %s changes', async (change) => {

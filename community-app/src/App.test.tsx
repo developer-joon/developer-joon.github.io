@@ -6,9 +6,6 @@ import type { CommunityRepository } from './data/communityRepository'
 import type { UploadRepository } from './data/uploadRepository'
 import { AuthContext, type AuthContextValue } from './auth/AuthProvider'
 
-const routeCases = [
-  ['/community/admin/reports/', '신고 관리 화면을 준비하고 있습니다'],
-] as const
 
 function uploadRepositoryStub() {
   return { publicAttachmentUrl: vi.fn(), upload: vi.fn(), attach: vi.fn(), discard: vi.fn() } as unknown as UploadRepository
@@ -104,16 +101,22 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: '게시글을 찾을 수 없습니다' })).toBeInTheDocument()
   })
 
-  it.each(routeCases)('renders the route-aware placeholder for %s', (pathname, statusTitle) => {
-    render(<App pathname={pathname} />)
+  it('routes the admin report shell to the lazy real page with repository and exact path', async () => {
+    const repository = {
+      isAdmin: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      listAdminReports: vi.fn().mockResolvedValue({ ok: true, data: { items: [], hasMore: false, nextCursor: null } }),
+      listModerationAuditLogs: vi.fn(),
+    } as unknown as CommunityRepository
+    const auth = {
+      loading: false, pending: false, session: {} as never, user: { id: '56000000-0000-4000-8000-000000000030' } as never,
+      error: null, signInWithGitHub: vi.fn(), signOut: vi.fn(),
+    } satisfies AuthContextValue
 
-    expect(
-      screen.getByRole('heading', { name: 'Breadlab 커뮤니티', level: 1 }),
-    ).toBeInTheDocument()
-    expect(screen.getByText(statusTitle)).toBeInTheDocument()
-    expect(
-      screen.getByRole('link', { name: '기존 블로그로 돌아가기' }),
-    ).toHaveAttribute('href', '/')
+    render(<AuthContext.Provider value={auth}><App pathname="/community/admin/reports/" search="?status=open" hash="#queue" repository={repository} /></AuthContext.Provider>)
+
+    expect(await screen.findByRole('heading', { name: '신고 운영 데스크' })).toBeInTheDocument()
+    expect(repository.isAdmin).toHaveBeenCalledTimes(1)
+    expect(repository.listAdminReports).toHaveBeenCalledWith({ status: 'active', limit: 50 })
   })
 
   it('renders a friendly Korean configuration error', () => {

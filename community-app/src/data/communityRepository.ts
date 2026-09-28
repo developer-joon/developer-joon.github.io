@@ -1,4 +1,7 @@
 import type {
+  AdminReportItem,
+  AdminReportListInput,
+  AdminReportPage,
   CommunityError,
   CommunityResult,
   CommunityTag,
@@ -6,6 +9,19 @@ import type {
   CommentPage,
   CreateCommentInput,
   CreatePostInput,
+  CreateReportInput,
+  ModerateCommentInput,
+  ModeratedCommentState,
+  ModeratedPostState,
+  ModeratedTagState,
+  ModeratePostInput,
+  ModerationAuditItem,
+  ModerationAuditListInput,
+  ModerationAuditMetadata,
+  ModerationAuditMetadataValue,
+  ModerationAuditPage,
+  ModerationAuditTargetType,
+  ModerationCursor,
   PostDetail,
   PublicComment,
   ReactionState,
@@ -13,6 +29,8 @@ import type {
   PostListItem,
   PostPage,
   PublicPostRead,
+  SetReportStatusInput,
+  SetTagActiveInput,
   UpdatePostInput,
 } from '../types/community'
 import type { Database } from '../types/database'
@@ -24,9 +42,13 @@ type Functions = Database['public']['Functions']
 type ExistingMutationName = 'create_post' | 'update_post' | 'soft_delete_post'
 type NewMutationName = 'create_comment_v2' | 'set_post_reaction' | 'set_comment_reaction'
 type ReadName = 'list_public_posts' | 'get_public_post_v3' | 'list_public_post_comments_v2'
-type RpcName = ReadName | ExistingMutationName | NewMutationName
+type ModerationName = 'is_admin' | 'create_report_v2' | 'list_moderation_reports_v1' | 'set_report_status_v1'
+  | 'moderate_post_v1' | 'moderate_comment_v1' | 'set_tag_active_v1' | 'list_moderation_audit_logs_v1'
+type RpcName = ReadName | ExistingMutationName | NewMutationName | ModerationName
 type RpcArgs<Name extends RpcName> = Name extends 'create_comment_v2'
   ? Omit<Functions['create_comment_v2']['Args'], 'p_parent_id'> & { p_parent_id: string | null }
+  : Name extends 'create_report_v2'
+    ? Omit<Functions['create_report_v2']['Args'], 'p_detail'> & { p_detail: string | null }
   : Name extends keyof Functions
     ? Functions[Name] extends { Args: infer Args } ? Args : never
     : never
@@ -80,6 +102,7 @@ function mapError(error: unknown): CommunityError {
     case '42501': return { code: 'forbidden', sourceCode, message: '요청할 권한이 없습니다.' }
     case '22023': case '23514': return { code: 'validation', sourceCode, message: '입력 내용을 확인해 주세요.' }
     case '23505': return { code: 'conflict', sourceCode, message: '이미 처리된 요청입니다.' }
+    case '40001': return { code: 'conflict', sourceCode, message: '상태가 변경되었습니다. 새로고침 후 다시 시도해 주세요.' }
     case 'rate_limit_exceeded': return { code: 'rate_limited', sourceCode, message: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.' }
     case 'PGRST116': return { code: 'not_found', sourceCode, message: '게시글을 찾을 수 없습니다.' }
     default: return { code: 'unknown', sourceCode, message: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' }
@@ -259,6 +282,140 @@ function mapMutationUuid(data: unknown): string {
   return data.toLowerCase()
 }
 
+function isBoundedString(value: unknown, max: number, allowEmpty = false): value is string {
+  return typeof value === 'string' && value.length <= max && (allowEmpty || value.length > 0)
+}
+function isOneOf<const Values extends readonly string[]>(value: unknown, values: Values): value is Values[number] {
+  return typeof value === 'string' && values.includes(value)
+}
+function mapModerationProfile(value: unknown) {
+  if (!isRecord(value) || !hasExactKeys(value, ['id', 'login', 'display_name', 'avatar_url'])
+    || !isUuid(value.id) || !isBoundedString(value.login, 100)
+    || !(value.display_name === null || isBoundedString(value.display_name, 200, true))
+    || !(value.avatar_url === null || isBoundedString(value.avatar_url, 2048, true))) throw new Error('invalid moderation profile')
+  return { id: value.id, login: value.login, displayName: value.display_name, avatarUrl: value.avatar_url }
+}
+function isContentStatus(value: unknown): value is 'published' | 'hidden' | 'deleted' {
+  return isOneOf(value, ['published', 'hidden', 'deleted'])
+}
+function mapModerationCursor(value: unknown): ModerationCursor {
+  if (!isRecord(value) || !hasExactKeys(value, ['created_at', 'id']) || !isIsoTimestamp(value.created_at) || !isUuid(value.id)) {
+    throw new Error('invalid moderation cursor')
+  }
+  return { createdAt: value.created_at, id: value.id }
+}
+function mapReportTarget(value: unknown) {
+  if (!isRecord(value) || !isOneOf(value.type, ['post', 'comment']) || !isUuid(value.id) || typeof value.available !== 'boolean') {
+    throw new Error('invalid report target')
+  }
+  if (!value.available) {
+    if (!hasExactKeys(value, ['type', 'id', 'available'])) throw new Error('invalid unavailable report target')
+    return { type: value.type, id: value.id, available: false as const }
+  }
+  if (!hasExactKeys(value, ['type', 'id', 'available', 'post_id', 'status', 'title', 'excerpt', 'is_locked', 'is_pinned'])
+    || !isUuid(value.post_id)
+    || !isContentStatus(value.status) || !isBoundedString(value.title, 300)
+    || !isBoundedString(value.excerpt, 240, true) || typeof value.is_locked !== 'boolean' || typeof value.is_pinned !== 'boolean'
+    || (value.type === 'post' && value.id !== value.post_id) || (value.type === 'comment' && value.id === value.post_id)) {
+    throw new Error('invalid report target')
+  }
+  return {
+    type: value.type, id: value.id, available: true as const, postId: value.post_id, status: value.status, title: value.title,
+    excerpt: value.excerpt, isLocked: value.is_locked, isPinned: value.is_pinned,
+  }
+}
+function mapAdminReportItem(value: unknown): AdminReportItem {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'id', 'status', 'reason_code', 'detail', 'created_at', 'resolved_at', 'resolved_by', 'reporter', 'target',
+  ]) || !isUuid(value.id) || !isOneOf(value.status, ['open', 'reviewing', 'resolved', 'dismissed'])
+    || !isOneOf(value.reason_code, ['spam', 'harassment', 'harmful', 'other'])
+    || !(value.detail === null || isBoundedString(value.detail, 2000, true)) || !isIsoTimestamp(value.created_at)) {
+    throw new Error('invalid report item')
+  }
+  const terminal = value.status === 'resolved' || value.status === 'dismissed'
+  if (terminal !== (value.resolved_at !== null) || terminal !== (value.resolved_by !== null)
+    || (value.resolved_at !== null && !isIsoTimestamp(value.resolved_at))
+    || (value.resolved_by !== null && !isUuid(value.resolved_by))) throw new Error('invalid report resolution')
+  return {
+    id: value.id, status: value.status, reasonCode: value.reason_code, detail: value.detail,
+    createdAt: value.created_at, resolvedAt: value.resolved_at, resolvedBy: value.resolved_by,
+    reporter: mapModerationProfile(value.reporter), target: mapReportTarget(value.target),
+  }
+}
+function mapAdminReportPage(data: unknown, limit: number): AdminReportPage {
+  if (!isRecord(data) || !hasExactKeys(data, ['items', 'has_more', 'next_cursor']) || !Array.isArray(data.items)
+    || data.items.length > limit || typeof data.has_more !== 'boolean'
+    || data.has_more !== (data.next_cursor !== null)) throw new Error('invalid report page')
+  const items = data.items.map(mapAdminReportItem)
+  const nextCursor = data.next_cursor === null ? null : mapModerationCursor(data.next_cursor)
+  const last = items.at(-1)
+  if (nextCursor && (!last || nextCursor.id !== last.id || nextCursor.createdAt !== last.createdAt)) throw new Error('mismatched report cursor')
+  return { items, hasMore: data.has_more, nextCursor }
+}
+function mapModeratedPostState(data: unknown): ModeratedPostState {
+  if (!isRecord(data) || !hasExactKeys(data, ['id', 'status', 'is_locked', 'is_pinned', 'updated_at', 'deleted_at'])
+    || !isUuid(data.id) || !isContentStatus(data.status) || typeof data.is_locked !== 'boolean'
+    || typeof data.is_pinned !== 'boolean' || !isIsoTimestamp(data.updated_at)
+    || (data.status === 'deleted' ? !isIsoTimestamp(data.deleted_at) : data.deleted_at !== null)) throw new Error('invalid post state')
+  return { id: data.id, status: data.status, isLocked: data.is_locked, isPinned: data.is_pinned, updatedAt: data.updated_at, deletedAt: data.deleted_at as string | null }
+}
+function mapModeratedCommentState(data: unknown): ModeratedCommentState {
+  if (!isRecord(data) || !hasExactKeys(data, ['id', 'post_id', 'status', 'updated_at', 'deleted_at'])
+    || !isUuid(data.id) || !isUuid(data.post_id) || data.id === data.post_id || !isContentStatus(data.status)
+    || !isIsoTimestamp(data.updated_at) || (data.status === 'deleted' ? !isIsoTimestamp(data.deleted_at) : data.deleted_at !== null)) {
+    throw new Error('invalid comment state')
+  }
+  return { id: data.id, postId: data.post_id, status: data.status, updatedAt: data.updated_at, deletedAt: data.deleted_at as string | null }
+}
+function mapModeratedTagState(data: unknown): ModeratedTagState {
+  if (!isRecord(data) || !hasExactKeys(data, ['id', 'slug', 'label', 'is_active', 'sort_order'])
+    || !isUuid(data.id) || !isBoundedString(data.slug, 100) || !isBoundedString(data.label, 200)
+    || typeof data.is_active !== 'boolean' || !isSafeCount(data.sort_order)) throw new Error('invalid tag state')
+  return { id: data.id, slug: data.slug, label: data.label, isActive: data.is_active, sortOrder: data.sort_order }
+}
+const sensitiveMetadataKey = /(?:password|passphrase|token|secret|credential|authorization|cookie|body|content|api[_-]?key|private[_-]?key|session|jwt)/i
+function isAuditMetadataValue(value: unknown, depth = 0, budget = { remaining: 200 }): value is ModerationAuditMetadataValue {
+  budget.remaining -= 1
+  if (budget.remaining < 0) return false
+  if (value === null || typeof value === 'boolean') return true
+  if (typeof value === 'string') return value.length <= 2000
+  if (typeof value === 'number') return Number.isSafeInteger(value)
+  if (depth >= 4) return false
+  if (Array.isArray(value)) return value.length <= 50 && value.every((item) => isAuditMetadataValue(item, depth + 1, budget))
+  if (!isRecord(value)) return false
+  const entries = Object.entries(value)
+  return entries.length <= 50 && entries.every(([key, item]) => key.length > 0 && key.length <= 100
+    && !sensitiveMetadataKey.test(key) && isAuditMetadataValue(item, depth + 1, budget))
+}
+function mapAuditMetadata(value: unknown): ModerationAuditMetadata {
+  if (!isRecord(value) || !isAuditMetadataValue(value)) throw new Error('invalid audit metadata')
+  return value
+}
+function mapModerationAuditItem(value: unknown): ModerationAuditItem {
+  if (!isRecord(value) || !hasExactKeys(value, ['id', 'actor', 'action', 'target_type', 'target_id', 'reason', 'metadata', 'created_at'])
+    || !isUuid(value.id) || !(value.actor === null || isRecord(value.actor)) || !isBoundedString(value.action, 200)
+    || !isOneOf(value.target_type, ['report', 'post', 'comment', 'tag']) || !isUuid(value.target_id)
+    || !(value.reason === null || isBoundedString(value.reason, 2000)) || !isIsoTimestamp(value.created_at)) throw new Error('invalid audit item')
+  return {
+    id: value.id, actor: value.actor === null ? null : mapModerationProfile(value.actor), action: value.action,
+    targetType: value.target_type, targetId: value.target_id, reason: value.reason,
+    metadata: mapAuditMetadata(value.metadata), createdAt: value.created_at,
+  }
+}
+function mapModerationAuditPage(data: unknown, limit: number, targetType?: ModerationAuditTargetType, targetId?: string): ModerationAuditPage {
+  if (!isRecord(data) || !hasExactKeys(data, ['items', 'has_more', 'next_cursor']) || !Array.isArray(data.items)
+    || data.items.length > limit || typeof data.has_more !== 'boolean'
+    || data.has_more !== (data.next_cursor !== null)) throw new Error('invalid audit page')
+  const items = data.items.map(mapModerationAuditItem)
+  if (targetType !== undefined && items.some(item => item.targetType !== targetType || item.targetId !== targetId)) {
+    throw new Error('mismatched audit target')
+  }
+  const nextCursor = data.next_cursor === null ? null : mapModerationCursor(data.next_cursor)
+  const last = items.at(-1)
+  if (nextCursor && (!last || nextCursor.id !== last.id || nextCursor.createdAt !== last.createdAt)) throw new Error('mismatched audit cursor')
+  return { items, hasMore: data.has_more, nextCursor }
+}
+
 export function createCommunityRepository(client: CommunityClient) {
   const publicAttachmentOrigin = new URL(client.publicAttachmentUrl('00000000-0000-4000-8000-000000000000')).origin
   return {
@@ -308,6 +465,75 @@ export function createCommunityRepository(client: CommunityClient) {
         if (!Array.isArray(data) || !data.every(isDetailTag)) throw new Error('invalid tag response')
         return data.map(mapTag)
       })
+    },
+    async isAdmin(): Promise<CommunityResult<boolean>> {
+      return execute(() => client.rpc('is_admin', {}), data => {
+        if (typeof data !== 'boolean') throw new Error('invalid admin response')
+        return data
+      })
+    },
+    async createReport(input: CreateReportInput): Promise<CommunityResult<string>> {
+      return execute(() => client.rpc('create_report_v2', {
+        p_target_type: input.targetType, p_target_id: input.targetId, p_reason_code: input.reasonCode,
+        p_detail: input.detail, p_idempotency_key: input.idempotencyKey,
+      }), mapMutationUuid)
+    },
+    async listAdminReports(input: AdminReportListInput): Promise<CommunityResult<AdminReportPage>> {
+      if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+        return failure({ code: 'validation', sourceCode: 'INVALID_REPORT_LIMIT', message: '입력 내용을 확인해 주세요.' })
+      }
+      return execute(() => client.rpc('list_moderation_reports_v1', {
+        p_status: input.status, p_limit: input.limit, p_cursor_created_at: input.cursor?.createdAt, p_cursor_id: input.cursor?.id,
+      }), data => mapAdminReportPage(data, input.limit))
+    },
+    async setReportStatus(input: SetReportStatusInput): Promise<CommunityResult<AdminReportItem>> {
+      return execute(() => client.rpc('set_report_status_v1', {
+        p_report_id: input.reportId, p_expected_status: input.expectedStatus, p_desired_status: input.desiredStatus,
+        p_reason: input.reason, p_idempotency_key: input.idempotencyKey,
+      }), data => {
+        const item = mapAdminReportItem(data)
+        if (item.id !== input.reportId) throw new Error('mismatched report response')
+        return item
+      })
+    },
+    async moderatePost(input: ModeratePostInput): Promise<CommunityResult<ModeratedPostState>> {
+      return execute(() => client.rpc('moderate_post_v1', {
+        p_post_id: input.postId, p_expected_status: input.expectedStatus, p_expected_locked: input.expectedLocked,
+        p_expected_pinned: input.expectedPinned, p_action: input.action, p_reason: input.reason, p_idempotency_key: input.idempotencyKey,
+      }), data => {
+        const state = mapModeratedPostState(data)
+        if (state.id !== input.postId) throw new Error('mismatched post response')
+        return state
+      })
+    },
+    async moderateComment(input: ModerateCommentInput): Promise<CommunityResult<ModeratedCommentState>> {
+      return execute(() => client.rpc('moderate_comment_v1', {
+        p_comment_id: input.commentId, p_expected_status: input.expectedStatus, p_action: input.action,
+        p_reason: input.reason, p_idempotency_key: input.idempotencyKey,
+      }), data => {
+        const state = mapModeratedCommentState(data)
+        if (state.id !== input.commentId) throw new Error('mismatched comment response')
+        return state
+      })
+    },
+    async setTagActive(input: SetTagActiveInput): Promise<CommunityResult<ModeratedTagState>> {
+      return execute(() => client.rpc('set_tag_active_v1', {
+        p_tag_id: input.tagId, p_expected_active: input.expectedActive, p_desired_active: input.desiredActive,
+        p_reason: input.reason, p_idempotency_key: input.idempotencyKey,
+      }), data => {
+        const state = mapModeratedTagState(data)
+        if (state.id !== input.tagId) throw new Error('mismatched tag response')
+        return state
+      })
+    },
+    async listModerationAuditLogs(input: ModerationAuditListInput): Promise<CommunityResult<ModerationAuditPage>> {
+      if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100 || ((input.targetType === undefined) !== (input.targetId === undefined))) {
+        return failure({ code: 'validation', sourceCode: 'INVALID_AUDIT_FILTER', message: '입력 내용을 확인해 주세요.' })
+      }
+      return execute(() => client.rpc('list_moderation_audit_logs_v1', {
+        p_limit: input.limit, p_cursor_created_at: input.cursor?.createdAt, p_cursor_id: input.cursor?.id,
+        p_target_type: input.targetType, p_target_id: input.targetId,
+      }), data => mapModerationAuditPage(data, input.limit, input.targetType, input.targetId))
     },
     async createComment(input: CreateCommentInput): Promise<CommunityResult<Extract<PublicComment, { kind:'published' }>>> {
       return execute(() => client.rpc('create_comment_v2', { p_post_id:input.postId, p_parent_id:input.parentId, p_body_markdown:input.bodyMarkdown, p_idempotency_key:input.idempotencyKey }), data => {

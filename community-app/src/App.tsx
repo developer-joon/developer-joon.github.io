@@ -18,6 +18,10 @@ const EditPostPage = lazy(async () => {
   const module = await import('./pages/EditPostPage')
   return { default: module.EditPostPage }
 })
+const AdminReportsPage = lazy(async () => {
+  const module = await import('./pages/AdminReportsPage')
+  return { default: module.AdminReportsPage }
+})
 
 const sharedStyles = `
   :root { color: #20201d; background: #f4f0e7; font-family: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif; font-synthesis: none; }
@@ -84,6 +88,9 @@ export function App({ pathname = window.location.pathname, search = window.locat
   }
   if (normalizedPathname === '/community/edit') {
     return <Suspense fallback={<div className="page" role="status">글 수정 화면을 준비하고 있습니다.</div>}><EditPostPage repository={repository ?? getCommunityRepository()} uploadRepository={uploadRepository ?? getUploadRepository()} search={search} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/admin/reports') {
+    return <Suspense fallback={<div className="page" role="status">신고 운영 데스크를 준비하고 있습니다.</div>}><AdminReportsPage repository={repository ?? getCommunityRepository()} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/auth/callback') {
     return <AuthCallbackPage client={authClient} search={search} navigate={onAuthCallbackNavigate} />

@@ -123,6 +123,55 @@ export interface UpdatePostInput {
   tagIds: string[]
 }
 
+export type ReportTargetType = 'post' | 'comment'
+export type ReportReasonCode = 'spam' | 'harassment' | 'harmful' | 'other'
+export type ReportStatus = 'open' | 'reviewing' | 'resolved' | 'dismissed'
+export type ReportStatusFilter = 'active' | ReportStatus | 'all'
+export type ModerationContentStatus = 'published' | 'hidden' | 'deleted'
+
+export interface ModerationCursor { createdAt: string; id: string }
+export interface CreateReportInput { targetType: ReportTargetType; targetId: string; reasonCode: ReportReasonCode; detail: string | null; idempotencyKey: string }
+export interface AdminReportListInput { status: ReportStatusFilter; limit: number; cursor?: ModerationCursor }
+export interface ModerationProfile { id: string; login: string; displayName: string | null; avatarUrl: string | null }
+export interface AvailableReportTarget {
+  type: ReportTargetType; id: string; available: true; postId: string; status: ModerationContentStatus
+  title: string; excerpt: string; isLocked: boolean; isPinned: boolean
+}
+export interface DanglingReportTarget { type: ReportTargetType; id: string; available: false }
+export type ReportTargetSummary = AvailableReportTarget | DanglingReportTarget
+export interface AdminReportItem {
+  id: string; status: ReportStatus; reasonCode: ReportReasonCode; detail: string | null; createdAt: string
+  resolvedAt: string | null; resolvedBy: string | null; reporter: ModerationProfile; target: ReportTargetSummary
+}
+export interface AdminReportPage { items: AdminReportItem[]; hasMore: boolean; nextCursor: ModerationCursor | null }
+export interface SetReportStatusInput { reportId: string; expectedStatus: ReportStatus; desiredStatus: ReportStatus; reason: string; idempotencyKey: string }
+
+export type PostModerationAction = 'hide' | 'restore' | 'lock' | 'unlock' | 'pin' | 'unpin' | 'delete'
+export type CommentModerationAction = 'hide' | 'restore' | 'delete'
+export interface ModeratePostInput {
+  postId: string; expectedStatus: ModerationContentStatus; expectedLocked: boolean; expectedPinned: boolean
+  action: PostModerationAction; reason: string; idempotencyKey: string
+}
+export interface ModeratedPostState {
+  id: string; status: ModerationContentStatus; isLocked: boolean; isPinned: boolean; updatedAt: string; deletedAt: string | null
+}
+export interface ModerateCommentInput { commentId: string; expectedStatus: ModerationContentStatus; action: CommentModerationAction; reason: string; idempotencyKey: string }
+export interface ModeratedCommentState { id: string; postId: string; status: ModerationContentStatus; updatedAt: string; deletedAt: string | null }
+export interface SetTagActiveInput { tagId: string; expectedActive: boolean; desiredActive: boolean; reason: string; idempotencyKey: string }
+export interface ModeratedTagState { id: string; slug: string; label: string; isActive: boolean; sortOrder: number }
+
+export type ModerationAuditTargetType = 'report' | 'post' | 'comment' | 'tag'
+export type ModerationAuditMetadataValue = string | number | boolean | null | ModerationAuditMetadataValue[] | { [key: string]: ModerationAuditMetadataValue }
+export type ModerationAuditMetadata = Record<string, ModerationAuditMetadataValue>
+export interface ModerationAuditListInput {
+  limit: number; cursor?: ModerationCursor; targetType?: ModerationAuditTargetType; targetId?: string
+}
+export interface ModerationAuditItem {
+  id: string; actor: ModerationProfile | null; action: string; targetType: ModerationAuditTargetType; targetId: string
+  reason: string | null; metadata: ModerationAuditMetadata; createdAt: string
+}
+export interface ModerationAuditPage { items: ModerationAuditItem[]; hasMore: boolean; nextCursor: ModerationCursor | null }
+
 export type CommunityErrorCode =
   | 'auth_required'
   | 'conflict'

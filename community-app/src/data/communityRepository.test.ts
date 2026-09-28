@@ -406,3 +406,216 @@ describe('community discussion interaction contract', () => {
     expect(await value.repository.setPostReaction(detailRow.id,true)).toMatchObject({ok:false,error:{sourceCode:'INVALID_RESPONSE'}})
   })
 })
+
+describe('community moderation strict contract', () => {
+  const reportId = '66000000-0000-4000-8000-000000000001'
+  const postId = '66000000-0000-4000-8000-000000000002'
+  const commentId = '66000000-0000-4000-8000-000000000003'
+  const actorId = '66000000-0000-4000-8000-000000000004'
+  const tagId = '66000000-0000-4000-8000-000000000005'
+  const createdAt = '2026-09-28T12:34:56.123Z'
+  const profile = { id: actorId, login: 'moderator', display_name: 'Moderator', avatar_url: null }
+  const postTarget = {
+    type: 'post', id: postId, available: true, post_id: postId, status: 'published', title: 'Post title', excerpt: 'bounded excerpt',
+    is_locked: false, is_pinned: true,
+  }
+  const report = {
+    id: reportId, status: 'open', reason_code: 'spam', detail: null, created_at: createdAt,
+    resolved_at: null, resolved_by: null, reporter: profile, target: postTarget,
+  }
+  const invalidResponse = {
+    ok: false,
+    error: { code: 'unknown', sourceCode: 'INVALID_RESPONSE', message: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' },
+  }
+
+  it('uses generated moderation RPC names and exact arguments', async () => {
+    const value = setup()
+    value.setMutationResponse({ data: true, error: null })
+    expect(await value.repository.isAdmin()).toEqual({ ok: true, data: true })
+    expect(value.calls.at(-1)).toEqual({ method: 'is_admin', args: {} })
+
+    value.setMutationResponse({ data: reportId, error: null })
+    expect(await value.repository.createReport({ targetType: 'comment', targetId: commentId, reasonCode: 'harmful', detail: null, idempotencyKey: 'report-key' }))
+      .toEqual({ ok: true, data: reportId })
+    expect(value.calls.at(-1)).toEqual({ method: 'create_report_v2', args: {
+      p_target_type: 'comment', p_target_id: commentId, p_reason_code: 'harmful', p_detail: null, p_idempotency_key: 'report-key',
+    } })
+
+    value.setMutationResponse({ data: report, error: null })
+    await value.repository.setReportStatus({ reportId, expectedStatus: 'open', desiredStatus: 'reviewing', reason: 'investigate', idempotencyKey: 'status-key' })
+    expect(value.calls.at(-1)).toEqual({ method: 'set_report_status_v1', args: {
+      p_report_id: reportId, p_expected_status: 'open', p_desired_status: 'reviewing', p_reason: 'investigate', p_idempotency_key: 'status-key',
+    } })
+
+    value.setMutationResponse({ data: { id: postId, status: 'hidden', is_locked: true, is_pinned: false, updated_at: createdAt, deleted_at: null }, error: null })
+    expect(await value.repository.moderatePost({ postId, expectedStatus: 'published', expectedLocked: true, expectedPinned: true, action: 'hide', reason: 'policy', idempotencyKey: 'post-key' }))
+      .toMatchObject({ ok: true, data: { id: postId, status: 'hidden', isLocked: true, isPinned: false } })
+    expect(value.calls.at(-1)).toEqual({ method: 'moderate_post_v1', args: {
+      p_post_id: postId, p_expected_status: 'published', p_expected_locked: true, p_expected_pinned: true,
+      p_action: 'hide', p_reason: 'policy', p_idempotency_key: 'post-key',
+    } })
+
+    value.setMutationResponse({ data: { id: commentId, post_id: postId, status: 'deleted', updated_at: createdAt, deleted_at: createdAt }, error: null })
+    expect(await value.repository.moderateComment({ commentId, expectedStatus: 'hidden', action: 'delete', reason: 'policy', idempotencyKey: 'comment-key' }))
+      .toMatchObject({ ok: true, data: { id: commentId, postId, status: 'deleted' } })
+    expect(value.calls.at(-1)).toEqual({ method: 'moderate_comment_v1', args: {
+      p_comment_id: commentId, p_expected_status: 'hidden', p_action: 'delete', p_reason: 'policy', p_idempotency_key: 'comment-key',
+    } })
+
+    value.setMutationResponse({ data: { id: tagId, slug: 'typescript', label: 'TypeScript', is_active: false, sort_order: 10 }, error: null })
+    expect(await value.repository.setTagActive({ tagId, expectedActive: true, desiredActive: false, reason: 'retire', idempotencyKey: 'tag-key' }))
+      .toMatchObject({ ok: true, data: { id: tagId, isActive: false, sortOrder: 10 } })
+    expect(value.calls.at(-1)).toEqual({ method: 'set_tag_active_v1', args: {
+      p_tag_id: tagId, p_expected_active: true, p_desired_active: false, p_reason: 'retire', p_idempotency_key: 'tag-key',
+    } })
+    expect(value.calls.some((call) => call.method === 'create_report')).toBe(false)
+  })
+
+  it('maps the strict report queue including a comment target and complete cursor', async () => {
+    const value = setup()
+    const cursor = { createdAt, id: reportId }
+    const commentReport = { ...report, target: { ...postTarget, type: 'comment', id: commentId, post_id: postId } }
+    value.setMutationResponse({ data: { items: [commentReport], has_more: true, next_cursor: { created_at: createdAt, id: reportId } }, error: null })
+    const result = await value.repository.listAdminReports({ status: 'active', limit: 25, cursor })
+    expect(value.calls.at(-1)).toEqual({ method: 'list_moderation_reports_v1', args: {
+      p_status: 'active', p_limit: 25, p_cursor_created_at: createdAt, p_cursor_id: reportId,
+    } })
+    expect(result).toEqual({ ok: true, data: {
+      items: [{
+        id: reportId, status: 'open', reasonCode: 'spam', detail: null, createdAt, resolvedAt: null, resolvedBy: null,
+        reporter: { id: actorId, login: 'moderator', displayName: 'Moderator', avatarUrl: null },
+        target: { type: 'comment', id: commentId, available: true, postId, status: 'published', title: 'Post title', excerpt: 'bounded excerpt', isLocked: false, isPinned: true },
+      }], hasMore: true, nextCursor: cursor,
+    } })
+  })
+
+  it('maps an exact dangling report target without unavailable content fields', async () => {
+    const value = setup()
+    value.setMutationResponse({ data: {
+      items: [{ ...report, target: { type: 'comment', id: commentId, available: false } }], has_more: false, next_cursor: null,
+    }, error: null })
+    expect(await value.repository.listAdminReports({ status: 'all', limit: 10 })).toMatchObject({ ok: true, data: {
+      items: [{ target: { type: 'comment', id: commentId, available: false } }],
+    } })
+  })
+
+  it.each([
+    { ...report, extra: true },
+    { ...report, id: 'bad' },
+    { ...report, status: 'pending' },
+    { ...report, created_at: '2026-02-29T00:00:00Z' },
+    { ...report, reporter: { ...profile, token: 'credential' } },
+    { ...report, target: { type: 'post', id: postId, available: false, post_id: postId } },
+    { ...report, target: { ...postTarget, post_id: commentId } },
+    { ...report, target: { ...postTarget, excerpt: 'x'.repeat(241) } },
+    { ...report, status: 'resolved', resolved_at: null, resolved_by: null },
+    { ...report, status: 'open', resolved_at: createdAt, resolved_by: actorId },
+  ])('rejects malformed report item %o', async (item) => {
+    const value = setup(); value.setMutationResponse({ data: { items: [item], has_more: false, next_cursor: null }, error: null })
+    expect(await value.repository.listAdminReports({ status: 'all', limit: 10 })).toEqual(invalidResponse)
+  })
+
+  it.each([
+    { items: [], has_more: false, next_cursor: null, extra: true },
+    { items: [], has_more: true, next_cursor: null },
+    { items: [], has_more: false, next_cursor: { created_at: createdAt, id: reportId } },
+    { items: [], has_more: true, next_cursor: { created_at: 'bad', id: reportId } },
+  ])('rejects malformed report page %o', async (data) => {
+    const value = setup(); value.setMutationResponse({ data, error: null })
+    expect(await value.repository.listAdminReports({ status: 'all', limit: 10 })).toEqual(invalidResponse)
+  })
+
+  it('rejects report and audit pages larger than the requested bound', async () => {
+    const value = setup()
+    value.setMutationResponse({ data: { items: [report, { ...report, id: actorId }], has_more: false, next_cursor: null }, error: null })
+    expect(await value.repository.listAdminReports({ status: 'all', limit: 1 })).toEqual(invalidResponse)
+
+    const audit = { id: reportId, actor: profile, action: 'report.created', target_type: 'report', target_id: reportId, reason: null, metadata: {}, created_at: createdAt }
+    value.setMutationResponse({ data: { items: [audit, { ...audit, id: actorId }], has_more: false, next_cursor: null }, error: null })
+    expect(await value.repository.listModerationAuditLogs({ limit: 1 })).toEqual(invalidResponse)
+  })
+
+  it.each([null, 0, 'true', {}, []])('accepts only a literal boolean is_admin result: %o', async (data) => {
+    const value = setup(); value.setMutationResponse({ data, error: null })
+    expect(await value.repository.isAdmin()).toEqual(invalidResponse)
+  })
+
+  it.each([null, 'not-a-uuid', {}, reportId.toUpperCase() + 'x'])('requires a strict UUID create_report_v2 result: %o', async (data) => {
+    const value = setup(); value.setMutationResponse({ data, error: null })
+    expect(await value.repository.createReport({ targetType: 'post', targetId: postId, reasonCode: 'spam', detail: null, idempotencyKey: 'key' })).toEqual(invalidResponse)
+  })
+
+  it.each([
+    { id: postId, status: 'bad', is_locked: false, is_pinned: false, updated_at: createdAt, deleted_at: null },
+    { id: postId, status: 'deleted', is_locked: false, is_pinned: false, updated_at: createdAt, deleted_at: null },
+    { id: postId, status: 'published', is_locked: false, is_pinned: false, updated_at: createdAt, deleted_at: createdAt },
+    { id: commentId, post_id: postId, status: 'deleted', updated_at: createdAt, deleted_at: null },
+    { id: tagId, slug: 'tag', label: 'Tag', is_active: true, sort_order: -1 },
+  ])('rejects malformed authoritative moderation state %o', async (data) => {
+    const value = setup(); value.setMutationResponse({ data, error: null })
+    const result = 'post_id' in data
+      ? await value.repository.moderateComment({ commentId, expectedStatus: 'published', action: 'delete', reason: 'r', idempotencyKey: 'k' })
+      : 'slug' in data
+        ? await value.repository.setTagActive({ tagId, expectedActive: false, desiredActive: true, reason: 'r', idempotencyKey: 'k' })
+        : await value.repository.moderatePost({ postId, expectedStatus: 'published', expectedLocked: false, expectedPinned: false, action: 'hide', reason: 'r', idempotencyKey: 'k' })
+    expect(result).toEqual(invalidResponse)
+  })
+
+  it('maps an exact bounded audit page and filters by a target pair', async () => {
+    const value = setup()
+    value.setMutationResponse({ data: { items: [{
+      id: reportId, actor: profile, action: 'report.status_changed', target_type: 'report', target_id: reportId,
+      reason: 'investigate', metadata: { from: 'open', to: 'reviewing' }, created_at: createdAt,
+    }], has_more: false, next_cursor: null }, error: null })
+    expect(await value.repository.listModerationAuditLogs({ limit: 20, targetType: 'report', targetId: reportId })).toEqual({ ok: true, data: {
+      items: [{ id: reportId, actor: { id: actorId, login: 'moderator', displayName: 'Moderator', avatarUrl: null }, action: 'report.status_changed', targetType: 'report', targetId: reportId, reason: 'investigate', metadata: { from: 'open', to: 'reviewing' }, createdAt }],
+      hasMore: false, nextCursor: null,
+    } })
+    expect(value.calls.at(-1)).toEqual({ method: 'list_moderation_audit_logs_v1', args: {
+      p_limit: 20, p_cursor_created_at: undefined, p_cursor_id: undefined, p_target_type: 'report', p_target_id: reportId,
+    } })
+  })
+
+  it('rejects authoritative moderation responses for a different requested target', async () => {
+    const value = setup()
+    value.setMutationResponse({ data: { ...report, id: actorId }, error: null })
+    expect(await value.repository.setReportStatus({ reportId, expectedStatus: 'open', desiredStatus: 'reviewing', reason: 'r', idempotencyKey: 'k1' })).toEqual(invalidResponse)
+
+    value.setMutationResponse({ data: { id: actorId, status: 'hidden', is_locked: false, is_pinned: false, updated_at: createdAt, deleted_at: null }, error: null })
+    expect(await value.repository.moderatePost({ postId, expectedStatus: 'published', expectedLocked: false, expectedPinned: false, action: 'hide', reason: 'r', idempotencyKey: 'k2' })).toEqual(invalidResponse)
+
+    value.setMutationResponse({ data: { id: actorId, post_id: postId, status: 'hidden', updated_at: createdAt, deleted_at: null }, error: null })
+    expect(await value.repository.moderateComment({ commentId, expectedStatus: 'published', action: 'hide', reason: 'r', idempotencyKey: 'k3' })).toEqual(invalidResponse)
+
+    value.setMutationResponse({ data: { id: actorId, slug: 'typescript', label: 'TypeScript', is_active: false, sort_order: 10 }, error: null })
+    expect(await value.repository.setTagActive({ tagId, expectedActive: true, desiredActive: false, reason: 'r', idempotencyKey: 'k4' })).toEqual(invalidResponse)
+
+    value.setMutationResponse({ data: { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: {}, created_at: createdAt }], has_more: false, next_cursor: null }, error: null })
+    expect(await value.repository.listModerationAuditLogs({ limit: 20, targetType: 'report', targetId: reportId })).toEqual(invalidResponse)
+  })
+
+  it.each([
+    null,
+    { items: [], has_more: false, next_cursor: null, extra: true },
+    { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: [], created_at: createdAt }], has_more: false, next_cursor: null },
+    { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: { password: 'secret' }, created_at: createdAt }], has_more: false, next_cursor: null },
+    { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: { body_markdown: 'private' }, created_at: createdAt }], has_more: false, next_cursor: null },
+    { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: { api_key: 'secret' }, created_at: createdAt }], has_more: false, next_cursor: null },
+    { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: { private_key: 'secret' }, created_at: createdAt }], has_more: false, next_cursor: null },
+    { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: { session: 'secret' }, created_at: createdAt }], has_more: false, next_cursor: null },
+    { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: { jwt: 'secret' }, created_at: createdAt }], has_more: false, next_cursor: null },
+    { items: [{ id: reportId, actor: profile, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: { groups: Array.from({ length: 5 }, () => Array.from({ length: 50 }, () => 1)) }, created_at: createdAt }], has_more: false, next_cursor: null },
+    { items: [{ id: reportId, actor: { ...profile, access_token: 'secret' }, action: 'x', target_type: 'post', target_id: postId, reason: null, metadata: {}, created_at: createdAt }], has_more: false, next_cursor: null },
+  ])('rejects malformed or sensitive audit payload %o', async (data) => {
+    const value = setup(); value.setMutationResponse({ data, error: null })
+    expect(await value.repository.listModerationAuditLogs({ limit: 20 })).toEqual(invalidResponse)
+  })
+
+  it('maps serialization failures to a retryable Korean conflict message', async () => {
+    const value = setup(); value.setMutationResponse({ data: null, error: { code: '40001', message: 'secret state changed' } })
+    expect(await value.repository.setTagActive({ tagId, expectedActive: true, desiredActive: false, reason: 'r', idempotencyKey: 'k' })).toEqual({
+      ok: false,
+      error: { code: 'conflict', sourceCode: '40001', message: '상태가 변경되었습니다. 새로고침 후 다시 시도해 주세요.' },
+    })
+  })
+})

@@ -1,3 +1,4 @@
+
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
 export type Database = {
@@ -358,6 +359,9 @@ isOneToOne: true
 "create_report":
 { Args: { "p_detail": string,"p_idempotency_key": string,"p_reason_code": string,"p_target_id": string,"p_target_type": string }; Returns: string
                            },
+"create_report_v2":
+{ Args: { "p_detail": string,"p_idempotency_key": string,"p_reason_code": string,"p_target_id": string,"p_target_type": string }; Returns: string
+                           },
 "fail_attachment_upload":
 { Args: { "p_attachment_id": string,"p_storage_path": string }; Returns: boolean
                            },
@@ -375,6 +379,12 @@ isOneToOne: true
 "is_admin":
 { Args: Record<PropertyKey, never>; Returns: boolean
                            },
+"list_moderation_audit_logs_v1":
+{ Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_limit"?: number,"p_target_id"?: string,"p_target_type"?: string }; Returns: Json
+                           },
+"list_moderation_reports_v1":
+{ Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_limit"?: number,"p_status"?: string }; Returns: Json
+                           },
 "list_public_post_comments":
 { Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_reply"?: boolean,"p_cursor_root_created_at"?: string,"p_cursor_root_id"?: string,"p_limit"?: number,"p_post_id": string }; Returns: Json
                            },
@@ -385,6 +395,12 @@ isOneToOne: true
 { Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_pinned"?: boolean,"p_cursor_rank"?: number,"p_cursor_search_rank"?: number,"p_limit": number,"p_search"?: string,"p_sort": string,"p_tag_id"?: string }; Returns: {
               "author_avatar_url": string,"author_display_name": string,"author_id": string,"author_login": string,"comment_count": number,"created_at": string,"excerpt": string,"id": string,"is_locked": boolean,"is_pinned": boolean,"popularity_score": number,"rank_key": number,"reaction_count": number,"row_number": number,"search_rank": number,"tags": Json,"title": string,"updated_at": string
             }[]
+                           },
+"moderate_comment_v1":
+{ Args: { "p_action": string,"p_comment_id": string,"p_expected_status": string,"p_idempotency_key": string,"p_reason": string }; Returns: Json
+                           },
+"moderate_post_v1":
+{ Args: { "p_action": string,"p_expected_locked": boolean,"p_expected_pinned": boolean,"p_expected_status": string,"p_idempotency_key": string,"p_post_id": string,"p_reason": string }; Returns: Json
                            },
 "prepare_attachment_cleanup":
 { Args: { "p_attachment_id": string,"p_claim_token": string,"p_storage_path": string }; Returns: boolean
@@ -408,6 +424,12 @@ isOneToOne: true
                            },
 "set_post_reaction":
 { Args: { "p_post_id": string,"p_reacted": boolean }; Returns: Json
+                           },
+"set_report_status_v1":
+{ Args: { "p_desired_status": string,"p_expected_status": string,"p_idempotency_key": string,"p_reason": string,"p_report_id": string }; Returns: Json
+                           },
+"set_tag_active_v1":
+{ Args: { "p_desired_active": boolean,"p_expected_active": boolean,"p_idempotency_key": string,"p_reason": string,"p_tag_id": string }; Returns: Json
                            },
 "soft_delete_comment":
 { Args: { "p_comment_id": string }; Returns: string

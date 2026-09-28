@@ -1,6 +1,6 @@
 begin;
 
-select plan(26);
+select plan(39);
 
 create extension if not exists dblink with schema extensions;
 
@@ -9,6 +9,10 @@ create temporary table rpc_fixture (
   user_two_id uuid not null,
   post_id uuid not null,
   parent_id uuid not null,
+  moderation_comment_id uuid not null,
+  cas_report_id uuid not null,
+  replay_report_id uuid not null,
+  lock_report_id uuid not null,
   github_user_id bigint not null,
   github_user_two_id bigint not null,
   connection_string text not null
@@ -39,7 +43,9 @@ with random_prefixes as materialized (
     substring(replace(gen_random_uuid()::text,'-','') for 28) as user_one_prefix,
     substring(replace(gen_random_uuid()::text,'-','') for 28) as user_two_prefix
 )
-select (user_one_prefix||'0001')::uuid, (user_two_prefix||'0002')::uuid, gen_random_uuid(), gen_random_uuid(),
+select (user_one_prefix||'0001')::uuid, (user_two_prefix||'0002')::uuid,
+       gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
+       gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
        2000000000 + floor(random()*500000000)::bigint,
        2500000000 + floor(random()*500000000)::bigint,
        format('hostaddr=%s port=%s dbname=%L user=%L password=postgres options=%L',
@@ -63,15 +69,28 @@ select extensions.dblink_exec('rpc_setup', format($sql$
   insert into public.profiles(id,github_user_id,login) values
     (%L,%s,%L),
     (%L,%s,%L);
+  insert into public.user_roles(user_id,role) values(%L,'admin');
   insert into public.posts(id,author_id,title,body_markdown) values(%L,%L,'RPC race post','RPC race body');
-  insert into public.comments(id,post_id,author_id,body_markdown) values(%L,%L,%L,'RPC race parent');
+  insert into public.comments(id,post_id,author_id,body_markdown) values
+    (%L,%L,%L,'RPC race parent'),
+    (%L,%L,%L,'RPC moderation lock target');
+  insert into public.reports(id,reporter_id,target_type,target_id,reason_code) values
+    (%L,%L,'post',%L,'spam'),
+    (%L,%L,'comment',%L,'spam'),
+    (%L,%L,'comment',%L,'spam');
   insert into public.rate_limit_events(user_id,action,idempotency_key)
     select %L,'post.create','saturated-'||g from generate_series(1,5) g
 $sql$, user_id, user_id::text||'@rpc-concurrency.example.test',
       user_two_id, user_two_id::text||'@rpc-concurrency.example.test',
       user_id, github_user_id, 'rpc-'||substring(replace(user_id::text,'-','') for 20),
-      user_two_id, github_user_two_id, 'rpc-'||substring(replace(user_two_id::text,'-','') for 20), post_id, user_id,
-      parent_id, post_id, user_id, user_id)) from rpc_fixture;
+      user_two_id, github_user_two_id, 'rpc-'||substring(replace(user_two_id::text,'-','') for 20),
+      user_two_id, post_id, user_id,
+      parent_id, post_id, user_id,
+      moderation_comment_id, post_id, user_id,
+      cas_report_id, user_id, post_id,
+      replay_report_id, user_id, parent_id,
+      lock_report_id, user_id, moderation_comment_id,
+      user_id)) from rpc_fixture;
 
 -- Every RPC rejects stale transaction snapshots before authentication, rate-limit,
 -- or mutation logic. The actor is deliberately already rate-limited.
@@ -218,14 +237,101 @@ select is((select count(*)::integer from extensions.dblink((select connection_st
 select extensions.dblink_disconnect('rpc_rate_one');
 select extensions.dblink_disconnect('rpc_rate_two');
 
+-- Distinct idempotency keys racing from the same expected report state are
+-- serialized by post->report row locks; exactly one CAS mutation commits.
+select extensions.dblink_connect('rpc_report_cas_one',connection_string) from rpc_fixture;
+select extensions.dblink_connect('rpc_report_cas_two',connection_string) from rpc_fixture;
+select extensions.dblink_exec('rpc_report_cas_one','begin');
+select extensions.dblink_exec('rpc_report_cas_one','set local role authenticated');
+select extensions.dblink_exec('rpc_report_cas_one',format('set local request.jwt.claim.sub=%L',user_two_id)) from rpc_fixture;
+select extensions.dblink_exec('rpc_report_cas_one',format($sql$do $do$ begin perform public.set_report_status_v1(%L,'open','reviewing','cas winner','report-cas-one'); end $do$$sql$,cas_report_id)) from rpc_fixture;
+select extensions.dblink_exec('rpc_report_cas_two','begin');
+select extensions.dblink_exec('rpc_report_cas_two','set local role authenticated');
+select extensions.dblink_exec('rpc_report_cas_two',format('set local request.jwt.claim.sub=%L',user_two_id)) from rpc_fixture;
+select extensions.dblink_send_query('rpc_report_cas_two',format($sql$select public.set_report_status_v1(%L,'open','dismissed','cas loser','report-cas-two')::text$sql$,cas_report_id)) from rpc_fixture;
+select is(extensions.dblink_is_busy('rpc_report_cas_two'),1,'distinct-key report CAS loser waits behind winner row locks');
+select extensions.dblink_exec('rpc_report_cas_one','commit');
+select pg_temp.collect_rpc_error('rpc_report_cas_two');
+select is((select sqlstate from rpc_remote_errors where connection_name='rpc_report_cas_two'),'40001','distinct-key report CAS permits exactly one success');
+select extensions.dblink_exec('rpc_report_cas_two','rollback');
+select is(result.status,'reviewing','distinct-key report CAS preserves the winning state')
+from rpc_fixture f cross join lateral extensions.dblink(f.connection_string,format('select status from public.reports where id=%L',f.cas_report_id)) as result(status text);
+select is((select count(*)::integer from extensions.dblink((select connection_string from rpc_fixture),format($sql$select id from public.moderation_audit_logs where action='report.status_changed' and target_id=%L$sql$,(select cas_report_id from rpc_fixture))) as result(id uuid)),1,'distinct-key report CAS writes one audit');
+select is((select count(*)::integer from extensions.dblink((select connection_string from rpc_fixture),format($sql$select id from public.idempotency_keys where operation='report.status.v1' and resource_id=%L$sql$,(select cas_report_id from rpc_fixture))) as result(id uuid)),1,'distinct-key report CAS stores one successful idempotency row');
+select extensions.dblink_disconnect('rpc_report_cas_one');
+select extensions.dblink_disconnect('rpc_report_cas_two');
+
+-- Same-key concurrent replay waits on the advisory lock, then returns the
+-- first committed result without a second mutation or audit.
+select extensions.dblink_connect('rpc_report_replay_one',connection_string) from rpc_fixture;
+select extensions.dblink_connect('rpc_report_replay_two',connection_string) from rpc_fixture;
+select extensions.dblink_exec('rpc_report_replay_one','begin');
+select extensions.dblink_exec('rpc_report_replay_one','set local role authenticated');
+select extensions.dblink_exec('rpc_report_replay_one',format('set local request.jwt.claim.sub=%L',user_two_id)) from rpc_fixture;
+select extensions.dblink_exec('rpc_report_replay_one',format($sql$do $do$ begin perform public.set_report_status_v1(%L,'open','reviewing','same replay','report-replay-same'); end $do$$sql$,replay_report_id)) from rpc_fixture;
+select extensions.dblink_exec('rpc_report_replay_two','begin');
+select extensions.dblink_exec('rpc_report_replay_two','set local role authenticated');
+select extensions.dblink_exec('rpc_report_replay_two',format('set local request.jwt.claim.sub=%L',user_two_id)) from rpc_fixture;
+select extensions.dblink_send_query('rpc_report_replay_two',format($sql$select public.set_report_status_v1(%L,'open','reviewing','same replay','report-replay-same')::text$sql$,replay_report_id)) from rpc_fixture;
+select is(extensions.dblink_is_busy('rpc_report_replay_two'),1,'same-key report replay waits for the first transaction');
+select extensions.dblink_exec('rpc_report_replay_one','commit');
+select pg_temp.collect_rpc_error('rpc_report_replay_two');
+select is((select sqlstate from rpc_remote_errors where connection_name='rpc_report_replay_two'),'00000','same-key report replay succeeds after winner commit');
+select extensions.dblink_exec('rpc_report_replay_two','commit');
+select is((select count(*)::integer from extensions.dblink((select connection_string from rpc_fixture),format($sql$select id from public.moderation_audit_logs where action='report.status_changed' and target_id=%L$sql$,(select replay_report_id from rpc_fixture))) as result(id uuid)),1,'same-key report replay writes one audit');
+select is((select count(*)::integer from extensions.dblink((select connection_string from rpc_fixture),format($sql$select id from public.idempotency_keys where operation='report.status.v1' and resource_id=%L$sql$,(select replay_report_id from rpc_fixture))) as result(id uuid)),1,'same-key report replay stores one idempotency row');
+select extensions.dblink_disconnect('rpc_report_replay_one');
+select extensions.dblink_disconnect('rpc_report_replay_two');
+
+-- Comment moderation and comment-target report moderation both acquire
+-- post->comment before report, so the waiter completes rather than deadlocking.
+select extensions.dblink_connect('rpc_comment_mod',connection_string) from rpc_fixture;
+select extensions.dblink_connect('rpc_report_lock',connection_string) from rpc_fixture;
+select extensions.dblink_exec('rpc_comment_mod','begin');
+select extensions.dblink_exec('rpc_comment_mod','set local role authenticated');
+select extensions.dblink_exec('rpc_comment_mod',format('set local request.jwt.claim.sub=%L',user_two_id)) from rpc_fixture;
+select extensions.dblink_exec('rpc_comment_mod',format($sql$do $do$ begin perform public.moderate_comment_v1(%L,'published','hide','lock ordering','comment-lock-order'); end $do$$sql$,moderation_comment_id)) from rpc_fixture;
+select extensions.dblink_exec('rpc_report_lock','begin');
+select extensions.dblink_exec('rpc_report_lock','set local role authenticated');
+select extensions.dblink_exec('rpc_report_lock',format('set local request.jwt.claim.sub=%L',user_two_id)) from rpc_fixture;
+select extensions.dblink_send_query('rpc_report_lock',format($sql$select public.set_report_status_v1(%L,'open','reviewing','lock ordering','report-lock-order')::text$sql$,lock_report_id)) from rpc_fixture;
+select is(extensions.dblink_is_busy('rpc_report_lock'),1,'comment-target report moderation waits behind post-comment moderation locks');
+select extensions.dblink_exec('rpc_comment_mod','commit');
+select pg_temp.collect_rpc_error('rpc_report_lock');
+select is((select sqlstate from rpc_remote_errors where connection_name='rpc_report_lock'),'00000','post-comment-report lock ordering completes without deadlock');
+select extensions.dblink_exec('rpc_report_lock','commit');
+select is(result.status,'reviewing','ordered report waiter commits its transition')
+from rpc_fixture f cross join lateral extensions.dblink(f.connection_string,format('select status from public.reports where id=%L',f.lock_report_id)) as result(status text);
+select extensions.dblink_disconnect('rpc_comment_mod');
+select extensions.dblink_disconnect('rpc_report_lock');
+
+-- Remote commits are outside this pgTAP transaction. Remove only rows owned by
+-- this randomized fixture, with the append-only trigger disabled and restored
+-- in the same implicit remote transaction.
+select extensions.dblink_exec('rpc_setup',format($sql$
+  alter table public.moderation_audit_logs disable trigger moderation_audit_logs_append_only_row;
+  delete from public.moderation_audit_logs where actor_id in (%L,%L);
+  alter table public.moderation_audit_logs enable trigger moderation_audit_logs_append_only_row
+$sql$,user_id,user_two_id)) from rpc_fixture;
+
+select is((
+  select count(*)::integer
+  from extensions.dblink(
+    (select connection_string from rpc_fixture),
+    format('select id from public.moderation_audit_logs where actor_id in (%L,%L)',
+      (select user_id from rpc_fixture),(select user_two_id from rpc_fixture))
+  ) as result(id uuid)
+),0,'concurrency fixture leaves no committed moderation audit rows');
+
 select extensions.dblink_exec('rpc_setup',format($sql$
   delete from public.rate_limit_events where user_id in (%L,%L);
   update public.rate_limit_rules set max_requests=5 where action='post.create' and window_seconds=600;
   delete from public.idempotency_keys where user_id in (%L,%L);
+  delete from public.reports where id in (%L,%L,%L);
   delete from public.posts where author_id=%L;
   delete from public.profiles where id in (%L,%L);
   delete from auth.users where id in (%L,%L)
-$sql$,user_id,user_two_id,user_id,user_two_id,user_id,user_id,user_two_id,user_id,user_two_id)) from rpc_fixture;
+$sql$,user_id,user_two_id,user_id,user_two_id,cas_report_id,replay_report_id,lock_report_id,user_id,user_id,user_two_id,user_id,user_two_id)) from rpc_fixture;
 select extensions.dblink_disconnect('rpc_setup');
 
 select * from finish();

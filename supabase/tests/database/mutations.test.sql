@@ -43,7 +43,7 @@ select ok(not has_function_privilege('public','private.normalize_duplicate_body(
 select ok((p.prosecdef and p.proconfig=array['search_path=""']), signature || ' is hardened')
 from unnest(array['public.create_post(text,text,uuid[],text)','public.update_post(uuid,text,text,uuid[])','public.soft_delete_post(uuid)','public.create_comment(uuid,uuid,text,text)','public.update_comment(uuid,text)','public.soft_delete_comment(uuid)','public.toggle_post_reaction(uuid)','public.toggle_comment_reaction(uuid)','public.create_report(text,uuid,text,text,text)']) signature
 join pg_proc p on p.oid=signature::regprocedure;
-select ok(not has_function_privilege('public', signature, 'EXECUTE') and not has_function_privilege('anon', signature, 'EXECUTE') and has_function_privilege('authenticated', signature, 'EXECUTE')=(signature not like 'public.toggle_%'), signature || ' has exact execution grants')
+select ok(not has_function_privilege('public', signature, 'EXECUTE') and not has_function_privilege('anon', signature, 'EXECUTE') and has_function_privilege('authenticated', signature, 'EXECUTE')=(signature not like 'public.toggle_%' and signature not like 'public.create_report(%'), signature || ' has exact execution grants')
 from unnest(array['public.create_post(text,text,uuid[],text)','public.update_post(uuid,text,text,uuid[])','public.soft_delete_post(uuid)','public.create_comment(uuid,uuid,text,text)','public.update_comment(uuid,text)','public.soft_delete_comment(uuid)','public.toggle_post_reaction(uuid)','public.toggle_comment_reaction(uuid)','public.create_report(text,uuid,text,text,text)']) signature;
 select ok(p.prosrc ~ 'begin[[:space:]]+perform private.require_read_committed\(\);', signature || ' starts with the READ COMMITTED guard')
 from unnest(array['public.create_post(text,text,uuid[],text)','public.update_post(uuid,text,text,uuid[])','public.soft_delete_post(uuid)','public.create_comment(uuid,uuid,text,text)','public.update_comment(uuid,text)','public.soft_delete_comment(uuid)','public.toggle_post_reaction(uuid)','public.toggle_comment_reaction(uuid)','public.create_report(text,uuid,text,text,text)']) signature
@@ -142,21 +142,21 @@ select is(public.set_comment_reaction('a4000000-0000-0000-0000-000000000001',fal
 select throws_like($$select public.set_comment_reaction('a4000000-0000-0000-0000-000000000002',true)$$, '%comment not found or visible%', 'hidden comment reaction is rejected');
 
 -- Reports derive reporter identity, validate target visibility, and preserve uniqueness.
-insert into mutation_results(name,id) select 'report-first', public.create_report('post', 'a2000000-0000-0000-0000-000000000001', 'spam', 'details', 'report-key-1');
+insert into mutation_results(name,id) select 'report-first', public.create_report_v2('post', 'a2000000-0000-0000-0000-000000000001', 'spam', 'details', 'report-key-1');
 reset role;
 select is((select reporter_id from public.reports where id=(select id from mutation_results where name='report-first')), 'a1000000-0000-0000-0000-000000000001'::uuid, 'reporter derives from auth.uid');
 set local role authenticated;
 select set_config('request.jwt.claim.sub', 'a1000000-0000-0000-0000-000000000001', true);
-select is(public.create_report('post', 'a2000000-0000-0000-0000-000000000001', 'spam', 'details', 'report-key-1'), (select id from mutation_results where name='report-first'), 'report idempotency replay returns same report');
+select is(public.create_report_v2('post', 'a2000000-0000-0000-0000-000000000001', 'spam', 'details', 'report-key-1'), (select id from mutation_results where name='report-first'), 'report idempotency replay returns same report');
 reset role;
 update public.posts set status='hidden' where id='a2000000-0000-0000-0000-000000000001';
 set local role authenticated;
-select is(public.create_report('post', 'a2000000-0000-0000-0000-000000000001', 'spam', 'details', ' report-key-1 '), (select id from mutation_results where name='report-first'), 'report replay precedes changed target visibility validation');
+select is(public.create_report_v2('post', 'a2000000-0000-0000-0000-000000000001', 'spam', 'details', ' report-key-1 '), (select id from mutation_results where name='report-first'), 'report replay precedes changed target visibility validation');
 reset role;
 update public.posts set status='published' where id='a2000000-0000-0000-0000-000000000001';
 set local role authenticated;
-select throws_like($$select public.create_report('post', 'a2000000-0000-0000-0000-000000000001', 'other', null, 'report-key-2')$$, '%open report already exists%', 'duplicate open report is rejected cleanly');
-select throws_like($$select public.create_report('post', 'a2000000-0000-0000-0000-000000000002', 'spam', null, 'report-hidden')$$, '%report target not found or visible%', 'hidden report target is rejected');
+select throws_like($$select public.create_report_v2('post', 'a2000000-0000-0000-0000-000000000001', 'spam', null, 'report-key-2')$$, '%open report already exists%', 'duplicate open report is rejected cleanly');
+select throws_like($$select public.create_report_v2('post', 'a2000000-0000-0000-0000-000000000002', 'spam', null, 'report-hidden')$$, '%report target not found or visible%', 'hidden report target is rejected');
 select throws_like($$insert into public.reports(reporter_id,target_type,target_id,reason_code) values ('a1000000-0000-0000-0000-000000000002','post','a2000000-0000-0000-0000-000000000001','forged')$$, '%permission denied%', 'reporter cannot be supplied through direct insert');
 
 -- Tighten one configured rule and prove successful distinct creates are counted,

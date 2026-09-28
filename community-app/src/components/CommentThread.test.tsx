@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import type { CommunityRepository } from '../data/communityRepository'
 import type { PublicComment } from '../types/community'
 import { CommentThread } from './CommentThread'
 
@@ -28,5 +29,29 @@ describe('CommentThread', () => {
 
     expect(screen.getByRole('button', { name: '로그인하고 반응 남기기, 현재 1개' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '로그인하고 답글 작성' })).toBeInTheDocument()
+  })
+
+  it('offers reporting for every published comment but not hidden or deleted placeholders', () => {
+    const hidden: PublicComment = { kind:'hidden', id:'56000000-0000-4000-8000-000000000022', parentId:null }
+    const deleted: PublicComment = { kind:'deleted', id:'56000000-0000-4000-8000-000000000023', parentId:null }
+    render(
+      <CommentThread
+        comments={[root, reply, hidden, deleted]}
+        canMutate
+        onReply={vi.fn()}
+        onReact={vi.fn()}
+        reporting={{
+          repository: { createReport: vi.fn() } as Pick<CommunityRepository, 'createReport'>,
+          actorId: 'actor-a',
+          currentPath: '/community/post?id=post#discussion',
+          authLoading: false,
+          authPending: false,
+        }}
+      />,
+    )
+
+    expect(screen.getAllByRole('button', { name: '댓글 신고하기' })).toHaveLength(2)
+    expect(screen.getByText('숨김 처리된 댓글입니다.').closest('article')).not.toHaveTextContent('신고')
+    expect(screen.getByText('삭제된 댓글입니다.').closest('article')).not.toHaveTextContent('신고')
   })
 })

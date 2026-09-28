@@ -9,6 +9,7 @@ import { CommentThread } from '../components/CommentThread'
 import { MarkdownContent } from '../components/MarkdownContent'
 import { PostMeta } from '../components/PostMeta'
 import { ReactionButton } from '../components/ReactionButton'
+import { ReportDialog } from '../components/ReportDialog'
 
 const commentPageSize = 50
 
@@ -302,6 +303,17 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
                   loginRequired={!auth.user}
                   onToggle={() => setPostReactionDesired(!(postReaction?.reacted ?? read.post.viewerReacted))}
                 />
+                <ReportDialog
+                  repository={repository}
+                  targetType="post"
+                  targetId={read.post.id}
+                  targetLabel={`게시글 “${read.post.title}”`}
+                  actorId={auth.user?.id ?? null}
+                  currentPath={currentPath}
+                  authLoading={auth.loading}
+                  authPending={auth.pending}
+                  onLogin={login}
+                />
                 {postReactionError && (
                   <div role="alert" aria-label="게시글 반응 오류">
                     <p>{postReactionError}</p>
@@ -352,6 +364,13 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
               onReply={(parentId, intent) => createComment(parentId, intent)}
               onReact={reactToComment}
               onLogin={login}
+              reporting={{
+                repository,
+                actorId: auth.user?.id ?? null,
+                currentPath,
+                authLoading: auth.loading,
+                authPending: auth.pending,
+              }}
             />
           )}
           {commentsLoading && comments.length === 0 && <p className="comments-status" role="status">댓글을 불러오고 있습니다.</p>}
