@@ -3,8 +3,7 @@
 .bundle
 .jekyll-cache
 .sass-cache
-_site
-_site-docker
+/_site*
 **/.env*
 supabase/.temp
 supabase/.branches

@@ -324,6 +324,33 @@ describe('PostDetailPage interactions', () => {
     expect(await screen.findByRole('button',{name:'반응 취소, 현재 11개'})).toBeEnabled()
   })
 
+  it('rolls back an orphaned optimistic post reaction when the route context changes', async () => {
+    let resolveReaction!: (value: CommunityResult<ReactionState>) => void
+    const pendingReaction = new Promise<CommunityResult<ReactionState>>((done) => { resolveReaction = done })
+    const setPostReaction = vi.fn(() => pendingReaction)
+    const repo = repository(() => Promise.resolve(success(published)), undefined, { setPostReaction })
+    const auth = authValue({ user: { id: 'user-1' } as AuthContextValue['user'] })
+    const { rerender } = render(
+      <AuthContext.Provider value={auth}>
+        <PostDetailPage repository={repo} search={`?id=${postId}`} currentPath="/community/post" />
+      </AuthContext.Provider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '반응 남기기, 현재 7개' }))
+    expect(screen.getByRole('button', { name: '반응 취소, 현재 8개' })).toHaveAttribute('aria-busy', 'true')
+
+    rerender(
+      <AuthContext.Provider value={auth}>
+        <PostDetailPage repository={repo} search={`?id=${postId}`} currentPath="/community/post?from=search" />
+      </AuthContext.Provider>,
+    )
+
+    expect(await screen.findByRole('button', { name: '반응 남기기, 현재 7개' })).toBeEnabled()
+    resolveReaction(success({ reacted: true, reactionCount: 11 }))
+    await pendingReaction
+    expect(screen.getByRole('button', { name: '반응 남기기, 현재 7개' })).toBeEnabled()
+  })
+
   it('dispatches at most one comment reaction while the first request is pending', async () => {
     let resolve!: (value: CommunityResult<ReactionState>) => void
     const pendingReaction = new Promise<CommunityResult<ReactionState>>((done) => { resolve = done })

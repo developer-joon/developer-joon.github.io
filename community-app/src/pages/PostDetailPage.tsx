@@ -67,6 +67,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
   const commentRequestGeneration = useRef(0)
   const mutationGeneration = useRef(0)
   const postReactionInvoking = useRef(false)
+  const postReactionRollback = useRef<{ reacted: boolean; count: number } | null>(null)
   const commentReactionInvoking = useRef(new Set<string>())
   const locallyCreatedCommentIds = useRef(new Set<string>())
   const commentsRef = useRef<PublicComment[]>([])
@@ -76,7 +77,9 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
 
   useEffect(() => {
     mutationGeneration.current += 1
+    if (postReactionInvoking.current) setPostReaction(postReactionRollback.current)
     postReactionInvoking.current = false
+    postReactionRollback.current = null
     commentReactionInvoking.current.clear()
     setPostReactionPending(false)
     setPostReactionError(null)
@@ -100,6 +103,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     commentRequestGeneration.current += 1
     let active = true
     setRead(null)
+    setPostReaction(null)
     setPostError(null)
     setComments([])
     commentsRef.current = []
@@ -112,8 +116,14 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     locallyCreatedCommentIds.current = new Set()
     void repository.getPost(postId).then((result) => {
       if (!active) return
-      if (result.ok) setRead(result.data)
-      else setPostError(result.error.message)
+      if (result.ok) {
+        setPostReaction(result.data.kind === 'published'
+          ? { reacted: result.data.post.viewerReacted, count: result.data.post.reactionCount }
+          : null)
+        setRead(result.data)
+      } else {
+        setPostError(result.error.message)
+      }
     })
     return () => { active = false }
   }, [attempt, auth.user?.id, postId, repository])
@@ -138,14 +148,6 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     return () => { active = false }
   }, [postId, read, repository])
 
-  useEffect(() => {
-    if (read?.kind === 'published') {
-      setPostReaction({ reacted: read.post.viewerReacted, count: read.post.reactionCount })
-    } else {
-      setPostReaction(null)
-    }
-  }, [read])
-
   function login() {
     void auth.signInWithGitHub(currentPath)
   }
@@ -155,6 +157,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     if (!auth.user) { login(); return }
     const previous = postReaction ?? { reacted: read.post.viewerReacted, count: read.post.reactionCount }
     const generation = mutationGeneration.current
+    postReactionRollback.current = previous
     postReactionInvoking.current = true
     setPostReactionPending(true)
     setPostReactionError(null)
@@ -171,6 +174,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
       }
       setPostReactionPending(false)
       postReactionInvoking.current = false
+      postReactionRollback.current = null
     })
   }
 

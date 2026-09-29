@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -50,6 +50,10 @@ test('excludes local credentials and Supabase CLI state from the Docker build co
   for (const excluded of ['**/.env*', 'supabase/.temp', 'supabase/.branches']) {
     assert.ok(dockerignore.includes(excluded), `${excluded} is not excluded from the Docker build context`)
   }
+  assert.ok(
+    dockerignore.includes('/_site*'),
+    'every root-level generated site export must be excluded from the Docker build context',
+  )
 })
 
 test('build helper pins the output platform', async () => {
@@ -94,6 +98,52 @@ test('propagates one deterministic build timestamp through local, Docker, and CI
   assert.match(dockerfile, /SITE_BUILD_TIME=\$SITE_BUILD_TIME/)
   assert.match(workflow, /SITE_BUILD_TIME=\$\(git log -1 --format=%cI\)/)
   assert.match(workflow, /run: \.\/scripts\/build-site\.sh/)
+})
+
+test('builds community snapshots from fixtures by default and requires live credentials explicitly', async () => {
+  const build = await readFile(path.join(repoRoot, 'scripts/build-site.sh'), 'utf8')
+  const snapshotTest = 'node --test scripts/community-snapshots.test.mjs'
+  const viteBuild = 'npm --prefix community-app run build'
+  const assembleCommunity = 'cp -a community-app/dist/. _site/community/'
+  const generateSnapshots = 'node scripts/community-snapshots.mjs --output _site/community/content --sitemap _site/sitemap.xml'
+
+  assert.ok(build.includes(snapshotTest), 'snapshot tests must be part of the site build')
+  assert.ok(build.indexOf(snapshotTest) < build.indexOf(viteBuild), 'snapshot tests must run before the site build')
+  assert.ok(build.indexOf(generateSnapshots) > build.indexOf(assembleCommunity), 'snapshots must be generated after Jekyll and Vite assembly')
+  assert.match(build, /COMMUNITY_SNAPSHOT_MODE:-fixture/)
+  assert.match(build, /node scripts\/community-snapshots\.mjs --output _site\/community\/content --sitemap _site\/sitemap\.xml --fixture scripts\/fixtures\/community-snapshots\.json/)
+  assert.match(build, /SUPABASE_URL:\?SUPABASE_URL is required in live mode/)
+  assert.match(build, /SUPABASE_PUBLISHABLE_KEY:\?SUPABASE_PUBLISHABLE_KEY is required in live mode/)
+})
+
+test('keeps Pages upload and deploy in the reusable Jekyll workflow with live snapshot credentials', async () => {
+  const workflow = await readFile(path.join(repoRoot, '.github/workflows/jekyll.yml'), 'utf8')
+  const workflowDirectory = path.join(repoRoot, '.github/workflows')
+  const workflowFiles = await readdir(workflowDirectory)
+  const allWorkflows = await Promise.all(workflowFiles
+    .filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'))
+    .map((file) => readFile(path.join(workflowDirectory, file), 'utf8')))
+
+  assert.match(workflow, /workflow_call:/)
+  assert.match(workflow, /COMMUNITY_SNAPSHOT_MODE: live/)
+  assert.match(workflow, /SUPABASE_URL: \$\{\{ vars\.SUPABASE_URL \}\}/)
+  assert.match(workflow, /SUPABASE_PUBLISHABLE_KEY: \$\{\{ secrets\.SUPABASE_PUBLISHABLE_KEY \}\}/)
+  assert.doesNotMatch(workflow, /SERVICE_ROLE/)
+  assert.doesNotMatch(workflow, /contents: write/)
+  assert.equal((workflow.match(/actions\/upload-pages-artifact@v3/g) ?? []).length, 1)
+  assert.equal((workflow.match(/actions\/deploy-pages@v4/g) ?? []).length, 1)
+  assert.equal(allWorkflows.filter((contents) => /upload-pages-artifact|deploy-pages/.test(contents)).length, 1)
+})
+
+test('hourly snapshot workflow calls the sole Pages deployment workflow', async () => {
+  const caller = await readFile(path.join(repoRoot, '.github/workflows/community-snapshots.yml'), 'utf8')
+
+  assert.match(caller, /cron: ['"]17 \* \* \* \*['"]/)
+  assert.match(caller, /uses: \.\/\.github\/workflows\/jekyll\.yml/)
+  assert.match(caller, /SUPABASE_PUBLISHABLE_KEY: \$\{\{ secrets\.SUPABASE_PUBLISHABLE_KEY \}\}/)
+  assert.match(caller, /permissions:\s+contents: read\s+pages: write\s+id-token: write/)
+  assert.doesNotMatch(caller, /upload-pages-artifact|deploy-pages/)
+  assert.doesNotMatch(caller, /contents: write|SERVICE_ROLE/)
 })
 
 test('reproducibility verifier writes sorted manifests and rejects byte differences', async () => {

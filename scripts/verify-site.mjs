@@ -328,6 +328,26 @@ async function main() {
   }
 
   const sitemap = await readText('sitemap.xml')
+  const snapshotPathPattern = /^community\/content\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/index\.html$/i
+  const snapshotFiles = new Map()
+  for (const relativePath of files) {
+    const match = snapshotPathPattern.exec(relativePath)
+    if (!match) continue
+    const canonical = `https://www.breadlab.ai/community/content/${match[1]}/`
+    snapshotFiles.set(canonical, relativePath)
+    const html = await readText(relativePath)
+    assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'snapshot canonical')
+    assertIncludes(html, '<meta property="og:type" content="article">', relativePath, 'snapshot OpenGraph type')
+    assertIncludes(html, `<meta property="og:url" content="${canonical}">`, relativePath, 'snapshot OpenGraph URL')
+    assertIncludes(html, '<script type="application/ld+json">', relativePath, 'snapshot JSON-LD')
+    assertIncludes(html, '"@type":"BlogPosting"', relativePath, 'snapshot JSON-LD type')
+    assertIncludes(sitemap, `<loc>${canonical}</loc>`, 'sitemap.xml', 'community snapshot URL')
+  }
+  for (const match of sitemap.matchAll(/<loc>(https:\/\/www\.breadlab\.ai\/community\/content\/([0-9a-f-]+)\/)<\/loc>/gi)) {
+    if (!snapshotFiles.has(match[1])) {
+      fail(`missing required artifact: community/content/${match[2]}/index.html`)
+    }
+  }
   for (const location of [
     'https://www.breadlab.ai/',
     'https://www.breadlab.ai/blog/',

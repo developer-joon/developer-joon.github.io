@@ -4,6 +4,10 @@ on:
   push:
     branches: ["master"]
   workflow_dispatch:
+  workflow_call:
+    secrets:
+      SUPABASE_PUBLISHABLE_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -37,6 +41,10 @@ jobs:
       - name: Set deterministic site build time
         run: echo "SITE_BUILD_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
       - name: Build and verify site artifact
+        env:
+          COMMUNITY_SNAPSHOT_MODE: live
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: ./scripts/build-site.sh
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

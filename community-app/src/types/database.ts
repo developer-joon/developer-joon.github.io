@@ -1,4 +1,3 @@
-
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
 export type Database = {
@@ -384,6 +383,9 @@ isOneToOne: true
                            },
 "list_moderation_reports_v1":
 { Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_limit"?: number,"p_status"?: string }; Returns: Json
+                           },
+"list_public_community_snapshots_v1":
+{ Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_limit": number,"p_snapshot_at"?: string }; Returns: Json
                            },
 "list_public_post_comments":
 { Args: { "p_cursor_created_at"?: string,"p_cursor_id"?: string,"p_cursor_is_reply"?: boolean,"p_cursor_root_created_at"?: string,"p_cursor_root_id"?: string,"p_limit"?: number,"p_post_id": string }; Returns: Json

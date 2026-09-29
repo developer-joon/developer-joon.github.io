@@ -10,6 +10,9 @@ import { fileURLToPath } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const verifier = path.join(repoRoot, 'scripts/verify-site.mjs')
+const snapshotId = '11111111-1111-4111-8111-111111111111'
+const snapshotPath = `community/content/${snapshotId}/index.html`
+const snapshotUrl = `https://www.breadlab.ai/community/content/${snapshotId}/`
 const shellTitles = new Map([
   ['community/index.html', '<title>Breadlab 커뮤니티</title>'],
   ['community/write/index.html', '<title>글쓰기 | Breadlab 커뮤니티</title>'],
@@ -40,6 +43,7 @@ async function makeValidArtifact() {
   for (const [relativePath, title] of shellTitles) {
     await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img srcset="/community/assets/logo-Xy12Za34.png 1x, https://cdn.example/logo.png 2x, data:image/png;base64,AA== 3x"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
   }
+  await put(root, snapshotPath, `<title>Published snapshot example | Breadlab 커뮤니티</title><link rel="canonical" href="${snapshotUrl}"><meta property="og:type" content="article"><meta property="og:url" content="${snapshotUrl}"><script type="application/ld+json">{"@type":"BlogPosting"}</script>`)
   await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">GitHub OAuth 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
   await put(root, 'robots.txt', 'User-agent: *\nAllow: /\nSitemap: https://www.breadlab.ai/sitemap.xml\n')
@@ -49,6 +53,7 @@ async function makeValidArtifact() {
     'https://www.breadlab.ai/lab/',
     'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm',
     'https://www.breadlab.ai/privacy',
+    snapshotUrl,
   ].map((location) => `<loc>${location}</loc>`).join('\n'))
   for (const relativePath of [
     'css/style.css',
@@ -82,6 +87,24 @@ test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects a missing required community snapshot', async () => {
+  await withArtifact(async (root) => {
+    await rm(path.join(root, snapshotPath))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /missing required artifact/)
+  })
+})
+
+test('rejects a community snapshot without canonical, OpenGraph, and JSON-LD metadata', async () => {
+  await withArtifact(async (root) => {
+    await put(root, snapshotPath, '<title>Published snapshot example | Breadlab 커뮤니티</title>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /snapshot canonical|snapshot OpenGraph|snapshot JSON-LD/)
   })
 })
 
