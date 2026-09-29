@@ -5,7 +5,9 @@
 .sass-cache
 _site
 _site-docker
-community-app/.env*
+**/.env*
+supabase/.temp
+supabase/.branches
 community-app/coverage
 community-app/dist
 community-app/node_modules

@@ -41,6 +41,17 @@ test('excludes repository build definitions from the Jekyll artifact', async () 
   }
 })
 
+test('excludes local credentials and Supabase CLI state from the Docker build context', async () => {
+  const dockerignore = (await readFile(path.join(repoRoot, '.dockerignore'), 'utf8'))
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  for (const excluded of ['**/.env*', 'supabase/.temp', 'supabase/.branches']) {
+    assert.ok(dockerignore.includes(excluded), `${excluded} is not excluded from the Docker build context`)
+  }
+})
+
 test('build helper pins the output platform', async () => {
   const helper = await readFile(path.join(repoRoot, 'scripts/build-site-docker.sh'), 'utf8')
   assert.match(helper, /docker build --platform linux\/amd64 /)
