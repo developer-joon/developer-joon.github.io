@@ -885,7 +885,7 @@ test('development 5xx, timeout, and paused-project responses fail with resume gu
 
 test('evidence schema rejects missing, unknown, and malformed keys', () => {
   const valid = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
     mode: 'local',
     status: 'passed',
@@ -894,7 +894,8 @@ test('evidence schema rejects missing, unknown, and malformed keys', () => {
     durationMs: 1000,
     developmentProjectFingerprint: null,
     productionProjectFingerprint: null,
-    artifactManifests: ['build-1.sha256', 'build-2.sha256'],
+    artifactManifest: { sha256: 'a'.repeat(64), fileCount: 2 },
+    databaseTests: { steps: [{ name: 'test-database', count: 7 }], total: 7 },
     steps: [{ name: 'check', status: 'passed', startedAt: '2026-10-03T00:00:00.000Z', finishedAt: '2026-10-03T00:00:01.000Z', durationMs: 1000 }],
     failure: null,
   }
@@ -903,18 +904,22 @@ test('evidence schema rejects missing, unknown, and malformed keys', () => {
     { ...valid, unknown: true },
     Object.fromEntries(Object.entries(valid).filter(([key]) => key !== 'revision')),
     { ...valid, steps: [{ ...valid.steps[0], stdout: 'forbidden' }] },
+    { ...valid, artifactManifest: { ...valid.artifactManifest, path: '/tmp/private' } },
+    { ...valid, artifactManifest: { sha256: 'bad', fileCount: 0 } },
+    { ...valid, databaseTests: { steps: [{ name: 'test-database', count: Number.MAX_SAFE_INTEGER + 1 }], total: 0 } },
+    { ...valid, databaseTests: { steps: [{ name: 'test-database', count: 7 }], total: 8 } },
     { ...valid, status: 'failed', failure: null },
   ]) assert.throws(() => validateEvidence(invalid), /evidence/i)
 })
 
-test('evidence has revision, mode, UTC timing, step durations, manifests, and project fingerprint only', async () => {
+test('evidence has revision, mode, UTC timing, step durations, artifact and database metadata, and project fingerprint only', async () => {
   const state = executionFixture('development')
   try {
     state.dependencies.plan = compactPlan('development', state.evidence, ['check'])
     await runReleaseGate(state.options, state.dependencies)
     const evidence = state.evidence()
     assert.deepEqual(Object.keys(evidence).sort(), [
-      'artifactManifests', 'developmentProjectFingerprint', 'durationMs', 'failure', 'finishedAt', 'mode',
+      'artifactManifest', 'databaseTests', 'developmentProjectFingerprint', 'durationMs', 'failure', 'finishedAt', 'mode',
       'productionProjectFingerprint', 'revision', 'schemaVersion', 'startedAt', 'status', 'steps',
     ])
     assert.equal(evidence.revision, state.dependencies.revision)
@@ -923,7 +928,8 @@ test('evidence has revision, mode, UTC timing, step durations, manifests, and pr
     assert.equal(evidence.productionProjectFingerprint, null)
     assert.ok(evidence.startedAt.endsWith('Z') && evidence.finishedAt.endsWith('Z'))
     assert.ok(evidence.steps.every((step) => Number.isInteger(step.durationMs)))
-    assert.deepEqual(evidence.artifactManifests, ['build-1.sha256', 'build-2.sha256'])
+    assert.equal(evidence.artifactManifest, null)
+    assert.equal(evidence.databaseTests, null)
   } finally {
     state.close()
   }
@@ -1008,5 +1014,228 @@ test('option parsing is pure with respect to argv, env, and context inputs', () 
     assert.deepEqual(context, snapshots[2])
   } finally {
     state.close()
+  }
+})
+
+test('binds passed reproducibility evidence to identical manifest bytes and exact file count', async () => {
+  const state = executionFixture()
+  try {
+    const manifest = 'aaa  ./index.html\nbbb  ./assets/app.js\n'
+    const manifestPaths = [
+      '/tmp/breadlab-community-release-manifests/build-1.sha256',
+      '/tmp/breadlab-community-release-manifests/build-2.sha256',
+    ]
+    const reads = []
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database', 'verify-site-reproducibility'])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database' ? 'runner detail\nTests=7\nprivate-user@example.com\n' : '',
+    })
+    state.dependencies.filesystem.readFile = async (file) => {
+      reads.push(file)
+      if (manifestPaths.includes(file)) return Buffer.from(manifest)
+      throw new Error('unexpected read')
+    }
+    const evidence = await runReleaseGate(state.options, state.dependencies)
+    assert.deepEqual(reads, manifestPaths)
+    assert.deepEqual(evidence.artifactManifest, {
+      sha256: createHash('sha256').update(Buffer.from(manifest)).digest('hex'),
+      fileCount: 2,
+    })
+    assert.deepEqual(evidence.databaseTests, {
+      steps: [{ name: 'test-database', count: 7 }],
+      total: 7,
+    })
+    const serialized = JSON.stringify(evidence)
+    assert.equal(serialized.includes('build-1.sha256'), false)
+    assert.equal(serialized.includes('index.html'), false)
+    assert.equal(serialized.includes('private-user@example.com'), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('fails closed when passed reproducibility manifests are missing, mismatched, or empty', async () => {
+  for (const scenario of ['missing', 'mismatched', 'empty']) {
+    const state = executionFixture()
+    try {
+      state.dependencies.plan = compactPlan('local', state.evidence, ['verify-site-reproducibility'])
+      state.dependencies.filesystem.readFile = async (file) => {
+        if (scenario === 'missing' && file.endsWith('build-2.sha256')) throw new Error('missing private path')
+        if (scenario === 'empty') return Buffer.from('')
+        return Buffer.from(file.endsWith('build-1.sha256') ? 'aaa  ./one\n' : 'bbb  ./two\n')
+      }
+      await assert.rejects(runReleaseGate(state.options, state.dependencies), /manifest/i, scenario)
+      assert.equal(state.evidence().status, 'failed', scenario)
+      assert.equal(state.evidence().artifactManifest, null, scenario)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('database test counts are null before tests and malformed or unsafe summaries fail closed', async () => {
+  for (const [stdout, expected] of [
+    ['', /Tests=/i],
+    ['Tests=1.5\n', /Tests=/i],
+    [`Tests=${Number.MAX_SAFE_INTEGER + 1}\n`, /safe integer/i],
+  ]) {
+    const state = executionFixture()
+    try {
+      state.dependencies.plan = compactPlan('local', state.evidence, ['before', 'test-database'])
+      state.dependencies.runner = async ({ name }) => ({ code: 0, stdout: name === 'test-database' ? stdout : '' })
+      await assert.rejects(runReleaseGate(state.options, state.dependencies), expected)
+      assert.equal(state.evidence().databaseTests, null)
+    } finally {
+      state.close()
+    }
+  }
+  const state = executionFixture()
+  try {
+    state.dependencies.plan = compactPlan('local', state.evidence, ['broken', 'test-database'])
+    state.dependencies.runner = async ({ name }) => ({ code: name === 'broken' ? 1 : 0, stdout: 'Tests=99\n' })
+    await assert.rejects(runReleaseGate(state.options, state.dependencies))
+    assert.equal(state.evidence().databaseTests, null)
+  } finally {
+    state.close()
+  }
+})
+
+test('development body timeout uses resume guidance without fallback or body persistence', async () => {
+  const state = executionFixture('development')
+  try {
+    const bodySecret = 'body-private-user@example.com'
+    const urls = []
+    const controller = new AbortController()
+    state.dependencies.plan = compactPlan('development', state.evidence, ['development-read-only-health'])
+    state.dependencies.developmentUrl = DEVELOPMENT_URL
+    state.dependencies.probeSignal = () => controller.signal
+    state.dependencies.fetch = async (url) => {
+      urls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => {
+          queueMicrotask(() => controller.abort(new Error(bodySecret)))
+          return new Promise(() => {})
+        },
+      }
+    }
+    await assert.rejects(runReleaseGate(state.options, state.dependencies), /resume.*development.*project/i)
+    assert.deepEqual(urls, [`${DEVELOPMENT_URL}/auth/v1/health`])
+    assert.equal(JSON.stringify(state.evidence()).includes(bodySecret), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('invalidates selected stale evidence before steps and refuses to run when invalidation fails', async () => {
+  const state = executionFixture()
+  try {
+    const calls = []
+    state.writes.set(state.options.evidencePath, JSON.stringify({ status: 'passed', stale: true }))
+    state.dependencies.plan = compactPlan('local', state.options.evidencePath, ['never'])
+    state.dependencies.filesystem.rm = async (file) => {
+      if (file === state.options.evidencePath) throw new Error('cannot invalidate output')
+    }
+    state.dependencies.runner = async ({ name }) => {
+      calls.push(name)
+      return { code: 0 }
+    }
+    await assert.rejects(runReleaseGate(state.options, state.dependencies), /invalidate.*evidence/i)
+    assert.deepEqual(calls, [])
+  } finally {
+    state.close()
+  }
+})
+
+test('publication write or rename failure cannot leave pre-existing success evidence visible', async () => {
+  for (const scenario of ['write', 'rename']) {
+    const state = executionFixture()
+    try {
+      state.writes.set(state.options.evidencePath, JSON.stringify({ status: 'passed', stale: true }))
+      state.dependencies.plan = compactPlan('local', state.options.evidencePath, [])
+      const baseWrite = state.dependencies.filesystem.writeFile
+      state.dependencies.filesystem.rm = async (file) => state.writes.delete(file)
+      state.dependencies.filesystem.writeFile = async (file, contents) => {
+        if (scenario === 'write') throw new Error('publication write failed')
+        return baseWrite(file, contents)
+      }
+      state.dependencies.filesystem.rename = async () => { throw new Error('publication rename failed') }
+      await assert.rejects(runReleaseGate(state.options, state.dependencies), new RegExp(`publication ${scenario} failed`))
+      assert.equal(state.writes.has(state.options.evidencePath), false, scenario)
+      assert.equal([...state.writes.values()].some((contents) => /"status"\s*:\s*"passed"/.test(contents)), false, scenario)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('production readiness never invalidates an input evidence path selected as output', async () => {
+  const state = executionFixture('production-readiness')
+  try {
+    const removals = []
+    state.options.evidencePath = state.options.localE2eEvidencePath
+    state.dependencies.filesystem.rm = async (file) => removals.push(file)
+    await assert.rejects(runReleaseGate(state.options, state.dependencies), /output evidence.*differ.*input evidence/i)
+    assert.deepEqual(removals, [])
+  } finally {
+    state.close()
+  }
+})
+
+test('default runner suppresses raw child stdout and stderr from terminal and evidence', () => {
+  const childOutput = [
+    'sb_secret_do-not-print',
+    'eyJhbGciOiJIUzI1NiJ9.payload.signature',
+    'https://abcdefghijklmnopqrst.supabase.co',
+    'private-user@example.com',
+  ].join(' ')
+  const program = `
+    import { EventEmitter } from 'node:events'
+    import { runReleaseGate } from './scripts/release-gate.mjs'
+    const writes = new Map()
+    const evidencePath = '/tmp/release-gate-secret-output-test.json'
+    const fakeSpawn = () => {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.kill = () => true
+      setImmediate(() => {
+        child.stdout.emit('data', Buffer.from(${JSON.stringify(childOutput)}))
+        child.stderr.emit('data', Buffer.from(${JSON.stringify(childOutput)}))
+        child.emit('close', 0, null)
+      })
+      return child
+    }
+    const evidence = await runReleaseGate(
+      { mode: 'local', evidencePath },
+      {
+        revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
+        plan: {
+          mode: 'local',
+          evidencePath,
+          steps: [{ name: 'check', command: 'node', args: ['check.mjs'], environment: {} }],
+        },
+        spawn: fakeSpawn,
+        filesystem: {
+          writeFile: async (file, contents) => writes.set(file, contents),
+          rename: async (from, to) => { writes.set(to, writes.get(from)); writes.delete(from) },
+          rm: async (file) => writes.delete(file),
+        },
+      },
+    )
+    console.log(JSON.stringify(evidence))
+  `
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', program], {
+    cwd: path.resolve(import.meta.dirname, '..'),
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const evidence = JSON.parse(result.stdout)
+  for (const secret of childOutput.split(' ')) {
+    assert.equal(result.stdout.includes(secret), false, secret)
+    assert.equal(result.stderr.includes(secret), false, secret)
+    assert.equal(JSON.stringify(evidence).includes(secret), false, secret)
   }
 })

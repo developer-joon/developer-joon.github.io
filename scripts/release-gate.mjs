@@ -9,6 +9,14 @@ import { fileURLToPath } from 'node:url'
 
 const MODES = new Set(['local', 'development', 'production-readiness'])
 const SHA256 = /^[a-f0-9]{64}$/
+const RUNNER_OUTPUT_LIMIT = 16 * 1024
+const DATABASE_TEST_STEPS = new Set([
+  'test-storage-upgrade',
+  'test-public-listing-upgrade',
+  'test-community-snapshot-upgrade',
+  'test-public-attachment-integration',
+  'test-database',
+])
 const HOSTED_LOCAL_ENV = [
   'SUPABASE_URL',
   'SUPABASE_PUBLISHABLE_KEY',
@@ -260,12 +268,16 @@ const EVIDENCE_KEYS = [
   'durationMs',
   'developmentProjectFingerprint',
   'productionProjectFingerprint',
-  'artifactManifests',
+  'artifactManifest',
+  'databaseTests',
   'steps',
   'failure',
 ].sort()
 const STEP_EVIDENCE_KEYS = ['name', 'status', 'startedAt', 'finishedAt', 'durationMs'].sort()
 const FAILURE_EVIDENCE_KEYS = ['step', 'kind', 'message'].sort()
+const ARTIFACT_MANIFEST_KEYS = ['sha256', 'fileCount'].sort()
+const DATABASE_TESTS_KEYS = ['steps', 'total'].sort()
+const DATABASE_TEST_KEYS = ['name', 'count'].sort()
 const READINESS_COMMON_KEYS = ['schemaVersion', 'type', 'mode', 'status', 'revision', 'timestamp']
 const LOCAL_READINESS_KEYS = [...READINESS_COMMON_KEYS].sort()
 const HOSTED_READINESS_KEYS = [...READINESS_COMMON_KEYS, 'projectFingerprint'].sort()
@@ -294,7 +306,7 @@ function validTime(value) {
 
 export function validateEvidence(evidence) {
   exactKeys(evidence, EVIDENCE_KEYS, 'release')
-  if (evidence.schemaVersion !== 1) throw new Error('release evidence schemaVersion must be 1')
+  if (evidence.schemaVersion !== 2) throw new Error('release evidence schemaVersion must be 2')
   if (!REVISION.test(evidence.revision)) throw new Error('release evidence revision must be a full lowercase Git revision')
   if (!MODES.has(evidence.mode)) throw new Error('release evidence mode is invalid')
   if (!['passed', 'failed'].includes(evidence.status)) throw new Error('release evidence status is invalid')
@@ -319,8 +331,29 @@ export function validateEvidence(evidence) {
   )) {
     throw new Error('production-readiness release evidence must contain distinct development and production project fingerprints')
   }
-  if (!Array.isArray(evidence.artifactManifests) || evidence.artifactManifests.some((value) => typeof value !== 'string')) {
-    throw new Error('release evidence artifactManifests is invalid')
+  if (evidence.artifactManifest !== null) {
+    exactKeys(evidence.artifactManifest, ARTIFACT_MANIFEST_KEYS, 'artifact manifest')
+    if (!SHA256.test(evidence.artifactManifest.sha256)
+      || !Number.isSafeInteger(evidence.artifactManifest.fileCount)
+      || evidence.artifactManifest.fileCount < 1) {
+      throw new Error('release evidence artifactManifest is invalid')
+    }
+  }
+  if (evidence.databaseTests !== null) {
+    exactKeys(evidence.databaseTests, DATABASE_TESTS_KEYS, 'database tests')
+    if (!Array.isArray(evidence.databaseTests.steps) || evidence.databaseTests.steps.length === 0) {
+      throw new Error('release evidence databaseTests steps are invalid')
+    }
+    let total = 0
+    for (const item of evidence.databaseTests.steps) {
+      exactKeys(item, DATABASE_TEST_KEYS, 'database test')
+      if (!DATABASE_TEST_STEPS.has(item.name) || !Number.isSafeInteger(item.count) || item.count < 0) {
+        throw new Error('release evidence database test count is invalid')
+      }
+      total += item.count
+      if (!Number.isSafeInteger(total)) throw new Error('release evidence database test total is invalid')
+    }
+    if (evidence.databaseTests.total !== total) throw new Error('release evidence databaseTests total is invalid')
   }
   if (!Array.isArray(evidence.steps)) throw new Error('release evidence steps must be an array')
   for (const item of evidence.steps) {
@@ -483,11 +516,12 @@ async function runHostedProbes(options, dependencies) {
   ]
   for (const [pathname, method] of probes) {
     let response
+    const signal = AbortSignal.timeout(10_000)
     try {
       response = await fetchImplementation(`${developmentUrl}${pathname}`, {
         method,
         redirect: 'error',
-        signal: AbortSignal.timeout(10_000),
+        signal,
       })
     } catch {
       throw new ReleaseFailure(
@@ -496,7 +530,23 @@ async function runHostedProbes(options, dependencies) {
         'resume the development Supabase project and retry the read-only probe',
       )
     }
-    const body = await response.text()
+    let body
+    try {
+      body = await new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason ?? new Error('hosted probe body timed out'))
+        signal.addEventListener('abort', abort, { once: true })
+        Promise.resolve()
+          .then(() => response.text())
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener('abort', abort))
+      })
+    } catch {
+      throw new ReleaseFailure(
+        'development-read-only-health',
+        'hosted-probe',
+        'resume the development Supabase project and retry the read-only probe',
+      )
+    }
     if (response.status >= 500 || /project\s+(?:is\s+)?(?:paused|inactive)|(?:paused|inactive)\s+project/i.test(body)) {
       throw new ReleaseFailure(
         'development-read-only-health',
@@ -511,24 +561,21 @@ async function runHostedProbes(options, dependencies) {
   return { code: 0 }
 }
 
-function defaultRunner(repoRoot, signal) {
+function defaultRunner(repoRoot, signal, spawnImplementation = spawn) {
   return (releaseStep) => new Promise((resolve, reject) => {
-    const child = spawn(releaseStep.command, releaseStep.args, {
+    const child = spawnImplementation(releaseStep.command, releaseStep.args, {
       cwd: repoRoot,
       env: { ...process.env, ...releaseStep.environment },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    const limit = 16 * 1024
     let stdout = ''
     let stderr = ''
-    const append = (current, chunk) => `${current}${chunk}`.slice(-limit)
+    const append = (current, chunk) => `${current}${chunk}`.slice(-RUNNER_OUTPUT_LIMIT)
     child.stdout.on('data', (chunk) => {
-      process.stdout.write(chunk)
       stdout = append(stdout, chunk)
     })
     child.stderr.on('data', (chunk) => {
-      process.stderr.write(chunk)
       stderr = append(stderr, chunk)
     })
     const abort = () => child.kill('SIGTERM')
@@ -558,13 +605,29 @@ export async function runReleaseGate(options, dependencies = {}) {
   const clock = dependencies.clock ?? (() => new Date())
   const filesystem = dependencies.filesystem ?? { readFile, writeFile, rename, rm }
   const repoRoot = dependencies.repoRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-  const runner = dependencies.runner ?? defaultRunner(repoRoot, dependencies.signal)
+  const runner = dependencies.runner ?? defaultRunner(repoRoot, dependencies.signal, dependencies.spawn)
   const executablePreflight = dependencies.executablePreflight ?? (() => defaultExecutablePreflight(plan, repoRoot))
   const revision = dependencies.revision
   if (!REVISION.test(revision ?? '')) throw new Error('runReleaseGate requires a full lowercase Git revision')
 
+  const inputEvidencePaths = [
+    options.localE2eEvidencePath,
+    options.developmentCloudIntegrationEvidencePath,
+    options.productionBackupEvidencePath,
+  ].filter(Boolean)
+  if (inputEvidencePaths.includes(options.evidencePath)) {
+    throw new Error('selected output evidence must differ from production-readiness input evidence paths')
+  }
+  try {
+    await filesystem.rm(options.evidencePath, { force: true })
+  } catch {
+    throw new ReleaseFailure('invalidate-release-evidence', 'evidence', 'could not invalidate existing release evidence')
+  }
+
   const started = timestamp(clock)
   const steps = []
+  let artifactManifest = null
+  const databaseTestSteps = []
   let primaryFailure
   let cleanupFailure
 
@@ -594,6 +657,45 @@ export async function runReleaseGate(options, dependencies = {}) {
         throw new ReleaseFailure(releaseStep.name, 'preflight', 'repository-preflight requires a clean Git working tree')
       }
       if (releaseStep.name === 'repository-preflight') await executablePreflight(plan, repoRoot)
+      if (DATABASE_TEST_STEPS.has(releaseStep.name)) {
+        const stdout = String(result.stdout ?? '').slice(-RUNNER_OUTPUT_LIMIT)
+        const summaries = [...stdout.matchAll(/^\s*Tests=(\d+)\s*$/gm)]
+        if (summaries.length !== 1) {
+          throw new ReleaseFailure(releaseStep.name, 'evidence', `${releaseStep.name} must emit exactly one Tests=<integer> summary`)
+        }
+        const count = Number(summaries[0][1])
+        if (!Number.isSafeInteger(count)) {
+          throw new ReleaseFailure(releaseStep.name, 'evidence', `${releaseStep.name} Tests count must be a safe integer`)
+        }
+        databaseTestSteps.push({ name: releaseStep.name, count })
+      }
+      if (releaseStep.name === 'verify-site-reproducibility') {
+        const manifestPaths = [
+          '/tmp/breadlab-community-release-manifests/build-1.sha256',
+          '/tmp/breadlab-community-release-manifests/build-2.sha256',
+        ]
+        let first
+        let second
+        try {
+          [first, second] = await Promise.all(manifestPaths.map((manifestPath) => filesystem.readFile(manifestPath)))
+        } catch {
+          throw new ReleaseFailure(releaseStep.name, 'evidence', 'reproducibility manifests could not be read')
+        }
+        const firstBytes = Buffer.from(first)
+        const secondBytes = Buffer.from(second)
+        if (!firstBytes.equals(secondBytes)) {
+          throw new ReleaseFailure(releaseStep.name, 'evidence', 'reproducibility manifests do not match')
+        }
+        const lines = firstBytes.toString('utf8').split('\n')
+        if (lines.at(-1) === '') lines.pop()
+        if (lines.length === 0 || lines.some((line) => line.length === 0)) {
+          throw new ReleaseFailure(releaseStep.name, 'evidence', 'reproducibility manifest must contain at least one file')
+        }
+        artifactManifest = {
+          sha256: createHash('sha256').update(firstBytes).digest('hex'),
+          fileCount: lines.length,
+        }
+      }
       if (!ignoreAbort && dependencies.signal?.aborted) {
         throw new ReleaseFailure(releaseStep.name, 'signal', `release gate aborted by ${dependencies.signal.reason ?? 'signal'}`)
       }
@@ -637,7 +739,7 @@ export async function runReleaseGate(options, dependencies = {}) {
   const failure = primaryFailure ?? cleanupFailure
   const finished = timestamp(clock)
   const evidence = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     revision,
     mode: options.mode,
     status: failure ? 'failed' : 'passed',
@@ -646,7 +748,13 @@ export async function runReleaseGate(options, dependencies = {}) {
     durationMs: Math.max(0, finished.valueOf() - started.valueOf()),
     developmentProjectFingerprint: options.developmentProjectFingerprint ?? options.projectFingerprint ?? null,
     productionProjectFingerprint: options.productionProjectFingerprint ?? null,
-    artifactManifests: ['build-1.sha256', 'build-2.sha256'],
+    artifactManifest,
+    databaseTests: databaseTestSteps.length > 0
+      ? {
+          steps: databaseTestSteps,
+          total: databaseTestSteps.reduce((total, item) => total + item.count, 0),
+        }
+      : null,
     steps,
     failure: failure ? { step: failure.stepName, kind: failure.kind, message: failure.message } : null,
   }
