@@ -623,8 +623,20 @@ function safeFailure(step, result) {
 }
 
 function databaseTestCount(stepName, result) {
-  const streams = [result.stdout, result.stderr]
-    .map((value) => String(value ?? '').slice(-RUNNER_OUTPUT_LIMIT).split(/\r?\n/))
+  const streamValues = ['stdout', 'stderr'].map((name) => {
+    const value = String(result?.[name] ?? '')
+    const metadata = result?.streamMetadata?.[name]
+    if (metadata?.truncated === true
+      || (Number.isSafeInteger(metadata?.bytes) && metadata.bytes > RUNNER_OUTPUT_LIMIT)
+      || Buffer.byteLength(value) > RUNNER_OUTPUT_LIMIT) {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} output is incomplete because ${name} was truncated`)
+    }
+    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u.test(value)) {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} output contains disallowed protocol control characters`)
+    }
+    return value
+  })
+  const streams = streamValues.map((value) => value.split(/\r?\n/))
   const lines = streams.flat()
   const standaloneSummaries = lines
     .map((line) => /^\s*Tests=(.*?)\s*$/.exec(line))
@@ -848,15 +860,26 @@ function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceM
       detached: useProcessGroup,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    let stdout = ''
-    let stderr = ''
+    let stdout = Buffer.alloc(0)
+    let stderr = Buffer.alloc(0)
+    let stdoutBytes = 0
+    let stderrBytes = 0
     let escalation
     let settled = false
-    const append = (current, chunk) => `${current}${chunk}`.slice(-RUNNER_OUTPUT_LIMIT)
+    const append = (current, chunk) => {
+      const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      if (next.length >= RUNNER_OUTPUT_LIMIT) return Buffer.from(next.subarray(-RUNNER_OUTPUT_LIMIT))
+      const combined = Buffer.concat([current, next])
+      return combined.length > RUNNER_OUTPUT_LIMIT
+        ? Buffer.from(combined.subarray(combined.length - RUNNER_OUTPUT_LIMIT))
+        : combined
+    }
     child.stdout.on('data', (chunk) => {
+      stdoutBytes = Math.min(Number.MAX_SAFE_INTEGER, stdoutBytes + Buffer.byteLength(chunk))
       stdout = append(stdout, chunk)
     })
     child.stderr.on('data', (chunk) => {
+      stderrBytes = Math.min(Number.MAX_SAFE_INTEGER, stderrBytes + Buffer.byteLength(chunk))
       stderr = append(stderr, chunk)
     })
     const kill = (childSignal) => {
@@ -890,7 +913,16 @@ function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceM
     }
     activeSignal?.addEventListener('abort', abort, { once: true })
     child.once('error', (error) => finish(() => reject(error)))
-    child.once('close', (code, childSignal) => finish(() => resolve({ code, signal: childSignal, stdout, stderr })))
+    child.once('close', (code, childSignal) => finish(() => resolve({
+      code,
+      signal: childSignal,
+      stdout: stdout.toString('utf8'),
+      stderr: stderr.toString('utf8'),
+      streamMetadata: {
+        stdout: { bytes: stdoutBytes, truncated: stdoutBytes > RUNNER_OUTPUT_LIMIT },
+        stderr: { bytes: stderrBytes, truncated: stderrBytes > RUNNER_OUTPUT_LIMIT },
+      },
+    })))
     if (activeSignal?.aborted) abort()
   })
 }

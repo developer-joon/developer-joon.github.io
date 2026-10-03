@@ -1619,6 +1619,214 @@ test('canonical test-database accepts the real prove aggregate summary', async (
   }
 })
 
+const RUNNER_OUTPUT_LIMIT = 16 * 1024
+const CANONICAL_PROVE_OUTPUT = [
+  'All tests successful.',
+  'Files=13, Tests=1146,  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)',
+  'Result: PASS',
+  '',
+].join('\n')
+
+test('default runner rejects a failure hidden before truncated stdout or stderr', async () => {
+  for (const stream of ['stdout', 'stderr']) {
+    const state = executionFixture()
+    try {
+      const rawSecret = `private-truncated-${stream}@example.com`
+      const chunks = [
+        `Result: FAIL\n${rawSecret}\n`,
+        'x'.repeat(RUNNER_OUTPUT_LIMIT),
+        `\n${CANONICAL_PROVE_OUTPUT}`,
+      ]
+      state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+      delete state.dependencies.runner
+      state.dependencies.executablePreflight = async () => undefined
+      state.dependencies.spawn = (_command, args) => {
+        const child = new EventEmitter()
+        child.stdout = new EventEmitter()
+        child.stderr = new EventEmitter()
+        child.kill = () => true
+        setImmediate(() => {
+          if (args[0] === 'test-database.mjs') {
+            for (const chunk of chunks) child[stream].emit('data', Buffer.from(chunk))
+          }
+          child.emit('close', 0, null)
+        })
+        return child
+      }
+
+      await assert.rejects(
+        runReleaseGate(state.options, state.dependencies),
+        (error) => /test-database.*(truncated|incomplete)/i.test(error.message)
+          && !error.message.includes(rawSecret),
+        stream,
+      )
+      assert.equal(state.evidence().databaseTests, null, stream)
+      assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false, stream)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('database protocol rejects explicit per-stream truncation metadata, including optional helpers', async () => {
+  for (const [stepName, stream] of [
+    ['test-database', 'stdout'],
+    ['test-database', 'stderr'],
+    ['test-storage-upgrade', 'stdout'],
+    ['test-storage-upgrade', 'stderr'],
+  ]) {
+    const state = executionFixture()
+    try {
+      const rawSecret = `private-explicit-${stepName}-${stream}@example.com`
+      state.dependencies.plan = compactPlan('local', state.evidence, [stepName])
+      state.dependencies.runner = async ({ name }) => {
+        if (name !== stepName) return { code: 0, stdout: '', stderr: '' }
+        const output = stepName === 'test-database' ? CANONICAL_PROVE_OUTPUT : `optional helper detail\n${rawSecret}\n`
+        return {
+          code: 0,
+          stdout: stream === 'stdout' ? output : '',
+          stderr: stream === 'stderr' ? output : '',
+          streamMetadata: {
+            stdout: { bytes: stream === 'stdout' ? Buffer.byteLength(output) + 1 : 0, truncated: stream === 'stdout' },
+            stderr: { bytes: stream === 'stderr' ? Buffer.byteLength(output) + 1 : 0, truncated: stream === 'stderr' },
+          },
+        }
+      }
+
+      await assert.rejects(
+        runReleaseGate(state.options, state.dependencies),
+        (error) => new RegExp(`${stepName}.*(truncated|incomplete)`, 'i').test(error.message)
+          && !error.message.includes(rawSecret),
+        `${stepName} ${stream}`,
+      )
+      assert.equal(state.evidence().databaseTests, null, `${stepName} ${stream}`)
+      assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false, `${stepName} ${stream}`)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('database protocol accepts exactly 16 KiB but rejects oversized injected output', async () => {
+  const exact = `${'x'.repeat(RUNNER_OUTPUT_LIMIT - Buffer.byteLength('\nTests=7\n'))}\nTests=7\n`
+  assert.equal(Buffer.byteLength(exact), RUNNER_OUTPUT_LIMIT)
+
+  const accepted = executionFixture()
+  try {
+    accepted.dependencies.plan = compactPlan('local', accepted.evidence, ['test-database'])
+    accepted.dependencies.runner = async () => ({ code: 0, stdout: exact, stderr: '' })
+    const evidence = await runReleaseGate(accepted.options, accepted.dependencies)
+    assert.deepEqual(evidence.databaseTests, { steps: [{ name: 'test-database', count: 7 }], total: 7 })
+  } finally {
+    accepted.close()
+  }
+
+  const oversized = executionFixture()
+  try {
+    const rawSecret = 'private-oversized-database-output@example.com'
+    oversized.dependencies.plan = compactPlan('local', oversized.evidence, ['test-database'])
+    oversized.dependencies.runner = async () => ({
+      code: 0,
+      stdout: `Result: FAIL\n${rawSecret}\n${'x'.repeat(RUNNER_OUTPUT_LIMIT)}\n${CANONICAL_PROVE_OUTPUT}`,
+      stderr: '',
+    })
+    await assert.rejects(
+      runReleaseGate(oversized.options, oversized.dependencies),
+      (error) => /test-database.*(truncated|incomplete|limit)/i.test(error.message)
+        && !error.message.includes(rawSecret),
+    )
+    assert.equal(JSON.stringify(oversized.evidence()).includes(rawSecret), false)
+  } finally {
+    oversized.close()
+  }
+})
+
+test('database protocol rejects ANSI and control-decorated failure markers without disclosure', async () => {
+  const attacks = [
+    '\x1b[31mResult: FAIL\x1b[0m',
+    '\x1b[31mnot ok 1 - assertion failed\x1b[0m',
+    'Result: FAIL\r\x1b[Kdiagnostic',
+  ]
+  for (const [index, attack] of attacks.entries()) {
+    const state = executionFixture()
+    try {
+      const rawSecret = `private-control-attack-${index}@example.com`
+      const stream = index === 1 ? 'stderr' : 'stdout'
+      state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+      state.dependencies.runner = async ({ name }) => ({
+        code: 0,
+        stdout: name === 'test-database' && stream === 'stdout'
+          ? `${attack}\n${rawSecret}\n${CANONICAL_PROVE_OUTPUT}`
+          : '',
+        stderr: name === 'test-database' && stream === 'stderr'
+          ? `${attack}\n${rawSecret}\n${CANONICAL_PROVE_OUTPUT}`
+          : '',
+      })
+
+      await assert.rejects(
+        runReleaseGate(state.options, state.dependencies),
+        (error) => /test-database.*(control|protocol|corrupt)/i.test(error.message)
+          && !error.message.includes(rawSecret)
+          && !error.message.includes(attack),
+        `attack ${index}`,
+      )
+      assert.equal(state.evidence().databaseTests, null, `attack ${index}`)
+      assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false, `attack ${index}`)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('optional database helpers cannot bypass control validation when omitting a summary', async () => {
+  const state = executionFixture()
+  try {
+    const rawSecret = 'private-helper-control@example.com'
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-storage-upgrade'])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-storage-upgrade' ? `helper detail\x1b[2K\n${rawSecret}\n` : '',
+      stderr: '',
+    })
+    await assert.rejects(
+      runReleaseGate(state.options, state.dependencies),
+      (error) => /test-storage-upgrade.*(control|protocol|corrupt)/i.test(error.message)
+        && !error.message.includes(rawSecret),
+    )
+    assert.equal(state.evidence().databaseTests, null)
+    assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('realistic 1.8 KiB Supabase prove output with CRLF and tabs remains accepted', async () => {
+  const state = executionFixture()
+  try {
+    const tapLines = Array.from({ length: 40 }, (_, index) => `ok ${index + 1} - public.database_case_${index + 1}\t${'.'.repeat(8)}`)
+    const output = [
+      'community-app/supabase/tests/database.test.sql ..',
+      ...tapLines,
+      'All tests successful.',
+      'Files=13, Tests=1146,  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)',
+      'Result: PASS',
+      '',
+    ].join('\r\n')
+    assert.ok(Buffer.byteLength(output) >= 1_800 && Buffer.byteLength(output) < 2_000)
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.runner = async () => ({ code: 0, stdout: output, stderr: '' })
+
+    const evidence = await runReleaseGate(state.options, state.dependencies)
+
+    assert.deepEqual(evidence.databaseTests, {
+      steps: [{ name: 'test-database', count: 1146 }],
+      total: 1146,
+    })
+  } finally {
+    state.close()
+  }
+})
+
 test('test-database rejects a canonical prove PASS mixed with failure or ambiguous result markers', async () => {
   const prove = [
     'All tests successful.',
