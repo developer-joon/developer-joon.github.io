@@ -2394,3 +2394,39 @@ test('default runner suppresses raw child stdout and stderr from terminal and ev
     assert.equal(JSON.stringify(evidence).includes(secret), false, secret)
   }
 })
+
+test('package release entry invokes the root gate and rejects repository evidence before execution', () => {
+  const repoRoot = path.resolve(import.meta.dirname, '..')
+  const repositoryEvidence = path.join(repoRoot, '.release-evidence-must-not-exist.json')
+  rmSync(repositoryEvidence, { force: true })
+
+  try {
+    const result = spawnSync('npm', [
+      '--prefix',
+      'community-app',
+      'run',
+      'release:check',
+      '--',
+      '--mode',
+      'local',
+      '--evidence',
+      repositoryEvidence,
+    ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+      env: {
+        ...process.env,
+        VITE_SUPABASE_URL: 'https://package-entry-safety-blocker.supabase.co',
+      },
+    })
+
+    assert.equal(result.error, undefined)
+    assert.notEqual(result.status, 0)
+    assert.match(`${result.stdout}${result.stderr}`, /evidence.*outside.*repository/i)
+    assert.equal(lstatSync(repositoryEvidence, { throwIfNoEntry: false }), undefined)
+  } finally {
+    rmSync(repositoryEvidence, { force: true })
+  }
+})

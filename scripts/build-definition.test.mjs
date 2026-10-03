@@ -146,6 +146,29 @@ test('hourly snapshot workflow calls the sole Pages deployment workflow', async 
   assert.doesNotMatch(caller, /contents: write|SERVICE_ROLE/)
 })
 
+test('exposes one non-deploying release check without hosted-write package shortcuts', async () => {
+  const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'community-app/package.json'), 'utf8'))
+  const scripts = packageJson.scripts ?? {}
+
+  assert.equal(scripts['release:check'], 'node ../scripts/release-gate.mjs')
+  assert.deepEqual(Object.keys(scripts).filter((name) => name.startsWith('release:')), ['release:check'])
+  for (const [name, command] of Object.entries(scripts)) {
+    assert.doesNotMatch(name, /deploy|production|canary/i, `unsafe package script name: ${name}`)
+    assert.doesNotMatch(command, /\b(?:supabase\s+db\s+push|supabase\s+functions\s+deploy|community-production-canary|deploy-pages)\b/i, `hosted-write package shortcut: ${name}`)
+  }
+})
+
+test('ordinary CI and build paths remain fixture-backed and never invoke release check', async () => {
+  const workflowDirectory = path.join(repoRoot, '.github/workflows')
+  const workflowFiles = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'))
+  const workflows = await Promise.all(workflowFiles.map((file) => readFile(path.join(workflowDirectory, file), 'utf8')))
+  const build = await readFile(path.join(repoRoot, 'scripts/build-site.sh'), 'utf8')
+
+  assert.match(build, /COMMUNITY_SNAPSHOT_MODE:-fixture/)
+  assert.doesNotMatch(build, /release:check|release-gate\.mjs/)
+  for (const workflow of workflows) assert.doesNotMatch(workflow, /release:check|release-gate\.mjs/)
+})
+
 test('reproducibility verifier writes sorted manifests and rejects byte differences', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'site-repro-'))
   const first = path.join(root, 'first')

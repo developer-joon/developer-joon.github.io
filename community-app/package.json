@@ -18,7 +18,8 @@
     "db:test:public-listing-upgrade": "bash ../supabase/tests/public_listing_upgrade.sh",
     "db:test:community-snapshot-upgrade": "bash ../supabase/tests/community_snapshot_upgrade.sh",
     "db:lint": "supabase db lint --level error",
-    "db:stop": "supabase stop"
+    "db:stop": "supabase stop",
+    "release:check": "node ../scripts/release-gate.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.0",

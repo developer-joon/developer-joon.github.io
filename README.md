@@ -62,6 +62,14 @@ Docker 빌드는 고정된 `linux/amd64` 이미지와 UID 10001의 비-root 사�
 
 커뮤니티 release gate는 검증과 외부 evidence 생성만 담당합니다. The release gate never deploys or performs a hosted mutation. 각 변경은 runbook의 별도 수동 승인 경계를 따릅니다.
 
+저장소 밖의 evidence 경로를 명시해 실행합니다. 로컬 검증 예시는 다음과 같습니다.
+
+```bash
+npm --prefix community-app run release:check -- --mode local --evidence /tmp/breadlab-community-release-local.json
+```
+
+이 package entry point는 배포, hosted DB push, Function 배포, production write canary를 실행하지 않습니다. GitHub Pages 배포 경계는 계속 `.github/workflows/jekyll.yml` 하나이며, 일반 CI·사이트 빌드는 명시적으로 live snapshot mode를 선택하지 않는 한 fixture를 사용합니다.
+
 ## 관리 메모
 
 - 하드코딩된 글 수나 오래된 문구는 가능한 한 자동화된 값으로 교체하는 편이 좋습니다.
