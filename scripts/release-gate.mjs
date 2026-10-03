@@ -626,10 +626,27 @@ function databaseTestCount(stepName, result) {
   const output = [result.stdout, result.stderr]
     .map((value) => String(value ?? '').slice(-RUNNER_OUTPUT_LIMIT))
     .join('\n')
-  const summaries = output
-    .split(/\r?\n/)
+  const lines = output.split(/\r?\n/)
+  const standaloneSummaries = lines
     .map((line) => /^\s*Tests=(.*?)\s*$/.exec(line))
     .filter(Boolean)
+  const proveSummaries = []
+  const provePattern = /^\s*Files=([1-9]\d*), Tests=(\d+),\s+\d+(?:\.\d+)? wallclock secs \(\s*\d+(?:\.\d+)? usr\s+\d+(?:\.\d+)? sys \+\s+\d+(?:\.\d+)? cusr\s+\d+(?:\.\d+)? csys =\s+\d+(?:\.\d+)? CPU\)\s*$/
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^\s*Files=/.test(lines[index])) continue
+    const summary = provePattern.exec(lines[index])
+    if (!summary
+      || lines[index - 1]?.trim() !== 'All tests successful.'
+      || lines[index + 1]?.trim() !== 'Result: PASS') {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} must emit a valid prove aggregate summary`)
+    }
+    const files = Number(summary[1])
+    if (!Number.isSafeInteger(files)) {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} prove Files count must be a safe integer`)
+    }
+    proveSummaries.push(summary[2])
+  }
+  const summaries = [...standaloneSummaries.map((summary) => summary[1]), ...proveSummaries]
   if (summaries.length === 0) {
     if (stepName === 'test-database') {
       throw new ReleaseFailure(stepName, 'evidence', 'test-database must emit a Tests=<integer> summary')
@@ -637,10 +654,10 @@ function databaseTestCount(stepName, result) {
     return undefined
   }
   const counts = summaries.map((summary) => {
-    if (!/^\d+$/.test(summary[1])) {
+    if (!/^\d+$/.test(summary)) {
       throw new ReleaseFailure(stepName, 'evidence', `${stepName} must emit a valid Tests=<integer> summary`)
     }
-    const count = Number(summary[1])
+    const count = Number(summary)
     if (!Number.isSafeInteger(count)) {
       throw new ReleaseFailure(stepName, 'evidence', `${stepName} Tests count must be a safe integer`)
     }

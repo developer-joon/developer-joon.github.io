@@ -1591,6 +1591,124 @@ test('database helpers may omit summaries, stderr summaries are counted, and the
   }
 })
 
+test('canonical test-database accepts the real prove aggregate summary', async () => {
+  const state = executionFixture()
+  try {
+    const proveOutput = [
+      'All tests successful.',
+      'Files=13, Tests=1146,  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)',
+      'Result: PASS',
+      '',
+    ].join('\n')
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database' ? proveOutput : '',
+      stderr: '',
+    })
+
+    const evidence = await runReleaseGate(state.options, state.dependencies)
+
+    assert.deepEqual(evidence.databaseTests, {
+      steps: [{ name: 'test-database', count: 1146 }],
+      total: 1146,
+    })
+    assert.equal(JSON.stringify(evidence).includes('All tests successful'), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('prove summaries fail closed when malformed or unsafe', async () => {
+  const timing = '  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)'
+  for (const [label, summary, expected] of [
+    ['malformed test count', `Files=13, Tests=1.5,${timing}`, /valid prove.*summary/i],
+    ['non-positive file count', `Files=0, Tests=7,${timing}`, /valid prove.*summary/i],
+    ['unsafe test count', `Files=13, Tests=${Number.MAX_SAFE_INTEGER + 1},${timing}`, /safe integer/i],
+    ['missing pass result', `Files=13, Tests=7,${timing}\nResult: FAIL`, /valid prove.*summary/i],
+  ]) {
+    const state = executionFixture()
+    try {
+      const rawSecret = `private-${label.replaceAll(' ', '-')}@example.com`
+      state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+      state.dependencies.runner = async ({ name }) => ({
+        code: 0,
+        stdout: name === 'test-database'
+          ? `All tests successful.\n${summary}\n${summary.includes('\n') ? '' : 'Result: PASS\n'}${rawSecret}\n`
+          : '',
+      })
+
+      await assert.rejects(
+        runReleaseGate(state.options, state.dependencies),
+        (error) => expected.test(error.message) && !error.message.includes(rawSecret),
+        label,
+      )
+      assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false, label)
+      assert.equal(state.evidence().databaseTests, null, label)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('standalone and prove summaries must agree while identical prove duplicates are accepted', async () => {
+  const prove = [
+    'All tests successful.',
+    'Files=2, Tests=7,  1 wallclock secs ( 0.01 usr  0.02 sys +  0.03 cusr  0.04 csys =  0.10 CPU)',
+    'Result: PASS',
+  ].join('\n')
+
+  const conflict = executionFixture()
+  try {
+    conflict.dependencies.plan = compactPlan('local', conflict.evidence, ['test-database'])
+    conflict.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database' ? `Tests=8\n${prove}\n` : '',
+    })
+    await assert.rejects(runReleaseGate(conflict.options, conflict.dependencies), /conflicting Tests=<integer> summaries/i)
+    assert.equal(conflict.evidence().databaseTests, null)
+  } finally {
+    conflict.close()
+  }
+
+  const duplicate = executionFixture()
+  try {
+    duplicate.dependencies.plan = compactPlan('local', duplicate.evidence, ['test-database'])
+    duplicate.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database' ? `${prove}\n${prove}\n` : '',
+    })
+    const evidence = await runReleaseGate(duplicate.options, duplicate.dependencies)
+    assert.deepEqual(evidence.databaseTests, {
+      steps: [{ name: 'test-database', count: 7 }],
+      total: 7,
+    })
+  } finally {
+    duplicate.close()
+  }
+})
+
+test('embedded prove-like user output is not treated as a database summary or retained', async () => {
+  const state = executionFixture()
+  try {
+    const rawOutput = 'private user text: Files=13, Tests=1146,  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)'
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database' ? `${rawOutput}\nResult: PASS\n` : '',
+    })
+
+    await assert.rejects(
+      runReleaseGate(state.options, state.dependencies),
+      (error) => /must emit a Tests=<integer> summary/i.test(error.message) && !error.message.includes(rawOutput),
+    )
+    assert.equal(JSON.stringify(state.evidence()).includes(rawOutput), false)
+    assert.equal(state.evidence().databaseTests, null)
+  } finally {
+    state.close()
+  }
+})
+
 test('database helper summaries fail closed when explicitly malformed or unsafe', async () => {
   for (const [summary, expected] of [
     ['Tests=1.5\n', /Tests=/i],
