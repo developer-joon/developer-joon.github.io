@@ -92,7 +92,7 @@ function rejectPrivilegedEnvironment(env) {
 }
 
 function validateEvidencePath(evidencePath, context) {
-  const { repoRoot, lstatSync, realpathSync } = context
+  const { repoRoot, lstatSync, realpathSync, accessSync: checkAccess } = context
   if (!path.isAbsolute(repoRoot)) throw new Error('context.repoRoot must be absolute')
   if (typeof lstatSync !== 'function' || typeof realpathSync !== 'function') {
     throw new Error('context must provide lstatSync and realpathSync')
@@ -110,6 +110,20 @@ function validateEvidencePath(evidencePath, context) {
 
   const canonicalRepo = realpathSync(repoRoot)
   const parent = realpathSync(path.dirname(absoluteEvidence))
+  if (typeof checkAccess === 'function') {
+    try {
+      checkAccess(parent, constants.W_OK)
+    } catch {
+      throw new Error('evidence output parent must be writable')
+    }
+    if (evidenceStat) {
+      try {
+        checkAccess(absoluteEvidence, constants.W_OK)
+      } catch {
+        throw new Error('existing evidence output must be writable')
+      }
+    }
+  }
   const canonicalEvidence = evidenceStat ? realpathSync(absoluteEvidence) : path.join(parent, path.basename(absoluteEvidence))
   const relative = path.relative(canonicalRepo, canonicalEvidence)
   if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
@@ -270,6 +284,7 @@ const EVIDENCE_KEYS = [
   'productionProjectFingerprint',
   'artifactManifest',
   'databaseTests',
+  'readinessEvidence',
   'steps',
   'failure',
 ].sort()
@@ -278,9 +293,14 @@ const FAILURE_EVIDENCE_KEYS = ['step', 'kind', 'message'].sort()
 const ARTIFACT_MANIFEST_KEYS = ['sha256', 'fileCount'].sort()
 const DATABASE_TESTS_KEYS = ['steps', 'total'].sort()
 const DATABASE_TEST_KEYS = ['name', 'count'].sort()
-const READINESS_COMMON_KEYS = ['schemaVersion', 'type', 'mode', 'status', 'revision', 'timestamp']
+const READINESS_COMMON_KEYS = ['schemaVersion', 'type', 'mode', 'status', 'revision', 'finishedAt']
 const LOCAL_READINESS_KEYS = [...READINESS_COMMON_KEYS].sort()
-const HOSTED_READINESS_KEYS = [...READINESS_COMMON_KEYS, 'projectFingerprint'].sort()
+const DEVELOPMENT_READINESS_KEYS = [...READINESS_COMMON_KEYS, 'projectFingerprint'].sort()
+const PRODUCTION_BACKUP_READINESS_KEYS = [...READINESS_COMMON_KEYS, 'projectFingerprint', 'backupChecksum'].sort()
+const READINESS_EVIDENCE_KEYS = ['localE2e', 'developmentIntegration', 'productionBackup'].sort()
+const LOCAL_READINESS_OUTPUT_KEYS = ['revision', 'finishedAt'].sort()
+const DEVELOPMENT_READINESS_OUTPUT_KEYS = ['revision', 'finishedAt', 'projectFingerprint'].sort()
+const PRODUCTION_BACKUP_READINESS_OUTPUT_KEYS = ['revision', 'finishedAt', 'projectFingerprint', 'backupChecksum'].sort()
 const REVISION = /^[a-f0-9]{40}$/
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 const READINESS_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -355,6 +375,29 @@ export function validateEvidence(evidence) {
     }
     if (evidence.databaseTests.total !== total) throw new Error('release evidence databaseTests total is invalid')
   }
+  if (evidence.mode !== 'production-readiness') {
+    if (evidence.readinessEvidence !== null) throw new Error('non-production release readinessEvidence must be null')
+  } else if (evidence.status === 'failed' && evidence.readinessEvidence === null) {
+    // Failed validation has no trustworthy source set to publish.
+  } else {
+    exactKeys(evidence.readinessEvidence, READINESS_EVIDENCE_KEYS, 'readiness')
+    const readiness = evidence.readinessEvidence
+    exactKeys(readiness.localE2e, LOCAL_READINESS_OUTPUT_KEYS, 'local E2E readiness')
+    exactKeys(readiness.developmentIntegration, DEVELOPMENT_READINESS_OUTPUT_KEYS, 'development integration readiness')
+    exactKeys(readiness.productionBackup, PRODUCTION_BACKUP_READINESS_OUTPUT_KEYS, 'production backup readiness')
+    for (const item of Object.values(readiness)) {
+      if (item.revision !== evidence.revision || !validTime(item.finishedAt)) {
+        throw new Error('release readiness evidence revision or finishedAt is invalid')
+      }
+    }
+    if (readiness.developmentIntegration.projectFingerprint !== evidence.developmentProjectFingerprint
+      || readiness.productionBackup.projectFingerprint !== evidence.productionProjectFingerprint) {
+      throw new Error('release readiness evidence project fingerprint is invalid')
+    }
+    if (!SHA256.test(readiness.productionBackup.backupChecksum)) {
+      throw new Error('release readiness evidence backupChecksum is invalid')
+    }
+  }
   if (!Array.isArray(evidence.steps)) throw new Error('release evidence steps must be an array')
   for (const item of evidence.steps) {
     exactKeys(item, STEP_EVIDENCE_KEYS, 'step')
@@ -387,7 +430,7 @@ function timestamp(clock) {
 }
 
 function validateReadinessInput(evidence, expected, revision, now) {
-  exactKeys(evidence, expected.projectFingerprint === undefined ? LOCAL_READINESS_KEYS : HOSTED_READINESS_KEYS, expected.label)
+  exactKeys(evidence, expected.keys, expected.label)
   if (evidence.schemaVersion !== 1) throw new Error(`${expected.label} evidence schemaVersion must be 1`)
   if (evidence.type !== expected.type) throw new Error(`${expected.label} evidence type must be ${expected.type}`)
   if (evidence.mode !== expected.mode) throw new Error(`${expected.label} evidence mode must be ${expected.mode}`)
@@ -395,14 +438,17 @@ function validateReadinessInput(evidence, expected, revision, now) {
   if (!REVISION.test(evidence.revision) || evidence.revision !== revision) {
     throw new Error(`${expected.label} evidence revision must match the current full revision`)
   }
-  if (!validTime(evidence.timestamp)) throw new Error(`${expected.label} evidence timestamp must be a UTC timestamp`)
-  const evidenceTime = Date.parse(evidence.timestamp)
-  if (evidenceTime > now.valueOf()) throw new Error(`${expected.label} evidence timestamp must not be in the future`)
+  if (!validTime(evidence.finishedAt)) throw new Error(`${expected.label} evidence finishedAt must be a UTC timestamp`)
+  const evidenceTime = Date.parse(evidence.finishedAt)
+  if (evidenceTime > now.valueOf()) throw new Error(`${expected.label} evidence finishedAt must not be in the future`)
   if (now.valueOf() - evidenceTime > READINESS_MAX_AGE_MS) {
     throw new Error(`${expected.label} evidence must be no more than 24 hours old`)
   }
   if (expected.projectFingerprint !== undefined && evidence.projectFingerprint !== expected.projectFingerprint) {
     throw new Error(`${expected.label} evidence ${expected.identity} fingerprint does not match the approved fingerprint`)
+  }
+  if (expected.backupChecksum && !SHA256.test(evidence.backupChecksum ?? '')) {
+    throw new Error(`${expected.label} evidence backup checksum must be a lowercase SHA-256 checksum`)
   }
 }
 
@@ -416,6 +462,8 @@ async function validateProductionReadinessEvidence(options, filesystem, revision
       label: 'local E2E',
       type: 'local-e2e',
       mode: 'local',
+      keys: LOCAL_READINESS_KEYS,
+      outputKey: 'localE2e',
     },
     {
       path: options.developmentCloudIntegrationEvidencePath,
@@ -424,6 +472,8 @@ async function validateProductionReadinessEvidence(options, filesystem, revision
       mode: 'development',
       identity: 'development',
       projectFingerprint: options.developmentProjectFingerprint,
+      keys: DEVELOPMENT_READINESS_KEYS,
+      outputKey: 'developmentIntegration',
     },
     {
       path: options.productionBackupEvidencePath,
@@ -432,9 +482,13 @@ async function validateProductionReadinessEvidence(options, filesystem, revision
       mode: 'production-readiness',
       identity: 'production',
       projectFingerprint: options.productionProjectFingerprint,
+      backupChecksum: true,
+      keys: PRODUCTION_BACKUP_READINESS_KEYS,
+      outputKey: 'productionBackup',
     },
   ]
 
+  const readinessEvidence = {}
   for (const expected of inputs) {
     let contents
     try {
@@ -457,8 +511,14 @@ async function validateProductionReadinessEvidence(options, filesystem, revision
     } catch (error) {
       throw new ReleaseFailure('validate-production-readiness-evidence', 'evidence', error.message)
     }
+    readinessEvidence[expected.outputKey] = {
+      revision: evidence.revision,
+      finishedAt: evidence.finishedAt,
+      ...(expected.projectFingerprint === undefined ? {} : { projectFingerprint: evidence.projectFingerprint }),
+      ...(expected.backupChecksum ? { backupChecksum: evidence.backupChecksum } : {}),
+    }
   }
-  return { code: 0 }
+  return { code: 0, readinessEvidence }
 }
 
 function safeFailure(step, result) {
@@ -466,6 +526,36 @@ function safeFailure(step, result) {
   const subject = sentinel ?? step.name
   const exit = Number.isInteger(result?.code) ? `exit code ${result.code}` : `signal ${result?.signal ?? 'unknown'}`
   return new ReleaseFailure(step.name, sentinel ? 'sentinel' : 'command', `${subject} failed with ${exit}`)
+}
+
+function databaseTestCount(stepName, result) {
+  const output = [result.stdout, result.stderr]
+    .map((value) => String(value ?? '').slice(-RUNNER_OUTPUT_LIMIT))
+    .join('\n')
+  const summaries = output
+    .split(/\r?\n/)
+    .map((line) => /^\s*Tests=(.*?)\s*$/.exec(line))
+    .filter(Boolean)
+  if (summaries.length === 0) {
+    if (stepName === 'test-database') {
+      throw new ReleaseFailure(stepName, 'evidence', 'test-database must emit a Tests=<integer> summary')
+    }
+    return undefined
+  }
+  const counts = summaries.map((summary) => {
+    if (!/^\d+$/.test(summary[1])) {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} must emit a valid Tests=<integer> summary`)
+    }
+    const count = Number(summary[1])
+    if (!Number.isSafeInteger(count)) {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} Tests count must be a safe integer`)
+    }
+    return count
+  })
+  if (new Set(counts).size !== 1) {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} emitted conflicting Tests=<integer> summaries`)
+  }
+  return counts[0]
 }
 
 function cleanupStep() {
@@ -619,14 +709,32 @@ export async function runReleaseGate(options, dependencies = {}) {
     throw new Error('selected output evidence must differ from production-readiness input evidence paths')
   }
   try {
+    await filesystem.writeFile(
+      options.evidencePath,
+      '{"schemaVersion":0,"status":"invalidated"}\n',
+      { mode: 0o600, flag: 'w', flush: true },
+    )
+  } catch {
+    throw new ReleaseFailure(
+      'invalidate-release-evidence',
+      'evidence',
+      'could not invalidate: write an evidence tombstone failed; verify the output file is writable',
+    )
+  }
+  try {
     await filesystem.rm(options.evidencePath, { force: true })
   } catch {
-    throw new ReleaseFailure('invalidate-release-evidence', 'evidence', 'could not invalidate existing release evidence')
+    throw new ReleaseFailure(
+      'invalidate-release-evidence',
+      'evidence',
+      'could not invalidate existing release evidence after tombstoning; verify the output parent is writable',
+    )
   }
 
   const started = timestamp(clock)
   const steps = []
   let artifactManifest = null
+  let readinessEvidence = null
   const databaseTestSteps = []
   let primaryFailure
   let cleanupFailure
@@ -644,6 +752,7 @@ export async function runReleaseGate(options, dependencies = {}) {
           throw new ReleaseFailure(releaseStep.name, 'configuration', `unsupported internal release step: ${releaseStep.name}`)
         }
         result = await validateProductionReadinessEvidence(options, filesystem, revision, stepStarted)
+        readinessEvidence = result.readinessEvidence
       } else {
         result = releaseStep.name === 'development-read-only-health'
           ? await runHostedProbes(options, dependencies)
@@ -658,16 +767,8 @@ export async function runReleaseGate(options, dependencies = {}) {
       }
       if (releaseStep.name === 'repository-preflight') await executablePreflight(plan, repoRoot)
       if (DATABASE_TEST_STEPS.has(releaseStep.name)) {
-        const stdout = String(result.stdout ?? '').slice(-RUNNER_OUTPUT_LIMIT)
-        const summaries = [...stdout.matchAll(/^\s*Tests=(\d+)\s*$/gm)]
-        if (summaries.length !== 1) {
-          throw new ReleaseFailure(releaseStep.name, 'evidence', `${releaseStep.name} must emit exactly one Tests=<integer> summary`)
-        }
-        const count = Number(summaries[0][1])
-        if (!Number.isSafeInteger(count)) {
-          throw new ReleaseFailure(releaseStep.name, 'evidence', `${releaseStep.name} Tests count must be a safe integer`)
-        }
-        databaseTestSteps.push({ name: releaseStep.name, count })
+        const count = databaseTestCount(releaseStep.name, result)
+        if (count !== undefined) databaseTestSteps.push({ name: releaseStep.name, count })
       }
       if (releaseStep.name === 'verify-site-reproducibility') {
         const manifestPaths = [
@@ -755,6 +856,7 @@ export async function runReleaseGate(options, dependencies = {}) {
           total: databaseTestSteps.reduce((total, item) => total + item.count, 0),
         }
       : null,
+    readinessEvidence,
     steps,
     failure: failure ? { step: failure.stepName, kind: failure.kind, message: failure.message } : null,
   }
@@ -795,6 +897,7 @@ async function main() {
     packageJson,
     lstatSync,
     realpathSync,
+    accessSync,
   })
   const revisionResult = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8', shell: false })
   if (revisionResult.status !== 0) throw new Error('unable to determine release Git revision')

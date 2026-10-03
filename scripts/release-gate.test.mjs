@@ -205,6 +205,24 @@ test('rejects existing evidence targets that are not regular files', () => {
   }
 })
 
+test('output preflight rejects a target whose parent is not writable when access checks are available', () => {
+  const state = fixture()
+  try {
+    const parent = path.dirname(state.evidence)
+    assert.throws(
+      () => parseReleaseOptions(['--evidence', state.evidence], {}, {
+        ...state.context,
+        accessSync(candidate) {
+          if (candidate === parent) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+        },
+      }),
+      /evidence output parent.*writable/i,
+    )
+  } finally {
+    state.close()
+  }
+})
+
 test('development requires an exact hosted HTTPS URL and explicit cloud-read opt-in', () => {
   assert.throws(
     () => parse(['--mode', 'development', '--evidence', '$EVIDENCE']),
@@ -478,7 +496,7 @@ function readinessInputs(state, overrides = {}) {
     schemaVersion: 1,
     status: 'passed',
     revision: state.dependencies.revision,
-    timestamp: '2026-10-02T12:00:00.000Z',
+    finishedAt: '2026-10-02T12:00:00.000Z',
   }
   return {
     [state.readinessEvidence.local]: {
@@ -499,6 +517,7 @@ function readinessInputs(state, overrides = {}) {
       type: 'production-backup',
       mode: 'production-readiness',
       projectFingerprint: state.options.productionProjectFingerprint,
+      backupChecksum: 'b'.repeat(64),
       ...overrides.backup,
     },
   }
@@ -521,6 +540,23 @@ test('production readiness validates external evidence offline without runner or
     assert.equal(evidence.status, 'passed')
     assert.equal(evidence.developmentProjectFingerprint, state.options.developmentProjectFingerprint)
     assert.equal(evidence.productionProjectFingerprint, state.options.productionProjectFingerprint)
+    assert.deepEqual(evidence.readinessEvidence, {
+      localE2e: {
+        revision: state.dependencies.revision,
+        finishedAt: '2026-10-02T12:00:00.000Z',
+      },
+      developmentIntegration: {
+        revision: state.dependencies.revision,
+        finishedAt: '2026-10-02T12:00:00.000Z',
+        projectFingerprint: state.options.developmentProjectFingerprint,
+      },
+      productionBackup: {
+        revision: state.dependencies.revision,
+        finishedAt: '2026-10-02T12:00:00.000Z',
+        projectFingerprint: state.options.productionProjectFingerprint,
+        backupChecksum: 'b'.repeat(64),
+      },
+    })
     assert.deepEqual(evidence.steps.map(({ name }) => name), ['validate-production-readiness-evidence'])
     assert.deepEqual(reads, [
       state.readinessEvidence.local,
@@ -543,13 +579,14 @@ test('production readiness rejects malformed, failed, stale, future, revision-mi
     ['type', { local: { type: 'other' } }, /type/i],
     ['mode', { local: { mode: 'development' } }, /mode.*local/i],
     ['successful status', { local: { status: 'failed' } }, /status.*passed/i],
-    ['UTC timestamp', { local: { timestamp: '2026-10-02 12:00:00' } }, /UTC timestamp/i],
-    ['calendar-valid timestamp', { local: { timestamp: '2026-02-30T12:00:00.000Z' } }, /UTC timestamp/i],
-    ['freshness', { local: { timestamp: '2026-10-01T23:59:59.000Z' } }, /24 hours/i],
-    ['future timestamp', { local: { timestamp: '2026-10-03T00:00:01.000Z' } }, /future/i],
+    ['UTC finishedAt', { local: { finishedAt: '2026-10-02 12:00:00' } }, /UTC.*finishedAt|finishedAt.*UTC/i],
+    ['calendar-valid finishedAt', { local: { finishedAt: '2026-02-30T12:00:00.000Z' } }, /UTC.*finishedAt|finishedAt.*UTC/i],
+    ['freshness', { local: { finishedAt: '2026-10-01T23:59:59.000Z' } }, /24 hours/i],
+    ['future finishedAt', { local: { finishedAt: '2026-10-03T00:00:01.000Z' } }, /future/i],
     ['revision', { local: { revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }, /revision.*current/i],
     ['development fingerprint', { development: { projectFingerprint: projectFingerprint(PRODUCTION_URL) } }, /development.*fingerprint/i],
     ['production fingerprint', { backup: { projectFingerprint: projectFingerprint(DEVELOPMENT_URL) } }, /production.*fingerprint/i],
+    ['production backup checksum', { backup: { backupChecksum: 'not-a-checksum' } }, /backup.*checksum.*SHA-256/i],
   ]
   for (const [label, overrides, expected] of cases) {
     const state = executionFixture('production-readiness')
@@ -567,6 +604,21 @@ test('production readiness rejects malformed, failed, stale, future, revision-mi
     } finally {
       state.close()
     }
+  }
+})
+
+test('production readiness rejects a missing backup checksum', async () => {
+  const state = executionFixture('production-readiness')
+  try {
+    const inputs = readinessInputs(state)
+    delete inputs[state.readinessEvidence.backup].backupChecksum
+    state.dependencies.clock = () => new Date('2026-10-03T00:00:00.000Z')
+    state.dependencies.filesystem.readFile = async (file) => JSON.stringify(inputs[file])
+    await assert.rejects(runReleaseGate(state.options, state.dependencies), /production backup.*exact keys|backup.*checksum/i)
+    assert.equal(state.evidence().status, 'failed')
+    assert.equal(state.evidence().readinessEvidence, null)
+  } finally {
+    state.close()
   }
 })
 
@@ -896,6 +948,7 @@ test('evidence schema rejects missing, unknown, and malformed keys', () => {
     productionProjectFingerprint: null,
     artifactManifest: { sha256: 'a'.repeat(64), fileCount: 2 },
     databaseTests: { steps: [{ name: 'test-database', count: 7 }], total: 7 },
+    readinessEvidence: null,
     steps: [{ name: 'check', status: 'passed', startedAt: '2026-10-03T00:00:00.000Z', finishedAt: '2026-10-03T00:00:01.000Z', durationMs: 1000 }],
     failure: null,
   }
@@ -920,7 +973,7 @@ test('evidence has revision, mode, UTC timing, step durations, artifact and data
     const evidence = state.evidence()
     assert.deepEqual(Object.keys(evidence).sort(), [
       'artifactManifest', 'databaseTests', 'developmentProjectFingerprint', 'durationMs', 'failure', 'finishedAt', 'mode',
-      'productionProjectFingerprint', 'revision', 'schemaVersion', 'startedAt', 'status', 'steps',
+      'productionProjectFingerprint', 'readinessEvidence', 'revision', 'schemaVersion', 'startedAt', 'status', 'steps',
     ])
     assert.equal(evidence.revision, state.dependencies.revision)
     assert.equal(evidence.mode, 'development')
@@ -930,6 +983,7 @@ test('evidence has revision, mode, UTC timing, step durations, artifact and data
     assert.ok(evidence.steps.every((step) => Number.isInteger(step.durationMs)))
     assert.equal(evidence.artifactManifest, null)
     assert.equal(evidence.databaseTests, null)
+    assert.equal(evidence.readinessEvidence, null)
   } finally {
     state.close()
   }
@@ -1074,6 +1128,69 @@ test('fails closed when passed reproducibility manifests are missing, mismatched
   }
 })
 
+test('database helpers may omit summaries, stderr summaries are counted, and the real plan continues past storage upgrade', async () => {
+  const state = executionFixture()
+  try {
+    const calls = []
+    const rawDetail = 'private-storage-upgrade-detail@example.com'
+    state.dependencies.plan = compactPlan('local', state.evidence, [
+      'test-storage-upgrade',
+      'test-public-listing-upgrade',
+      'test-database',
+      'after-database',
+    ])
+    state.dependencies.runner = async ({ name }) => {
+      calls.push(name)
+      if (name === 'test-storage-upgrade') return { code: 0, stdout: `ok - upgraded\n${rawDetail}\n`, stderr: '' }
+      if (name === 'test-public-listing-upgrade') return { code: 0, stdout: '', stderr: 'ok 1\nTests=3\n' }
+      if (name === 'test-database') return { code: 0, stdout: '', stderr: '1..7\nTests=7\n' }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+
+    const evidence = await runReleaseGate(state.options, state.dependencies)
+
+    assert.deepEqual(calls, [
+      'test-storage-upgrade',
+      'test-public-listing-upgrade',
+      'test-database',
+      'after-database',
+      'cleanup-local-supabase',
+    ])
+    assert.deepEqual(evidence.databaseTests, {
+      steps: [
+        { name: 'test-public-listing-upgrade', count: 3 },
+        { name: 'test-database', count: 7 },
+      ],
+      total: 10,
+    })
+    assert.equal(JSON.stringify(evidence).includes(rawDetail), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('database helper summaries fail closed when explicitly malformed or unsafe', async () => {
+  for (const [summary, expected] of [
+    ['Tests=1.5\n', /Tests=/i],
+    [`Tests=${Number.MAX_SAFE_INTEGER + 1}\n`, /safe integer/i],
+  ]) {
+    const state = executionFixture()
+    try {
+      state.dependencies.plan = compactPlan('local', state.evidence, ['test-storage-upgrade', 'never'])
+      state.dependencies.runner = async ({ name }) => ({
+        code: 0,
+        stdout: name === 'test-storage-upgrade' ? summary : '',
+        stderr: '',
+      })
+      await assert.rejects(runReleaseGate(state.options, state.dependencies), expected)
+      assert.equal(state.evidence().databaseTests, null)
+      assert.deepEqual(state.evidence().steps.map(({ name }) => name), ['test-storage-upgrade', 'cleanup-local-supabase'])
+    } finally {
+      state.close()
+    }
+  }
+})
+
 test('database test counts are null before tests and malformed or unsafe summaries fail closed', async () => {
   for (const [stdout, expected] of [
     ['', /Tests=/i],
@@ -1129,11 +1246,12 @@ test('development body timeout uses resume guidance without fallback or body per
   }
 })
 
-test('invalidates selected stale evidence before steps and refuses to run when invalidation fails', async () => {
+test('tombstones stale success before removal and runs no steps when removal fails', async () => {
   const state = executionFixture()
   try {
     const calls = []
-    state.writes.set(state.options.evidencePath, JSON.stringify({ status: 'passed', stale: true }))
+    const staleSuccess = JSON.stringify({ status: 'passed', stale: true })
+    state.writes.set(state.options.evidencePath, staleSuccess)
     state.dependencies.plan = compactPlan('local', state.options.evidencePath, ['never'])
     state.dependencies.filesystem.rm = async (file) => {
       if (file === state.options.evidencePath) throw new Error('cannot invalidate output')
@@ -1144,6 +1262,38 @@ test('invalidates selected stale evidence before steps and refuses to run when i
     }
     await assert.rejects(runReleaseGate(state.options, state.dependencies), /invalidate.*evidence/i)
     assert.deepEqual(calls, [])
+    const remaining = state.writes.get(state.options.evidencePath)
+    assert.notEqual(remaining, staleSuccess)
+    assert.equal(/"status"\s*:\s*"passed"/.test(remaining), false)
+    assert.throws(() => validateEvidence(JSON.parse(remaining)), /evidence/i)
+  } finally {
+    state.close()
+  }
+})
+
+test('runs no steps or removal when stale evidence cannot be tombstoned', async () => {
+  const state = executionFixture()
+  try {
+    const calls = []
+    const removals = []
+    const staleSuccess = JSON.stringify({ status: 'passed', stale: true })
+    state.writes.set(state.options.evidencePath, staleSuccess)
+    state.dependencies.plan = compactPlan('local', state.options.evidencePath, ['never'])
+    state.dependencies.filesystem.writeFile = async (file) => {
+      if (file === state.options.evidencePath) throw new Error('target is not writable')
+      throw new Error('unexpected publication write')
+    }
+    state.dependencies.filesystem.rm = async (file) => removals.push(file)
+    state.dependencies.runner = async ({ name }) => {
+      calls.push(name)
+      return { code: 0 }
+    }
+
+    await assert.rejects(runReleaseGate(state.options, state.dependencies), /invalidate.*write.*evidence/i)
+
+    assert.deepEqual(calls, [])
+    assert.deepEqual(removals, [])
+    assert.equal(state.writes.get(state.options.evidencePath), staleSuccess)
   } finally {
     state.close()
   }
@@ -1158,7 +1308,7 @@ test('publication write or rename failure cannot leave pre-existing success evid
       const baseWrite = state.dependencies.filesystem.writeFile
       state.dependencies.filesystem.rm = async (file) => state.writes.delete(file)
       state.dependencies.filesystem.writeFile = async (file, contents) => {
-        if (scenario === 'write') throw new Error('publication write failed')
+        if (scenario === 'write' && file !== state.options.evidencePath) throw new Error('publication write failed')
         return baseWrite(file, contents)
       }
       state.dependencies.filesystem.rename = async () => { throw new Error('publication rename failed') }
