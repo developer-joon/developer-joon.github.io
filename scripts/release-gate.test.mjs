@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { lstatSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { lstatSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -45,6 +45,12 @@ function fixture() {
   const evidenceRoot = path.join(root, 'evidence')
   mkdirSync(repoRoot)
   mkdirSync(evidenceRoot)
+  const readinessEvidence = {
+    local: path.join(evidenceRoot, 'local-e2e.json'),
+    development: path.join(evidenceRoot, 'development-cloud-integration.json'),
+    backup: path.join(evidenceRoot, 'production-backup.json'),
+  }
+  for (const evidencePath of Object.values(readinessEvidence)) writeFileSync(evidencePath, '{}\n')
   const context = {
     repoRoot,
     nodeVersion: '24.15.0',
@@ -56,6 +62,7 @@ function fixture() {
     root,
     repoRoot,
     evidence: path.join(evidenceRoot, 'release.json'),
+    readinessEvidence,
     context,
     close: () => rmSync(root, { recursive: true, force: true }),
   }
@@ -64,13 +71,35 @@ function fixture() {
 function parse(argv = [], env = {}, updateContext = {}) {
   const state = fixture()
   try {
+    const resolvedEnv = Object.fromEntries(Object.entries(env).map(([name, value]) => [
+      name,
+      value === '$LOCAL_EVIDENCE'
+        ? state.readinessEvidence.local
+        : value === '$DEVELOPMENT_EVIDENCE'
+          ? state.readinessEvidence.development
+          : value === '$BACKUP_EVIDENCE'
+            ? state.readinessEvidence.backup
+            : value,
+    ]))
     return parseReleaseOptions(
       argv.length === 0 ? ['--evidence', state.evidence] : argv.map((value) => value === '$EVIDENCE' ? state.evidence : value),
-      env,
+      resolvedEnv,
       { ...state.context, ...updateContext },
     )
   } finally {
     state.close()
+  }
+}
+
+function productionEnv(overrides = {}) {
+  return {
+    DEVELOPMENT_PROJECT_FINGERPRINT: projectFingerprint(DEVELOPMENT_URL),
+    PRODUCTION_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
+    LOCAL_E2E_EVIDENCE_PATH: '$LOCAL_EVIDENCE',
+    DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH: '$DEVELOPMENT_EVIDENCE',
+    PRODUCTION_BACKUP_EVIDENCE_PATH: '$BACKUP_EVIDENCE',
+    ALLOW_PRODUCTION_READINESS: '1',
+    ...overrides,
   }
 }
 
@@ -80,16 +109,27 @@ test('defaults to local mode and builds the exact ordered local plan', () => {
   assert.deepEqual(buildReleasePlan(options).steps.map(({ name }) => name), LOCAL_STEP_NAMES)
 })
 
+test('development plan runs the exhaustive local core before hosted probes and its Task 16 sentinel', () => {
+  const options = parse(
+    ['--mode', 'development', '--evidence', '$EVIDENCE'],
+    { DEVELOPMENT_SUPABASE_URL: DEVELOPMENT_URL, ALLOW_DEVELOPMENT_CLOUD_READS: '1' },
+  )
+  const names = buildReleasePlan(options).steps.map(({ name }) => name)
+  assert.deepEqual(names, [
+    ...LOCAL_STEP_NAMES.slice(0, -1),
+    'development-read-only-health',
+    'development-integration',
+  ])
+  assert.equal(names.includes('local-e2e'), false)
+  assert.ok(names.indexOf('development-read-only-health') > names.indexOf('verify-site-reproducibility'))
+})
+
 test('accepts only the three release modes', () => {
   for (const mode of ['local', 'development', 'production-readiness']) {
     const env = mode === 'development'
       ? { DEVELOPMENT_SUPABASE_URL: DEVELOPMENT_URL, ALLOW_DEVELOPMENT_CLOUD_READS: '1' }
       : mode === 'production-readiness'
-        ? {
-            DEVELOPMENT_PROJECT_FINGERPRINT: projectFingerprint(DEVELOPMENT_URL),
-            PRODUCTION_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
-            ALLOW_PRODUCTION_READINESS: '1',
-          }
+        ? productionEnv()
         : {}
     assert.equal(parse(['--mode', mode, '--evidence', '$EVIDENCE'], env).mode, mode)
   }
@@ -228,50 +268,99 @@ test('production readiness requires opt-in and distinct canonical project finger
   assert.throws(
     () => parse(
       ['--mode', 'production-readiness', '--evidence', '$EVIDENCE'],
-      {
-        ...fingerprints,
+      productionEnv({
         PRODUCTION_PROJECT_FINGERPRINT: fingerprints.DEVELOPMENT_PROJECT_FINGERPRINT,
-        ALLOW_PRODUCTION_READINESS: '1',
-      },
+      }),
     ),
     /must be distinct/i,
   )
   assert.throws(
     () => parse(
       ['--mode', 'production-readiness', '--evidence', '$EVIDENCE'],
-      { ...fingerprints, DEVELOPMENT_PROJECT_FINGERPRINT: 'not-a-digest', ALLOW_PRODUCTION_READINESS: '1' },
+      productionEnv({ DEVELOPMENT_PROJECT_FINGERPRINT: 'not-a-digest' }),
     ),
     /SHA-256 fingerprint/i,
   )
 })
 
 test('production readiness rejects URL and explicit fingerprint disagreements before identity comparison', () => {
-  const optIn = { ALLOW_PRODUCTION_READINESS: '1' }
   assert.throws(
     () => parse(
       ['--mode', 'production-readiness', '--evidence', '$EVIDENCE'],
-      {
-        ...optIn,
+      productionEnv({
         DEVELOPMENT_SUPABASE_URL: DEVELOPMENT_URL,
         DEVELOPMENT_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
-        PRODUCTION_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
-      },
+      }),
     ),
     /DEVELOPMENT_PROJECT_FINGERPRINT must match DEVELOPMENT_SUPABASE_URL/i,
   )
   assert.throws(
     () => parse(
       ['--mode', 'production-readiness', '--evidence', '$EVIDENCE'],
-      {
-        ...optIn,
+      productionEnv({
         DEVELOPMENT_SUPABASE_URL: DEVELOPMENT_URL,
         DEVELOPMENT_PROJECT_FINGERPRINT: projectFingerprint(DEVELOPMENT_URL),
         PRODUCTION_SUPABASE_URL: DEVELOPMENT_URL,
-        PRODUCTION_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
-      },
+      }),
     ),
     /PRODUCTION_PROJECT_FINGERPRINT must match PRODUCTION_SUPABASE_URL/i,
   )
+})
+
+test('production readiness requires all three external evidence paths with actionable names', () => {
+  for (const name of [
+    'LOCAL_E2E_EVIDENCE_PATH',
+    'DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH',
+    'PRODUCTION_BACKUP_EVIDENCE_PATH',
+  ]) {
+    assert.throws(
+      () => parse(
+        ['--mode', 'production-readiness', '--evidence', '$EVIDENCE'],
+        productionEnv({ [name]: undefined }),
+      ),
+      new RegExp(`missing production-readiness evidence.*${name}`, 'i'),
+    )
+  }
+})
+
+test('production readiness evidence inputs must be external regular non-symlink files', () => {
+  const state = fixture()
+  try {
+    const base = {
+      ...productionEnv(),
+      LOCAL_E2E_EVIDENCE_PATH: state.readinessEvidence.local,
+      DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH: state.readinessEvidence.development,
+      PRODUCTION_BACKUP_EVIDENCE_PATH: state.readinessEvidence.backup,
+    }
+    const symlink = path.join(path.dirname(state.evidence), 'local-symlink.json')
+    symlinkSync(state.readinessEvidence.local, symlink)
+    for (const invalid of [
+      symlink,
+      state.repoRoot,
+      path.join(state.repoRoot, 'inside.json'),
+      path.join(path.dirname(state.evidence), 'missing.json'),
+    ]) {
+      if (invalid.endsWith('inside.json')) writeFileSync(invalid, '{}\n')
+      assert.throws(
+        () => parseReleaseOptions(
+          ['--mode', 'production-readiness', '--evidence', state.evidence],
+          { ...base, LOCAL_E2E_EVIDENCE_PATH: invalid },
+          state.context,
+        ),
+        /LOCAL_E2E_EVIDENCE_PATH.*(?:regular file|symlink|outside|exist)/i,
+      )
+    }
+  } finally {
+    state.close()
+  }
+})
+
+test('production readiness plan is one internal validation step with no command', () => {
+  const plan = buildReleasePlan(parse(
+    ['--mode', 'production-readiness', '--evidence', '$EVIDENCE'],
+    productionEnv(),
+  ))
+  assert.deepEqual(plan.steps, [{ name: 'validate-production-readiness-evidence', kind: 'internal' }])
 })
 
 test('project fingerprint hashes only the lowercase canonical Supabase project ref', () => {
@@ -301,17 +390,22 @@ test('plans use recursively frozen fixed argv arrays and contain no deploying or
   const modeEnvironments = {
     local: {},
     development: { DEVELOPMENT_SUPABASE_URL: DEVELOPMENT_URL, ALLOW_DEVELOPMENT_CLOUD_READS: '1' },
-    'production-readiness': {
-      DEVELOPMENT_PROJECT_FINGERPRINT: projectFingerprint(DEVELOPMENT_URL),
-      PRODUCTION_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
-      ALLOW_PRODUCTION_READINESS: '1',
-    },
+    'production-readiness': productionEnv(),
   }
   for (const [mode, env] of Object.entries(modeEnvironments)) {
     const plan = buildReleasePlan(parse(['--mode', mode, '--evidence', '$EVIDENCE'], env))
     assert.ok(Object.isFrozen(plan))
     assert.ok(Object.isFrozen(plan.steps))
     for (const step of plan.steps) {
+      if (step.kind === 'internal') {
+        assert.deepEqual(Object.keys(step).sort(), ['kind', 'name'])
+        assert.equal(step.name, 'validate-production-readiness-evidence')
+        assert.equal('command' in step, false)
+        assert.equal('args' in step, false)
+        assert.equal('environment' in step, false)
+        assert.ok(Object.isFrozen(step))
+        continue
+      }
       assert.deepEqual(Object.keys(step).sort(), ['args', 'command', 'environment', 'name'])
       assert.equal(typeof step.command, 'string')
       assert.ok(Array.isArray(step.args))
@@ -351,6 +445,15 @@ function executionFixture(mode = 'local') {
     mode,
     evidencePath: state.evidence,
     ...(mode === 'development' ? { projectFingerprint: projectFingerprint(DEVELOPMENT_URL) } : {}),
+    ...(mode === 'production-readiness'
+      ? {
+          developmentProjectFingerprint: projectFingerprint(DEVELOPMENT_URL),
+          productionProjectFingerprint: projectFingerprint(PRODUCTION_URL),
+          localE2eEvidencePath: state.readinessEvidence.local,
+          developmentCloudIntegrationEvidencePath: state.readinessEvidence.development,
+          productionBackupEvidencePath: state.readinessEvidence.backup,
+        }
+      : {}),
   }
   return {
     ...state,
@@ -369,6 +472,130 @@ function compactPlan(mode, evidencePath, names) {
     steps: names.map((name) => ({ name, command: 'node', args: [`${name}.mjs`], environment: {} })),
   }
 }
+
+function readinessInputs(state, overrides = {}) {
+  const common = {
+    schemaVersion: 1,
+    status: 'passed',
+    revision: state.dependencies.revision,
+    timestamp: '2026-10-02T12:00:00.000Z',
+  }
+  return {
+    [state.readinessEvidence.local]: {
+      ...common,
+      type: 'local-e2e',
+      mode: 'local',
+      ...overrides.local,
+    },
+    [state.readinessEvidence.development]: {
+      ...common,
+      type: 'development-cloud-integration',
+      mode: 'development',
+      projectFingerprint: state.options.developmentProjectFingerprint,
+      ...overrides.development,
+    },
+    [state.readinessEvidence.backup]: {
+      ...common,
+      type: 'production-backup',
+      mode: 'production-readiness',
+      projectFingerprint: state.options.productionProjectFingerprint,
+      ...overrides.backup,
+    },
+  }
+}
+
+test('production readiness validates external evidence offline without runner or fetch', async () => {
+  const state = executionFixture('production-readiness')
+  try {
+    const inputs = readinessInputs(state)
+    const reads = []
+    state.dependencies.filesystem.readFile = async (file) => {
+      reads.push(file)
+      return JSON.stringify(inputs[file])
+    }
+    state.dependencies.runner = async () => { throw new Error('runner must not be called') }
+    state.dependencies.fetch = async () => { throw new Error('fetch must not be called') }
+
+    const evidence = await runReleaseGate(state.options, state.dependencies)
+
+    assert.equal(evidence.status, 'passed')
+    assert.equal(evidence.developmentProjectFingerprint, state.options.developmentProjectFingerprint)
+    assert.equal(evidence.productionProjectFingerprint, state.options.productionProjectFingerprint)
+    assert.deepEqual(evidence.steps.map(({ name }) => name), ['validate-production-readiness-evidence'])
+    assert.deepEqual(reads, [
+      state.readinessEvidence.local,
+      state.readinessEvidence.development,
+      state.readinessEvidence.backup,
+    ])
+    const serialized = JSON.stringify(evidence)
+    assert.equal(serialized.includes('local-e2e'), false)
+    assert.equal(serialized.includes('development-cloud-integration'), false)
+    assert.equal(serialized.includes('production-backup'), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('production readiness rejects malformed, failed, stale, future, revision-mismatched, and misbound evidence', async () => {
+  const cases = [
+    ['exact schema', { local: { extra: 'input-private-value' } }, /exact keys/i],
+    ['schema version', { local: { schemaVersion: 2 } }, /schemaVersion.*1/i],
+    ['type', { local: { type: 'other' } }, /type/i],
+    ['mode', { local: { mode: 'development' } }, /mode.*local/i],
+    ['successful status', { local: { status: 'failed' } }, /status.*passed/i],
+    ['UTC timestamp', { local: { timestamp: '2026-10-02 12:00:00' } }, /UTC timestamp/i],
+    ['calendar-valid timestamp', { local: { timestamp: '2026-02-30T12:00:00.000Z' } }, /UTC timestamp/i],
+    ['freshness', { local: { timestamp: '2026-10-01T23:59:59.000Z' } }, /24 hours/i],
+    ['future timestamp', { local: { timestamp: '2026-10-03T00:00:01.000Z' } }, /future/i],
+    ['revision', { local: { revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }, /revision.*current/i],
+    ['development fingerprint', { development: { projectFingerprint: projectFingerprint(PRODUCTION_URL) } }, /development.*fingerprint/i],
+    ['production fingerprint', { backup: { projectFingerprint: projectFingerprint(DEVELOPMENT_URL) } }, /production.*fingerprint/i],
+  ]
+  for (const [label, overrides, expected] of cases) {
+    const state = executionFixture('production-readiness')
+    try {
+      const inputs = readinessInputs(state, overrides)
+      state.dependencies.clock = () => new Date('2026-10-03T00:00:00.000Z')
+      state.dependencies.filesystem.readFile = async (file) => JSON.stringify(inputs[file])
+      state.dependencies.runner = async () => { throw new Error('runner must not be called') }
+      state.dependencies.fetch = async () => { throw new Error('fetch must not be called') }
+      await assert.rejects(runReleaseGate(state.options, state.dependencies), expected, label)
+      assert.equal(state.evidence().status, 'failed', label)
+      assert.equal(state.evidence().failure.step, 'validate-production-readiness-evidence', label)
+      assert.equal(state.evidence().failure.kind, 'evidence', label)
+      assert.equal(JSON.stringify(state.evidence()).includes('input-private-value'), false, label)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('production readiness publishes actionable failed evidence for unreadable or invalid JSON inputs', async () => {
+  for (const scenario of ['unreadable', 'invalid-json']) {
+    const state = executionFixture('production-readiness')
+    try {
+      const inputs = readinessInputs(state)
+      state.dependencies.clock = () => new Date('2026-10-03T00:00:00.000Z')
+      state.dependencies.filesystem.readFile = async (file) => {
+        if (file === state.readinessEvidence.local) {
+          if (scenario === 'unreadable') throw new Error('input-private-read-error')
+          return '{ input-private-invalid-json'
+        }
+        return JSON.stringify(inputs[file])
+      }
+      await assert.rejects(
+        runReleaseGate(state.options, state.dependencies),
+        scenario === 'unreadable' ? /local E2E.*approved path/i : /local E2E.*valid JSON/i,
+      )
+      const evidence = state.evidence()
+      assert.equal(evidence.status, 'failed')
+      assert.equal(evidence.failure.kind, 'evidence')
+      assert.equal(JSON.stringify(evidence).includes('input-private'), false)
+    } finally {
+      state.close()
+    }
+  }
+})
 
 test('executes steps serially in exact order', async () => {
   const state = executionFixture()
@@ -497,6 +724,53 @@ test('cleanup runs after success, command failure, sentinel failure, and signal 
   }
 })
 
+test('CLI signal handlers abort through cleanup, preserve the first signal, and remove listeners', async () => {
+  const releaseGate = await import('./release-gate.mjs')
+  assert.equal(typeof releaseGate.runReleaseGateWithSignals, 'function')
+
+  for (const firstSignal of ['SIGINT', 'SIGTERM']) {
+    const state = executionFixture()
+    try {
+      const handlers = new Map()
+      const removed = []
+      const signalTarget = {
+        on(signal, handler) {
+          assert.equal(handlers.has(signal), false)
+          handlers.set(signal, handler)
+        },
+        removeListener(signal, handler) {
+          assert.equal(handlers.get(signal), handler)
+          removed.push(signal)
+          handlers.delete(signal)
+        },
+      }
+      const calls = []
+      state.dependencies.plan = compactPlan('local', state.evidence, ['check', 'never'])
+      state.dependencies.runner = async ({ name }) => {
+        calls.push(name)
+        if (name === 'check') {
+          handlers.get(firstSignal)()
+          handlers.get(firstSignal === 'SIGINT' ? 'SIGTERM' : 'SIGINT')()
+        }
+        if (name === 'cleanup-local-supabase') return { code: 9 }
+        return { code: 0 }
+      }
+
+      await assert.rejects(
+        releaseGate.runReleaseGateWithSignals(state.options, state.dependencies, signalTarget),
+        new RegExp(`aborted by ${firstSignal}.*cleanup`, 'i'),
+      )
+      assert.deepEqual(calls, ['check', 'cleanup-local-supabase'])
+      assert.deepEqual(removed.sort(), ['SIGINT', 'SIGTERM'])
+      assert.equal(handlers.size, 0)
+      assert.equal(state.evidence().failure.kind, 'signal')
+      assert.match(state.evidence().failure.message, new RegExp(firstSignal))
+    } finally {
+      state.close()
+    }
+  }
+})
+
 test('cleanup failure changes success to failure without hiding an original failure', async () => {
   for (const failMain of [false, true]) {
     const state = executionFixture()
@@ -618,7 +892,8 @@ test('evidence schema rejects missing, unknown, and malformed keys', () => {
     startedAt: '2026-10-03T00:00:00.000Z',
     finishedAt: '2026-10-03T00:00:01.000Z',
     durationMs: 1000,
-    projectFingerprint: null,
+    developmentProjectFingerprint: null,
+    productionProjectFingerprint: null,
     artifactManifests: ['build-1.sha256', 'build-2.sha256'],
     steps: [{ name: 'check', status: 'passed', startedAt: '2026-10-03T00:00:00.000Z', finishedAt: '2026-10-03T00:00:01.000Z', durationMs: 1000 }],
     failure: null,
@@ -639,12 +914,13 @@ test('evidence has revision, mode, UTC timing, step durations, manifests, and pr
     await runReleaseGate(state.options, state.dependencies)
     const evidence = state.evidence()
     assert.deepEqual(Object.keys(evidence).sort(), [
-      'artifactManifests', 'durationMs', 'failure', 'finishedAt', 'mode', 'projectFingerprint',
-      'revision', 'schemaVersion', 'startedAt', 'status', 'steps',
+      'artifactManifests', 'developmentProjectFingerprint', 'durationMs', 'failure', 'finishedAt', 'mode',
+      'productionProjectFingerprint', 'revision', 'schemaVersion', 'startedAt', 'status', 'steps',
     ])
     assert.equal(evidence.revision, state.dependencies.revision)
     assert.equal(evidence.mode, 'development')
-    assert.equal(evidence.projectFingerprint, state.options.projectFingerprint)
+    assert.equal(evidence.developmentProjectFingerprint, state.options.projectFingerprint)
+    assert.equal(evidence.productionProjectFingerprint, null)
     assert.ok(evidence.startedAt.endsWith('Z') && evidence.finishedAt.endsWith('Z'))
     assert.ok(evidence.steps.every((step) => Number.isInteger(step.durationMs)))
     assert.deepEqual(evidence.artifactManifests, ['build-1.sha256', 'build-2.sha256'])

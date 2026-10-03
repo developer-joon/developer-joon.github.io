@@ -110,6 +110,27 @@ function validateEvidencePath(evidencePath, context) {
   return canonicalEvidence
 }
 
+function validateInputEvidencePath(evidencePath, name, context) {
+  if (!evidencePath) throw new Error(`missing production-readiness evidence: ${name} must point to an external evidence file`)
+  const absoluteEvidence = path.resolve(evidencePath)
+  let evidenceStat
+  try {
+    evidenceStat = context.lstatSync(absoluteEvidence)
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`${name} evidence file must exist`)
+    throw error
+  }
+  if (evidenceStat.isSymbolicLink()) throw new Error(`${name} evidence file must not be a symlink`)
+  if (!evidenceStat.isFile()) throw new Error(`${name} evidence must be a regular file`)
+  const canonicalRepo = context.realpathSync(context.repoRoot)
+  const canonicalEvidence = context.realpathSync(absoluteEvidence)
+  const relative = path.relative(canonicalRepo, canonicalEvidence)
+  if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+    throw new Error(`${name} evidence must resolve outside the repository`)
+  }
+  return canonicalEvidence
+}
+
 function parseFingerprint(value, name) {
   if (!SHA256.test(value ?? '')) throw new Error(`${name} must be a lowercase SHA-256 fingerprint`)
   return value
@@ -168,6 +189,17 @@ export function parseReleaseOptions(argv, env, context) {
     }
     options.developmentProjectFingerprint = developmentFingerprint
     options.productionProjectFingerprint = productionFingerprint
+    options.localE2eEvidencePath = validateInputEvidencePath(env.LOCAL_E2E_EVIDENCE_PATH, 'LOCAL_E2E_EVIDENCE_PATH', context)
+    options.developmentCloudIntegrationEvidencePath = validateInputEvidencePath(
+      env.DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH,
+      'DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH',
+      context,
+    )
+    options.productionBackupEvidencePath = validateInputEvidencePath(
+      env.PRODUCTION_BACKUP_EVIDENCE_PATH,
+      'PRODUCTION_BACKUP_EVIDENCE_PATH',
+      context,
+    )
   }
 
   return deepFreeze(options)
@@ -177,7 +209,7 @@ function step(name, command, args, environment = {}) {
   return { name, command, args, environment }
 }
 
-function localSteps() {
+function localCoreSteps() {
   const siteA = '/tmp/breadlab-community-release-site-a'
   const siteB = '/tmp/breadlab-community-release-site-b'
   const manifest = '/tmp/breadlab-community-release-manifests'
@@ -197,22 +229,21 @@ function localSteps() {
     step('verify-site-a', 'node', ['scripts/verify-site.mjs', siteA]),
     step('verify-site-b', 'node', ['scripts/verify-site.mjs', siteB]),
     step('verify-site-reproducibility', './scripts/verify-site-reproducibility.sh', [siteA, siteB, manifest]),
-    step('local-e2e', 'node', ['scripts/community-e2e-sentinel.mjs']),
   ]
 }
 
 export function buildReleasePlan(options) {
   let steps
   if (options.mode === 'local') {
-    steps = localSteps()
+    steps = [...localCoreSteps(), step('local-e2e', 'node', ['scripts/community-e2e-sentinel.mjs'])]
   } else if (options.mode === 'development') {
     steps = [
-      ...localSteps(),
+      ...localCoreSteps(),
       step('development-read-only-health', 'node', ['scripts/development-readonly-probe.mjs']),
       step('development-integration', 'node', ['scripts/development-integration-sentinel.mjs']),
     ]
   } else if (options.mode === 'production-readiness') {
-    steps = [step('validate-production-readiness-evidence', 'node', ['scripts/production-readiness-sentinel.mjs'])]
+    steps = [{ name: 'validate-production-readiness-evidence', kind: 'internal' }]
   } else {
     throw new Error(`unsupported release mode: ${options.mode}`)
   }
@@ -227,15 +258,20 @@ const EVIDENCE_KEYS = [
   'startedAt',
   'finishedAt',
   'durationMs',
-  'projectFingerprint',
+  'developmentProjectFingerprint',
+  'productionProjectFingerprint',
   'artifactManifests',
   'steps',
   'failure',
 ].sort()
 const STEP_EVIDENCE_KEYS = ['name', 'status', 'startedAt', 'finishedAt', 'durationMs'].sort()
 const FAILURE_EVIDENCE_KEYS = ['step', 'kind', 'message'].sort()
+const READINESS_COMMON_KEYS = ['schemaVersion', 'type', 'mode', 'status', 'revision', 'timestamp']
+const LOCAL_READINESS_KEYS = [...READINESS_COMMON_KEYS].sort()
+const HOSTED_READINESS_KEYS = [...READINESS_COMMON_KEYS, 'projectFingerprint'].sort()
 const REVISION = /^[a-f0-9]{40}$/
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+const READINESS_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const PROJECT_ID = 'developer-joon-community-design'
 const ARTIFACT_PATHS = [
   '/tmp/breadlab-community-release-site-a',
@@ -251,7 +287,9 @@ function exactKeys(value, expected, label) {
 }
 
 function validTime(value) {
-  return typeof value === 'string' && ISO_UTC.test(value) && !Number.isNaN(Date.parse(value))
+  if (typeof value !== 'string' || !ISO_UTC.test(value)) return false
+  const milliseconds = Date.parse(value)
+  return !Number.isNaN(milliseconds) && new Date(milliseconds).toISOString() === value
 }
 
 export function validateEvidence(evidence) {
@@ -262,8 +300,24 @@ export function validateEvidence(evidence) {
   if (!['passed', 'failed'].includes(evidence.status)) throw new Error('release evidence status is invalid')
   if (!validTime(evidence.startedAt) || !validTime(evidence.finishedAt)) throw new Error('release evidence timestamps must be UTC ISO timestamps')
   if (!Number.isInteger(evidence.durationMs) || evidence.durationMs < 0) throw new Error('release evidence durationMs is invalid')
-  if (evidence.projectFingerprint !== null && !SHA256.test(evidence.projectFingerprint)) {
-    throw new Error('release evidence projectFingerprint is invalid')
+  if (evidence.developmentProjectFingerprint !== null && !SHA256.test(evidence.developmentProjectFingerprint)) {
+    throw new Error('release evidence developmentProjectFingerprint is invalid')
+  }
+  if (evidence.productionProjectFingerprint !== null && !SHA256.test(evidence.productionProjectFingerprint)) {
+    throw new Error('release evidence productionProjectFingerprint is invalid')
+  }
+  if (evidence.mode === 'local' && (evidence.developmentProjectFingerprint !== null || evidence.productionProjectFingerprint !== null)) {
+    throw new Error('local release evidence must not contain hosted project fingerprints')
+  }
+  if (evidence.mode === 'development' && (evidence.developmentProjectFingerprint === null || evidence.productionProjectFingerprint !== null)) {
+    throw new Error('development release evidence must contain only the development project fingerprint')
+  }
+  if (evidence.mode === 'production-readiness' && (
+    evidence.developmentProjectFingerprint === null
+    || evidence.productionProjectFingerprint === null
+    || evidence.developmentProjectFingerprint === evidence.productionProjectFingerprint
+  )) {
+    throw new Error('production-readiness release evidence must contain distinct development and production project fingerprints')
   }
   if (!Array.isArray(evidence.artifactManifests) || evidence.artifactManifests.some((value) => typeof value !== 'string')) {
     throw new Error('release evidence artifactManifests is invalid')
@@ -297,6 +351,81 @@ function timestamp(clock) {
   const value = clock()
   if (!(value instanceof Date) || Number.isNaN(value.valueOf())) throw new Error('clock must return a valid Date')
   return value
+}
+
+function validateReadinessInput(evidence, expected, revision, now) {
+  exactKeys(evidence, expected.projectFingerprint === undefined ? LOCAL_READINESS_KEYS : HOSTED_READINESS_KEYS, expected.label)
+  if (evidence.schemaVersion !== 1) throw new Error(`${expected.label} evidence schemaVersion must be 1`)
+  if (evidence.type !== expected.type) throw new Error(`${expected.label} evidence type must be ${expected.type}`)
+  if (evidence.mode !== expected.mode) throw new Error(`${expected.label} evidence mode must be ${expected.mode}`)
+  if (evidence.status !== 'passed') throw new Error(`${expected.label} evidence status must be passed`)
+  if (!REVISION.test(evidence.revision) || evidence.revision !== revision) {
+    throw new Error(`${expected.label} evidence revision must match the current full revision`)
+  }
+  if (!validTime(evidence.timestamp)) throw new Error(`${expected.label} evidence timestamp must be a UTC timestamp`)
+  const evidenceTime = Date.parse(evidence.timestamp)
+  if (evidenceTime > now.valueOf()) throw new Error(`${expected.label} evidence timestamp must not be in the future`)
+  if (now.valueOf() - evidenceTime > READINESS_MAX_AGE_MS) {
+    throw new Error(`${expected.label} evidence must be no more than 24 hours old`)
+  }
+  if (expected.projectFingerprint !== undefined && evidence.projectFingerprint !== expected.projectFingerprint) {
+    throw new Error(`${expected.label} evidence ${expected.identity} fingerprint does not match the approved fingerprint`)
+  }
+}
+
+async function validateProductionReadinessEvidence(options, filesystem, revision, now) {
+  if (typeof filesystem.readFile !== 'function') {
+    throw new ReleaseFailure('validate-production-readiness-evidence', 'evidence', 'production-readiness filesystem must provide readFile')
+  }
+  const inputs = [
+    {
+      path: options.localE2eEvidencePath,
+      label: 'local E2E',
+      type: 'local-e2e',
+      mode: 'local',
+    },
+    {
+      path: options.developmentCloudIntegrationEvidencePath,
+      label: 'development cloud integration',
+      type: 'development-cloud-integration',
+      mode: 'development',
+      identity: 'development',
+      projectFingerprint: options.developmentProjectFingerprint,
+    },
+    {
+      path: options.productionBackupEvidencePath,
+      label: 'production backup',
+      type: 'production-backup',
+      mode: 'production-readiness',
+      identity: 'production',
+      projectFingerprint: options.productionProjectFingerprint,
+    },
+  ]
+
+  for (const expected of inputs) {
+    let contents
+    try {
+      contents = await filesystem.readFile(expected.path, 'utf8')
+    } catch {
+      throw new ReleaseFailure(
+        'validate-production-readiness-evidence',
+        'evidence',
+        `${expected.label} evidence could not be read from its approved path`,
+      )
+    }
+    let evidence
+    try {
+      evidence = JSON.parse(contents)
+    } catch {
+      throw new ReleaseFailure('validate-production-readiness-evidence', 'evidence', `${expected.label} evidence must be valid JSON`)
+    }
+    try {
+      validateReadinessInput(evidence, expected, revision, now)
+    } catch (error) {
+      throw new ReleaseFailure('validate-production-readiness-evidence', 'evidence', error.message)
+    }
+  }
+  return { code: 0 }
 }
 
 function safeFailure(step, result) {
@@ -427,7 +556,7 @@ async function publishEvidence(evidencePath, evidence, filesystem) {
 export async function runReleaseGate(options, dependencies = {}) {
   const plan = dependencies.plan ?? buildReleasePlan(options)
   const clock = dependencies.clock ?? (() => new Date())
-  const filesystem = dependencies.filesystem ?? { writeFile, rename, rm }
+  const filesystem = dependencies.filesystem ?? { readFile, writeFile, rename, rm }
   const repoRoot = dependencies.repoRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const runner = dependencies.runner ?? defaultRunner(repoRoot, dependencies.signal)
   const executablePreflight = dependencies.executablePreflight ?? (() => defaultExecutablePreflight(plan, repoRoot))
@@ -444,16 +573,30 @@ export async function runReleaseGate(options, dependencies = {}) {
     let result
     let failure
     try {
-      if (!ignoreAbort && dependencies.signal?.aborted) throw new ReleaseFailure(releaseStep.name, 'signal', 'release gate aborted by signal')
-      result = releaseStep.name === 'development-read-only-health'
-        ? await runHostedProbes(options, dependencies)
-        : await runner(releaseStep)
+      if (!ignoreAbort && dependencies.signal?.aborted) {
+        throw new ReleaseFailure(releaseStep.name, 'signal', `release gate aborted by ${dependencies.signal.reason ?? 'signal'}`)
+      }
+      if (releaseStep.kind === 'internal') {
+        if (releaseStep.name !== 'validate-production-readiness-evidence') {
+          throw new ReleaseFailure(releaseStep.name, 'configuration', `unsupported internal release step: ${releaseStep.name}`)
+        }
+        result = await validateProductionReadinessEvidence(options, filesystem, revision, stepStarted)
+      } else {
+        result = releaseStep.name === 'development-read-only-health'
+          ? await runHostedProbes(options, dependencies)
+          : await runner(releaseStep)
+      }
+      if (!ignoreAbort && dependencies.signal?.aborted) {
+        throw new ReleaseFailure(releaseStep.name, 'signal', `release gate aborted by ${dependencies.signal.reason ?? 'signal'}`)
+      }
       if (result?.code !== 0) throw safeFailure(releaseStep, result)
       if (releaseStep.name === 'repository-preflight' && result.stdout?.trim()) {
         throw new ReleaseFailure(releaseStep.name, 'preflight', 'repository-preflight requires a clean Git working tree')
       }
       if (releaseStep.name === 'repository-preflight') await executablePreflight(plan, repoRoot)
-      if (!ignoreAbort && dependencies.signal?.aborted) throw new ReleaseFailure(releaseStep.name, 'signal', 'release gate aborted by signal')
+      if (!ignoreAbort && dependencies.signal?.aborted) {
+        throw new ReleaseFailure(releaseStep.name, 'signal', `release gate aborted by ${dependencies.signal.reason ?? 'signal'}`)
+      }
     } catch (error) {
       failure = error instanceof ReleaseFailure
         ? error
@@ -501,7 +644,8 @@ export async function runReleaseGate(options, dependencies = {}) {
     startedAt: started.toISOString(),
     finishedAt: finished.toISOString(),
     durationMs: Math.max(0, finished.valueOf() - started.valueOf()),
-    projectFingerprint: options.projectFingerprint ?? null,
+    developmentProjectFingerprint: options.developmentProjectFingerprint ?? options.projectFingerprint ?? null,
+    productionProjectFingerprint: options.productionProjectFingerprint ?? null,
     artifactManifests: ['build-1.sha256', 'build-2.sha256'],
     steps,
     failure: failure ? { step: failure.stepName, kind: failure.kind, message: failure.message } : null,
@@ -517,6 +661,23 @@ export async function runReleaseGate(options, dependencies = {}) {
   return evidence
 }
 
+export async function runReleaseGateWithSignals(options, dependencies = {}, signalTarget = process) {
+  const controller = new AbortController()
+  const handlers = new Map()
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    const handler = () => {
+      if (!controller.signal.aborted) controller.abort(signal)
+    }
+    handlers.set(signal, handler)
+    signalTarget.on(signal, handler)
+  }
+  try {
+    return await runReleaseGate(options, { ...dependencies, signal: controller.signal })
+  } finally {
+    for (const [signal, handler] of handlers) signalTarget.removeListener(signal, handler)
+  }
+}
+
 async function main() {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'community-app/package.json'), 'utf8'))
@@ -529,7 +690,7 @@ async function main() {
   })
   const revisionResult = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8', shell: false })
   if (revisionResult.status !== 0) throw new Error('unable to determine release Git revision')
-  await runReleaseGate(options, {
+  await runReleaseGateWithSignals(options, {
     repoRoot,
     revision: revisionResult.stdout.trim(),
     developmentUrl: process.env.DEVELOPMENT_SUPABASE_URL,
