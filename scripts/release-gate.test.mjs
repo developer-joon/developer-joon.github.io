@@ -1040,6 +1040,96 @@ test('default runner bounds TERM-to-KILL for an uncooperative process tree befor
   }
 })
 
+test('default runner escalates the process group after its leader exits on TERM', { skip: process.platform === 'win32' }, async () => {
+  const state = fixture()
+  const originalPath = process.env.PATH
+  const originalMarker = process.env.RELEASE_GATE_CLEANUP_MARKER
+  let pid
+  let abortWhenReady
+  let descendantPid
+  const isRunning = () => {
+    if (!pid) return false
+    try {
+      process.kill(pid, 0)
+      if (process.platform === 'linux') {
+        const status = readFileSync(`/proc/${pid}/stat`, 'utf8')
+        if (/^\d+ \(.+\) Z /.test(status)) return false
+      }
+      return true
+    } catch (error) {
+      if (error?.code === 'ESRCH' || error?.code === 'ENOENT') return false
+      throw error
+    }
+  }
+  try {
+    const bin = path.join(state.root, 'bin')
+    const marker = path.join(state.root, 'cleanup-ran')
+    descendantPid = path.join(state.root, 'descendant.pid')
+    mkdirSync(bin)
+    const npm = path.join(bin, 'npm')
+    writeFileSync(npm, '#!/bin/sh\nprintf cleaned > "$RELEASE_GATE_CLEANUP_MARKER"\n')
+    chmodSync(npm, 0o700)
+    process.env.PATH = `${bin}${path.delimiter}${originalPath}`
+    process.env.RELEASE_GATE_CLEANUP_MARKER = marker
+    const descendant = `
+      process.on('SIGTERM', () => {})
+      process.send('ready')
+      setInterval(() => {}, 100)
+    `
+    const leader = `
+      const { spawn } = require('node:child_process')
+      const { writeFileSync } = require('node:fs')
+      process.on('SIGTERM', () => process.exit(0))
+      const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+      child.once('message', () => writeFileSync(${JSON.stringify(descendantPid)}, String(child.pid)))
+      setInterval(() => {}, 100)
+    `
+    const controller = new AbortController()
+    abortWhenReady = setInterval(() => {
+      try {
+        readFileSync(descendantPid)
+        clearInterval(abortWhenReady)
+        controller.abort('SIGTERM')
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+      }
+    }, 10)
+    await assert.rejects(runReleaseGate(
+      { mode: 'local', evidencePath: state.evidence },
+      {
+        revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
+        repoRoot: state.repoRoot,
+        signal: controller.signal,
+        killGraceMs: 100,
+        executablePreflight: async () => {},
+        plan: {
+          mode: 'local',
+          evidencePath: state.evidence,
+          steps: [{ name: 'exiting-leader', command: process.execPath, args: ['-e', leader], environment: {} }],
+        },
+      },
+    ), /aborted by SIGTERM/i)
+    assert.equal(readFileSync(marker, 'utf8'), 'cleaned')
+    pid = Number(readFileSync(descendantPid, 'utf8'))
+    const deadline = Date.now() + 2_000
+    while (isRunning() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(isRunning(), false, `descendant ${pid} survived process-group escalation`)
+  } finally {
+    clearInterval(abortWhenReady)
+    if (!pid && descendantPid) {
+      try { pid = Number(readFileSync(descendantPid, 'utf8')) } catch (error) { if (error?.code !== 'ENOENT') throw error }
+    }
+    if (isRunning()) {
+      try { process.kill(pid, 'SIGKILL') } catch (error) { if (error?.code !== 'ESRCH') throw error }
+    }
+    if (originalPath === undefined) delete process.env.PATH
+    else process.env.PATH = originalPath
+    if (originalMarker === undefined) delete process.env.RELEASE_GATE_CLEANUP_MARKER
+    else process.env.RELEASE_GATE_CLEANUP_MARKER = originalMarker
+    state.close()
+  }
+})
+
 test('cleanup failure changes success to failure without hiding an original failure', async () => {
   for (const failMain of [false, true]) {
     const state = executionFixture()
@@ -1225,6 +1315,42 @@ test('evidence excludes diagnostics, URLs, bodies, credentials, Markdown, and us
     const serialized = JSON.stringify(state.evidence())
     for (const value of forbidden) assert.equal(serialized.includes(value), false, value)
     assert.doesNotMatch(serialized, /stdout|stderr|environment|request|response|body|jwt|key/i)
+  } finally {
+    state.close()
+  }
+})
+
+test('partial evidence writes remove their temporary sibling and preserve the sanitized write failure', async () => {
+  const state = executionFixture()
+  try {
+    let temporary
+    const removed = []
+    state.dependencies.filesystem.writeFile = async (file, contents) => {
+      temporary = file
+      state.writes.set(file, `${contents.slice(0, 16)}\"status\":\"passed\"`)
+      throw new Error('private original write failure')
+    }
+    state.dependencies.filesystem.rm = async (file) => {
+      removed.push(file)
+      state.writes.delete(file)
+      throw new Error('private cleanup failure')
+    }
+
+    await assert.rejects(
+      runReleaseGate(state.options, state.dependencies),
+      (error) => {
+        assert.equal(error.stepName, 'invalidate-release-evidence')
+        assert.equal(error.kind, 'evidence')
+        assert.match(error.message, /could not invalidate: write an evidence tombstone failed/i)
+        assert.doesNotMatch(error.message, /private|cleanup/i)
+        return true
+      },
+    )
+    assert.match(path.basename(temporary), /^\.release\.json\..+\.tmp$/)
+    assert.deepEqual(removed, [temporary])
+    assert.equal(state.writes.has(temporary), false)
+    assert.equal(state.writes.has(state.options.evidencePath), false)
+    assert.equal(state.renames.length, 0)
   } finally {
     state.close()
   }
@@ -1630,7 +1756,7 @@ test('tombstones stale success before removal and runs no steps when removal fai
   }
 })
 
-test('runs no steps or removal when stale evidence cannot be tombstoned', async () => {
+test('runs no steps and removes only the temporary sibling when stale evidence cannot be tombstoned', async () => {
   const state = executionFixture()
   try {
     const calls = []
@@ -1651,7 +1777,9 @@ test('runs no steps or removal when stale evidence cannot be tombstoned', async 
     await assert.rejects(runReleaseGate(state.options, state.dependencies), /invalidate.*write.*evidence/i)
 
     assert.deepEqual(calls, [])
-    assert.deepEqual(removals, [])
+    assert.equal(removals.length, 1)
+    assert.match(path.basename(removals[0]), /^\.release\.json\..+\.tmp$/)
+    assert.notEqual(removals[0], state.options.evidencePath)
     assert.equal(state.writes.get(state.options.evidencePath), staleSuccess)
   } finally {
     state.close()

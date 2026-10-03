@@ -829,19 +829,23 @@ function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceM
     const finish = (callback) => {
       if (settled) return
       settled = true
-      if (escalation) clearTimeout(escalation)
+      if (escalation && !useProcessGroup) clearTimeout(escalation)
       activeSignal?.removeEventListener('abort', abort)
       callback()
     }
     const abort = () => {
       try {
         kill('SIGTERM')
-        escalation ??= setTimeout(() => {
-          try { kill('SIGKILL') } catch {}
-        }, killGraceMs)
-      } catch {
-        // A concurrent process exit is finalized by the close event.
+      } catch (error) {
+        process.emitWarning(error)
       }
+      escalation ??= setTimeout(() => {
+        try {
+          kill('SIGKILL')
+        } catch (error) {
+          process.emitWarning(error)
+        }
+      }, killGraceMs)
     }
     activeSignal?.addEventListener('abort', abort, { once: true })
     child.once('error', (error) => finish(() => reject(error)))
@@ -852,11 +856,15 @@ function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceM
 
 async function atomicReplace(evidencePath, contents, filesystem) {
   const temporary = path.join(path.dirname(evidencePath), `.${path.basename(evidencePath)}.${randomUUID()}.tmp`)
-  await filesystem.writeFile(temporary, contents, { mode: 0o600, flag: 'wx', flush: true })
   try {
+    await filesystem.writeFile(temporary, contents, { mode: 0o600, flag: 'wx', flush: true })
     await filesystem.rename(temporary, evidencePath)
   } catch (error) {
-    await filesystem.rm?.(temporary, { force: true })
+    try {
+      await filesystem.rm?.(temporary, { force: true })
+    } catch {
+      // Preserve the original write or rename failure.
+    }
     throw error
   }
 }
