@@ -108,8 +108,6 @@ read -rsp 'Development database password: ' SUPABASE_DB_PASSWORD
 printf '\n'
 export SUPABASE_DB_PASSWORD
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  link --project-ref "$DEVELOPMENT_PROJECT_REF"
-./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   db push --project-ref "$DEVELOPMENT_PROJECT_REF" --dry-run
 printf '%s\n' 'STOP: compare the dry run with the reviewed additive migrations'
 ```
@@ -139,8 +137,6 @@ First complete [backup and recovery evidence](community-backup-restore.md). Only
 read -rsp 'Production database password: ' SUPABASE_DB_PASSWORD
 printf '\n'
 export SUPABASE_DB_PASSWORD
-./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  link --project-ref "$PRODUCTION_PROJECT_REF"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   db push --project-ref "$PRODUCTION_PROJECT_REF" --dry-run
 printf '%s\n' 'STOP: approve the reviewed additive migration set before applying'

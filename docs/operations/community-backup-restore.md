@@ -65,7 +65,11 @@ set -euo pipefail
 umask 077
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK_DIR="$BACKUP_ROOT/$STAMP.work"
-ARCHIVE="$BACKUP_ROOT/$STAMP-community-backup.tar.age"
+ARCHIVE_DIR="$BACKUP_ROOT"
+ARCHIVE_BASENAME="$STAMP-community-backup.tar.age"
+CHECKSUM_BASENAME="$ARCHIVE_BASENAME.sha256"
+ARCHIVE="$ARCHIVE_DIR/$ARCHIVE_BASENAME"
+CHECKSUM="$ARCHIVE_DIR/$CHECKSUM_BASENAME"
 ARCHIVE_TMP="$BACKUP_ROOT/.$STAMP-community-backup.tar.age.tmp.$$"
 CHECKSUM_TMP="$BACKUP_ROOT/.$STAMP-community-backup.tar.age.sha256.tmp.$$"
 BACKUP_PUBLISHED=0
@@ -79,7 +83,7 @@ backup_cleanup() {
   fi
   rm -f -- "${ARCHIVE_TMP:-}" "${CHECKSUM_TMP:-}"
   if [ "${BACKUP_PUBLISHED:-0}" -ne 1 ]; then
-    rm -f -- "${ARCHIVE:-}" "${ARCHIVE:-}.sha256"
+    rm -f -- "${ARCHIVE:-}" "${CHECKSUM:-}"
   fi
   exit "$status"
 }
@@ -89,35 +93,50 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  link --project-ref "$PRODUCTION_PROJECT_REF"
+  db dump --project-ref "$PRODUCTION_PROJECT_REF" --role-only --file "$WORK_DIR/roles.sql"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  db dump --linked --role-only --file "$WORK_DIR/roles.sql"
+  db dump --project-ref "$PRODUCTION_PROJECT_REF" --file "$WORK_DIR/schema.sql"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  db dump --linked --file "$WORK_DIR/schema.sql"
-./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  db dump --linked --data-only --use-copy \
+  db dump --project-ref "$PRODUCTION_PROJECT_REF" --data-only --use-copy \
   --exclude storage.buckets_vectors \
   --exclude storage.vector_indexes \
   --file "$WORK_DIR/data.sql"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  db dump --linked --schema supabase_migrations --file "$WORK_DIR/history_schema.sql"
+  db dump --project-ref "$PRODUCTION_PROJECT_REF" --schema supabase_migrations \
+  --file "$WORK_DIR/history_schema.sql"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  db dump --linked --data-only --use-copy --schema supabase_migrations \
+  db dump --project-ref "$PRODUCTION_PROJECT_REF" --data-only --use-copy \
+  --schema supabase_migrations \
   --file "$WORK_DIR/history_data.sql"
 ```
 
-CLI 2.118.0 marks Storage commands experimental. Keep `--experimental`, `--project-ref`, bucket, and local destination explicit. Recursive download appends the source directory `community-images` to the existing destination directory, so the asserted local object root is exactly `$WORK_DIR/storage-objects/community-images`.
+CLI 2.118.0 marks Storage commands experimental. Keep `--experimental`, `--project-ref`, bucket, and local destination explicit. The trailing bucket slash makes the argument the bucket root rather than a bucket-name prefix. Recursive download appends the source directory `community-images` to the existing destination directory, so the asserted local object root is exactly `$WORK_DIR/storage-objects/community-images`.
+
+CLI 2.118.0 recursive `storage ls` emits `/community-images/object-key`, not an `ss:///` URL. The normalizer below accepts only that bucket prefix, strips it to an exact relative object key, sorts keys, and naturally emits an empty file for an empty bucket. The downloaded-file inventory uses the same relative-key format.
 
 ```bash
+normalize_storage_inventory() {
+  local pipeline_status
+  LC_ALL=C awk -v prefix='/community-images/' '
+    length($0) == 0 || index($0, prefix) != 1 || length($0) == length(prefix) {
+      print "unexpected Storage inventory record: " $0 > "/dev/stderr"
+      exit 1
+    }
+    { print substr($0, length(prefix) + 1) }
+  ' | LC_ALL=C sort
+  pipeline_status=("${PIPESTATUS[@]}")
+  [ "${pipeline_status[0]}" -eq 0 ] && [ "${pipeline_status[1]}" -eq 0 ]
+}
 mkdir -m 700 "$WORK_DIR/storage-objects"
+mkdir -m 700 "$WORK_DIR/storage-objects/community-images"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   storage ls --experimental --recursive --project-ref "$PRODUCTION_PROJECT_REF" \
-  ss:///community-images | LC_ALL=C sort > "$WORK_DIR/private-storage-inventory.txt"
+  ss:///community-images/ | normalize_storage_inventory > "$WORK_DIR/private-storage-inventory.txt"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   storage cp --experimental --recursive --project-ref "$PRODUCTION_PROJECT_REF" \
-  ss:///community-images "$WORK_DIR/storage-objects"
+  ss:///community-images/ "$WORK_DIR/storage-objects"
 test -d "$WORK_DIR/storage-objects/community-images"
-find "$WORK_DIR/storage-objects/community-images" -type f -printf 'ss:///community-images/%P\n' \
+find "$WORK_DIR/storage-objects/community-images" -type f -printf '%P\n' \
   | LC_ALL=C sort > "$WORK_DIR/downloaded-storage-paths.txt"
 diff --unified "$WORK_DIR/private-storage-inventory.txt" "$WORK_DIR/downloaded-storage-paths.txt"
 STORAGE_OBJECT_COUNT="$(wc -l < "$WORK_DIR/private-storage-inventory.txt" | tr -d ' ')"
@@ -151,12 +170,18 @@ tar -C "$WORK_DIR" -cf - . | age --recipient "$AGE_RECIPIENT" --output "$ARCHIVE
 chmod 600 "$ARCHIVE_TMP"
 sync -f "$ARCHIVE_TMP"
 mv -- "$ARCHIVE_TMP" "$ARCHIVE"
-sha256sum "$ARCHIVE" > "$CHECKSUM_TMP"
+(
+  cd "$ARCHIVE_DIR"
+  sha256sum "$ARCHIVE_BASENAME" > "$CHECKSUM_TMP"
+)
 chmod 600 "$CHECKSUM_TMP"
 sync -f "$CHECKSUM_TMP"
-mv -- "$CHECKSUM_TMP" "$ARCHIVE.sha256"
+mv -- "$CHECKSUM_TMP" "$CHECKSUM"
 sync -f "$BACKUP_ROOT"
-sha256sum --check "$ARCHIVE.sha256"
+(
+  cd "$ARCHIVE_DIR"
+  sha256sum --check "$CHECKSUM_BASENAME"
+)
 BACKUP_PUBLISHED=1
 ```
 
@@ -187,27 +212,68 @@ set -euo pipefail
 umask 077
 : "${ARCHIVE:?set encrypted archive path}"
 : "${AGE_IDENTITY_FILE:?set private age identity path}"
-: "${RESTORE_ROOT:?set an absolute restore parent outside the repository}"
-: "${RESTORE_DRILL_EVIDENCE_PATH:?set an absolute non-sensitive drill evidence path outside the repository}"
+: "${RESTORE_ROOT:?set an existing absolute restore parent outside the repository}"
+: "${RESTORE_DRILL_EVIDENCE_PATH:?set an absolute non-sensitive drill evidence path outside the repository and restore root}"
+REPO_ROOT="$(realpath -e -- "$(git rev-parse --show-toplevel)")"
 case "$RESTORE_ROOT" in /*) ;; *) exit 1 ;; esac
 case "$RESTORE_DRILL_EVIDENCE_PATH" in /*) ;; *) exit 1 ;; esac
+RESTORE_ROOT_INPUT="$RESTORE_ROOT"
+EVIDENCE_PARENT_INPUT="$(dirname -- "$RESTORE_DRILL_EVIDENCE_PATH")"
+EVIDENCE_BASENAME="$(basename -- "$RESTORE_DRILL_EVIDENCE_PATH")"
+[ -d "$RESTORE_ROOT_INPUT" ] && [ ! -L "$RESTORE_ROOT_INPUT" ] || exit 1
+[ -d "$EVIDENCE_PARENT_INPUT" ] && [ ! -L "$EVIDENCE_PARENT_INPUT" ] || exit 1
+RESTORE_ROOT="$(realpath -e -- "$RESTORE_ROOT_INPUT")"
+EVIDENCE_PARENT="$(realpath -e -- "$EVIDENCE_PARENT_INPUT")"
+[ "$RESTORE_ROOT_INPUT" = "$RESTORE_ROOT" ] || exit 1
+[ "$EVIDENCE_PARENT_INPUT" = "$EVIDENCE_PARENT" ] || exit 1
+[ "$RESTORE_DRILL_EVIDENCE_PATH" = "$EVIDENCE_PARENT/$EVIDENCE_BASENAME" ] || exit 1
+[ -d "$RESTORE_ROOT" ] && [ ! -L "$RESTORE_ROOT" ] || exit 1
+[ -d "$EVIDENCE_PARENT" ] && [ ! -L "$EVIDENCE_PARENT" ] || exit 1
 case "$RESTORE_ROOT/" in "$REPO_ROOT/"*) exit 1 ;; esac
 case "$RESTORE_DRILL_EVIDENCE_PATH" in "$REPO_ROOT/"*) exit 1 ;; esac
+case "$RESTORE_DRILL_EVIDENCE_PATH" in "$RESTORE_ROOT/"*) exit 1 ;; esac
+[ ! -e "$RESTORE_DRILL_EVIDENCE_PATH" ] && [ ! -L "$RESTORE_DRILL_EVIDENCE_PATH" ] || exit 1
+ARCHIVE_DIR="$(dirname -- "$ARCHIVE")"
+ARCHIVE_BASENAME="$(basename -- "$ARCHIVE")"
+CHECKSUM_BASENAME="$ARCHIVE_BASENAME.sha256"
+CHECKSUM="$ARCHIVE_DIR/$ARCHIVE_BASENAME.sha256"
+[ -f "$ARCHIVE" ] && [ ! -L "$ARCHIVE" ] || exit 1
+[ -f "$CHECKSUM" ] && [ ! -L "$CHECKSUM" ] || exit 1
 chmod 600 "$AGE_IDENTITY_FILE"
-sha256sum --check "$ARCHIVE.sha256"
-mkdir -p "$RESTORE_ROOT"
+(
+  cd "$ARCHIVE_DIR"
+  sha256sum --check "$CHECKSUM_BASENAME"
+)
 chmod 700 "$RESTORE_ROOT"
-RESTORE_WORK_DIR="$(mktemp -d "$RESTORE_ROOT/community-restore.XXXXXX")"
+RESTORE_WORK_DIR=''
+RESTORE_EVIDENCE_TMP=''
+RESTORE_EVIDENCE_PUBLISHED=0
 cleanup_restore() {
+  cleanup_status=0
   unset PGPASSWORD SUPABASE_ACCESS_TOKEN RECOVERY_RESTORE_APPROVAL RECOVERY_STORAGE_APPROVAL
-  if [ -d "${RESTORE_WORK_DIR:-}" ]; then
-    find "$RESTORE_WORK_DIR" -type f -exec chmod u+w,go-rwx {} + 2>/dev/null || true
-    rm -rf -- "$RESTORE_WORK_DIR"
+  if [ -n "${RESTORE_WORK_DIR:-}" ] && [ -e "$RESTORE_WORK_DIR" ]; then
+    if [ ! -d "$RESTORE_WORK_DIR" ] || [ -L "$RESTORE_WORK_DIR" ]; then
+      cleanup_status=1
+    else
+      find "$RESTORE_WORK_DIR" -type f -exec chmod u+w,go-rwx {} + 2>/dev/null || cleanup_status=1
+      rm -rf -- "$RESTORE_WORK_DIR" || cleanup_status=1
+    fi
   fi
+  if [ "${RESTORE_EVIDENCE_PUBLISHED:-0}" -ne 1 ]; then
+    rm -f -- "${RESTORE_EVIDENCE_TMP:-}" "$RESTORE_DRILL_EVIDENCE_PATH" || cleanup_status=1
+  fi
+  return "$cleanup_status"
 }
-trap 'status=$?; trap - EXIT INT TERM; cleanup_restore; exit "$status"' EXIT
+restore_exit() {
+  status=$?
+  trap - EXIT INT TERM
+  cleanup_restore || status=1
+  exit "$status"
+}
+trap restore_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+RESTORE_WORK_DIR="$(mktemp -d "$RESTORE_ROOT/community-restore.XXXXXX")"
 
 age --decrypt --identity "$AGE_IDENTITY_FILE" "$ARCHIVE" | tar -C "$RESTORE_WORK_DIR" -xf -
 (
@@ -250,20 +316,32 @@ unset PGPASSWORD
 
 Resolve provider-owned role/extension warnings according to the official CLI restore guide; do not weaken errors globally or edit the only backup. Apply only reviewed compatibility changes to a copy and record its checksum.
 
-Restore private objects separately after buckets/policies exist. The local source is the same asserted tree produced by recursive download, and both upload/list commands explicitly target the recovery project and `community-images` bucket:
+Restore private objects separately after buckets/policies exist. The local source is the same asserted tree produced by recursive download. Under CLI 2.118.0 recursive copy appends the local source basename to the destination: uploading source basename `community-images` to `ss:///` therefore creates the target bucket path exactly once and preserves the original object keys. Uploading that directory to `ss:///community-images/` is forbidden because it can create `community-images/community-images/...`. The target listing is normalized and compared with the backup inventory after upload.
 
 ```bash
 : "${RECOVERY_STORAGE_APPROVAL:?record Storage restore approval}"
 read -rsp 'Supabase access token: ' SUPABASE_ACCESS_TOKEN
 printf '\n'
 export SUPABASE_ACCESS_TOKEN
+normalize_storage_inventory() {
+  local pipeline_status
+  LC_ALL=C awk -v prefix='/community-images/' '
+    length($0) == 0 || index($0, prefix) != 1 || length($0) == length(prefix) {
+      print "unexpected Storage inventory record: " $0 > "/dev/stderr"
+      exit 1
+    }
+    { print substr($0, length(prefix) + 1) }
+  ' | LC_ALL=C sort
+  pipeline_status=("${PIPESTATUS[@]}")
+  [ "${pipeline_status[0]}" -eq 0 ] && [ "${pipeline_status[1]}" -eq 0 ]
+}
 test -d "$RESTORE_WORK_DIR/storage-objects/community-images"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   storage cp --experimental --recursive --project-ref "$RECOVERY_PROJECT_REF" \
-  "$RESTORE_WORK_DIR/storage-objects/community-images" ss:///community-images
+  "$RESTORE_WORK_DIR/storage-objects/community-images" ss:///
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   storage ls --experimental --recursive --project-ref "$RECOVERY_PROJECT_REF" \
-  ss:///community-images | LC_ALL=C sort > "$RESTORE_WORK_DIR/restored-storage-inventory.txt"
+  ss:///community-images/ | normalize_storage_inventory > "$RESTORE_WORK_DIR/restored-storage-inventory.txt"
 diff --unified "$RESTORE_WORK_DIR/private-storage-inventory.txt" "$RESTORE_WORK_DIR/restored-storage-inventory.txt"
 RESTORED_STORAGE_OBJECT_COUNT="$(wc -l < "$RESTORE_WORK_DIR/restored-storage-inventory.txt" | tr -d ' ')"
 RESTORED_STORAGE_INVENTORY_SHA256="$(sha256sum "$RESTORE_WORK_DIR/restored-storage-inventory.txt" | cut -d' ' -f1)"
@@ -278,12 +356,12 @@ Reconfigure and verify Auth provider settings, the separate recovery OAuth app/r
 
 Run schema/migration checks, RLS tests, representative read-only RPCs, snapshot generation, OAuth, private Storage, Function, and browser smoke checks against the recovery ref. Keep production write-disabled during incident recovery. A cutover needs a separate approval and endpoint/key rotation plan. Retain the old production project and all encrypted backup/evidence until both the incident and rollback windows close.
 
-A quarterly restore drill stops before production cutover. Measure elapsed time against target RTO 4 hours and record whether the newest recoverable data satisfies RPO 24 hours. Write only non-sensitive drill evidence, atomically, before deleting plaintext:
+A quarterly restore drill stops before production cutover. Measure elapsed time against target RTO 4 hours and record whether the newest recoverable data satisfies RPO 24 hours. Stage only non-sensitive drill evidence in the separate canonical evidence directory. Cleanup must then succeed and the plaintext work path must be absent before the evidence rename can publish a passed result:
 
 ```bash
-RESTORE_EVIDENCE_TMP="${RESTORE_DRILL_EVIDENCE_PATH}.tmp.$$"
+RESTORE_EVIDENCE_TMP="$(mktemp "$EVIDENCE_PARENT/.$EVIDENCE_BASENAME.tmp.XXXXXX")"
 printf '%s\n' \
-  "archive_sha256=$(cut -d' ' -f1 "$ARCHIVE.sha256")" \
+  "archive_sha256=$(cut -d' ' -f1 "$CHECKSUM")" \
   "storage_object_count=$RESTORED_STORAGE_OBJECT_COUNT" \
   "storage_inventory_sha256=$RESTORED_STORAGE_INVENTORY_SHA256" \
   'database_restore=passed' \
@@ -291,12 +369,17 @@ printf '%s\n' \
   'zero_plaintext_retained=true' \
   > "$RESTORE_EVIDENCE_TMP"
 chmod 600 "$RESTORE_EVIDENCE_TMP"
-mv -- "$RESTORE_EVIDENCE_TMP" "$RESTORE_DRILL_EVIDENCE_PATH"
 cleanup_restore
+test ! -e "$RESTORE_WORK_DIR"
+test ! -L "$RESTORE_WORK_DIR"
+mv -- "$RESTORE_EVIDENCE_TMP" "$RESTORE_DRILL_EVIDENCE_PATH"
+sync -f "$RESTORE_DRILL_EVIDENCE_PATH"
+sync -f "$EVIDENCE_PARENT"
+RESTORE_EVIDENCE_PUBLISHED=1
 trap - EXIT INT TERM
 ```
 
-The final explicit `cleanup_restore` and the failure/signal trap ensure no permanent plaintext restore tree remains. As with backup cleanup, deletion minimizes exposure but does not guarantee physical secure erase on SSDs or snapshotting filesystems.
+The final explicit `cleanup_restore` and absence assertions run before the atomic evidence rename. Any cleanup, absence-check, rename, or sync failure reaches the fail-closed trap, which removes staged or prematurely renamed success evidence. As with backup cleanup, deletion minimizes exposure but does not guarantee physical secure erase on SSDs or snapshotting filesystems.
 
 ## Official references
 

@@ -30,6 +30,13 @@ function assertMatches(text, patterns) {
   for (const pattern of patterns) assert.match(text, pattern)
 }
 
+function bashCommands(text) {
+  return [...text.matchAll(/```bash\n([\s\S]*?)```/g)]
+    .flatMap(([, block]) => block.replaceAll(/\\\n\s*/g, ' ').split('\n'))
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
 async function put(root, relativePath, content = '') {
   const destination = path.join(root, relativePath)
   await mkdir(path.dirname(destination), { recursive: true })
@@ -156,7 +163,7 @@ test('backup and restore plaintext cleanup is fail-closed and ciphertext publica
     /ARCHIVE_TMP=.*\$BACKUP_ROOT/,
     /age [^\n]*--output "\$ARCHIVE_TMP"/,
     /chmod 600 "\$ARCHIVE_TMP"[\s\S]*mv -- "\$ARCHIVE_TMP" "\$ARCHIVE"/,
-    /sha256sum "\$ARCHIVE"/,
+    /sha256sum "\$ARCHIVE_BASENAME"/,
     /secure erase.*(?:not guaranteed|cannot be guaranteed).*SSD/is,
     /RESTORE_WORK_DIR[\s\S]{0,1200}trap [^\n]*EXIT[\s\S]{0,300}trap [^\n]*INT[\s\S]{0,300}trap [^\n]*TERM/,
     /cleanup_restore[\s\S]*trap - EXIT INT TERM/,
@@ -167,8 +174,8 @@ test('backup and restore plaintext cleanup is fail-closed and ciphertext publica
 test('backup includes migration history and restores all SQL atomically', async () => {
   const backup = await operationText('community-backup-restore.md')
   assertMatches(backup, [
-    /db dump --linked --schema supabase_migrations --file "\$WORK_DIR\/history_schema\.sql"/,
-    /db dump --linked --data-only --use-copy --schema supabase_migrations[\s\\]*--file "\$WORK_DIR\/history_data\.sql"/,
+    /db dump --project-ref "\$PRODUCTION_PROJECT_REF" --schema supabase_migrations[\s\\]*--file "\$WORK_DIR\/history_schema\.sql"/,
+    /db dump --project-ref "\$PRODUCTION_PROJECT_REF" --data-only --use-copy[\s\\]*--schema supabase_migrations[\s\\]*--file "\$WORK_DIR\/history_data\.sql"/,
     /--exclude storage\.buckets_vectors[\s\\]*--exclude storage\.vector_indexes/,
     /psql --single-transaction --variable ON_ERROR_STOP=1[\s\S]*--file "\$RESTORE_WORK_DIR\/roles\.sql"[\s\S]*--file "\$RESTORE_WORK_DIR\/schema\.sql"[\s\S]*--file "\$RESTORE_WORK_DIR\/data\.sql"[\s\S]*--file "\$RESTORE_WORK_DIR\/history_schema\.sql"[\s\S]*--file "\$RESTORE_WORK_DIR\/history_data\.sql"/,
     /one `psql` process/i,
@@ -180,18 +187,18 @@ test('backup includes migration history and restores all SQL atomically', async 
 test('Storage copy commands use one verified local tree and explicit project targets', async () => {
   const backup = await operationText('community-backup-restore.md')
   assertMatches(backup, [
-    /mkdir -m 700 "\$WORK_DIR\/storage-objects"/,
-    /storage cp --experimental --recursive --project-ref "\$PRODUCTION_PROJECT_REF"[\s\\]*ss:\/\/\/community-images "\$WORK_DIR\/storage-objects"/,
+    /mkdir -m 700 "\$WORK_DIR\/storage-objects"[\s\S]*mkdir -m 700 "\$WORK_DIR\/storage-objects\/community-images"/,
+    /storage cp --experimental --recursive --project-ref "\$PRODUCTION_PROJECT_REF"[\s\\]*ss:\/\/\/community-images\/ "\$WORK_DIR\/storage-objects"/,
     /test -d "\$WORK_DIR\/storage-objects\/community-images"/,
-    /storage cp --experimental --recursive --project-ref "\$RECOVERY_PROJECT_REF"[\s\\]*"\$RESTORE_WORK_DIR\/storage-objects\/community-images" ss:\/\/\/community-images/,
+    /storage cp --experimental --recursive --project-ref "\$RECOVERY_PROJECT_REF"[\s\\]*"\$RESTORE_WORK_DIR\/storage-objects\/community-images" ss:\/\/\//,
   ])
 })
 
 test('Storage inventory is deterministic, counted, hashed, and compared to downloaded bytes', async () => {
   const backup = await operationText('community-backup-restore.md')
   assertMatches(backup, [
-    /storage ls --experimental --recursive --project-ref "\$PRODUCTION_PROJECT_REF"[\s\\]*ss:\/\/\/community-images \| LC_ALL=C sort > "\$WORK_DIR\/private-storage-inventory\.txt"/,
-    /find "\$WORK_DIR\/storage-objects\/community-images" -type f[^\n]*[\s\\]*\| LC_ALL=C sort > "\$WORK_DIR\/downloaded-storage-paths\.txt"/,
+    /storage ls --experimental --recursive --project-ref "\$PRODUCTION_PROJECT_REF"[\s\\]*ss:\/\/\/community-images\/ \| normalize_storage_inventory > "\$WORK_DIR\/private-storage-inventory\.txt"/,
+    /find "\$WORK_DIR\/storage-objects\/community-images" -type f -printf '%P\\n'[\s\\]*\| LC_ALL=C sort > "\$WORK_DIR\/downloaded-storage-paths\.txt"/,
     /diff --unified[^\n]*private-storage-inventory\.txt[^\n]*downloaded-storage-paths\.txt/,
     /STORAGE_OBJECT_COUNT="\$\(wc -l < "\$WORK_DIR\/private-storage-inventory\.txt"[^\n]*\)"/,
     /STORAGE_INVENTORY_SHA256="\$\(sha256sum "\$WORK_DIR\/private-storage-inventory\.txt"[^\n]*\)"/,
@@ -206,6 +213,79 @@ test('Storage inventory is deterministic, counted, hashed, and compared to downl
     /test "\$RESTORED_STORAGE_INVENTORY_SHA256" = "\$\(sed -n 's\/\^storage_inventory_sha256=/,
     /no signed URLs?[^.]*no object bod(?:y|ies)/is,
   ])
+})
+
+test('Storage inventories normalize CLI 2.118 paths to relative object keys including an empty bucket', async () => {
+  const backup = await operationText('community-backup-restore.md')
+  const definition = backup.match(/normalize_storage_inventory\(\) \{[\s\S]*?\n\}/)?.[0]
+  assert.ok(definition, 'the documented inventory normalizer must be executable')
+  assert.match(backup, /storage ls --experimental --recursive --project-ref "\$PRODUCTION_PROJECT_REF"[\s\\]*ss:\/\/\/community-images\/ \| normalize_storage_inventory/)
+  assert.match(backup, /find "\$WORK_DIR\/storage-objects\/community-images" -type f -printf '%P\\n'/)
+  const emptyBucketRoot = backup.indexOf('mkdir -m 700 "$WORK_DIR/storage-objects/community-images"')
+  const download = backup.indexOf('storage cp --experimental --recursive --project-ref "$PRODUCTION_PROJECT_REF"')
+  assert.ok(emptyBucketRoot >= 0 && emptyBucketRoot < download, 'the local bucket root must exist before an empty recursive download')
+
+  const runNormalizer = (input) => spawnSync('bash', ['-c', `${definition}\nnormalize_storage_inventory`], {
+    encoding: 'utf8',
+    input,
+  })
+  const populated = runNormalizer('/community-images/root.txt\n/community-images/nested/file.txt\n')
+  assert.equal(populated.status, 0, populated.stderr)
+  assert.equal(populated.stdout, 'nested/file.txt\nroot.txt\n')
+  const empty = runNormalizer('')
+  assert.equal(empty.status, 0, empty.stderr)
+  assert.equal(empty.stdout, '')
+  const malformed = runNormalizer('ss:///community-images/root.txt\n')
+  assert.notEqual(malformed.status, 0, 'unexpected CLI listing formats must fail closed')
+})
+
+test('Storage restore uploads the downloaded bucket subtree exactly once and verifies target keys', async () => {
+  const backup = await operationText('community-backup-restore.md')
+  assert.match(backup, /storage cp --experimental --recursive --project-ref "\$RECOVERY_PROJECT_REF"[\s\\]*"\$RESTORE_WORK_DIR\/storage-objects\/community-images" ss:\/\/\/[\s\n]/)
+  assert.doesNotMatch(backup, /"\$RESTORE_WORK_DIR\/storage-objects\/community-images" ss:\/\/\/community-images\/?/)
+  assert.match(backup, /CLI 2\.118\.0[\s\S]*source basename `community-images`[\s\S]*exactly once[\s\S]*original object keys/i)
+  assert.match(backup, /storage ls --experimental --recursive --project-ref "\$RECOVERY_PROJECT_REF"[\s\\]*ss:\/\/\/community-images\/ \| normalize_storage_inventory/)
+  assert.match(backup, /diff --unified "\$RESTORE_WORK_DIR\/private-storage-inventory\.txt" "\$RESTORE_WORK_DIR\/restored-storage-inventory\.txt"/)
+})
+
+test('hosted Supabase procedures never persist a link and every remote command has an explicit target', async () => {
+  const text = await allOperationsText()
+  assert.doesNotMatch(text, /\bsupabase\b[^\n]*[\s\\]*\blink --project-ref|\bdb (?:dump|push) --linked\b/)
+  const hostedCommands = bashCommands(text).filter((command) =>
+    /\bsupabase\b/.test(command) && /\b(?:db (?:dump|push)|storage (?:ls|cp)|functions deploy)\b/.test(command))
+  assert.ok(hostedCommands.length >= 15, 'expected all documented hosted CLI commands')
+  for (const command of hostedCommands) {
+    assert.match(command, /--project-ref "\$(?:DEVELOPMENT|PRODUCTION|RECOVERY)_PROJECT_REF"/, `implicit hosted target: ${command}`)
+    assert.doesNotMatch(command, /\s--linked(?:\s|$)/, `linked-state target: ${command}`)
+  }
+})
+
+test('archive checksum stores a basename and verifies the relocated archive/checksum pair', async () => {
+  const backup = await operationText('community-backup-restore.md')
+  assert.doesNotMatch(backup, /sha256sum "\$ARCHIVE" > "\$CHECKSUM_TMP"/)
+  assert.match(backup, /ARCHIVE_DIR="\$\(dirname -- "\$ARCHIVE"\)"[\s\S]*ARCHIVE_BASENAME="\$\(basename -- "\$ARCHIVE"\)"/)
+  assert.match(backup, /cd "\$ARCHIVE_DIR"[\s\S]{0,200}sha256sum "\$ARCHIVE_BASENAME" > "\$CHECKSUM_TMP"/)
+  assert.match(backup, /mv -- "\$CHECKSUM_TMP" "\$CHECKSUM"/)
+  assert.match(backup, /cd "\$ARCHIVE_DIR"[\s\S]{0,200}sha256sum --check "\$CHECKSUM_BASENAME"/)
+  assert.match(backup, /CHECKSUM="\$ARCHIVE_DIR\/\$ARCHIVE_BASENAME\.sha256"/)
+})
+
+test('restore path guards canonicalize external directories and publish evidence only after verified cleanup', async () => {
+  const backup = await operationText('community-backup-restore.md')
+  assertMatches(backup, [
+    /RESTORE_ROOT="\$\(realpath -e -- "\$RESTORE_ROOT_INPUT"\)"/,
+    /EVIDENCE_PARENT="\$\(realpath -e -- "\$EVIDENCE_PARENT_INPUT"\)"/,
+    /"\$RESTORE_ROOT_INPUT" = "\$RESTORE_ROOT"/,
+    /"\$EVIDENCE_PARENT_INPUT" = "\$EVIDENCE_PARENT"/,
+    /\[ -d "\$RESTORE_ROOT" \] && \[ ! -L "\$RESTORE_ROOT" \]/,
+    /\[ -d "\$EVIDENCE_PARENT" \] && \[ ! -L "\$EVIDENCE_PARENT" \]/,
+    /case "\$RESTORE_DRILL_EVIDENCE_PATH" in "\$RESTORE_ROOT\/"\*\)/,
+  ])
+  const cleanup = backup.indexOf('cleanup_restore\ntest ! -e "$RESTORE_WORK_DIR"')
+  const publish = backup.indexOf('mv -- "$RESTORE_EVIDENCE_TMP" "$RESTORE_DRILL_EVIDENCE_PATH"')
+  assert.ok(cleanup >= 0, 'cleanup and an absence assertion must be adjacent')
+  assert.ok(publish > cleanup, 'passed evidence must publish only after zero-residue verification')
+  assert.match(backup, /if \[ "\$\{RESTORE_EVIDENCE_PUBLISHED:-0\}" -ne 1 \]; then[\s\S]*rm -f -- "\$\{RESTORE_EVIDENCE_TMP:-\}" "\$RESTORE_DRILL_EVIDENCE_PATH"/)
 })
 
 test('documents safe credentials and explicit project targeting', async () => {
