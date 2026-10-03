@@ -236,6 +236,8 @@ test('local mode rejects hosted URLs and credentials rather than ignoring them',
   for (const name of [
     'SUPABASE_URL',
     'SUPABASE_PUBLISHABLE_KEY',
+    'VITE_SUPABASE_URL',
+    'VITE_SUPABASE_PUBLISHABLE_KEY',
     'DEVELOPMENT_SUPABASE_URL',
     'PRODUCTION_SUPABASE_URL',
     'DEVELOPMENT_PROJECT_FINGERPRINT',
