@@ -52,6 +52,16 @@ Docker 빌드는 고정된 `linux/amd64` 이미지와 UID 10001의 비-root 사�
 
 이 사이트는 GitHub Pages 기준으로 운영합니다. 기존 `.github/workflows/jekyll.yml` 하나가 `master` push 또는 수동 실행 시 `_site` artifact를 한 번 업로드하고 배포합니다.
 
+커뮤니티 릴리스 운영 문서:
+
+- [릴리스 runbook](docs/operations/community-release-runbook.md)
+- [Free Plan 백업·복구](docs/operations/community-backup-restore.md)
+- [롤백·forward-fix](docs/operations/community-rollback.md)
+- [검증된 릴리스 체크리스트](docs/operations/community-release-checklist.md)
+- [GitHub OAuth 설정](docs/operations/community-oauth-setup.md)
+
+커뮤니티 release gate는 검증과 외부 evidence 생성만 담당합니다. The release gate never deploys or performs a hosted mutation. 각 변경은 runbook의 별도 수동 승인 경계를 따릅니다.
+
 ## 관리 메모
 
 - 하드코딩된 글 수나 오래된 문구는 가능한 한 자동화된 값으로 교체하는 편이 좋습니다.

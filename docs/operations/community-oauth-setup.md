@@ -1,42 +1,58 @@
-# GitHub OAuth 운영 설정
+# Community GitHub OAuth configuration
 
-커뮤니티 브라우저 앱은 Supabase Auth의 GitHub 공급자와 PKCE 흐름을 사용합니다. 브라우저에는 Supabase **publishable key**만 배포하며, GitHub Client Secret이나 Supabase service-role key를 넣지 않습니다.
+The community browser uses Supabase Auth’s GitHub provider with PKCE. Its boundaries are local Docker, hosted development, and production.
 
-## 1. GitHub OAuth App
+## Separate applications and credentials
 
-GitHub의 **Settings → Developer settings → OAuth Apps**에서 OAuth App을 만들고 다음 값을 설정합니다.
+Create a separate GitHub OAuth App for each boundary. Each has its own Client ID/Client Secret and callback; never share a production app or secret with local or development. Store each Client Secret only in that boundary’s Supabase Auth provider configuration (local secret injection for Docker; Dashboard for hosted projects).
 
-- Homepage URL: 운영 사이트 URL (예: `https://www.breadlab.ai/community/`)
-- Authorization callback URL: `https://<project-ref>.supabase.co/auth/v1/callback`
+The browser receives only the boundary’s Supabase project URL and **publishable key**. A publishable key is public. GitHub OAuth secrets, Supabase service-role/secret keys, database passwords, and user tokens are privileged and must not enter the browser bundle, repository, evidence, logs, Actions artifacts, or Pages artifact.
 
-GitHub에 등록하는 callback은 커뮤니티 페이지가 아니라 **Supabase Auth endpoint**입니다. `<project-ref>`는 실제 Supabase 프로젝트 ref로 바꿉니다.
+## Exact GitHub OAuth App callbacks
 
-GitHub OAuth App의 Client ID와 Client Secret은 Supabase Dashboard의 **Authentication → Providers → GitHub**에만 저장하고 GitHub 공급자를 활성화합니다. 저장소, 정적 사이트, `.env` 브라우저 변수에 secret을 기록하지 않습니다.
+GitHub **Settings → Developer settings → OAuth Apps** uses the Supabase Auth endpoint as Authorization callback URL, not the community page callback.
 
-## 2. Supabase URL Configuration
+| OAuth App | Homepage URL | Authorization callback URL |
+|---|---|---|
+| local Docker | `http://localhost:5173/community/` | `http://127.0.0.1:54321/auth/v1/callback` |
+| hosted development | `http://localhost:5173/community/` | `https://${DEVELOPMENT_PROJECT_REF}.supabase.co/auth/v1/callback` |
+| production | `https://www.breadlab.ai/community/` | `https://${PRODUCTION_PROJECT_REF}.supabase.co/auth/v1/callback` |
 
-Supabase Dashboard의 **Authentication → URL Configuration**에서 Site URL을 운영 origin으로 설정하고 Redirect URLs allowlist에 앱 callback을 정확히 등록합니다.
+`${DEVELOPMENT_PROJECT_REF}` and `${PRODUCTION_PROJECT_REF}` denote operator environment variables; substitute their non-secret values in the dashboards. Validate that they are nonempty and distinct before configuration:
 
-- 운영: `https://www.breadlab.ai/community/auth/callback/`
-- 스테이징: `https://<staging-host>/community/auth/callback/`
-- 로컬 개발: `http://localhost:5173/community/auth/callback/`
+```bash
+: "${DEVELOPMENT_PROJECT_REF:?set development project ref}"
+: "${PRODUCTION_PROJECT_REF:?set production project ref}"
+[ "$DEVELOPMENT_PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ] || exit 1
+```
 
-실제로 사용하는 스테이징 host와 로컬 Vite 포트만 허용합니다. 광범위한 wildcard, 외부 origin, protocol-relative URL은 추가하지 않습니다. GitHub OAuth App의 callback(`https://<project-ref>.supabase.co/auth/v1/callback`)과 이 Supabase redirect allowlist는 서로 다른 설정입니다.
+## Exact Supabase redirect allow-lists
 
-## 3. 브라우저 환경 변수
+The Supabase Auth **Authentication → URL Configuration → Redirect URLs** allow-list controls the browser’s post-auth destination and is different from GitHub’s Authorization callback URL. Do not add wildcards, preview hosts, protocol-relative URLs, or another environment’s origin.
 
-정적 앱에는 다음 공개 값만 제공합니다.
+| Boundary | Site URL | Complete redirect allow-list |
+|---|---|---|
+| local Docker | `http://localhost:5173/community/` | `http://localhost:5173/community/auth/callback/` |
+| hosted development | `http://localhost:5173/community/` | `http://localhost:5173/community/auth/callback/` |
+| production | `https://www.breadlab.ai/community/` | `https://www.breadlab.ai/community/auth/callback/` |
 
-- Supabase project URL
-- Supabase publishable key
+For local Docker, keep equivalent values in `supabase/config.toml`; inject the local GitHub app credentials through the approved local secret mechanism. For hosted development and production, enter only that boundary’s OAuth app credentials and exact allow-list in its Dashboard.
 
-GitHub Client Secret과 service-role key는 브라우저 번들에 절대 포함하지 않습니다. 앱은 `flowType: 'pkce'`, session persistence, 자동 refresh를 사용하고 `/community/auth/callback/`에서 authorization code를 한 번만 교환합니다.
+## Verification
 
-## 4. 점검
+For each boundary independently:
 
-1. 로그아웃 상태에서 GitHub 로그인을 시작합니다.
-2. GitHub 승인 후 같은 origin의 `/community/auth/callback/`으로 돌아오는지 확인합니다.
-3. 로그인 전 커뮤니티 상세 경로와 query가 로그인 후 복원되는지 확인합니다.
-4. GitHub 공급자를 비활성화했을 때 한국어 안내가 표시되는지 확인합니다.
-5. 세션 만료 또는 로그아웃 후 읽기는 계속 가능하고, 브라우저의 작성 draft가 유지되는지 확인합니다.
-6. 애플리케이션 로그와 관측 도구에 OAuth code, access/refresh token, callback 전체 body를 기록하지 않는지 확인합니다.
+1. Confirm the displayed project ref and OAuth App name before any change.
+2. Start logged out and initiate GitHub login.
+3. Confirm GitHub returns to that boundary’s Supabase `/auth/v1/callback` and Supabase returns to the exact community `/auth/callback/` allow-listed URL.
+4. Confirm PKCE code exchange occurs once, the original same-origin community path/query is restored, and logout/session expiry preserves public reads and local drafts.
+5. Confirm a disabled provider produces the expected user-facing message.
+6. Confirm logs and evidence contain no OAuth code, access/refresh token, Client Secret, or callback body.
+7. Use separate synthetic test identities; remove development test sessions/fixtures by exact recorded IDs.
+
+OAuth/configuration change is a hosted mutation and requires a boundary-specific manual approval. `scripts/release-gate.mjs` never changes OAuth settings.
+
+## Official references
+
+- Supabase redirect URLs: https://supabase.com/docs/guides/auth/redirect-urls
+- GitHub OAuth Apps: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app

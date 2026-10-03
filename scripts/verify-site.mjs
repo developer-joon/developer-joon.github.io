@@ -67,6 +67,12 @@ const forbiddenNames = [
   /^(?:id_rsa|id_ed25519)$/i,
   /\.(?:key|pem)$/i,
 ]
+const forbiddenCommunityOperationsNames = new Set([
+  'community-release-runbook.md',
+  'community-backup-restore.md',
+  'community-rollback.md',
+  'community-release-checklist.md',
+])
 const secretPatterns = [
   /\bsb_secret_[A-Za-z0-9._-]+/,
   /\b(?:gh[opusr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/,
@@ -220,6 +226,9 @@ async function walk(relativeDirectory = '') {
       fail(`implementation/private ${kind} leaked into artifact: ${relativePath}`)
     } else if (forbiddenNames.some((pattern) => pattern.test(entry.name))) {
       fail(`implementation/private file leaked into artifact: ${relativePath}`)
+    }
+    if (forbiddenCommunityOperationsNames.has(entry.name)) {
+      fail(`community operations source leaked into artifact: ${relativePath}`)
     }
 
     if (entryStat.isDirectory()) {
