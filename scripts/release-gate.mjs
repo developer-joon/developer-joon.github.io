@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { spawn, spawnSync } from 'node:child_process'
+import { accessSync, constants, lstatSync, realpathSync, statSync } from 'node:fs'
+import { readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const MODES = new Set(['local', 'development', 'production-readiness'])
 const SHA256 = /^[a-f0-9]{64}$/
@@ -215,6 +219,327 @@ export function buildReleasePlan(options) {
   return deepFreeze({ mode: options.mode, evidencePath: options.evidencePath, steps })
 }
 
-export async function runReleaseGate(_options, _dependencies) {
-  throw new Error('Task 2 release-gate execution is not implemented')
+const EVIDENCE_KEYS = [
+  'schemaVersion',
+  'revision',
+  'mode',
+  'status',
+  'startedAt',
+  'finishedAt',
+  'durationMs',
+  'projectFingerprint',
+  'artifactManifests',
+  'steps',
+  'failure',
+].sort()
+const STEP_EVIDENCE_KEYS = ['name', 'status', 'startedAt', 'finishedAt', 'durationMs'].sort()
+const FAILURE_EVIDENCE_KEYS = ['step', 'kind', 'message'].sort()
+const REVISION = /^[a-f0-9]{40}$/
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+const PROJECT_ID = 'developer-joon-community-design'
+const ARTIFACT_PATHS = [
+  '/tmp/breadlab-community-release-site-a',
+  '/tmp/breadlab-community-release-site-b',
+  '/tmp/breadlab-community-release-manifests',
+]
+
+function exactKeys(value, expected, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} evidence must be an object`)
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expected)) {
+    throw new Error(`${label} evidence must contain exact keys`)
+  }
+}
+
+function validTime(value) {
+  return typeof value === 'string' && ISO_UTC.test(value) && !Number.isNaN(Date.parse(value))
+}
+
+export function validateEvidence(evidence) {
+  exactKeys(evidence, EVIDENCE_KEYS, 'release')
+  if (evidence.schemaVersion !== 1) throw new Error('release evidence schemaVersion must be 1')
+  if (!REVISION.test(evidence.revision)) throw new Error('release evidence revision must be a full lowercase Git revision')
+  if (!MODES.has(evidence.mode)) throw new Error('release evidence mode is invalid')
+  if (!['passed', 'failed'].includes(evidence.status)) throw new Error('release evidence status is invalid')
+  if (!validTime(evidence.startedAt) || !validTime(evidence.finishedAt)) throw new Error('release evidence timestamps must be UTC ISO timestamps')
+  if (!Number.isInteger(evidence.durationMs) || evidence.durationMs < 0) throw new Error('release evidence durationMs is invalid')
+  if (evidence.projectFingerprint !== null && !SHA256.test(evidence.projectFingerprint)) {
+    throw new Error('release evidence projectFingerprint is invalid')
+  }
+  if (!Array.isArray(evidence.artifactManifests) || evidence.artifactManifests.some((value) => typeof value !== 'string')) {
+    throw new Error('release evidence artifactManifests is invalid')
+  }
+  if (!Array.isArray(evidence.steps)) throw new Error('release evidence steps must be an array')
+  for (const item of evidence.steps) {
+    exactKeys(item, STEP_EVIDENCE_KEYS, 'step')
+    if (typeof item.name !== 'string' || !['passed', 'failed'].includes(item.status)) throw new Error('step evidence status is invalid')
+    if (!validTime(item.startedAt) || !validTime(item.finishedAt)) throw new Error('step evidence timestamps are invalid')
+    if (!Number.isInteger(item.durationMs) || item.durationMs < 0) throw new Error('step evidence durationMs is invalid')
+  }
+  if (evidence.status === 'passed' && evidence.failure !== null) throw new Error('passed release evidence must not contain failure evidence')
+  if (evidence.status === 'failed') {
+    exactKeys(evidence.failure, FAILURE_EVIDENCE_KEYS, 'failure')
+    if (![evidence.failure.step, evidence.failure.kind, evidence.failure.message].every((value) => typeof value === 'string' && value.length > 0)) {
+      throw new Error('failure evidence values are invalid')
+    }
+  }
+  return evidence
+}
+
+class ReleaseFailure extends Error {
+  constructor(stepName, kind, message) {
+    super(message)
+    this.stepName = stepName
+    this.kind = kind
+  }
+}
+
+function timestamp(clock) {
+  const value = clock()
+  if (!(value instanceof Date) || Number.isNaN(value.valueOf())) throw new Error('clock must return a valid Date')
+  return value
+}
+
+function safeFailure(step, result) {
+  const sentinel = step.args.find((value) => /sentinel\.mjs$/.test(value))
+  const subject = sentinel ?? step.name
+  const exit = Number.isInteger(result?.code) ? `exit code ${result.code}` : `signal ${result?.signal ?? 'unknown'}`
+  return new ReleaseFailure(step.name, sentinel ? 'sentinel' : 'command', `${subject} failed with ${exit}`)
+}
+
+function cleanupStep() {
+  return {
+    name: 'cleanup-local-supabase',
+    command: 'npm',
+    args: ['--prefix', 'community-app', 'run', 'db:stop', '--', '--project-id', PROJECT_ID],
+    environment: {},
+  }
+}
+
+function defaultExecutablePreflight(plan, repoRoot, env = process.env) {
+  const executablePaths = env.PATH?.split(path.delimiter).filter(Boolean) ?? []
+  const isExecutableFile = (candidate) => {
+    try {
+      if (!statSync(candidate).isFile()) return false
+      accessSync(candidate, constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  for (const command of new Set(plan.steps.map((releaseStep) => releaseStep.command))) {
+    const candidates = command.includes(path.sep)
+      ? [path.isAbsolute(command) ? command : path.resolve(repoRoot, command)]
+      : executablePaths.map((directory) => path.join(directory, command))
+    if (!candidates.some(isExecutableFile)) {
+      throw new ReleaseFailure(
+        'repository-preflight',
+        'preflight',
+        `required release executable is unavailable: ${command}`,
+      )
+    }
+  }
+}
+
+async function runHostedProbes(options, dependencies) {
+  const developmentUrl = dependencies.developmentUrl
+  if (projectFingerprint(developmentUrl) !== options.projectFingerprint) {
+    throw new ReleaseFailure('development-read-only-health', 'configuration', 'development project identity does not match the approved fingerprint')
+  }
+  const fetchImplementation = dependencies.fetch
+  if (typeof fetchImplementation !== 'function') throw new Error('development mode requires an injected fetch implementation')
+  const probes = [
+    ['/auth/v1/health', 'GET'],
+    ['/auth/v1/settings', 'GET'],
+  ]
+  for (const [pathname, method] of probes) {
+    let response
+    try {
+      response = await fetchImplementation(`${developmentUrl}${pathname}`, {
+        method,
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      })
+    } catch {
+      throw new ReleaseFailure(
+        'development-read-only-health',
+        'hosted-probe',
+        'resume the development Supabase project and retry the read-only probe',
+      )
+    }
+    const body = await response.text()
+    if (response.status >= 500 || /project\s+(?:is\s+)?(?:paused|inactive)|(?:paused|inactive)\s+project/i.test(body)) {
+      throw new ReleaseFailure(
+        'development-read-only-health',
+        'hosted-probe',
+        'resume the development Supabase project and retry the read-only probe',
+      )
+    }
+    if (!response.ok) {
+      throw new ReleaseFailure('development-read-only-health', 'hosted-probe', `development read-only probe failed with HTTP ${response.status}`)
+    }
+  }
+  return { code: 0 }
+}
+
+function defaultRunner(repoRoot, signal) {
+  return (releaseStep) => new Promise((resolve, reject) => {
+    const child = spawn(releaseStep.command, releaseStep.args, {
+      cwd: repoRoot,
+      env: { ...process.env, ...releaseStep.environment },
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const limit = 16 * 1024
+    let stdout = ''
+    let stderr = ''
+    const append = (current, chunk) => `${current}${chunk}`.slice(-limit)
+    child.stdout.on('data', (chunk) => {
+      process.stdout.write(chunk)
+      stdout = append(stdout, chunk)
+    })
+    child.stderr.on('data', (chunk) => {
+      process.stderr.write(chunk)
+      stderr = append(stderr, chunk)
+    })
+    const abort = () => child.kill('SIGTERM')
+    signal?.addEventListener('abort', abort, { once: true })
+    child.once('error', reject)
+    child.once('close', (code, childSignal) => {
+      signal?.removeEventListener('abort', abort)
+      resolve({ code, signal: childSignal, stdout, stderr })
+    })
+  })
+}
+
+async function publishEvidence(evidencePath, evidence, filesystem) {
+  validateEvidence(evidence)
+  const temporary = path.join(path.dirname(evidencePath), `.${path.basename(evidencePath)}.${randomUUID()}.tmp`)
+  await filesystem.writeFile(temporary, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
+  try {
+    await filesystem.rename(temporary, evidencePath)
+  } catch (error) {
+    await filesystem.rm?.(temporary, { force: true })
+    throw error
+  }
+}
+
+export async function runReleaseGate(options, dependencies = {}) {
+  const plan = dependencies.plan ?? buildReleasePlan(options)
+  const clock = dependencies.clock ?? (() => new Date())
+  const filesystem = dependencies.filesystem ?? { writeFile, rename, rm }
+  const repoRoot = dependencies.repoRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const runner = dependencies.runner ?? defaultRunner(repoRoot, dependencies.signal)
+  const executablePreflight = dependencies.executablePreflight ?? (() => defaultExecutablePreflight(plan, repoRoot))
+  const revision = dependencies.revision
+  if (!REVISION.test(revision ?? '')) throw new Error('runReleaseGate requires a full lowercase Git revision')
+
+  const started = timestamp(clock)
+  const steps = []
+  let primaryFailure
+  let cleanupFailure
+
+  const execute = async (releaseStep, { ignoreAbort = false } = {}) => {
+    const stepStarted = timestamp(clock)
+    let result
+    let failure
+    try {
+      if (!ignoreAbort && dependencies.signal?.aborted) throw new ReleaseFailure(releaseStep.name, 'signal', 'release gate aborted by signal')
+      result = releaseStep.name === 'development-read-only-health'
+        ? await runHostedProbes(options, dependencies)
+        : await runner(releaseStep)
+      if (result?.code !== 0) throw safeFailure(releaseStep, result)
+      if (releaseStep.name === 'repository-preflight' && result.stdout?.trim()) {
+        throw new ReleaseFailure(releaseStep.name, 'preflight', 'repository-preflight requires a clean Git working tree')
+      }
+      if (releaseStep.name === 'repository-preflight') await executablePreflight(plan, repoRoot)
+      if (!ignoreAbort && dependencies.signal?.aborted) throw new ReleaseFailure(releaseStep.name, 'signal', 'release gate aborted by signal')
+    } catch (error) {
+      failure = error instanceof ReleaseFailure
+        ? error
+        : new ReleaseFailure(releaseStep.name, 'command', `${releaseStep.name} could not be executed`)
+    }
+    const stepFinished = timestamp(clock)
+    steps.push({
+      name: releaseStep.name,
+      status: failure ? 'failed' : 'passed',
+      startedAt: stepStarted.toISOString(),
+      finishedAt: stepFinished.toISOString(),
+      durationMs: Math.max(0, stepFinished.valueOf() - stepStarted.valueOf()),
+    })
+    if (failure) throw failure
+  }
+
+  try {
+    for (const releaseStep of plan.steps) await execute(releaseStep)
+  } catch (error) {
+    primaryFailure = error
+  } finally {
+    if (options.mode === 'local' || options.mode === 'development') {
+      try {
+        await execute(cleanupStep(), { ignoreAbort: true })
+      } catch (error) {
+        cleanupFailure = error
+      }
+      for (const artifactPath of ARTIFACT_PATHS) {
+        try {
+          await filesystem.rm?.(artifactPath, { recursive: true, force: true })
+        } catch (error) {
+          cleanupFailure ??= new ReleaseFailure('cleanup-release-artifacts', 'cleanup', 'cleanup-release-artifacts could not be completed')
+        }
+      }
+    }
+  }
+
+  const failure = primaryFailure ?? cleanupFailure
+  const finished = timestamp(clock)
+  const evidence = {
+    schemaVersion: 1,
+    revision,
+    mode: options.mode,
+    status: failure ? 'failed' : 'passed',
+    startedAt: started.toISOString(),
+    finishedAt: finished.toISOString(),
+    durationMs: Math.max(0, finished.valueOf() - started.valueOf()),
+    projectFingerprint: options.projectFingerprint ?? null,
+    artifactManifests: ['build-1.sha256', 'build-2.sha256'],
+    steps,
+    failure: failure ? { step: failure.stepName, kind: failure.kind, message: failure.message } : null,
+  }
+  await publishEvidence(options.evidencePath, evidence, filesystem)
+
+  if (failure) {
+    if (primaryFailure && cleanupFailure) {
+      throw new Error(`${primaryFailure.message}; cleanup also failed: ${cleanupFailure.message}`, { cause: primaryFailure })
+    }
+    throw failure
+  }
+  return evidence
+}
+
+async function main() {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'community-app/package.json'), 'utf8'))
+  const options = parseReleaseOptions(process.argv.slice(2), process.env, {
+    repoRoot,
+    nodeVersion: process.versions.node,
+    packageJson,
+    lstatSync,
+    realpathSync,
+  })
+  const revisionResult = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8', shell: false })
+  if (revisionResult.status !== 0) throw new Error('unable to determine release Git revision')
+  await runReleaseGate(options, {
+    repoRoot,
+    revision: revisionResult.stdout.trim(),
+    developmentUrl: process.env.DEVELOPMENT_SUPABASE_URL,
+    fetch: globalThis.fetch,
+  })
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error.message)
+    process.exitCode = 1
+  })
 }
