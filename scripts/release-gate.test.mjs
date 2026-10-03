@@ -144,6 +144,25 @@ test('requires evidence to resolve outside the repository and rejects symlinks',
   }
 })
 
+test('rejects existing evidence targets that are not regular files', () => {
+  const state = fixture()
+  try {
+    mkdirSync(state.evidence)
+    assert.throws(
+      () => parseReleaseOptions(['--evidence', state.evidence], {}, state.context),
+      /must be a regular file/i,
+    )
+    if (process.platform === 'linux') {
+      assert.throws(
+        () => parseReleaseOptions(['--evidence', '/dev/null'], {}, state.context),
+        /must be a regular file/i,
+      )
+    }
+  } finally {
+    state.close()
+  }
+})
+
 test('development requires an exact hosted HTTPS URL and explicit cloud-read opt-in', () => {
   assert.throws(
     () => parse(['--mode', 'development', '--evidence', '$EVIDENCE']),
@@ -221,6 +240,35 @@ test('production readiness requires opt-in and distinct canonical project finger
       { ...fingerprints, DEVELOPMENT_PROJECT_FINGERPRINT: 'not-a-digest', ALLOW_PRODUCTION_READINESS: '1' },
     ),
     /SHA-256 fingerprint/i,
+  )
+})
+
+test('production readiness rejects URL and explicit fingerprint disagreements before identity comparison', () => {
+  const optIn = { ALLOW_PRODUCTION_READINESS: '1' }
+  assert.throws(
+    () => parse(
+      ['--mode', 'production-readiness', '--evidence', '$EVIDENCE'],
+      {
+        ...optIn,
+        DEVELOPMENT_SUPABASE_URL: DEVELOPMENT_URL,
+        DEVELOPMENT_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
+        PRODUCTION_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
+      },
+    ),
+    /DEVELOPMENT_PROJECT_FINGERPRINT must match DEVELOPMENT_SUPABASE_URL/i,
+  )
+  assert.throws(
+    () => parse(
+      ['--mode', 'production-readiness', '--evidence', '$EVIDENCE'],
+      {
+        ...optIn,
+        DEVELOPMENT_SUPABASE_URL: DEVELOPMENT_URL,
+        DEVELOPMENT_PROJECT_FINGERPRINT: projectFingerprint(DEVELOPMENT_URL),
+        PRODUCTION_SUPABASE_URL: DEVELOPMENT_URL,
+        PRODUCTION_PROJECT_FINGERPRINT: projectFingerprint(PRODUCTION_URL),
+      },
+    ),
+    /PRODUCTION_PROJECT_FINGERPRINT must match PRODUCTION_SUPABASE_URL/i,
   )
 })
 

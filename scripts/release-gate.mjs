@@ -94,6 +94,7 @@ function validateEvidencePath(evidencePath, context) {
     if (error?.code !== 'ENOENT') throw error
   }
   if (evidenceStat?.isSymbolicLink()) throw new Error('evidence output must not be a symlink')
+  if (evidenceStat && !evidenceStat.isFile()) throw new Error('evidence output must be a regular file')
 
   const canonicalRepo = realpathSync(repoRoot)
   const parent = realpathSync(path.dirname(absoluteEvidence))
@@ -113,8 +114,15 @@ function parseFingerprint(value, name) {
 function fingerprintInput(env, prefix) {
   const fingerprintName = `${prefix}_PROJECT_FINGERPRINT`
   const urlName = `${prefix}_SUPABASE_URL`
-  if (env[fingerprintName]) return parseFingerprint(env[fingerprintName], fingerprintName)
-  if (env[urlName]) return projectFingerprint(env[urlName])
+  const explicitFingerprint = env[fingerprintName]
+    ? parseFingerprint(env[fingerprintName], fingerprintName)
+    : undefined
+  const urlFingerprint = env[urlName] ? projectFingerprint(env[urlName]) : undefined
+  if (explicitFingerprint && urlFingerprint && explicitFingerprint !== urlFingerprint) {
+    throw new Error(`${fingerprintName} must match ${urlName}`)
+  }
+  if (explicitFingerprint) return explicitFingerprint
+  if (urlFingerprint) return urlFingerprint
   throw new Error(`${fingerprintName} is required`)
 }
 
