@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -237,6 +237,29 @@ test('Storage inventories normalize CLI 2.118 paths to relative object keys incl
   assert.equal(empty.stdout, '')
   const malformed = runNormalizer('ss:///community-images/root.txt\n')
   assert.notEqual(malformed.status, 0, 'unexpected CLI listing formats must fail closed')
+
+  const storageBlock = backup.match(/```bash\n(normalize_storage_inventory\(\) \{[\s\S]*?chmod 600 "\$WORK_DIR"\/\*\.sql "\$WORK_DIR"\/\*\.txt)\n```/)?.[1]
+  assert.ok(storageBlock, 'the documented Storage backup block must be executable')
+  const root = await mkdtemp(path.join(tmpdir(), 'community-empty-storage-'))
+  try {
+    const cli = path.join(root, 'community-app/node_modules/.bin/supabase')
+    const work = path.join(root, 'work')
+    const marker = path.join(root, 'cp-called')
+    await mkdir(path.dirname(cli), { recursive: true })
+    await mkdir(work)
+    await writeFile(path.join(work, 'dummy.sql'), '')
+    await writeFile(cli, `#!/usr/bin/env bash\nif [[ " $* " == *" storage ls "* ]]; then exit 0; fi\nif [[ " $* " == *" storage cp "* ]]; then : > "$CP_MARKER"; exit 17; fi\nexit 99\n`)
+    await chmod(cli, 0o700)
+    const result = spawnSync('bash', ['-c', `set -euo pipefail\n${storageBlock}`], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, WORK_DIR: work, REPO_ROOT: root, PRODUCTION_PROJECT_REF: 'example-ref', CP_MARKER: marker },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    await assert.rejects(readFile(marker), 'an empty bucket must not invoke recursive storage cp')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('Storage restore uploads the downloaded bucket subtree exactly once and verifies target keys', async () => {
@@ -268,6 +291,18 @@ test('archive checksum stores a basename and verifies the relocated archive/chec
   assert.match(backup, /mv -- "\$CHECKSUM_TMP" "\$CHECKSUM"/)
   assert.match(backup, /cd "\$ARCHIVE_DIR"[\s\S]{0,200}sha256sum --check "\$CHECKSUM_BASENAME"/)
   assert.match(backup, /CHECKSUM="\$ARCHIVE_DIR\/\$ARCHIVE_BASENAME\.sha256"/)
+  assert.match(backup, /EXPECTED_ARCHIVE_CHECKSUM_RECORD="\$\(sha256sum "\$ARCHIVE_BASENAME"\)"/)
+  assert.match(backup, /test "\$\(cat -- "\$CHECKSUM_BASENAME"\)" = "\$EXPECTED_ARCHIVE_CHECKSUM_RECORD"/)
+
+  const root = await mkdtemp(path.join(tmpdir(), 'community-checksum-binding-'))
+  try {
+    await writeFile(path.join(root, 'A.tar.age'), 'archive-a')
+    await writeFile(path.join(root, 'B.tar.age'), 'archive-b')
+    const wrong = spawnSync('bash', ['-c', 'cd "$1"; sha256sum B.tar.age > A.tar.age.sha256; EXPECTED_ARCHIVE_CHECKSUM_RECORD="$(sha256sum A.tar.age)"; test "$(cat -- A.tar.age.sha256)" = "$EXPECTED_ARCHIVE_CHECKSUM_RECORD"', 'bash', root], { encoding: 'utf8' })
+    assert.notEqual(wrong.status, 0, 'a sidecar naming another valid archive must be rejected')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('restore path guards canonicalize external directories and publish evidence only after verified cleanup', async () => {
@@ -285,7 +320,46 @@ test('restore path guards canonicalize external directories and publish evidence
   const publish = backup.indexOf('mv -- "$RESTORE_EVIDENCE_TMP" "$RESTORE_DRILL_EVIDENCE_PATH"')
   assert.ok(cleanup >= 0, 'cleanup and an absence assertion must be adjacent')
   assert.ok(publish > cleanup, 'passed evidence must publish only after zero-residue verification')
-  assert.match(backup, /if \[ "\$\{RESTORE_EVIDENCE_PUBLISHED:-0\}" -ne 1 \]; then[\s\S]*rm -f -- "\$\{RESTORE_EVIDENCE_TMP:-\}" "\$RESTORE_DRILL_EVIDENCE_PATH"/)
+  assert.match(backup, /restore_exit\(\)[\s\S]*if \[ "\$\{RESTORE_EVIDENCE_PUBLISHED:-0\}" -ne 1 \]; then[\s\S]*rm -f -- "\$\{RESTORE_EVIDENCE_TMP:-\}" "\$RESTORE_DRILL_EVIDENCE_PATH"/)
+
+  const cleanupDefinition = backup.match(/cleanup_restore\(\) \{[\s\S]*?\n\}/)?.[0]
+  const evidenceBlock = backup.match(/```bash\n(RESTORE_EVIDENCE_TMP="\$\(mktemp[\s\S]*?trap - EXIT INT TERM)\n```/)?.[1]
+  assert.ok(cleanupDefinition && evidenceBlock, 'cleanup and evidence publication blocks must be executable')
+  const root = await mkdtemp(path.join(tmpdir(), 'community-restore-evidence-'))
+  try {
+    const restoreWork = path.join(root, 'restore-work')
+    const evidencePath = path.join(root, 'restore-evidence.txt')
+    const checksum = path.join(root, 'archive.sha256')
+    await mkdir(restoreWork)
+    await writeFile(path.join(restoreWork, 'plaintext.sql'), 'sensitive')
+    await writeFile(checksum, 'abc123  archive.tar.age\n')
+    const result = spawnSync('bash', ['-c', `set -euo pipefail
+RESTORE_WORK_DIR="$TEST_RESTORE_WORK"
+RESTORE_DRILL_EVIDENCE_PATH="$TEST_EVIDENCE_PATH"
+EVIDENCE_PARENT="$TEST_EVIDENCE_PARENT"
+EVIDENCE_BASENAME="restore-evidence.txt"
+CHECKSUM="$TEST_CHECKSUM"
+RESTORED_STORAGE_OBJECT_COUNT=0
+RESTORED_STORAGE_INVENTORY_SHA256=empty
+RESTORE_EVIDENCE_TMP=''
+RESTORE_EVIDENCE_PUBLISHED=0
+${cleanupDefinition}
+${evidenceBlock}`], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        TEST_RESTORE_WORK: restoreWork,
+        TEST_EVIDENCE_PATH: evidencePath,
+        TEST_EVIDENCE_PARENT: root,
+        TEST_CHECKSUM: checksum,
+      },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(await readFile(evidencePath, 'utf8'), /zero_plaintext_retained=true/)
+    await assert.rejects(readFile(path.join(restoreWork, 'plaintext.sql')), 'plaintext must be absent before evidence publication')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('documents safe credentials and explicit project targeting', async () => {

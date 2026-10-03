@@ -112,7 +112,7 @@ trap 'exit 143' TERM
 
 CLI 2.118.0 marks Storage commands experimental. Keep `--experimental`, `--project-ref`, bucket, and local destination explicit. The trailing bucket slash makes the argument the bucket root rather than a bucket-name prefix. Recursive download appends the source directory `community-images` to the existing destination directory, so the asserted local object root is exactly `$WORK_DIR/storage-objects/community-images`.
 
-CLI 2.118.0 recursive `storage ls` emits `/community-images/object-key`, not an `ss:///` URL. The normalizer below accepts only that bucket prefix, strips it to an exact relative object key, sorts keys, and naturally emits an empty file for an empty bucket. The downloaded-file inventory uses the same relative-key format.
+CLI 2.118.0 recursive `storage ls` emits `/community-images/object-key`, not an `ss:///` URL. The normalizer below accepts only that bucket prefix, strips it to an exact relative object key, sorts keys, and naturally emits an empty file for an empty bucket. The downloaded-file inventory uses the same relative-key format. The pinned recursive `storage cp` returns `Object not found` for an empty traversal, so invoke it only when the already-validated remote inventory is nonempty; every nonempty bucket must still complete the copy and exact inventory comparison.
 
 ```bash
 normalize_storage_inventory() {
@@ -132,9 +132,11 @@ mkdir -m 700 "$WORK_DIR/storage-objects/community-images"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   storage ls --experimental --recursive --project-ref "$PRODUCTION_PROJECT_REF" \
   ss:///community-images/ | normalize_storage_inventory > "$WORK_DIR/private-storage-inventory.txt"
-./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
-  storage cp --experimental --recursive --project-ref "$PRODUCTION_PROJECT_REF" \
-  ss:///community-images/ "$WORK_DIR/storage-objects"
+if [ -s "$WORK_DIR/private-storage-inventory.txt" ]; then
+  ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
+    storage cp --experimental --recursive --project-ref "$PRODUCTION_PROJECT_REF" \
+    ss:///community-images/ "$WORK_DIR/storage-objects"
+fi
 test -d "$WORK_DIR/storage-objects/community-images"
 find "$WORK_DIR/storage-objects/community-images" -type f -printf '%P\n' \
   | LC_ALL=C sort > "$WORK_DIR/downloaded-storage-paths.txt"
@@ -242,6 +244,8 @@ CHECKSUM="$ARCHIVE_DIR/$ARCHIVE_BASENAME.sha256"
 chmod 600 "$AGE_IDENTITY_FILE"
 (
   cd "$ARCHIVE_DIR"
+  EXPECTED_ARCHIVE_CHECKSUM_RECORD="$(sha256sum "$ARCHIVE_BASENAME")"
+  test "$(cat -- "$CHECKSUM_BASENAME")" = "$EXPECTED_ARCHIVE_CHECKSUM_RECORD"
   sha256sum --check "$CHECKSUM_BASENAME"
 )
 chmod 700 "$RESTORE_ROOT"
@@ -259,15 +263,15 @@ cleanup_restore() {
       rm -rf -- "$RESTORE_WORK_DIR" || cleanup_status=1
     fi
   fi
-  if [ "${RESTORE_EVIDENCE_PUBLISHED:-0}" -ne 1 ]; then
-    rm -f -- "${RESTORE_EVIDENCE_TMP:-}" "$RESTORE_DRILL_EVIDENCE_PATH" || cleanup_status=1
-  fi
   return "$cleanup_status"
 }
 restore_exit() {
   status=$?
   trap - EXIT INT TERM
   cleanup_restore || status=1
+  if [ "${RESTORE_EVIDENCE_PUBLISHED:-0}" -ne 1 ]; then
+    rm -f -- "${RESTORE_EVIDENCE_TMP:-}" "$RESTORE_DRILL_EVIDENCE_PATH" || status=1
+  fi
   exit "$status"
 }
 trap restore_exit EXIT
