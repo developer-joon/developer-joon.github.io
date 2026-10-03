@@ -184,6 +184,104 @@ test('backup includes migration history and restores all SQL atomically', async 
   ])
 })
 
+test('database restore accepts only recovery-bound Supabase connection targets', async () => {
+  const backup = await operationText('community-backup-restore.md')
+  const definition = backup.match(/validate_recovery_database_target\(\) \{[\s\S]*?\n\}/)?.[0]
+  assert.ok(definition, 'the documented recovery database validator must be executable')
+
+  const runValidator = (overrides) => spawnSync('bash', ['-c', `set -euo pipefail\n${definition}\nvalidate_recovery_database_target`], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      RECOVERY_PROJECT_REF: 'recovery-ref',
+      DEVELOPMENT_PROJECT_REF: 'development-ref',
+      PRODUCTION_PROJECT_REF: 'production-ref',
+      PGHOST: 'db.recovery-ref.supabase.co',
+      PGPORT: '5432',
+      PGDATABASE: 'postgres',
+      PGUSER: 'postgres',
+      ...overrides,
+    },
+  })
+
+  for (const fixture of [
+    {},
+    { PGHOST: 'aws-0-region.pooler.supabase.com', PGPORT: '5432', PGUSER: 'postgres.recovery-ref' },
+    { PGHOST: 'aws-0-region.pooler.supabase.com', PGPORT: '6543', PGUSER: 'postgres.recovery-ref' },
+  ]) {
+    const result = runValidator(fixture)
+    assert.equal(result.status, 0, result.stderr)
+  }
+
+  for (const fixture of [
+    { RECOVERY_PROJECT_REF: 'development-ref' },
+    { RECOVERY_PROJECT_REF: 'production-ref' },
+    { PGHOST: 'db.other-ref.supabase.co' },
+    { PGHOST: 'database.example.com' },
+    { PGUSER: 'postgres.other-ref', PGHOST: 'aws-0-region.pooler.supabase.com', PGPORT: '6543' },
+    { PGUSER: 'admin' },
+    { PGDATABASE: 'app' },
+    { PGPORT: '6543' },
+    { PGPORT: 'not-a-port' },
+  ]) {
+    const result = runValidator(fixture)
+    assert.notEqual(result.status, 0, `unsafe database target unexpectedly accepted: ${JSON.stringify(fixture)}`)
+  }
+
+  const validation = backup.indexOf('validate_recovery_database_target')
+  const passwordPrompt = backup.indexOf("read -rsp 'Recovery database password: '")
+  const psql = backup.indexOf('psql --single-transaction')
+  assert.ok(validation >= 0 && validation < passwordPrompt && passwordPrompt < psql, 'target validation must precede the password prompt and psql')
+  assert.match(backup, /psql --single-transaction --variable ON_ERROR_STOP=1[\s\\]*--host "\$PGHOST" --port "\$PGPORT" --dbname "\$PGDATABASE" --username "\$PGUSER"/)
+
+  const evidenceBlock = backup.match(/```bash\n(RESTORE_EVIDENCE_TMP="\$\(mktemp[\s\S]*?trap - EXIT INT TERM)\n```/)?.[1]
+  assert.ok(evidenceBlock, 'restore evidence block must remain executable')
+  assert.doesNotMatch(evidenceBlock, /PGHOST|PGPORT|PGDATABASE|PGUSER|RECOVERY_PROJECT_REF/)
+
+  const restoreBlock = backup.match(/```bash\n(: "\$\{RECOVERY_RESTORE_APPROVAL[\s\S]*?unset PGPASSWORD)\n```/)?.[1]
+  assert.ok(restoreBlock, 'the documented database restore block must be executable')
+  const root = await mkdtemp(path.join(tmpdir(), 'community-database-target-'))
+  try {
+    const bin = path.join(root, 'bin')
+    const marker = path.join(root, 'psql-argv')
+    await mkdir(bin)
+    await writeFile(path.join(bin, 'psql'), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$PSQL_MARKER"\n')
+    await chmod(path.join(bin, 'psql'), 0o700)
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      PSQL_MARKER: marker,
+      RECOVERY_RESTORE_APPROVAL: 'approved',
+      RECOVERY_PROJECT_REF: 'recovery-ref',
+      DEVELOPMENT_PROJECT_REF: 'development-ref',
+      PRODUCTION_PROJECT_REF: 'production-ref',
+      PGHOST: 'db.recovery-ref.supabase.co',
+      PGPORT: '5432',
+      PGDATABASE: 'postgres',
+      PGUSER: 'postgres',
+      RESTORE_WORK_DIR: root,
+    }
+    const approved = spawnSync('bash', ['-c', `set -euo pipefail\n${restoreBlock}`], { encoding: 'utf8', env, input: 'secret\n' })
+    assert.equal(approved.status, 0, approved.stderr)
+    assert.equal(await readFile(marker, 'utf8'), [
+      '--single-transaction', '--variable', 'ON_ERROR_STOP=1',
+      '--host', env.PGHOST, '--port', env.PGPORT, '--dbname', env.PGDATABASE, '--username', env.PGUSER,
+      '--file', path.join(root, 'roles.sql'), '--file', path.join(root, 'schema.sql'),
+      '--command', "SET session_replication_role = 'replica';", '--file', path.join(root, 'data.sql'),
+      '--file', path.join(root, 'history_schema.sql'), '--file', path.join(root, 'history_data.sql'), '',
+    ].join('\n'))
+    await rm(marker)
+    const rejected = spawnSync('bash', ['-c', `set -euo pipefail\n${restoreBlock}`], {
+      encoding: 'utf8',
+      env: { ...env, PGHOST: 'database.example.com' },
+    })
+    assert.notEqual(rejected.status, 0, 'an arbitrary host must stop before prompting or invoking psql')
+    await assert.rejects(readFile(marker), 'rejected targets must not invoke psql')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('Storage copy commands use one verified local tree and explicit project targets', async () => {
   const backup = await operationText('community-backup-restore.md')
   assertMatches(backup, [
@@ -215,9 +313,12 @@ test('Storage inventory is deterministic, counted, hashed, and compared to downl
   ])
 })
 
-test('Storage inventories normalize CLI 2.118 paths to relative object keys including an empty bucket', async () => {
+test('Storage inventories strictly normalize safe CLI paths including Unicode and an empty bucket', async () => {
   const backup = await operationText('community-backup-restore.md')
-  const definition = backup.match(/normalize_storage_inventory\(\) \{[\s\S]*?\n\}/)?.[0]
+  const definitions = [...backup.matchAll(/normalize_storage_inventory\(\) \{[\s\S]*?\n\}/g)].map((match) => match[0])
+  assert.equal(definitions.length, 2, 'backup and target restore must each define the strict normalizer')
+  assert.equal(definitions[1], definitions[0], 'target restore listing must use the same strict normalizer')
+  const [definition] = definitions
   assert.ok(definition, 'the documented inventory normalizer must be executable')
   assert.match(backup, /storage ls --experimental --recursive --project-ref "\$PRODUCTION_PROJECT_REF"[\s\\]*ss:\/\/\/community-images\/ \| normalize_storage_inventory/)
   assert.match(backup, /find "\$WORK_DIR\/storage-objects\/community-images" -type f -printf '%P\\n'/)
@@ -229,14 +330,29 @@ test('Storage inventories normalize CLI 2.118 paths to relative object keys incl
     encoding: 'utf8',
     input,
   })
-  const populated = runNormalizer('/community-images/root.txt\n/community-images/nested/file.txt\n')
+  const populated = runNormalizer('/community-images/root file.txt\n/community-images/중첩/파일 이름.txt\n/community-images/nested/file.txt\n')
   assert.equal(populated.status, 0, populated.stderr)
-  assert.equal(populated.stdout, 'nested/file.txt\nroot.txt\n')
+  assert.equal(populated.stdout, 'nested/file.txt\nroot file.txt\n중첩/파일 이름.txt\n')
   const empty = runNormalizer('')
   assert.equal(empty.status, 0, empty.stderr)
   assert.equal(empty.stdout, '')
-  const malformed = runNormalizer('ss:///community-images/root.txt\n')
-  assert.notEqual(malformed.status, 0, 'unexpected CLI listing formats must fail closed')
+  for (const input of [
+    'ss:///community-images/root.txt\n',
+    '/community-images/../../escaped\n',
+    '/community-images/./x\n',
+    '/community-images/a//b\n',
+    '/community-images/a\\b\n',
+    '/community-images//leading\n',
+    '/community-images/control\tkey\n',
+    '/community-images/duplicate\n/community-images/duplicate\n',
+  ]) {
+    const malformed = runNormalizer(input)
+    assert.notEqual(malformed.status, 0, `unsafe Storage inventory unexpectedly accepted: ${JSON.stringify(input)}`)
+  }
+
+  const failedProducer = spawnSync('bash', ['-c', `set -o pipefail\n${definition}\n{ printf '%s\\n' '/community-images/safe'; exit 23; } | normalize_storage_inventory`], { encoding: 'utf8' })
+  assert.notEqual(failedProducer.status, 0, 'upstream Storage CLI failures must propagate through the normalizer pipeline')
+  assert.doesNotMatch(definition, /sort\s+-u|\buniq\b/, 'duplicate keys must be rejected, not silently deduplicated')
 
   const storageBlock = backup.match(/```bash\n(normalize_storage_inventory\(\) \{[\s\S]*?chmod 600 "\$WORK_DIR"\/\*\.sql "\$WORK_DIR"\/\*\.txt)\n```/)?.[1]
   assert.ok(storageBlock, 'the documented Storage backup block must be executable')

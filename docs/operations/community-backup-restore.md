@@ -112,17 +112,35 @@ trap 'exit 143' TERM
 
 CLI 2.118.0 marks Storage commands experimental. Keep `--experimental`, `--project-ref`, bucket, and local destination explicit. The trailing bucket slash makes the argument the bucket root rather than a bucket-name prefix. Recursive download appends the source directory `community-images` to the existing destination directory, so the asserted local object root is exactly `$WORK_DIR/storage-objects/community-images`.
 
-CLI 2.118.0 recursive `storage ls` emits `/community-images/object-key`, not an `ss:///` URL. The normalizer below accepts only that bucket prefix, strips it to an exact relative object key, sorts keys, and naturally emits an empty file for an empty bucket. The downloaded-file inventory uses the same relative-key format. The pinned recursive `storage cp` returns `Object not found` for an empty traversal, so invoke it only when the already-validated remote inventory is nonempty; every nonempty bucket must still complete the copy and exact inventory comparison.
+CLI 2.118.0 recursive `storage ls` emits `/community-images/object-key`, not an `ss:///` URL. The normalizer below accepts only that bucket prefix, strips it to an exact relative object key, rejects control characters, backslashes, leading or empty path segments, `.`/`..` segments, and duplicate normalized keys, then sorts only after uniqueness has been proven. Any malformed record or failed listing pipeline stops before copy. An empty listing naturally emits an empty file for an empty bucket. The downloaded-file inventory uses the same relative-key format. The pinned recursive `storage cp` returns `Object not found` for an empty traversal, so invoke it only when the already-validated remote inventory is nonempty; every nonempty bucket must still complete the copy and exact inventory comparison.
 
 ```bash
 normalize_storage_inventory() {
   local pipeline_status
   LC_ALL=C awk -v prefix='/community-images/' '
     length($0) == 0 || index($0, prefix) != 1 || length($0) == length(prefix) {
-      print "unexpected Storage inventory record: " $0 > "/dev/stderr"
+      print "malformed Storage inventory" > "/dev/stderr"
       exit 1
     }
-    { print substr($0, length(prefix) + 1) }
+    {
+      key = substr($0, length(prefix) + 1)
+      if (key ~ /[[:cntrl:]]/ || index(key, "\\") != 0 || substr(key, 1, 1) == "/") {
+        print "unsafe Storage object key" > "/dev/stderr"
+        exit 1
+      }
+      segment_count = split(key, segment, "/")
+      for (i = 1; i <= segment_count; i++) {
+        if (segment[i] == "" || segment[i] == "." || segment[i] == "..") {
+          print "unsafe Storage object key" > "/dev/stderr"
+          exit 1
+        }
+      }
+      if (seen[key]++) {
+        print "duplicate Storage object key" > "/dev/stderr"
+        exit 1
+      }
+      print key
+    }
   ' | LC_ALL=C sort
   pipeline_status=("${PIPESTATUS[@]}")
   [ "${pipeline_status[0]}" -eq 0 ] && [ "${pipeline_status[1]}" -eq 0 ]
@@ -291,7 +309,7 @@ Compare `manifest.txt` to the incident revision, source ref hash, expected Postg
 
 ## Manual atomic logical restore
 
-Configure `PGHOST`, `PGPORT`, `PGDATABASE`, and `PGUSER` from the clean recovery project’s approved connection details. Enter the password through a hidden prompt; do not place a connection string or password in command history.
+Configure `PGHOST`, `PGPORT`, `PGDATABASE`, and `PGUSER` from the clean recovery project’s approved connection details. Only the direct connection (`db.${RECOVERY_PROJECT_REF}.supabase.co`, user `postgres`, port 5432) or an official Supabase pooler hostname ending `.pooler.supabase.com` (user `postgres.${RECOVERY_PROJECT_REF}`, session port 5432 or transaction port 6543) is accepted. The database must be exactly `postgres`. Enter the password through a hidden prompt; do not place a connection string or password in command history.
 
 **Clean-target prerequisite:** the target must be a clean, empty recovery target with no application migrations or user data applied. Do not run this over production or a partially initialized target.
 
@@ -301,14 +319,56 @@ The repeated `--file` options are supported `psql` semantics. Roles, ordinary sc
 
 ```bash
 : "${RECOVERY_RESTORE_APPROVAL:?record clean-target restore approval}"
+: "${RECOVERY_PROJECT_REF:?set clean recovery project ref}"
+: "${DEVELOPMENT_PROJECT_REF:?set hosted development project ref}"
+: "${PRODUCTION_PROJECT_REF:?set production project ref}"
 : "${PGHOST:?set recovery database host}"
 : "${PGPORT:?set recovery database port}"
 : "${PGDATABASE:?set recovery database name}"
 : "${PGUSER:?set recovery database user}"
+validate_recovery_database_target() {
+  [ "$RECOVERY_PROJECT_REF" != "$DEVELOPMENT_PROJECT_REF" ] || {
+    printf '%s\n' 'recovery target rejected' >&2
+    return 1
+  }
+  [ "$RECOVERY_PROJECT_REF" != "$PRODUCTION_PROJECT_REF" ] || {
+    printf '%s\n' 'recovery target rejected' >&2
+    return 1
+  }
+  [ "$PGDATABASE" = 'postgres' ] || {
+    printf '%s\n' 'recovery database rejected' >&2
+    return 1
+  }
+  case "$PGPORT" in
+    ''|*[!0-9]*) printf '%s\n' 'recovery database port rejected' >&2; return 1 ;;
+  esac
+  if [ "$PGHOST" = "db.${RECOVERY_PROJECT_REF}.supabase.co" ]; then
+    [ "$PGUSER" = 'postgres' ] && [ "$PGPORT" = '5432' ] || {
+      printf '%s\n' 'direct recovery connection rejected' >&2
+      return 1
+    }
+  else
+    case "$PGHOST" in
+      ?*.pooler.supabase.com)
+        [ "$PGUSER" = "postgres.${RECOVERY_PROJECT_REF}" ] || {
+          printf '%s\n' 'pooler recovery user rejected' >&2
+          return 1
+        }
+        case "$PGPORT" in
+          5432|6543) ;;
+          *) printf '%s\n' 'pooler recovery port rejected' >&2; return 1 ;;
+        esac
+        ;;
+      *) printf '%s\n' 'recovery database host rejected' >&2; return 1 ;;
+    esac
+  fi
+}
+validate_recovery_database_target
 read -rsp 'Recovery database password: ' PGPASSWORD
 printf '\n'
 export PGPASSWORD
 psql --single-transaction --variable ON_ERROR_STOP=1 \
+  --host "$PGHOST" --port "$PGPORT" --dbname "$PGDATABASE" --username "$PGUSER" \
   --file "$RESTORE_WORK_DIR/roles.sql" \
   --file "$RESTORE_WORK_DIR/schema.sql" \
   --command "SET session_replication_role = 'replica';" \
@@ -331,10 +391,28 @@ normalize_storage_inventory() {
   local pipeline_status
   LC_ALL=C awk -v prefix='/community-images/' '
     length($0) == 0 || index($0, prefix) != 1 || length($0) == length(prefix) {
-      print "unexpected Storage inventory record: " $0 > "/dev/stderr"
+      print "malformed Storage inventory" > "/dev/stderr"
       exit 1
     }
-    { print substr($0, length(prefix) + 1) }
+    {
+      key = substr($0, length(prefix) + 1)
+      if (key ~ /[[:cntrl:]]/ || index(key, "\\") != 0 || substr(key, 1, 1) == "/") {
+        print "unsafe Storage object key" > "/dev/stderr"
+        exit 1
+      }
+      segment_count = split(key, segment, "/")
+      for (i = 1; i <= segment_count; i++) {
+        if (segment[i] == "" || segment[i] == "." || segment[i] == "..") {
+          print "unsafe Storage object key" > "/dev/stderr"
+          exit 1
+        }
+      }
+      if (seen[key]++) {
+        print "duplicate Storage object key" > "/dev/stderr"
+        exit 1
+      }
+      print key
+    }
   ' | LC_ALL=C sort
   pipeline_status=("${PIPESTATUS[@]}")
   [ "${pipeline_status[0]}" -eq 0 ] && [ "${pipeline_status[1]}" -eq 0 ]
@@ -387,6 +465,7 @@ The final explicit `cleanup_restore` and absence assertions run before the atomi
 
 ## Official references
 
+- Database connection endpoints, users, and pooler ports: https://supabase.com/docs/guides/database/connecting-to-postgres
 - Database backups and Free Plan export guidance: https://supabase.com/docs/guides/platform/backups
 - CLI backup/restore procedure: https://supabase.com/docs/guides/platform/migrating-within-supabase/backup-restore
 - Paid duplicate-project limitation reference: https://supabase.com/docs/guides/platform/clone-project
