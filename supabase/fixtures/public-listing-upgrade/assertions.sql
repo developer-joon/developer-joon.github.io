@@ -9,6 +9,8 @@ begin
             where indexrelid='private.post_reaction_daily_recent_idx'::regclass) then
     raise exception 'recent reaction index is not valid and ready';
   end if;
+  -- Seeded rows need deterministic statistics before asserting the exact plan.
+  analyze public.posts;
   set local enable_seqscan=off;
   execute $explain$
     explain (format json)
