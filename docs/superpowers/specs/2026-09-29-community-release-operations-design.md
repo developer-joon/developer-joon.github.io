@@ -132,9 +132,9 @@ The `docs/` tree is excluded from Jekyll output, and the artifact verifier rejec
 
 ## Backup policy
 
-Baseline: Supabase managed database backup plus an independently encrypted logical backup.
+Baseline: Free Plan capabilities only, with an independently encrypted logical database backup and a separate private Storage object backup. Paid backup features are not part of the release contract.
 
-- Managed backup/PITR availability must be verified for the actual plan before production approval. Lack of managed backup is a release blocker unless the operator explicitly adopts the documented logical-only exception.
+- Managed daily backups, PITR, and managed project cloning are unavailable assumptions and must not appear as required or fallback paths.
 - Create encrypted logical exports at least daily and immediately before a production migration.
 - Store encrypted backups off-site with retention independent of the Supabase project. Deleting a project also removes provider-held backups.
 - Record a SHA-256 checksum, source project reference hash, database major version, migration revision, creation time, encryption mechanism identifier, and storage-object inventory checksum. Do not record connection strings, tokens, or raw project credentials.
@@ -153,7 +153,9 @@ Target objectives:
 - RTO: four hours to restore into a new project, verify, and prepare cutover for the current expected data volume.
 - Restore drill: at least quarterly and before relying on a materially changed backup mechanism.
 
-The Free Plan does not by itself guarantee the managed backup capabilities assumed by paid plans. The runbook must verify the current project-plan capabilities and must not claim PITR or managed daily backups without evidence. Independent logical DB exports and Storage object inventories are therefore mandatory before production migrations under the Free Plan.
+The Free Plan does not provide the managed daily backups and PITR assumed by paid plans. Supabase recommends regular CLI `db dump` exports for Free Plan projects. The managed "Restore to a New Project" flow is also paid-plan-only. Independent logical DB exports and Storage object inventories are therefore mandatory before production migrations under the Free Plan.
+
+Free Plan recovery uses a manual logical restore. Because both active hosted-project slots are normally occupied, the recovery runbook pauses the development project to free one active slot, then creates or activates a clean recovery project. A paid-plan upgrade is not a fallback. Production is never overwritten merely to make room for a restore rehearsal. The quarterly drill may use the development project only after its synthetic fixtures are exported or declared disposable and its project identity is recorded for reconfiguration.
 
 ## Environment isolation
 
@@ -169,6 +171,13 @@ The Free Plan does not by itself guarantee the managed backup capabilities assum
 - Contains synthetic fixtures only and has a separate GitHub OAuth application, redirect allow-list, keys, Storage objects, and administrator test identity.
 - May be reset or cleaned under an explicit development-only operator command.
 - May pause after low activity. Release automation reports the condition and stops; it does not send artificial keepalive traffic and never substitutes production.
+
+### Free Plan runtime budget
+
+- Scheduled attachment cleanup uses hosted `pg_cron`/`pg_net` plus the existing Edge Function at a low frequency, initially once per day.
+- The runbook verifies current Free Plan quotas before release instead of treating today's numeric limits as permanent constants.
+- Quota exhaustion or platform restriction fails closed and raises an operator action; it never enables paid overage or upgrades automatically.
+- Development integration fixtures remain bounded and are cleaned by exact identifiers so validation does not consume production capacity.
 
 ### Production project
 
@@ -188,8 +197,8 @@ Preferred order:
 1. stop writes or place the community in maintenance/read-only mode;
 2. capture incident time and current revision;
 3. prefer a forward-fix when data integrity is intact;
-4. when restoration is required, restore into a new Supabase project;
-5. restore roles/schema/data and migration history according to the official Supabase process;
+4. when restoration is required, pause the development project to secure an active-project slot, then create or activate a clean recovery project;
+5. manually restore roles/schema/data and migration history from the encrypted logical backup according to the official Supabase CLI process;
 6. restore Storage objects separately;
 7. reconfigure Auth, OAuth, API keys, Realtime, extensions, network restrictions, and other settings not guaranteed by the database restore;
 8. run schema, RLS, RPC, snapshot, and browser smoke verification;
@@ -266,7 +275,8 @@ Task 16 replaces both sentinels, runs local browser verification and hosted deve
 
 - Supabase Database Backups: https://supabase.com/docs/guides/platform/backups
 - Supabase CLI Backup and Restore: https://supabase.com/docs/guides/platform/migrating-within-supabase/backup-restore
-- Supabase Restore to a New Project: https://supabase.com/docs/guides/platform/clone-project
+- Supabase Restore to a New Project (paid-plan limitation): https://supabase.com/docs/guides/platform/clone-project
+- Supabase Storage object download: https://supabase.com/docs/guides/storage/management/download-objects
 - GitHub Actions deployments: https://docs.github.com/actions/deployment/about-deployments/deploying-with-github-actions
 - Supabase Billing FAQ (two active Free Plan projects): https://supabase.com/docs/guides/platform/billing-faq
 - Supabase Free Project Pausing: https://supabase.com/docs/guides/platform/free-project-pausing

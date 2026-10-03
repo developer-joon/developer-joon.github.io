@@ -183,8 +183,10 @@ Tests must assert the runbooks contain:
 - local Docker, hosted development, and production separation;
 - distinct project references, OAuth apps, redirect allow-lists, keys, Storage, and test identities;
 - Free Plan pause detection/resume with no production fallback and no artificial keepalive;
-- current-plan capability check before claiming managed backup or PITR;
+- Free Plan only: managed daily backup, PITR, and managed restore-to-new-project must not be required or offered as fallbacks;
 - encrypted logical DB backup and private Storage inventory before production migration;
+- Free Plan recovery capacity explicitly pauses development before creating or activating a clean recovery target;
+- scheduled cleanup uses low-frequency `pg_cron`/`pg_net`, verifies current Free Plan quotas, and never enables paid overage automatically;
 - no secrets in CLI literals, repository files, evidence, or Pages artifacts;
 - additive migration and forward-fix policy;
 - development fixture cleanup with exact IDs and zero-residue read-back;
@@ -363,7 +365,7 @@ node --test scripts/*.test.mjs
 ./scripts/build-site-docker.sh /tmp/breadlab-community-site-b
 node scripts/verify-site.mjs /tmp/breadlab-community-site-a
 node scripts/verify-site.mjs /tmp/breadlab-community-site-b
-./scripts/verify-site-reproducibility.sh /tmp/breadlab-community-site-a /tmp/breadlab-community-site-b
+./scripts/verify-site-reproducibility.sh /tmp/breadlab-community-site-a /tmp/breadlab-community-site-b /tmp/breadlab-community-reproducibility-evidence
 ```
 
 Then run the real gate and verify intentional failure:
