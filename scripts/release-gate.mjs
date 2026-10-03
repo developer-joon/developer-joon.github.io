@@ -2,14 +2,18 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { accessSync, constants, lstatSync, realpathSync, statSync } from 'node:fs'
-import { readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs'
+import { open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const MODES = new Set(['local', 'development', 'production-readiness'])
 const SHA256 = /^[a-f0-9]{64}$/
 const RUNNER_OUTPUT_LIMIT = 16 * 1024
+const READINESS_INPUT_LIMIT = 64 * 1024
+const HOSTED_BODY_LIMIT = 64 * 1024
+const MANIFEST_INPUT_LIMIT = 1024 * 1024
+const readinessInputBindings = new WeakMap()
 const DATABASE_TEST_STEPS = new Set([
   'test-storage-upgrade',
   'test-public-listing-upgrade',
@@ -144,13 +148,37 @@ function validateInputEvidencePath(evidencePath, name, context) {
   }
   if (evidenceStat.isSymbolicLink()) throw new Error(`${name} evidence file must not be a symlink`)
   if (!evidenceStat.isFile()) throw new Error(`${name} evidence must be a regular file`)
+  if (evidenceStat.nlink !== 1) throw new Error(`${name} evidence file must have a single link`)
   const canonicalRepo = context.realpathSync(context.repoRoot)
   const canonicalEvidence = context.realpathSync(absoluteEvidence)
   const relative = path.relative(canonicalRepo, canonicalEvidence)
   if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
     throw new Error(`${name} evidence must resolve outside the repository`)
   }
-  return canonicalEvidence
+  let descriptor
+  try {
+    descriptor = openSync(absoluteEvidence, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    const openedStat = fstatSync(descriptor)
+    if (!openedStat.isFile() || openedStat.nlink !== 1
+      || openedStat.dev !== evidenceStat.dev || openedStat.ino !== evidenceStat.ino) {
+      throw new Error(`${name} evidence file changed during validation`)
+    }
+    if (openedStat.size > READINESS_INPUT_LIMIT) throw new Error(`${name} evidence file exceeds the byte limit`)
+    const buffer = Buffer.alloc(Math.min(READINESS_INPUT_LIMIT + 1, openedStat.size + 1))
+    let offset = 0
+    while (offset < buffer.length) {
+      const count = readSync(descriptor, buffer, offset, buffer.length - offset, null)
+      if (count === 0) break
+      offset += count
+    }
+    if (offset > READINESS_INPUT_LIMIT) throw new Error(`${name} evidence file exceeds the byte limit`)
+    return { path: canonicalEvidence, contents: buffer.subarray(0, offset).toString('utf8') }
+  } catch (error) {
+    if (error?.message?.startsWith(`${name} evidence`)) throw error
+    throw new Error(`${name} evidence file could not be securely opened`)
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor)
+  }
 }
 
 function parseFingerprint(value, name) {
@@ -211,17 +239,25 @@ export function parseReleaseOptions(argv, env, context) {
     }
     options.developmentProjectFingerprint = developmentFingerprint
     options.productionProjectFingerprint = productionFingerprint
-    options.localE2eEvidencePath = validateInputEvidencePath(env.LOCAL_E2E_EVIDENCE_PATH, 'LOCAL_E2E_EVIDENCE_PATH', context)
-    options.developmentCloudIntegrationEvidencePath = validateInputEvidencePath(
+    const localE2e = validateInputEvidencePath(env.LOCAL_E2E_EVIDENCE_PATH, 'LOCAL_E2E_EVIDENCE_PATH', context)
+    const developmentCloudIntegration = validateInputEvidencePath(
       env.DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH,
       'DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH',
       context,
     )
-    options.productionBackupEvidencePath = validateInputEvidencePath(
+    const productionBackup = validateInputEvidencePath(
       env.PRODUCTION_BACKUP_EVIDENCE_PATH,
       'PRODUCTION_BACKUP_EVIDENCE_PATH',
       context,
     )
+    options.localE2eEvidencePath = localE2e.path
+    options.developmentCloudIntegrationEvidencePath = developmentCloudIntegration.path
+    options.productionBackupEvidencePath = productionBackup.path
+    readinessInputBindings.set(options, new Map([
+      [localE2e.path, localE2e.contents],
+      [developmentCloudIntegration.path, developmentCloudIntegration.contents],
+      [productionBackup.path, productionBackup.contents],
+    ]))
   }
 
   return deepFreeze(options)
@@ -370,6 +406,9 @@ export function validateEvidence(evidence) {
       if (!DATABASE_TEST_STEPS.has(item.name) || !Number.isSafeInteger(item.count) || item.count < 0) {
         throw new Error('release evidence database test count is invalid')
       }
+      if (item.name === 'test-database' && item.count === 0) {
+        throw new Error('release evidence canonical database test count must be greater than zero')
+      }
       total += item.count
       if (!Number.isSafeInteger(total)) throw new Error('release evidence database test total is invalid')
     }
@@ -427,6 +466,59 @@ function timestamp(clock) {
   const value = clock()
   if (!(value instanceof Date) || Number.isNaN(value.valueOf())) throw new Error('clock must return a valid Date')
   return value
+}
+
+async function readBoundedFile(filesystem, filePath, limit) {
+  if (typeof filesystem.open !== 'function') {
+    const contents = Buffer.from(await filesystem.readFile(filePath))
+    if (contents.length > limit) throw new Error('file exceeds byte limit')
+    return contents
+  }
+  const handle = await filesystem.open(filePath, 'r')
+  try {
+    const fileStat = await handle.stat()
+    if (!fileStat.isFile() || fileStat.size > limit) throw new Error('file exceeds byte limit')
+    const contents = Buffer.alloc(limit + 1)
+    let offset = 0
+    while (offset < contents.length) {
+      const { bytesRead } = await handle.read(contents, offset, contents.length - offset, null)
+      if (bytesRead === 0) break
+      offset += bytesRead
+    }
+    if (offset > limit) throw new Error('file exceeds byte limit')
+    return contents.subarray(0, offset)
+  } finally {
+    await handle.close()
+  }
+}
+
+function validateManifestBytes(contents) {
+  let text
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(contents)
+  } catch {
+    throw new Error('reproducibility manifest must be valid UTF-8')
+  }
+  if (!text.endsWith('\n')) throw new Error('reproducibility manifest must use canonical newline-terminated records')
+  const lines = text.slice(0, -1).split('\n')
+  if (lines.length === 0 || lines.some((line) => line.length === 0)) {
+    throw new Error('reproducibility manifest must contain at least one file')
+  }
+  let previousPath
+  for (const line of lines) {
+    const match = /^([a-f0-9]{64})  (\.\/.+)$/.exec(line)
+    if (!match) throw new Error('reproducibility manifest record is not canonical sha256sum output')
+    const relativePath = match[2]
+    const segments = relativePath.slice(2).split('/')
+    if (relativePath.includes('\\') || segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+      throw new Error('reproducibility manifest path is unsafe')
+    }
+    if (previousPath !== undefined && Buffer.compare(Buffer.from(previousPath), Buffer.from(relativePath)) >= 0) {
+      throw new Error('reproducibility manifest paths must be unique and LC_ALL=C sorted')
+    }
+    previousPath = relativePath
+  }
+  return lines.length
 }
 
 function validateReadinessInput(evidence, expected, revision, now) {
@@ -489,10 +581,12 @@ async function validateProductionReadinessEvidence(options, filesystem, revision
   ]
 
   const readinessEvidence = {}
+  const boundInputs = readinessInputBindings.get(options)
   for (const expected of inputs) {
     let contents
     try {
-      contents = await filesystem.readFile(expected.path, 'utf8')
+      contents = boundInputs?.get(expected.path)
+        ?? (await readBoundedFile(filesystem, expected.path, READINESS_INPUT_LIMIT)).toString('utf8')
     } catch {
       throw new ReleaseFailure(
         'validate-production-readiness-evidence',
@@ -555,6 +649,9 @@ function databaseTestCount(stepName, result) {
   if (new Set(counts).size !== 1) {
     throw new ReleaseFailure(stepName, 'evidence', `${stepName} emitted conflicting Tests=<integer> summaries`)
   }
+  if (stepName === 'test-database' && counts[0] === 0) {
+    throw new ReleaseFailure(stepName, 'evidence', 'test-database Tests count must be greater than zero')
+  }
   return counts[0]
 }
 
@@ -578,19 +675,28 @@ function defaultExecutablePreflight(plan, repoRoot, env = process.env) {
       return false
     }
   }
+  const resolved = new Map()
 
-  for (const command of new Set(plan.steps.map((releaseStep) => releaseStep.command))) {
-    const candidates = command.includes(path.sep)
-      ? [path.isAbsolute(command) ? command : path.resolve(repoRoot, command)]
-      : executablePaths.map((directory) => path.join(directory, command))
-    if (!candidates.some(isExecutableFile)) {
+  const commands = [...plan.steps, cleanupStep()]
+    .filter((releaseStep) => releaseStep.command)
+    .map((releaseStep) => releaseStep.command)
+  for (const command of new Set(commands)) {
+    const candidates = command === 'node'
+      ? [process.execPath]
+      : command.includes(path.sep)
+        ? [path.isAbsolute(command) ? command : path.resolve(repoRoot, command)]
+        : executablePaths.map((directory) => path.join(directory, command))
+    const executable = candidates.find(isExecutableFile)
+    if (!executable) {
       throw new ReleaseFailure(
         'repository-preflight',
         'preflight',
         `required release executable is unavailable: ${command}`,
       )
     }
+    resolved.set(command, realpathSync(executable))
   }
+  return resolved
 }
 
 async function runHostedProbes(options, dependencies) {
@@ -606,7 +712,7 @@ async function runHostedProbes(options, dependencies) {
   ]
   for (const [pathname, method] of probes) {
     let response
-    const signal = AbortSignal.timeout(10_000)
+    const signal = dependencies.probeSignal?.() ?? AbortSignal.timeout(dependencies.probeTimeoutMs ?? 10_000)
     try {
       response = await fetchImplementation(`${developmentUrl}${pathname}`, {
         method,
@@ -620,13 +726,54 @@ async function runHostedProbes(options, dependencies) {
         'resume the development Supabase project and retry the read-only probe',
       )
     }
+    if (!response.ok) {
+      if (response.status >= 500 || response.status === 404) {
+        throw new ReleaseFailure(
+          'development-read-only-health',
+          'hosted-probe',
+          'resume the development Supabase project and retry the read-only probe',
+        )
+      }
+      throw new ReleaseFailure('development-read-only-health', 'hosted-probe', `development read-only probe failed with HTTP ${response.status}`)
+    }
     let body
     try {
       body = await new Promise((resolve, reject) => {
         const abort = () => reject(signal.reason ?? new Error('hosted probe body timed out'))
         signal.addEventListener('abort', abort, { once: true })
         Promise.resolve()
-          .then(() => response.text())
+          .then(async () => {
+            const declared = response.headers?.get?.('content-length')
+            if (declared !== null && declared !== undefined) {
+              if (!/^\d+$/.test(declared) || Number(declared) > HOSTED_BODY_LIMIT) {
+                throw new Error('hosted probe body exceeds byte limit')
+              }
+            }
+            if (!response.body?.getReader) {
+              const text = await response.text()
+              if (Buffer.byteLength(text) > HOSTED_BODY_LIMIT) throw new Error('hosted probe body exceeds byte limit')
+              return text
+            }
+            const reader = response.body.getReader()
+            const chunks = []
+            let bytes = 0
+            try {
+              while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                const chunk = Buffer.from(value)
+                bytes += chunk.length
+                if (bytes > HOSTED_BODY_LIMIT) {
+                  await reader.cancel()
+                  throw new Error('hosted probe body exceeds byte limit')
+                }
+                chunks.push(chunk)
+              }
+              return Buffer.concat(chunks, bytes).toString('utf8')
+            } finally {
+              reader.releaseLock()
+            }
+          })
           .then(resolve, reject)
           .finally(() => signal.removeEventListener('abort', abort))
       })
@@ -637,30 +784,33 @@ async function runHostedProbes(options, dependencies) {
         'resume the development Supabase project and retry the read-only probe',
       )
     }
-    if (response.status >= 500 || /project\s+(?:is\s+)?(?:paused|inactive)|(?:paused|inactive)\s+project/i.test(body)) {
+    if (/project\s+(?:is\s+)?(?:paused|inactive)|(?:paused|inactive)\s+project/i.test(body)) {
       throw new ReleaseFailure(
         'development-read-only-health',
         'hosted-probe',
         'resume the development Supabase project and retry the read-only probe',
       )
     }
-    if (!response.ok) {
-      throw new ReleaseFailure('development-read-only-health', 'hosted-probe', `development read-only probe failed with HTTP ${response.status}`)
-    }
+
   }
   return { code: 0 }
 }
 
-function defaultRunner(repoRoot, signal, spawnImplementation = spawn) {
-  return (releaseStep) => new Promise((resolve, reject) => {
+function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceMs = 2_000) {
+  return (releaseStep, { ignoreAbort = false } = {}) => new Promise((resolve, reject) => {
+    const activeSignal = ignoreAbort ? undefined : signal
+    const useProcessGroup = process.platform !== 'win32'
     const child = spawnImplementation(releaseStep.command, releaseStep.args, {
       cwd: repoRoot,
       env: { ...process.env, ...releaseStep.environment },
       shell: false,
+      detached: useProcessGroup,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stdout = ''
     let stderr = ''
+    let escalation
+    let settled = false
     const append = (current, chunk) => `${current}${chunk}`.slice(-RUNNER_OUTPUT_LIMIT)
     child.stdout.on('data', (chunk) => {
       stdout = append(stdout, chunk)
@@ -668,20 +818,41 @@ function defaultRunner(repoRoot, signal, spawnImplementation = spawn) {
     child.stderr.on('data', (chunk) => {
       stderr = append(stderr, chunk)
     })
-    const abort = () => child.kill('SIGTERM')
-    signal?.addEventListener('abort', abort, { once: true })
-    child.once('error', reject)
-    child.once('close', (code, childSignal) => {
-      signal?.removeEventListener('abort', abort)
-      resolve({ code, signal: childSignal, stdout, stderr })
-    })
+    const kill = (childSignal) => {
+      try {
+        if (useProcessGroup && Number.isInteger(child.pid) && child.pid > 0) process.kill(-child.pid, childSignal)
+        else child.kill(childSignal)
+      } catch (error) {
+        if (error?.code !== 'ESRCH') throw error
+      }
+    }
+    const finish = (callback) => {
+      if (settled) return
+      settled = true
+      if (escalation) clearTimeout(escalation)
+      activeSignal?.removeEventListener('abort', abort)
+      callback()
+    }
+    const abort = () => {
+      try {
+        kill('SIGTERM')
+        escalation ??= setTimeout(() => {
+          try { kill('SIGKILL') } catch {}
+        }, killGraceMs)
+      } catch {
+        // A concurrent process exit is finalized by the close event.
+      }
+    }
+    activeSignal?.addEventListener('abort', abort, { once: true })
+    child.once('error', (error) => finish(() => reject(error)))
+    child.once('close', (code, childSignal) => finish(() => resolve({ code, signal: childSignal, stdout, stderr })))
+    if (activeSignal?.aborted) abort()
   })
 }
 
-async function publishEvidence(evidencePath, evidence, filesystem) {
-  validateEvidence(evidence)
+async function atomicReplace(evidencePath, contents, filesystem) {
   const temporary = path.join(path.dirname(evidencePath), `.${path.basename(evidencePath)}.${randomUUID()}.tmp`)
-  await filesystem.writeFile(temporary, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
+  await filesystem.writeFile(temporary, contents, { mode: 0o600, flag: 'wx', flush: true })
   try {
     await filesystem.rename(temporary, evidencePath)
   } catch (error) {
@@ -690,12 +861,23 @@ async function publishEvidence(evidencePath, evidence, filesystem) {
   }
 }
 
+async function publishEvidence(evidencePath, evidence, filesystem) {
+  validateEvidence(evidence)
+  await atomicReplace(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, filesystem)
+}
+
 export async function runReleaseGate(options, dependencies = {}) {
   const plan = dependencies.plan ?? buildReleasePlan(options)
   const clock = dependencies.clock ?? (() => new Date())
-  const filesystem = dependencies.filesystem ?? { readFile, writeFile, rename, rm }
+  const filesystem = dependencies.filesystem ?? { open, readFile, writeFile, rename, rm }
   const repoRoot = dependencies.repoRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-  const runner = dependencies.runner ?? defaultRunner(repoRoot, dependencies.signal, dependencies.spawn)
+  const usesDefaultRunner = dependencies.runner === undefined
+  const runner = dependencies.runner ?? defaultRunner(
+    repoRoot,
+    dependencies.signal,
+    dependencies.spawn,
+    dependencies.killGraceMs,
+  )
   const executablePreflight = dependencies.executablePreflight ?? (() => defaultExecutablePreflight(plan, repoRoot))
   const revision = dependencies.revision
   if (!REVISION.test(revision ?? '')) throw new Error('runReleaseGate requires a full lowercase Git revision')
@@ -709,10 +891,10 @@ export async function runReleaseGate(options, dependencies = {}) {
     throw new Error('selected output evidence must differ from production-readiness input evidence paths')
   }
   try {
-    await filesystem.writeFile(
+    await atomicReplace(
       options.evidencePath,
       '{"schemaVersion":0,"status":"invalidated"}\n',
-      { mode: 0o600, flag: 'w', flush: true },
+      filesystem,
     )
   } catch {
     throw new ReleaseFailure(
@@ -738,6 +920,15 @@ export async function runReleaseGate(options, dependencies = {}) {
   const databaseTestSteps = []
   let primaryFailure
   let cleanupFailure
+  let resolvedExecutables
+
+  if (usesDefaultRunner) {
+    try {
+      resolvedExecutables = await executablePreflight(plan, repoRoot)
+    } catch (error) {
+      primaryFailure = error
+    }
+  }
 
   const execute = async (releaseStep, { ignoreAbort = false } = {}) => {
     const stepStarted = timestamp(clock)
@@ -756,7 +947,12 @@ export async function runReleaseGate(options, dependencies = {}) {
       } else {
         result = releaseStep.name === 'development-read-only-health'
           ? await runHostedProbes(options, dependencies)
-          : await runner(releaseStep)
+          : await runner(
+              resolvedExecutables?.has(releaseStep.command)
+                ? { ...releaseStep, command: resolvedExecutables.get(releaseStep.command) }
+                : releaseStep,
+              { ignoreAbort },
+            )
       }
       if (!ignoreAbort && dependencies.signal?.aborted) {
         throw new ReleaseFailure(releaseStep.name, 'signal', `release gate aborted by ${dependencies.signal.reason ?? 'signal'}`)
@@ -765,7 +961,7 @@ export async function runReleaseGate(options, dependencies = {}) {
       if (releaseStep.name === 'repository-preflight' && result.stdout?.trim()) {
         throw new ReleaseFailure(releaseStep.name, 'preflight', 'repository-preflight requires a clean Git working tree')
       }
-      if (releaseStep.name === 'repository-preflight') await executablePreflight(plan, repoRoot)
+      if (releaseStep.name === 'repository-preflight' && !usesDefaultRunner) await executablePreflight(plan, repoRoot)
       if (DATABASE_TEST_STEPS.has(releaseStep.name)) {
         const count = databaseTestCount(releaseStep.name, result)
         if (count !== undefined) databaseTestSteps.push({ name: releaseStep.name, count })
@@ -778,7 +974,9 @@ export async function runReleaseGate(options, dependencies = {}) {
         let first
         let second
         try {
-          [first, second] = await Promise.all(manifestPaths.map((manifestPath) => filesystem.readFile(manifestPath)))
+          [first, second] = await Promise.all(
+            manifestPaths.map((manifestPath) => readBoundedFile(filesystem, manifestPath, MANIFEST_INPUT_LIMIT)),
+          )
         } catch {
           throw new ReleaseFailure(releaseStep.name, 'evidence', 'reproducibility manifests could not be read')
         }
@@ -787,14 +985,15 @@ export async function runReleaseGate(options, dependencies = {}) {
         if (!firstBytes.equals(secondBytes)) {
           throw new ReleaseFailure(releaseStep.name, 'evidence', 'reproducibility manifests do not match')
         }
-        const lines = firstBytes.toString('utf8').split('\n')
-        if (lines.at(-1) === '') lines.pop()
-        if (lines.length === 0 || lines.some((line) => line.length === 0)) {
-          throw new ReleaseFailure(releaseStep.name, 'evidence', 'reproducibility manifest must contain at least one file')
+        let fileCount
+        try {
+          fileCount = validateManifestBytes(firstBytes)
+        } catch (error) {
+          throw new ReleaseFailure(releaseStep.name, 'evidence', error.message)
         }
         artifactManifest = {
           sha256: createHash('sha256').update(firstBytes).digest('hex'),
-          fileCount: lines.length,
+          fileCount,
         }
       }
       if (!ignoreAbort && dependencies.signal?.aborted) {
@@ -817,6 +1016,7 @@ export async function runReleaseGate(options, dependencies = {}) {
   }
 
   try {
+    if (primaryFailure) throw primaryFailure
     for (const releaseStep of plan.steps) await execute(releaseStep)
   } catch (error) {
     primaryFailure = error

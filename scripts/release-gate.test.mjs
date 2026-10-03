@@ -2,7 +2,8 @@
 
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { lstatSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { chmodSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -217,6 +218,103 @@ test('output preflight rejects a target whose parent is not writable when access
         },
       }),
       /evidence output parent.*writable/i,
+    )
+  } finally {
+    state.close()
+  }
+})
+
+test('output publication replaces swapped symlink and hardlink entries without mutating their targets', async () => {
+  for (const alias of ['symlink', 'hardlink']) {
+    const state = fixture()
+    try {
+      const victim = path.join(state.root, `${alias}-victim.json`)
+      const victimContents = `private-${alias}-target\n`
+      writeFileSync(victim, victimContents)
+      writeFileSync(state.evidence, 'stale-success\n')
+      const options = parseReleaseOptions(['--evidence', state.evidence], {}, state.context)
+      unlinkSync(state.evidence)
+      if (alias === 'symlink') symlinkSync(victim, state.evidence)
+      else linkSync(victim, state.evidence)
+
+      await runReleaseGate(options, {
+        revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
+        plan: compactPlan('local', options.evidencePath, []),
+        runner: async () => ({ code: 0 }),
+      })
+
+      assert.equal(readFileSync(victim, 'utf8'), victimContents, alias)
+      assert.equal(lstatSync(state.evidence).isSymbolicLink(), false, alias)
+      assert.notEqual(statSync(state.evidence).ino, statSync(victim).ino, alias)
+      assert.equal(JSON.parse(readFileSync(state.evidence, 'utf8')).status, 'passed', alias)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('production readiness binds validation and bounded read to the originally opened input object', async () => {
+  const state = fixture()
+  try {
+    const revision = '7212072813f97d8c21266f5ec72a2b2bb6754967'
+    const common = { schemaVersion: 1, status: 'passed', revision, finishedAt: '2026-10-02T12:00:00.000Z' }
+    writeFileSync(state.readinessEvidence.local, JSON.stringify({ ...common, type: 'local-e2e', mode: 'local' }))
+    writeFileSync(state.readinessEvidence.development, JSON.stringify({
+      ...common,
+      type: 'development-cloud-integration',
+      mode: 'development',
+      projectFingerprint: projectFingerprint(DEVELOPMENT_URL),
+    }))
+    writeFileSync(state.readinessEvidence.backup, JSON.stringify({
+      ...common,
+      type: 'production-backup',
+      mode: 'production-readiness',
+      projectFingerprint: projectFingerprint(PRODUCTION_URL),
+      backupChecksum: 'b'.repeat(64),
+    }))
+    const options = parseReleaseOptions(
+      ['--mode', 'production-readiness', '--evidence', state.evidence],
+      {
+        ...productionEnv(),
+        LOCAL_E2E_EVIDENCE_PATH: state.readinessEvidence.local,
+        DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH: state.readinessEvidence.development,
+        PRODUCTION_BACKUP_EVIDENCE_PATH: state.readinessEvidence.backup,
+      },
+      state.context,
+    )
+    const substituted = path.join(state.root, 'substituted-private-input.json')
+    writeFileSync(substituted, '{"private":"must-not-be-read"}\n')
+    unlinkSync(state.readinessEvidence.local)
+    symlinkSync(substituted, state.readinessEvidence.local)
+
+    const evidence = await runReleaseGate(options, {
+      revision,
+      clock: () => new Date('2026-10-03T00:00:00.000Z'),
+    })
+    assert.equal(evidence.status, 'passed')
+    assert.equal(JSON.stringify(evidence).includes('must-not-be-read'), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('production readiness rejects multiply-linked input evidence', () => {
+  const state = fixture()
+  try {
+    const alias = path.join(path.dirname(state.evidence), 'local-hardlink.json')
+    linkSync(state.readinessEvidence.local, alias)
+    assert.throws(
+      () => parseReleaseOptions(
+        ['--mode', 'production-readiness', '--evidence', state.evidence],
+        {
+          ...productionEnv(),
+          LOCAL_E2E_EVIDENCE_PATH: state.readinessEvidence.local,
+          DEVELOPMENT_CLOUD_INTEGRATION_EVIDENCE_PATH: state.readinessEvidence.development,
+          PRODUCTION_BACKUP_EVIDENCE_PATH: state.readinessEvidence.backup,
+        },
+        state.context,
+      ),
+      /single link/i,
     )
   } finally {
     state.close()
@@ -732,6 +830,64 @@ test('default executable preflight rejects a missing plan command before later c
   }
 })
 
+test('default preflight resolves immutable absolute executable identities and pins Node to process.execPath', async () => {
+  const state = executionFixture()
+  const originalPath = process.env.PATH
+  try {
+    const firstBin = path.join(state.root, 'first-bin')
+    const secondBin = path.join(state.root, 'second-bin')
+    mkdirSync(firstBin)
+    mkdirSync(secondBin)
+    for (const directory of [firstBin, secondBin]) {
+      for (const command of ['git', 'tool', 'npm']) {
+        const executable = path.join(directory, command)
+        writeFileSync(executable, '#!/bin/sh\nexit 0\n')
+        chmodSync(executable, 0o700)
+      }
+    }
+    process.env.PATH = `${firstBin}${path.delimiter}${originalPath}`
+    const spawned = []
+    const fakeSpawn = (command) => {
+      spawned.push(command)
+      const child = new EventEmitter()
+      child.pid = 123456789
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.kill = () => true
+      queueMicrotask(() => {
+        if (spawned.length === 2) process.env.PATH = `${secondBin}${path.delimiter}${originalPath}`
+        child.emit('close', 0, null)
+      })
+      return child
+    }
+    state.dependencies.repoRoot = state.repoRoot
+    delete state.dependencies.runner
+    state.dependencies.spawn = fakeSpawn
+    state.dependencies.plan = {
+      mode: 'local',
+      evidencePath: state.evidence,
+      steps: [
+        { name: 'repository-preflight', command: 'git', args: ['status', '--porcelain'], environment: {} },
+        { name: 'node-check', command: 'node', args: ['check.mjs'], environment: {} },
+        { name: 'tool-check', command: 'tool', args: [], environment: {} },
+      ],
+    }
+
+    await runReleaseGate(state.options, state.dependencies)
+
+    assert.deepEqual(spawned, [
+      path.join(firstBin, 'git'),
+      process.execPath,
+      path.join(firstBin, 'tool'),
+      path.join(firstBin, 'npm'),
+    ])
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH
+    else process.env.PATH = originalPath
+    state.close()
+  }
+})
+
 test('first command failure prevents later checks and preserves the original failure through cleanup', async () => {
   const state = executionFixture()
   try {
@@ -820,6 +976,67 @@ test('CLI signal handlers abort through cleanup, preserve the first signal, and 
     } finally {
       state.close()
     }
+  }
+})
+
+test('default runner bounds TERM-to-KILL for an uncooperative process tree before cleanup', async () => {
+  const state = fixture()
+  const originalPath = process.env.PATH
+  const originalMarker = process.env.RELEASE_GATE_CLEANUP_MARKER
+  try {
+    const bin = path.join(state.root, 'bin')
+    const marker = path.join(state.root, 'cleanup-ran')
+    const descendantPid = path.join(state.root, 'descendant.pid')
+    mkdirSync(bin)
+    const npm = path.join(bin, 'npm')
+    writeFileSync(npm, '#!/bin/sh\nprintf cleaned > "$RELEASE_GATE_CLEANUP_MARKER"\n')
+    chmodSync(npm, 0o700)
+    process.env.PATH = `${bin}${path.delimiter}${originalPath}`
+    process.env.RELEASE_GATE_CLEANUP_MARKER = marker
+    const descendant = `
+      process.on('SIGTERM', () => {})
+      setTimeout(() => process.exit(0), 1600)
+      setInterval(() => {}, 100)
+    `
+    const parent = `
+      const { spawn } = require('node:child_process')
+      const { writeFileSync } = require('node:fs')
+      process.on('SIGTERM', () => {})
+      const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'ignore' })
+      writeFileSync(${JSON.stringify(descendantPid)}, String(child.pid))
+      setTimeout(() => process.exit(0), 1600)
+      setInterval(() => {}, 100)
+    `
+    const controller = new AbortController()
+    const started = Date.now()
+    setTimeout(() => controller.abort('SIGTERM'), 80)
+    await assert.rejects(runReleaseGate(
+      { mode: 'local', evidencePath: state.evidence },
+      {
+        revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
+        repoRoot: state.repoRoot,
+        signal: controller.signal,
+        killGraceMs: 100,
+        executablePreflight: async () => {},
+        plan: {
+          mode: 'local',
+          evidencePath: state.evidence,
+          steps: [{ name: 'uncooperative', command: process.execPath, args: ['-e', parent], environment: {} }],
+        },
+      },
+    ), /aborted by SIGTERM/i)
+    const elapsed = Date.now() - started
+    assert.ok(elapsed < 800, `abort took ${elapsed}ms`)
+    assert.equal(readFileSync(marker, 'utf8'), 'cleaned')
+    const pid = Number(readFileSync(descendantPid, 'utf8'))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' })
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH
+    else process.env.PATH = originalPath
+    if (originalMarker === undefined) delete process.env.RELEASE_GATE_CLEANUP_MARKER
+    else process.env.RELEASE_GATE_CLEANUP_MARKER = originalMarker
+    state.close()
   }
 })
 
@@ -1016,14 +1233,26 @@ test('evidence excludes diagnostics, URLs, bodies, credentials, Markdown, and us
 test('evidence is written to a temporary sibling and atomically renamed', async () => {
   const state = executionFixture()
   try {
+    const writePaths = []
+    const baseWrite = state.dependencies.filesystem.writeFile
+    state.dependencies.filesystem.writeFile = async (file, contents) => {
+      writePaths.push(file)
+      return baseWrite(file, contents)
+    }
     state.dependencies.plan = compactPlan('local', state.evidence, [])
     await runReleaseGate(state.options, state.dependencies)
-    assert.equal(state.renames.length, 1)
-    const [temporary, target] = state.renames[0]
-    assert.equal(path.dirname(temporary), path.dirname(target))
-    assert.equal(target, state.options.evidencePath)
-    assert.notEqual(temporary, target)
-    assert.match(path.basename(temporary), /^\.release\.json\..+\.tmp$/)
+    assert.equal(state.renames.length, 2)
+    assert.deepEqual(writePaths, state.renames.map(([temporary]) => temporary))
+    assert.equal(writePaths.includes(state.options.evidencePath), false)
+    for (const [temporary, target] of state.renames) {
+      assert.equal(path.dirname(temporary), path.dirname(target))
+      assert.equal(target, state.options.evidencePath)
+      assert.notEqual(temporary, target)
+      assert.match(path.basename(temporary), /^\.release\.json\..+\.tmp$/)
+    }
+    assert.notEqual(state.renames[0][0], state.renames[1][0])
+    assert.equal(state.evidence().status, 'passed')
+    assert.doesNotThrow(() => validateEvidence(state.evidence()))
   } finally {
     state.close()
   }
@@ -1074,7 +1303,7 @@ test('option parsing is pure with respect to argv, env, and context inputs', () 
 test('binds passed reproducibility evidence to identical manifest bytes and exact file count', async () => {
   const state = executionFixture()
   try {
-    const manifest = 'aaa  ./index.html\nbbb  ./assets/app.js\n'
+    const manifest = `${'a'.repeat(64)}  ./assets/app.js\n${'b'.repeat(64)}  ./index.html\n`
     const manifestPaths = [
       '/tmp/breadlab-community-release-manifests/build-1.sha256',
       '/tmp/breadlab-community-release-manifests/build-2.sha256',
@@ -1121,6 +1350,73 @@ test('fails closed when passed reproducibility manifests are missing, mismatched
       }
       await assert.rejects(runReleaseGate(state.options, state.dependencies), /manifest/i, scenario)
       assert.equal(state.evidence().status, 'failed', scenario)
+      assert.equal(state.evidence().artifactManifest, null, scenario)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('readiness inputs and reproducibility manifests enforce bounded reads through opened file handles', async () => {
+  const cases = [
+    ['readiness', 64 * 1024],
+    ['manifest', 1024 * 1024],
+  ]
+  for (const [kind, limit] of cases) {
+    for (const scenario of ['declared', 'growing']) {
+      const state = executionFixture(kind === 'readiness' ? 'production-readiness' : 'local')
+      try {
+        const secret = `private-${kind}-${scenario}@example.com`
+        let bytesRead = 0
+        let closed = false
+        state.dependencies.plan = kind === 'readiness'
+          ? compactPlan('production-readiness', state.evidence, ['validate-production-readiness-evidence'])
+          : compactPlan('local', state.evidence, ['verify-site-reproducibility'])
+        state.dependencies.plan.steps[0].kind = kind === 'readiness' ? 'internal' : undefined
+        state.dependencies.filesystem.readFile = async () => { throw new Error(`${secret} unbounded read`) }
+        state.dependencies.filesystem.open = async () => ({
+          stat: async () => ({ isFile: () => true, size: scenario === 'declared' ? limit + 1 : 1 }),
+          read: async (buffer, offset, length) => {
+            const count = Math.min(length, 32 * 1024)
+            buffer.fill(0x61, offset, offset + count)
+            bytesRead += count
+            return { bytesRead: count, buffer }
+          },
+          close: async () => { closed = true },
+        })
+
+        await assert.rejects(runReleaseGate(state.options, state.dependencies), /evidence|manifest/i)
+
+        const maximumRead = (limit + 1) * (kind === 'manifest' ? 2 : 1)
+        assert.ok(bytesRead <= maximumRead, `${kind}/${scenario} read ${bytesRead} bytes`)
+        assert.equal(closed, true, `${kind}/${scenario}`)
+        assert.equal(JSON.stringify(state.evidence()).includes(secret), false, `${kind}/${scenario}`)
+      } finally {
+        state.close()
+      }
+    }
+  }
+})
+
+test('reproducibility manifests require canonical sha256sum records, safe unique paths, and C ordering', async () => {
+  const digestA = 'a'.repeat(64)
+  const digestB = 'b'.repeat(64)
+  const cases = {
+    'short digest': `aaa  ./index.html\n`,
+    'single separator': `${digestA} ./index.html\n`,
+    'absolute path': `${digestA}  /etc/passwd\n`,
+    'parent traversal': `${digestA}  ./assets/../secret\n`,
+    'duplicate path': `${digestA}  ./index.html\n${digestB}  ./index.html\n`,
+    'unsorted path': `${digestA}  ./z.html\n${digestB}  ./a.html\n`,
+  }
+  for (const [scenario, manifest] of Object.entries(cases)) {
+    const state = executionFixture()
+    try {
+      state.dependencies.plan = compactPlan('local', state.evidence, ['verify-site-reproducibility'])
+      state.dependencies.filesystem.readFile = async () => Buffer.from(manifest)
+
+      await assert.rejects(runReleaseGate(state.options, state.dependencies), /manifest/i, scenario)
+
       assert.equal(state.evidence().artifactManifest, null, scenario)
     } finally {
       state.close()
@@ -1218,12 +1514,38 @@ test('database test counts are null before tests and malformed or unsafe summari
   }
 })
 
+test('canonical test-database zero count fails the gate and evidence schema', async () => {
+  const state = executionFixture()
+  try {
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database', 'never'])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database' ? 'Tests=0\n' : '',
+    })
+
+    await assert.rejects(runReleaseGate(state.options, state.dependencies), /test-database.*greater than zero/i)
+
+    assert.deepEqual(state.evidence().steps.map(({ name }) => name), ['test-database', 'cleanup-local-supabase'])
+    const invalid = {
+      ...state.evidence(),
+      status: 'passed',
+      failure: null,
+      databaseTests: { steps: [{ name: 'test-database', count: 0 }], total: 0 },
+    }
+    assert.throws(() => validateEvidence(invalid), /database.*greater than zero/i)
+  } finally {
+    state.close()
+  }
+})
+
 test('development body timeout uses resume guidance without fallback or body persistence', async () => {
   const state = executionFixture('development')
   try {
     const bodySecret = 'body-private-user@example.com'
     const urls = []
     const controller = new AbortController()
+    let bodyRead = false
+    const started = Date.now()
     state.dependencies.plan = compactPlan('development', state.evidence, ['development-read-only-health'])
     state.dependencies.developmentUrl = DEVELOPMENT_URL
     state.dependencies.probeSignal = () => controller.signal
@@ -1233,16 +1555,53 @@ test('development body timeout uses resume guidance without fallback or body per
         ok: true,
         status: 200,
         text: async () => {
+          bodyRead = true
           queueMicrotask(() => controller.abort(new Error(bodySecret)))
           return new Promise(() => {})
         },
       }
     }
     await assert.rejects(runReleaseGate(state.options, state.dependencies), /resume.*development.*project/i)
+    assert.equal(bodyRead, true)
+    assert.ok(Date.now() - started < 500, 'injected body timeout must finish promptly')
     assert.deepEqual(urls, [`${DEVELOPMENT_URL}/auth/v1/health`])
     assert.equal(JSON.stringify(state.evidence()).includes(bodySecret), false)
   } finally {
     state.close()
+  }
+})
+
+test('development probes reject declared and streamed oversized bodies without reading or retaining secrets', async () => {
+  for (const scenario of ['declared', 'missing-length', 'lying-length']) {
+    const state = executionFixture('development')
+    try {
+      const secret = `private-${scenario}@example.com`
+      let textCalled = false
+      let cancelled = false
+      const body = new ReadableStream({
+        pull(controller) { controller.enqueue(Buffer.alloc(40 * 1024, 'a')) },
+        cancel() { cancelled = true },
+      })
+      state.dependencies.plan = compactPlan('development', state.evidence, ['development-read-only-health'])
+      state.dependencies.developmentUrl = DEVELOPMENT_URL
+      state.dependencies.fetch = async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(scenario === 'declared'
+          ? { 'content-length': String(65 * 1024), 'x-private': secret }
+          : scenario === 'lying-length' ? { 'content-length': '1' } : {}),
+        body,
+        text: async () => { textCalled = true; return secret },
+      })
+
+      await assert.rejects(runReleaseGate(state.options, state.dependencies), /resume.*development.*project/i)
+
+      assert.equal(textCalled, false, scenario)
+      assert.equal(cancelled, scenario !== 'declared', scenario)
+      assert.equal(JSON.stringify(state.evidence()).includes(secret), false, scenario)
+    } finally {
+      state.close()
+    }
   }
 })
 
@@ -1303,18 +1662,30 @@ test('publication write or rename failure cannot leave pre-existing success evid
   for (const scenario of ['write', 'rename']) {
     const state = executionFixture()
     try {
-      state.writes.set(state.options.evidencePath, JSON.stringify({ status: 'passed', stale: true }))
+      const secret = `private-${scenario}@example.com`
+      state.writes.set(state.options.evidencePath, JSON.stringify({ status: 'passed', stale: true, secret }))
       state.dependencies.plan = compactPlan('local', state.options.evidencePath, [])
       const baseWrite = state.dependencies.filesystem.writeFile
+      const baseRename = state.dependencies.filesystem.rename
+      let writes = 0
+      let renames = 0
       state.dependencies.filesystem.rm = async (file) => state.writes.delete(file)
       state.dependencies.filesystem.writeFile = async (file, contents) => {
-        if (scenario === 'write' && file !== state.options.evidencePath) throw new Error('publication write failed')
+        writes += 1
+        if (scenario === 'write' && writes === 2) throw new Error('publication write failed')
         return baseWrite(file, contents)
       }
-      state.dependencies.filesystem.rename = async () => { throw new Error('publication rename failed') }
+      state.dependencies.filesystem.rename = async (from, to) => {
+        renames += 1
+        if (scenario === 'rename' && renames === 2) throw new Error('publication rename failed')
+        return baseRename(from, to)
+      }
       await assert.rejects(runReleaseGate(state.options, state.dependencies), new RegExp(`publication ${scenario} failed`))
+      assert.equal(writes, 2, scenario)
+      assert.equal(renames, scenario === 'write' ? 1 : 2, scenario)
       assert.equal(state.writes.has(state.options.evidencePath), false, scenario)
       assert.equal([...state.writes.values()].some((contents) => /"status"\s*:\s*"passed"/.test(contents)), false, scenario)
+      assert.equal([...state.writes.values()].some((contents) => contents.includes(secret)), false, scenario)
     } finally {
       state.close()
     }
