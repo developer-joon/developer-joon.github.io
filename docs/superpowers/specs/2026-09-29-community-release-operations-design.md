@@ -1,14 +1,18 @@
 # Community release operations and gate design
 
-Date: 2026-09-29
-Status: proposed written specification; conceptual design approved
-Scope: Task 15 — operational backup, restore, rollback, and one fail-closed release gate
+Date: 2026-09-29; revised 2026-10-03
+Status: revised written specification awaiting final user review
+Scope: Task 15 — local, development-cloud, and production release operations with fail-closed gates
 
 ## Context
 
 The repository builds one GitHub Pages artifact from Jekyll, the Vite community application, and public Supabase snapshots. Database migrations, frontend checks, artifact verification, and reproducibility checks exist, but operators currently have to compose them manually. There is no repository-owned backup/restore/rollback runbook and no single command that proves a release candidate is ready.
 
-Task 15 adds that operational boundary. It does not deploy Pages, mutate a hosted Supabase project, change OAuth, or execute a production backup or restore.
+There is no permanent staging environment. Development uses three distinct boundaries: a local Supabase CLI/Docker stack, one hosted Free Plan development project, and one hosted Free Plan production project. The hosted development project is an integration target for OAuth, CORS, Edge Functions, and internet-reachable behavior; it never contains production data and is not a deployment promotion source.
+
+Supabase currently permits two active Free Plan projects. Local CLI/Docker instances do not consume that hosted-project quota. Free projects may be paused for low activity, so a paused development project is an explicit recoverable preflight failure and never causes a fallback to production.
+
+Task 15 adds the release boundary and documentation. It does not deploy Pages, mutate either hosted Supabase project, change OAuth, or execute a production backup, restore, or canary write. Those remain explicit operator actions in Task 16.
 
 ## Goals
 
@@ -18,11 +22,13 @@ Task 15 adds that operational boundary. It does not deploy Pages, mutate a hoste
 4. Keep production credentials and backup data outside the repository and logs.
 5. Make E2E mandatory rather than silently omitting it before Task 16 exists.
 6. Preserve the existing single Pages artifact and single deployment contract.
+7. Keep local, development-cloud, and production credentials and evidence structurally separate.
+8. Make every production mutation—including canary verification—a separate explicit approval boundary.
 
 ## Non-goals
 
 - Deploying to GitHub Pages.
-- Applying migrations to a hosted Supabase project.
+- Applying migrations or deploying Functions to a hosted Supabase project.
 - Creating, downloading, or restoring a real production backup.
 - Configuring GitHub OAuth or hosted Supabase settings.
 - Implementing browser E2E; Task 16 supplies it.
@@ -43,7 +49,7 @@ Rejected alternatives:
 
 ### `scripts/release-gate.mjs`
 
-One non-deploying CLI with `--mode local|staging|production`; `local` is the default.
+One non-deploying CLI with `--mode local|development|production-readiness`; `local` is the default.
 
 The command constructs an ordered immutable plan and runs each step serially:
 
@@ -52,7 +58,7 @@ The command constructs an ordered immutable plan and runs each step serially:
    - clean Git working tree;
    - exact Node and required executable availability;
    - no forbidden privileged Supabase credential variables;
-   - mode-specific URL and approval inputs;
+   - mode-specific project URL, evidence, and opt-in inputs;
    - no repository-local plaintext backup or evidence output.
 2. Start local Supabase.
 3. Reset from zero and run upgrade-path tests.
@@ -61,10 +67,10 @@ The command constructs an ordered immutable plan and runs each step serially:
 6. Build/export two fresh Docker artifacts.
 7. Verify both exported artifacts on the host.
 8. Compare byte manifests for exact reproducibility.
-9. Run the mode-specific E2E command.
+9. Run the mode-specific verification command.
 10. Write a non-secret JSON summary to an operator-selected path outside the repository.
 
-The gate never pushes, creates a PR, deploys Pages, runs `supabase db push`, or writes to a hosted database.
+The gate never pushes, creates a PR, deploys Pages, runs `supabase db push`, deploys an Edge Function, or writes to a hosted database. Hosted migration, Function deployment, Pages deployment, and production canary commands belong to the operator runbook and are not hidden inside the verification gate.
 
 ### Mode contract
 
@@ -72,16 +78,21 @@ The gate never pushes, creates a PR, deploys Pages, runs `supabase db push`, or 
   - fixture-backed snapshot generation;
   - local browser E2E command;
   - no hosted credentials or network target required.
-- `staging`
-  - requires an HTTPS staging URL and explicit `ALLOW_STAGING_E2E=1`;
-  - rejects the production hostname;
-  - delegates browser behavior to Task 16's staging E2E command.
-- `production`
-  - is readiness-only and still does not deploy;
-  - requires a verified staging E2E evidence file, current backup evidence, and explicit approval input;
-  - validates evidence structure, revision binding, timestamps, and file location without reading secrets.
+- `development`
+  - targets the dedicated hosted development Supabase project only;
+  - requires an HTTPS project URL, explicit `ALLOW_DEVELOPMENT_CLOUD_READS=1`, and a project-reference fingerprint that differs from production evidence;
+  - performs read-only health and configuration probes in Task 15;
+  - delegates authenticated integration writes and browser behavior to Task 16;
+  - reports a paused or unreachable Free Plan project as a recoverable hard failure with resume guidance;
+  - never falls back to the production URL or credentials.
+- `production-readiness`
+  - is offline/read-only readiness validation and still does not deploy or mutate production;
+  - requires current local E2E evidence, current development-cloud integration evidence, current backup evidence, and an explicit operator opt-in;
+  - requires development and production project-reference fingerprints to differ;
+  - validates evidence structure, revision binding, timestamps, and file location without reading secrets;
+  - excludes production write canaries, which require a separate named command and approval in Task 16.
 
-Task 15 intentionally installs a failing E2E sentinel. The gate must stop at that step until Task 16 replaces it with real browser tests. This is preferable to a false-green release gate.
+Task 15 intentionally installs failing sentinels for local browser E2E and development-cloud authenticated integration verification. The applicable gate must stop at either missing step until Task 16 replaces it with real tests. This is preferable to a false-green release gate.
 
 ### `scripts/release-gate.test.mjs`
 
@@ -91,12 +102,14 @@ Behavioral tests use an injected runner, temporary directories, and synthetic no
 - first failure stops later release checks;
 - cleanup runs after success, ordinary failure, and E2E failure;
 - cleanup failure makes an otherwise successful run fail;
-- missing E2E is a hard failure;
-- staging requires explicit opt-in and rejects `breadlab.ai`;
-- production requires revision-bound, current backup and staging evidence;
+- missing local E2E or development-cloud integration evidence is a hard failure;
+- development mode requires explicit read-only opt-in and rejects the production project fingerprint;
+- a paused or unreachable development project fails without attempting production;
+- production readiness requires revision-bound, current backup, local E2E, and development-cloud evidence;
+- production canary variables cannot make the non-deploying gate perform a write;
 - service-role and secret-key environment variables are rejected before commands run;
 - summary output contains no environment values or command output;
-- artifact paths are outside the repository and removed after completion.
+- temporary artifact paths are outside the repository and removed after completion; the atomically published evidence summary remains at the operator-selected external path.
 
 ### `docs/operations/community-release-runbook.md`
 
@@ -104,6 +117,8 @@ The runbook contains:
 
 - roles and approval boundaries;
 - release sequence and go/no-go checklist;
+- separation of local, development-cloud, and production project configuration;
+- hosted development project resume, reset, and fixture-cleanup procedures;
 - backup policy and evidence format;
 - restore drill procedure;
 - database forward-fix and restore-to-new-project procedure;
@@ -111,6 +126,7 @@ The runbook contains:
 - GitHub Pages rollback procedure;
 - OAuth/configuration recovery checklist;
 - incident communication and verification record template.
+- production read-only probe and separately approved write-canary procedures.
 
 The `docs/` tree is excluded from Jekyll output, and the artifact verifier rejects leaked operational source documents.
 
@@ -136,6 +152,30 @@ Target objectives:
 - RPO: no more than 24 hours during normal operation; a fresh pre-migration backup narrows planned-change exposure.
 - RTO: four hours to restore into a new project, verify, and prepare cutover for the current expected data volume.
 - Restore drill: at least quarterly and before relying on a materially changed backup mechanism.
+
+The Free Plan does not by itself guarantee the managed backup capabilities assumed by paid plans. The runbook must verify the current project-plan capabilities and must not claim PITR or managed daily backups without evidence. Independent logical DB exports and Storage object inventories are therefore mandatory before production migrations under the Free Plan.
+
+## Environment isolation
+
+### Local
+
+- Supabase CLI and Docker are the disposable source of exhaustive database and browser testing.
+- Reset, destructive fixtures, concurrency probes, and cleanup verification run only here by default.
+- Local services use no hosted project credentials.
+
+### Hosted development project
+
+- Uses the first hosted Free Plan project for OAuth, redirect, CORS, Edge Function, Storage, and public-internet integration checks.
+- Contains synthetic fixtures only and has a separate GitHub OAuth application, redirect allow-list, keys, Storage objects, and administrator test identity.
+- May be reset or cleaned under an explicit development-only operator command.
+- May pause after low activity. Release automation reports the condition and stops; it does not send artificial keepalive traffic and never substitutes production.
+
+### Production project
+
+- Uses the second hosted Free Plan project and contains real user data.
+- Receives only reviewed additive migrations and versioned Edge Functions after local and development evidence are current.
+- Read-only probes are separate from write canaries. Every write canary requires an explicit approval token, dedicated test identity, exact fixture IDs, snapshot scheduling control, and asserted cleanup/read-back.
+- Production credentials are never accepted by local or development modes.
 
 ## Restore and rollback strategy
 
@@ -178,11 +218,13 @@ Evidence is JSON written outside the repository. It contains only:
 - Git revision;
 - UTC start/end timestamps;
 - mode;
+- non-secret project-reference fingerprint for hosted evidence;
 - named step status and duration;
 - artifact manifest checksum and file count;
 - DB test counts;
 - backup evidence timestamp/checksum references for production readiness;
-- E2E evidence timestamp/revision reference.
+- local E2E and development-cloud integration evidence timestamp/revision references;
+- for production canary evidence only: approval reference, exact synthetic fixture identifiers, and cleanup/read-back status without content bodies.
 
 It must not contain environment dumps, URLs with credentials, HTTP bodies, JWTs, connection strings, user data, or backup contents.
 
@@ -190,7 +232,7 @@ It must not contain environment dumps, URLs with credentials, HTTP bodies, JWTs,
 
 - Every step is a hard failure.
 - The first operational failure is preserved as the primary error.
-- Cleanup always attempts to stop the project-owned Supabase stack and delete temporary artifact/evidence staging directories.
+- Cleanup always attempts to stop the project-owned Supabase stack and delete temporary artifact/evidence work directories.
 - Cleanup failures are reported and fail an otherwise successful gate.
 - Signal handling uses the same cleanup path.
 - Existing unrelated containers are never removed.
@@ -198,10 +240,11 @@ It must not contain environment dumps, URLs with credentials, HTTP bodies, JWTs,
 
 ## Security boundaries
 
-- Publishable credentials may be used only by the existing public snapshot path.
-- Service-role, database password, access token, and secret-key variables are forbidden in ordinary local/staging artifact steps.
+- Publishable credentials may be used only by the existing public snapshot path and explicitly read-only hosted probes.
+- Service-role, database password, access token, and secret-key variables are forbidden in ordinary local, development, and artifact steps.
 - Backup commands are manual operator procedures and receive secrets through an approved secret manager, never command-line literals committed to history.
-- Staging write tests require explicit approval and are out of scope until Task 16.
+- Hosted development authenticated writes require explicit development-only opt-in and are out of scope until Task 16.
+- Production read-only probes and production write canaries are different commands and different approvals. Read-only success never authorizes a write.
 - Production deployment and hosted database writes remain separate explicit approval points.
 
 ## Verification and acceptance
@@ -209,14 +252,15 @@ It must not contain environment dumps, URLs with credentials, HTTP bodies, JWTs,
 Task 15 is complete when:
 
 - release-gate unit tests pass;
-- env/preflight tests include fail-closed credential and URL cases;
-- the real gate reaches and fails at the intentionally missing E2E step after earlier local checks pass, proving E2E cannot be skipped;
+- env/preflight tests include fail-closed credential, project-isolation, URL, and paused-development cases;
+- the real local gate reaches and fails at the intentionally missing local E2E step after earlier checks pass;
+- the development gate reaches and fails at the intentionally missing authenticated integration step without contacting production;
 - documentation checks reject unresolved markers and secret-like values;
 - frontend, DB, Jekyll, snapshot, verifier, and reproducibility commands remain green independently;
 - an independent operations/security review reports no Critical or Important findings;
 - the Task 15 commit is locally integrated only after review.
 
-Task 16 replaces the E2E sentinel, runs local/staging browser verification within the approved boundary, and is the first point where the complete release gate may become green.
+Task 16 replaces both sentinels, runs local browser verification and hosted development integration verification, and produces the evidence required for production readiness. It then follows separate operator-approved steps for production backup, additive backend deployment, read-only probes, Pages deployment, and one bounded write canary with asserted cleanup. No permanent staging environment is introduced.
 
 ## Authoritative references
 
@@ -224,3 +268,5 @@ Task 16 replaces the E2E sentinel, runs local/staging browser verification withi
 - Supabase CLI Backup and Restore: https://supabase.com/docs/guides/platform/migrating-within-supabase/backup-restore
 - Supabase Restore to a New Project: https://supabase.com/docs/guides/platform/clone-project
 - GitHub Actions deployments: https://docs.github.com/actions/deployment/about-deployments/deploying-with-github-actions
+- Supabase Billing FAQ (two active Free Plan projects): https://supabase.com/docs/guides/platform/billing-faq
+- Supabase Free Project Pausing: https://supabase.com/docs/guides/platform/free-project-pausing
