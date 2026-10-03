@@ -1800,12 +1800,87 @@ test('optional database helpers cannot bypass control validation when omitting a
   }
 })
 
+test('database protocol rejects bare CR and invisible Unicode format or separator attacks in either stream', async () => {
+  const attacks = [
+    'Result: FAIL\roverwritten',
+    'not ok 1 - failed\roverwritten',
+    'Res\u200bult: FAIL',
+    'not\u200b ok 1 - failed',
+    'Result: FAIL\u2028overwritten',
+    'Result: FAIL\u2029overwritten',
+    'Result: FAIL\ufeffoverwritten',
+    'Result: FAIL\u2066overwritten',
+    'Result: FAIL\u202eoverwritten',
+  ]
+  for (const [index, attack] of attacks.entries()) {
+    for (const stream of ['stdout', 'stderr']) {
+      const state = executionFixture()
+      try {
+        const rawSecret = `private-invisible-${index}-${stream}@example.com`
+        const output = `${attack}\n${rawSecret}\n${CANONICAL_PROVE_OUTPUT}`
+        state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+        state.dependencies.runner = async ({ name }) => ({
+          code: 0,
+          stdout: name === 'test-database' && stream === 'stdout' ? output : '',
+          stderr: name === 'test-database' && stream === 'stderr' ? output : '',
+        })
+
+        await assert.rejects(
+          runReleaseGate(state.options, state.dependencies),
+          (error) => /test-database.*(control|protocol|corrupt)/i.test(error.message)
+            && !error.message.includes(rawSecret)
+            && !error.message.includes(attack),
+          `${index} ${stream}`,
+        )
+        assert.equal(state.evidence().databaseTests, null, `${index} ${stream}`)
+        const serialized = JSON.stringify(state.evidence())
+        assert.equal(serialized.includes(rawSecret), false, `${index} ${stream}`)
+        assert.equal(serialized.includes(attack), false, `${index} ${stream}`)
+      } finally {
+        state.close()
+      }
+    }
+  }
+})
+
+test('optional database helpers reject invisible Unicode without a summary', async () => {
+  for (const [stream, attack] of [
+    ['stdout', 'helper\ufeffdetail'],
+    ['stderr', 'helper\u2067detail'],
+  ]) {
+    const state = executionFixture()
+    try {
+      const rawSecret = `private-helper-invisible-${stream}@example.com`
+      state.dependencies.plan = compactPlan('local', state.evidence, ['test-storage-upgrade'])
+      state.dependencies.runner = async ({ name }) => ({
+        code: 0,
+        stdout: name === 'test-storage-upgrade' && stream === 'stdout' ? `${attack}\n${rawSecret}\n` : '',
+        stderr: name === 'test-storage-upgrade' && stream === 'stderr' ? `${attack}\n${rawSecret}\n` : '',
+      })
+      await assert.rejects(
+        runReleaseGate(state.options, state.dependencies),
+        (error) => /test-storage-upgrade.*(control|protocol|corrupt)/i.test(error.message)
+          && !error.message.includes(rawSecret)
+          && !error.message.includes(attack),
+        stream,
+      )
+      assert.equal(state.evidence().databaseTests, null, stream)
+      const serialized = JSON.stringify(state.evidence())
+      assert.equal(serialized.includes(rawSecret), false, stream)
+      assert.equal(serialized.includes(attack), false, stream)
+    } finally {
+      state.close()
+    }
+  }
+})
+
 test('realistic 1.8 KiB Supabase prove output with CRLF and tabs remains accepted', async () => {
   const state = executionFixture()
   try {
     const tapLines = Array.from({ length: 40 }, (_, index) => `ok ${index + 1} - public.database_case_${index + 1}\t${'.'.repeat(8)}`)
     const output = [
       'community-app/supabase/tests/database.test.sql ..',
+      'visible Unicode diagnostic: café 데이터',
       ...tapLines,
       'All tests successful.',
       'Files=13, Tests=1146,  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)',

@@ -631,12 +631,13 @@ function databaseTestCount(stepName, result) {
       || Buffer.byteLength(value) > RUNNER_OUTPUT_LIMIT) {
       throw new ReleaseFailure(stepName, 'evidence', `${stepName} output is incomplete because ${name} was truncated`)
     }
-    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u.test(value)) {
+    const normalized = value.replaceAll('\r\n', '\n')
+    if (/[\r\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\p{Cf}\p{Zl}\p{Zp}]/u.test(normalized)) {
       throw new ReleaseFailure(stepName, 'evidence', `${stepName} output contains disallowed protocol control characters`)
     }
-    return value
+    return normalized
   })
-  const streams = streamValues.map((value) => value.split(/\r?\n/))
+  const streams = streamValues.map((value) => value.split('\n'))
   const lines = streams.flat()
   const standaloneSummaries = lines
     .map((line) => /^\s*Tests=(.*?)\s*$/.exec(line))
