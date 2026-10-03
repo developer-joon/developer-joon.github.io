@@ -1619,6 +1619,111 @@ test('canonical test-database accepts the real prove aggregate summary', async (
   }
 })
 
+test('test-database rejects a canonical prove PASS mixed with failure or ambiguous result markers', async () => {
+  const prove = [
+    'All tests successful.',
+    'Files=13, Tests=1146,  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)',
+    'Result: PASS',
+  ].join('\n')
+  for (const [label, output] of [
+    ['mixed result failure', `${prove}\nResult: FAIL\n`],
+    ['TAP failure', `not ok 1 - database assertion failed\n${prove}\n`],
+    ['prove failure summary', `Failed 1/13 test programs. 1/1146 subtests failed.\n${prove}\n`],
+    ['duplicate terminal result', `${prove}\nResult: PASS\n`],
+  ]) {
+    const state = executionFixture()
+    try {
+      const rawSecret = `private-${label.replaceAll(' ', '-')}@example.com`
+      state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+      state.dependencies.runner = async ({ name }) => ({
+        code: 0,
+        stdout: name === 'test-database' ? `${output}${rawSecret}\n` : '',
+        stderr: '',
+      })
+
+      await assert.rejects(
+        runReleaseGate(state.options, state.dependencies),
+        (error) => /test-database.*(prove|failure|result|summary)/i.test(error.message)
+          && !error.message.includes(rawSecret),
+        label,
+      )
+      assert.equal(state.evidence().databaseTests, null, label)
+      assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false, label)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('test-database never synthesizes a prove PASS block across stdout and stderr', async () => {
+  const state = executionFixture()
+  try {
+    const rawSecret = 'private-cross-stream-summary@example.com'
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database'
+        ? 'All tests successful.\nFiles=13, Tests=1146,  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)'
+        : '',
+      stderr: name === 'test-database' ? `Result: PASS\n${rawSecret}\n` : '',
+    })
+
+    await assert.rejects(
+      runReleaseGate(state.options, state.dependencies),
+      (error) => /test-database.*(prove|summary)/i.test(error.message) && !error.message.includes(rawSecret),
+    )
+    assert.equal(state.evidence().databaseTests, null)
+    assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('standalone database summaries cannot override prove failure markers', async () => {
+  const state = executionFixture()
+  try {
+    const rawSecret = 'private-standalone-failure@example.com'
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database' ? `Tests=7\nResult: FAIL\n${rawSecret}\n` : '',
+      stderr: '',
+    })
+
+    await assert.rejects(
+      runReleaseGate(state.options, state.dependencies),
+      (error) => /test-database.*(failure|result|prove)/i.test(error.message) && !error.message.includes(rawSecret),
+    )
+    assert.equal(state.evidence().databaseTests, null)
+    assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false)
+  } finally {
+    state.close()
+  }
+})
+
+test('ordinary prose containing failure words does not override a standalone database summary', async () => {
+  const state = executionFixture()
+  try {
+    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === 'test-database'
+        ? 'This diagnostic is not ok to publish verbatim.\nA prior report Failed 1/13 checks.\nTests=7\n'
+        : '',
+      stderr: '',
+    })
+
+    const evidence = await runReleaseGate(state.options, state.dependencies)
+
+    assert.deepEqual(evidence.databaseTests, {
+      steps: [{ name: 'test-database', count: 7 }],
+      total: 7,
+    })
+  } finally {
+    state.close()
+  }
+})
+
 test('prove summaries fail closed when malformed or unsafe', async () => {
   const timing = '  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)'
   for (const [label, summary, expected] of [

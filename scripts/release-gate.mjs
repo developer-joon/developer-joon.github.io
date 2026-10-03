@@ -623,33 +623,57 @@ function safeFailure(step, result) {
 }
 
 function databaseTestCount(stepName, result) {
-  const output = [result.stdout, result.stderr]
-    .map((value) => String(value ?? '').slice(-RUNNER_OUTPUT_LIMIT))
-    .join('\n')
-  const lines = output.split(/\r?\n/)
+  const streams = [result.stdout, result.stderr]
+    .map((value) => String(value ?? '').slice(-RUNNER_OUTPUT_LIMIT).split(/\r?\n/))
+  const lines = streams.flat()
   const standaloneSummaries = lines
     .map((line) => /^\s*Tests=(.*?)\s*$/.exec(line))
     .filter(Boolean)
   const proveSummaries = []
   const provePattern = /^\s*Files=([1-9]\d*), Tests=(\d+),\s+\d+(?:\.\d+)? wallclock secs \(\s*\d+(?:\.\d+)? usr\s+\d+(?:\.\d+)? sys \+\s+\d+(?:\.\d+)? cusr\s+\d+(?:\.\d+)? csys =\s+\d+(?:\.\d+)? CPU\)\s*$/
-  for (let index = 0; index < lines.length; index += 1) {
-    if (!/^\s*Files=/.test(lines[index])) continue
-    const summary = provePattern.exec(lines[index])
-    if (!summary
-      || lines[index - 1]?.trim() !== 'All tests successful.'
-      || lines[index + 1]?.trim() !== 'Result: PASS') {
-      throw new ReleaseFailure(stepName, 'evidence', `${stepName} must emit a valid prove aggregate summary`)
-    }
-    const files = Number(summary[1])
-    if (!Number.isSafeInteger(files)) {
-      throw new ReleaseFailure(stepName, 'evidence', `${stepName} prove Files count must be a safe integer`)
-    }
-    proveSummaries.push(summary[2])
+  const resultPattern = /^\s*Result:\s*(.*?)\s*$/
+  const proveFailurePattern = /^(?:\s*not ok(?:\s+\d+)?(?:\s+-\s+.*)?\s*|\s*Test Summary Report\s*|\s*Failed \d+\/\d+ (?:test programs?|subtests?)(?:\. \d+\/\d+ subtests? failed\.)?\s*|\s*Failed tests?:\s+.+|\s*Non-zero exit status:\s+\d+\s*|\s*Parse errors?:\s+.+|\s*Dubious,\s+test returned\s+\d+.*)$/i
+  const invalidProve = (detail = '') => new ReleaseFailure(
+    stepName,
+    'evidence',
+    `${stepName} must emit a Tests=<integer> summary or valid prove aggregate summary${detail}`,
+  )
+
+  if (lines.some((line) => /^\s*Result:\s*FAIL\s*$/.test(line) || proveFailurePattern.test(line))) {
+    throw invalidProve('; prove failure marker detected')
   }
+
+  let proveBlocks = 0
+  let allSuccessMarkers = 0
+  let resultMarkers = 0
+  for (const streamLines of streams) {
+    allSuccessMarkers += streamLines.filter((line) => line.trim() === 'All tests successful.').length
+    resultMarkers += streamLines.filter((line) => resultPattern.test(line)).length
+    for (let index = 0; index < streamLines.length; index += 1) {
+      if (!/^\s*Files=/.test(streamLines[index])) continue
+      const summary = provePattern.exec(streamLines[index])
+      if (!summary
+        || streamLines[index - 1]?.trim() !== 'All tests successful.'
+        || streamLines[index + 1]?.trim() !== 'Result: PASS') {
+        throw invalidProve()
+      }
+      const files = Number(summary[1])
+      if (!Number.isSafeInteger(files)) {
+        throw new ReleaseFailure(stepName, 'evidence', `${stepName} prove Files count must be a safe integer`)
+      }
+      proveBlocks += 1
+      proveSummaries.push(summary[2])
+    }
+  }
+
+  if (allSuccessMarkers !== proveBlocks || resultMarkers !== proveBlocks) {
+    if (allSuccessMarkers > 0 || resultMarkers > 0 || proveBlocks > 0) throw invalidProve('; ambiguous prove result markers')
+  }
+
   const summaries = [...standaloneSummaries.map((summary) => summary[1]), ...proveSummaries]
   if (summaries.length === 0) {
     if (stepName === 'test-database') {
-      throw new ReleaseFailure(stepName, 'evidence', 'test-database must emit a Tests=<integer> summary')
+      throw new ReleaseFailure(stepName, 'evidence', 'test-database must emit a Tests=<integer> summary or valid prove aggregate summary')
     }
     return undefined
   }
