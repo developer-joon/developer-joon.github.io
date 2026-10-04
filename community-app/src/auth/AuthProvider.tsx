@@ -21,8 +21,7 @@ export interface AuthContextValue {
   session: Session | null
   user: User | null
   error: string | null
-  signIn?(provider: CommunityOAuthProvider, returnPath?: string): Promise<void>
-  signInWithGitHub(returnPath?: string): Promise<void>
+  signIn(provider: CommunityOAuthProvider, returnPath?: string): Promise<void>
   signOut(): Promise<void>
 }
 
@@ -33,7 +32,6 @@ const defaultAuth: AuthContextValue = {
   user: null,
   error: null,
   signIn: async () => undefined,
-  signInWithGitHub: async () => undefined,
   signOut: async () => undefined,
 }
 
@@ -122,11 +120,6 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
     }
   }, [authClient])
 
-  const loginWithGitHub = useCallback(
-    (returnPath?: string) => login('github', returnPath),
-    [login],
-  )
-
   const value = useMemo<AuthContextValue>(() => ({
     loading,
     pending,
@@ -134,9 +127,8 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
     user: session?.user ?? null,
     error,
     signIn: login,
-    signInWithGitHub: loginWithGitHub,
     signOut: logout,
-  }), [error, loading, login, loginWithGitHub, logout, pending, session])
+  }), [error, loading, login, logout, pending, session])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

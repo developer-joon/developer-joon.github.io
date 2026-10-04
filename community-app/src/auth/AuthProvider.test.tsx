@@ -25,14 +25,28 @@ function Harness({ onState }: { onState?: (value: ReturnType<typeof useAuth>) =>
       <span>{auth.loading ? 'loading' : auth.user?.email ?? 'signed-out'}</span>
       <span>{auth.error}</span>
       <span>{auth.pending ? 'pending' : 'idle'}</span>
-      <button onClick={() => void auth.signIn?.('google', '/community/write/')}>login</button>
-      <button onClick={() => void auth.signIn?.('github', '/community/private/')}>disabled login</button>
+      <button onClick={() => void auth.signIn('google', '/community/write/')}>login</button>
+      <button onClick={() => void auth.signIn('github', '/community/private/')}>disabled login</button>
       <button onClick={() => void auth.signOut()}>logout</button>
     </div>
   )
 }
 
 describe('AuthProvider', () => {
+  it('exposes only the provider-neutral sign-in API', async () => {
+    let auth: ReturnType<typeof useAuth> | undefined
+    render(
+      <AuthProvider client={client()}>
+        <Harness onState={(value) => { auth = value }} />
+      </AuthProvider>,
+    )
+
+    await screen.findByText('signed-out')
+    expect(auth).toBeDefined()
+    expect(auth).not.toHaveProperty('signInWithGitHub')
+    expect(auth!.signIn).toEqual(expect.any(Function))
+  })
+
   it('restores the initial session and subscribes to session changes', async () => {
     let listener: ((event: string, session: unknown) => void) | undefined
     const unsubscribe = vi.fn()
