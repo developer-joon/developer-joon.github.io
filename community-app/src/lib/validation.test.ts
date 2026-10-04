@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { isStrictUuid, validatePostInput } from './validation'
 
 const tag = '56000000-0000-4000-8000-000000000040'
+const seededTag = 'a1000000-0000-0000-0000-000000000001'
 
 describe('post validation', () => {
-  it('trims valid title and body', () => {
-    expect(validatePostInput({ title: '  제목  ', bodyMarkdown: '  본문  ', tagIds: [tag] })).toEqual({
+  it('accepts a seeded PostgreSQL UUID tag while trimming valid title and body', () => {
+    expect(validatePostInput({ title: '  제목  ', bodyMarkdown: '  본문  ', tagIds: [seededTag] })).toEqual({
       ok: true,
-      value: { title: '제목', bodyMarkdown: '본문', tagIds: [tag] },
+      value: { title: '제목', bodyMarkdown: '본문', tagIds: [seededTag] },
     })
   })
 
@@ -27,6 +28,7 @@ describe('post validation', () => {
 
   it('accepts only canonical UUID mutation results', () => {
     expect(isStrictUuid('56000000-0000-4000-8000-000000000010')).toBe(true)
+    expect(isStrictUuid(seededTag)).toBe(false)
     expect(isStrictUuid('not-a-uuid')).toBe(false)
   })
 })

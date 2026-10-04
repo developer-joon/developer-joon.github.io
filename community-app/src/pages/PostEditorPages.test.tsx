@@ -12,7 +12,7 @@ import { EditPostPage } from './EditPostPage'
 
 const postId = '56000000-0000-4000-8000-000000000010'
 const authorId = '56000000-0000-4000-8000-000000000030'
-const tag = { id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' }
+const tag = { id: 'a1000000-0000-0000-0000-000000000001', slug: 'typescript', label: 'TypeScript' }
 const post = { id: postId, title: '서버 제목', excerpt: '', bodyMarkdown: '서버 본문', createdAt: '2026-09-27T00:00:00Z', updatedAt: '2026-09-27T00:00:00Z', isLocked: false, isPinned: false, commentCount: 0, reactionCount: 0, popularityScore: 0, attachmentCount: 0, author: { id: authorId, login: 'bread', displayName: null, avatarUrl: null }, tags: [tag] }
 const attachmentId = '56000000-0000-4000-8000-000000000070'
 const uploadKey = '56000000-0000-4000-8000-000000000080'

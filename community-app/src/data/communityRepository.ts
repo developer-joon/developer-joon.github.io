@@ -36,6 +36,7 @@ import type {
 import type { Database } from '../types/database'
 import { getSupabaseClient } from '../lib/supabase'
 import { parseEnv } from '../config/env'
+import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
 
 export interface QueryResponse { data: unknown; error: unknown }
 type Functions = Database['public']['Functions']
@@ -167,12 +168,9 @@ function isNullableString(value: unknown): value is string | null {
 function isSafeCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
-// PostgreSQL's uuid type accepts canonical UUID text regardless of RFC version/variant bits.
-// Seeded stable IDs therefore need syntax validation rather than UUID-generation validation.
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const isoTimestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/
 function isUuid(value: unknown): value is string {
-  return typeof value === 'string' && uuidPattern.test(value)
+  return isStrictUuid(value)
 }
 function isLeapYear(year: number): boolean {
   return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
@@ -202,7 +200,7 @@ function isTag(value: unknown): value is RawTag {
     && typeof value.id === 'string' && typeof value.slug === 'string' && typeof value.label === 'string'
 }
 function isDetailTag(value: unknown): value is RawTag {
-  return isTag(value) && isUuid(value.id)
+  return isTag(value) && isCanonicalUuid(value.id)
 }
 function isPublicPostDetail(value: unknown): value is PublicPostDetailRow {
   if (!isRecord(value) || !hasExactKeys(value, detailKeys)) return false
@@ -371,7 +369,7 @@ function mapModeratedCommentState(data: unknown): ModeratedCommentState {
 }
 function mapModeratedTagState(data: unknown): ModeratedTagState {
   if (!isRecord(data) || !hasExactKeys(data, ['id', 'slug', 'label', 'is_active', 'sort_order'])
-    || !isUuid(data.id) || !isBoundedString(data.slug, 100) || !isBoundedString(data.label, 200)
+    || !isCanonicalUuid(data.id) || !isBoundedString(data.slug, 100) || !isBoundedString(data.label, 200)
     || typeof data.is_active !== 'boolean' || !isSafeCount(data.sort_order)) throw new Error('invalid tag state')
   return { id: data.id, slug: data.slug, label: data.label, isActive: data.is_active, sortOrder: data.sort_order }
 }

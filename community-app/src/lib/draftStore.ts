@@ -1,4 +1,4 @@
-import { isStrictUuid } from './validation'
+import { isCanonicalUuid, isStrictUuid } from './uuid'
 
 export type DraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 export interface DraftAttachment {
@@ -77,7 +77,7 @@ export function createEditDraft(postId: string, title: string, bodyMarkdown: str
 }
 function validFields(title: unknown, body: unknown, tags: unknown, updatedAt: unknown) {
   return typeof title === 'string' && title.length <= 120 && typeof body === 'string' && body.length <= 50_000
-    && Array.isArray(tags) && tags.length <= 3 && tags.every(isStrictUuid)
+    && Array.isArray(tags) && tags.length <= 3 && tags.every(isCanonicalUuid)
     && new Set(tags.map(id => String(id).toLowerCase())).size === tags.length && isStrictTimestamp(updatedAt)
 }
 function parseAttachment(value: unknown): DraftAttachment | null {

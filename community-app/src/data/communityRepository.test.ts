@@ -308,6 +308,14 @@ describe('community repository public list contract', () => {
 })
 
 describe('community repository mutation response validation', () => {
+  it('keeps RFC version and variant validation for mutation UUIDs', async () => {
+    const value = setup()
+    value.setMutationResponse({ data: 'a1000000-0000-0000-0000-000000000001', error: null })
+
+    expect(await value.repository.createPost({ title: '제목', bodyMarkdown: '본문', tagIds: ['tag-1'], idempotencyKey: 'key' }))
+      .toMatchObject({ ok: false, error: { sourceCode: 'INVALID_RESPONSE' } })
+  })
+
   it.each(['createPost', 'updatePost', 'deletePost'] as const)('rejects malformed %s success UUIDs', async (method) => {
     const value = setup()
     value.setMutationResponse({ data: 'not-a-uuid', error: null })
