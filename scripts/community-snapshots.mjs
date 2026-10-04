@@ -18,6 +18,7 @@ const POST_KEYS = ['author', 'body_markdown', 'created_at', 'id', 'tags', 'title
 const AUTHOR_KEYS = ['display_name', 'login']
 const TAG_KEYS = ['id', 'label', 'slug']
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-])(\d{2}):(\d{2}))$/
 
 function fail(message) {
@@ -73,7 +74,7 @@ function validatePost(value) {
   const slugs = new Set()
   for (const tag of value.tags) {
     exactKeys(tag, TAG_KEYS, 'snapshot tag')
-    if (!UUID_RE.test(tag.id)) fail('invalid tag id')
+    if (!CANONICAL_UUID_RE.test(tag.id)) fail('invalid tag id')
     if (typeof tag.slug !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(tag.slug) || tag.slug.length > 80) fail('invalid tag slug')
     validText(tag.label, 1, 50, 'tag label')
     if (slugs.has(tag.slug)) fail('duplicate tag slug')

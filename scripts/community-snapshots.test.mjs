@@ -87,6 +87,19 @@ test('published fixture generates canonical metadata, JSON-LD, author, tags, dat
   })
 })
 
+test('accepts PostgreSQL canonical seeded tag IDs in live snapshot rows', async () => {
+  await withSetup(async (ctx) => {
+    const seededTag = { id: 'a1000000-0000-0000-0000-000000000006', slug: 'revenue-model', label: '수익모델' }
+    await writeJson(ctx.fixture, [page([post({ tags: [seededTag] })])])
+
+    const result = run(ctx)
+
+    assert.equal(result.status, 0, result.stderr)
+    const html = await readFile(path.join(ctx.output, UUID, 'index.html'), 'utf8')
+    assert.match(html, /수익모델/)
+  })
+})
+
 test('escapes raw HTML and strips dangerous or credential-bearing Markdown URLs', async () => {
   await withSetup(async (ctx) => {
     await writeJson(ctx.fixture, [page([post()])])
