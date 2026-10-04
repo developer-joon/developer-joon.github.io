@@ -211,7 +211,8 @@ function hasCommunityAjaxOptOut(html) {
   const lowerHtml = html.toLowerCase()
   const inertStack = []
   let anchor = null
-  let foundValidCommunityLink = false
+  let foundCommunityMenuLink = false
+  let allCommunityMenuLinksOptOut = true
   let position = 0
 
   while (position < html.length) {
@@ -254,8 +255,12 @@ function hasCommunityAjaxOptOut(html) {
       } else if (name === 'a' && inertStack.length === 0) {
         if (!anchor) return false
         const classes = anchor.attributes.get('class')?.split(htmlWhitespaceSequence) ?? []
-        if (anchor.attributes.get('href') === '/community/' && anchor.text.trim() === 'Community' && classes.includes('js-no-ajax')) {
-          foundValidCommunityLink = true
+        const isCommunityMenuLink = anchor.attributes.get('href') === '/community/'
+          && anchor.text.trim() === 'Community'
+          && classes.includes('menu__list__item__link')
+        if (isCommunityMenuLink) {
+          foundCommunityMenuLink = true
+          if (!classes.includes('js-no-ajax')) allCommunityMenuLinksOptOut = false
         }
         anchor = null
       }
@@ -285,7 +290,10 @@ function hasCommunityAjaxOptOut(html) {
     position = tagEnd + 1
   }
 
-  return anchor === null && inertStack.length === 0 && foundValidCommunityLink
+  return anchor === null
+    && inertStack.length === 0
+    && foundCommunityMenuLink
+    && allCommunityMenuLinksOptOut
 }
 
 function communityAssetReferences(html, shellPath) {

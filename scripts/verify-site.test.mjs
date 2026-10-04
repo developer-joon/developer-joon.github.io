@@ -185,11 +185,38 @@ for (const [container, openingTag, closingTag] of [
   })
 }
 
-test('accepts a marked Community navigation link after an unmarked matching link', async () => {
+test('rejects an unmarked Community menu link despite a marked body-link decoy', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a href="/community/">Community</a><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link">Community</a></nav><main><a href="/community/" class="js-no-ajax">Community</a></main>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a marked body-link decoy for an unmarked menu link')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+test('accepts a marked Community menu link without imposing the opt-out on a body link', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav><main><a href="/community/">Community</a></main>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects duplicate Community menu links when any lacks the AJAX opt-out', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a><a href="/community/" class="menu__list__item__link">Community</a></nav>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unmarked duplicate menu link')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+test('rejects a marked Community body link when no actual menu link exists', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><main><a href="/community/" class="js-no-ajax">Community</a></main>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a body link in place of the Community menu link')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
   })
 })
 
