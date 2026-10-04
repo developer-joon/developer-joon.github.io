@@ -99,6 +99,15 @@ test('rejects a generated homepage Community link without the AJAX opt-out class
   })
 })
 
+test('rejects a non-breaking space between Community navigation classes', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link\u00a0js-no-ajax" href="/community/">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly treated non-ASCII whitespace as an HTML class separator')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
 test('rejects prefixed data attributes masquerading as href and class', async () => {
   await withArtifact(async (root) => {
     await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a data-href="/community/" data-class="js-no-ajax">Community</a>')
@@ -131,6 +140,33 @@ test('rejects a Community AJAX opt-out that exists only in a template', async ()
     await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><template><a href="/community/" class="js-no-ajax">Community</a></template><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an AJAX opt-out inside a template')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+test('rejects a Community AJAX opt-out after a plaintext start tag', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><plaintext><a href="/community/" class="js-no-ajax">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly parsed markup after a plaintext start tag')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+test('rejects a Community AJAX opt-out inside select content', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><select><a href="/community/" class="js-no-ajax">Community</a></select><a href="/community/">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an anchor from select content')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+test('rejects a Community AJAX opt-out inside frameset noframes content', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><frameset><noframes><a href="/community/" class="js-no-ajax">Community</a></noframes></frameset><a href="/community/">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an anchor from frameset noframes content')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
   })
 })

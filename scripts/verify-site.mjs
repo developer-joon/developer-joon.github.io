@@ -122,8 +122,9 @@ function assertIncludes(content, expected, relativePath, behavior) {
 }
 
 const htmlWhitespace = /[\t\n\f\r ]/
-const rawTextElements = new Set(['iframe', 'noembed', 'noscript', 'script', 'style', 'textarea', 'title', 'xmp'])
-const inertElements = new Set(['template'])
+const htmlWhitespaceSequence = /[\t\n\f\r ]+/
+const rawTextElements = new Set(['iframe', 'noembed', 'noframes', 'noscript', 'script', 'style', 'textarea', 'title', 'xmp'])
+const inertElements = new Set(['frameset', 'select', 'template'])
 
 function findTagEnd(html, start) {
   let quote = null
@@ -252,7 +253,7 @@ function hasCommunityAjaxOptOut(html) {
         inertStack.pop()
       } else if (name === 'a' && inertStack.length === 0) {
         if (!anchor) return false
-        const classes = anchor.attributes.get('class')?.split(/\s+/) ?? []
+        const classes = anchor.attributes.get('class')?.split(htmlWhitespaceSequence) ?? []
         if (anchor.attributes.get('href') === '/community/' && anchor.text.trim() === 'Community' && classes.includes('js-no-ajax')) {
           foundValidCommunityLink = true
         }
@@ -264,6 +265,11 @@ function hasCommunityAjaxOptOut(html) {
 
     const tag = parseStartTag(source)
     if (!tag) return false
+    if (tag.name === 'plaintext') {
+      if (anchor) return false
+      position = html.length
+      continue
+    }
     if (rawTextElements.has(tag.name)) {
       const afterRawText = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
       if (afterRawText === -1) return false
