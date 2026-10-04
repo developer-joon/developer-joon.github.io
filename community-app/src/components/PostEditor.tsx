@@ -21,6 +21,8 @@ interface PostEditorProps {
   submitDisabled?: boolean
   tagSelectionDisabled?: boolean
   tagStatus?: ReactNode
+  tagCatalogKnown?: boolean
+  tagAvailabilityDescriptionId?: string
   submissionActions?: ReactNode
   uploadRepository?: UploadRepository
   uploadActorId?: string
@@ -29,7 +31,7 @@ interface PostEditorProps {
   onUploadStateChange?(state: ImageUploaderState): void
 }
 
-export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange, unavailableTagLabels = [], allowedImageOrigin, submissionError, auxiliaryActions, disabled = false, submitDisabled = false, tagSelectionDisabled = false, tagStatus, submissionActions, uploadRepository, uploadActorId, initialAttachments = [], existingAttachmentCount = 0, onUploadStateChange }: PostEditorProps) {
+export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange, unavailableTagLabels = [], allowedImageOrigin, submissionError, auxiliaryActions, disabled = false, submitDisabled = false, tagSelectionDisabled = false, tagStatus, tagCatalogKnown = true, tagAvailabilityDescriptionId, submissionActions, uploadRepository, uploadActorId, initialAttachments = [], existingAttachmentCount = 0, onUploadStateChange }: PostEditorProps) {
   const [value, setValue] = useState(initialValue)
   const [errors, setErrors] = useState<PostErrors>({})
   const [preview, setPreview] = useState(false)
@@ -41,7 +43,7 @@ export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange
   const writeTab = useRef<HTMLButtonElement>(null)
   const previewTab = useRef<HTMLButtonElement>(null)
   const activeIds = new Set(tags.map(tag => tag.id))
-  const hasUnavailableTags = value.tagIds.some(id => !activeIds.has(id))
+  const hasUnavailableTags = tagCatalogKnown && value.tagIds.some(id => !activeIds.has(id))
   const busy = pending || disabled
 
   useEffect(() => {
@@ -111,10 +113,10 @@ export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange
       </div>}
       </div>
       {uploadRepository && uploadActorId && <ImageUploader repository={uploadRepository} actorId={uploadActorId} bodyLength={value.bodyMarkdown.length} onInsert={insertImage} onStateChange={imageStateChanged} initialAttachments={initialAttachments} existingCount={existingAttachmentCount} disabled={busy} />}
-      <TagSelector tags={tags} selected={value.tagIds} onChange={tagIds => update({ ...value, tagIds })} error={errors.tagIds} unavailableLabels={unavailableTagLabels} disabled={tagSelectionDisabled} />
+      <TagSelector tags={tags} selected={value.tagIds} onChange={tagIds => update({ ...value, tagIds })} error={errors.tagIds} unavailableLabels={unavailableTagLabels} disabled={tagSelectionDisabled} catalogKnown={tagCatalogKnown} availabilityDescriptionId={tagAvailabilityDescriptionId} />
       {tagStatus}
       <div className="editor-actions">
-        <button className="editor-submit" type="submit" disabled={uploadBlocked || submitDisabled}>{pending ? '처리 중' : submitLabel}</button>
+        <button className="editor-submit" type="submit" disabled={uploadBlocked || submitDisabled} aria-describedby={submitDisabled && !disabled && !uploadBlocked && !pending ? tagAvailabilityDescriptionId : undefined}>{pending ? '처리 중' : submitLabel}</button>
         {auxiliaryActions}
       </div>
       </fieldset>

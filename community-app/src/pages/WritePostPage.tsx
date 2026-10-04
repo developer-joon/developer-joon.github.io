@@ -30,6 +30,7 @@ function safeWritePath(path: string) {
 }
 
 const lockError = '초안 잠금을 사용할 수 없습니다. 브라우저 설정을 확인해 주세요.'
+const tagAvailabilityDescriptionId = 'write-tag-availability-status'
 
 export function WritePostPage({ repository, uploadRepository, storage = window.localStorage, navigate = path => window.location.assign(path), currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}` }: Props) {
   const auth = useAuth()
@@ -345,14 +346,14 @@ export function WritePostPage({ repository, uploadRepository, storage = window.l
     ? <button type="button" className="secondary-action" disabled={mutationPending} onClick={() => { if (!mutationLock.current) setRecoveryAttempt(value => value + 1) }}>첨부 연결 다시 시도</button>
     : null
   const tagStatus = tagError
-    ? <section className="editor-load-state" role="alert"><p>{tagError}</p><button type="button" className="secondary-action" onClick={() => setTagAttempt(value => value + 1)}>태그 다시 불러오기</button></section>
-    : !tags ? <p className="editor-load-state" role="status">태그를 불러오고 있습니다.</p> : null
+    ? <section id={tagAvailabilityDescriptionId} className="editor-load-state" role="alert"><p>{tagError}</p><button type="button" className="secondary-action" onClick={() => setTagAttempt(value => value + 1)}>태그 다시 불러오기</button></section>
+    : !tags ? <p id={tagAvailabilityDescriptionId} className="editor-load-state" role="status">태그를 불러오고 있습니다.</p> : null
 
   return <div className="community-page editor-page"><AppHeader /><main>
     <header className="editor-heading"><p className="post-detail-kicker">NEW COMMUNITY NOTE</p><h1>새 글 쓰기</h1><p>이 브라우저의 로컬 저장소에 임시 저장을 시도합니다.</p></header>
     <DraftNotice restored={initial.current.restored} />
     {auth.loading && <p className="editor-auth-note" role="status">로그인 상태를 확인하고 있습니다. 작성 내용은 유지됩니다.</p>}
     {actorMismatch && <section className="editor-load-state" role="alert"><p>이 초안의 이미지는 다른 계정에서 업로드되었습니다. 원래 계정으로 로그인해 계속해 주세요.</p><button type="button" className="secondary-action" onClick={() => void auth.signOut()}>계정 바꾸기</button></section>}
-    <PostEditor key={`${editorRevision}:${draftRef.current.idempotencyKey}:${auth.user?.id ?? 'anonymous'}`} initialValue={draftRef.current} tags={tags ?? []} submitLabel="발행" onChange={autosave} onSubmit={publish} disabled={mutationPending || workflowFrozen || actorMismatch} submitDisabled={!tags} tagSelectionDisabled={!tags} tagStatus={tagStatus} submissionError={submitError} submissionActions={<>{conflictActions}{retryAttachmentAction}</>} allowedImageOrigin={repository.publicAttachmentOrigin} uploadRepository={uploadRepository} uploadActorId={auth.user?.id} initialAttachments={currentWorkflow && currentWorkflow.ownerId === auth.user?.id ? currentWorkflow.attachments : []} onUploadStateChange={uploadChanged} auxiliaryActions={needsLogin ? <button type="button" className="secondary-action" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeWritePath(currentPath))}>다시 로그인</button> : null} />
+    <PostEditor key={`${editorRevision}:${draftRef.current.idempotencyKey}:${auth.user?.id ?? 'anonymous'}`} initialValue={draftRef.current} tags={tags ?? []} submitLabel="발행" onChange={autosave} onSubmit={publish} disabled={mutationPending || workflowFrozen || actorMismatch} submitDisabled={!tags} tagSelectionDisabled={!tags} tagStatus={tagStatus} tagCatalogKnown={tags !== null} tagAvailabilityDescriptionId={!tags ? tagAvailabilityDescriptionId : undefined} submissionError={submitError} submissionActions={<>{conflictActions}{retryAttachmentAction}</>} allowedImageOrigin={repository.publicAttachmentOrigin} uploadRepository={uploadRepository} uploadActorId={auth.user?.id} initialAttachments={currentWorkflow && currentWorkflow.ownerId === auth.user?.id ? currentWorkflow.attachments : []} onUploadStateChange={uploadChanged} auxiliaryActions={needsLogin ? <button type="button" className="secondary-action" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeWritePath(currentPath))}>다시 로그인</button> : null} />
   </main><footer className="community-footer"><span>BREADLAB · EDITORIAL DESK</span><a href="/community/">글 목록</a></footer></div>
 }

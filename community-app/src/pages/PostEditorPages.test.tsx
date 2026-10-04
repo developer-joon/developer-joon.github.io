@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '@supabase/supabase-js'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
@@ -72,6 +72,9 @@ describe('WritePostPage', () => {
     expect(screen.getByLabelText('본문').compareDocumentPosition(tagStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     const publish = screen.getByRole('button', { name: '발행' })
     expect(publish).toBeDisabled()
+    expect(tagStatus).toHaveAttribute('id', 'write-tag-availability-status')
+    expect(tagSelector).toHaveAttribute('aria-describedby', expect.stringContaining(tagStatus.id))
+    expect(publish).toHaveAttribute('aria-describedby', tagStatus.id)
 
     await waitFor(() => expect(local.values.has(draftKey('write'))).toBe(true))
     fireEvent.change(screen.getByLabelText('제목'), { target: { value: '로딩 중 제목' } })
@@ -79,6 +82,20 @@ describe('WritePostPage', () => {
     await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!)).toEqual(expect.objectContaining({ title: '로딩 중 제목', bodyMarkdown: '로딩 중 본문' })))
     fireEvent.submit(publish.closest('form')!)
     expect(createPost).not.toHaveBeenCalled()
+  })
+
+  it('preserves a restored valid tag without treating it as unavailable while tags are loading', async () => {
+    const local = storage()
+    local.setItem(draftKey('write'), JSON.stringify({ version: 1, kind: 'write', title: '복원 제목', bodyMarkdown: '복원 본문', tagIds: [tag.id], updatedAt: '2026-09-27T01:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000099' }))
+    const listTags = vi.fn(() => new Promise(() => undefined)) as CommunityRepository['listTags']
+
+    wrap(<WritePostPage repository={repository({ listTags })} storage={local} navigate={vi.fn()} />, auth(authorId))
+
+    expect(screen.getByText('태그를 불러오고 있습니다.').closest('[role="status"]')).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(tag.id))).not.toBeInTheDocument()
+    expect(screen.queryByText(/현재 사용할 수 없는 태그|활성 태그로 교체/)).not.toBeInTheDocument()
+    expect(screen.queryByText('0 / 3개 선택')).not.toBeInTheDocument()
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!).tagIds).toEqual([tag.id]))
   })
 
   it('keeps the editor editable and autosaving after tags fail with an explicit retry', async () => {
@@ -97,6 +114,9 @@ describe('WritePostPage', () => {
     expect(tagSelector).toBeDisabled()
     const publish = screen.getByRole('button', { name: '발행' })
     expect(publish).toBeDisabled()
+    expect(tagAlert).toHaveAttribute('id', 'write-tag-availability-status')
+    expect(tagSelector).toHaveAttribute('aria-describedby', expect.stringContaining(tagAlert.id))
+    expect(publish).toHaveAttribute('aria-describedby', tagAlert.id)
 
     await waitFor(() => expect(local.values.has(draftKey('write'))).toBe(true))
     fireEvent.change(screen.getByLabelText('제목'), { target: { value: '실패 뒤 제목' } })
@@ -104,6 +124,21 @@ describe('WritePostPage', () => {
     await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!)).toEqual(expect.objectContaining({ title: '실패 뒤 제목', bodyMarkdown: '실패 뒤 본문' })))
     fireEvent.submit(publish.closest('form')!)
     expect(createPost).not.toHaveBeenCalled()
+  })
+
+  it('preserves a restored valid tag without treating it as unavailable after tags fail', async () => {
+    const local = storage()
+    local.setItem(draftKey('write'), JSON.stringify({ version: 1, kind: 'write', title: '복원 제목', bodyMarkdown: '복원 본문', tagIds: [tag.id], updatedAt: '2026-09-27T01:00:00.000Z', idempotencyKey: '56000000-0000-4000-8000-000000000099' }))
+    const listTags = vi.fn().mockResolvedValue({ ok: false, error: { code: 'network', message: '태그 연결 실패' } })
+
+    wrap(<WritePostPage repository={repository({ listTags })} storage={local} navigate={vi.fn()} />, auth(authorId))
+
+    await screen.findByText('태그 연결 실패')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(screen.queryByText(new RegExp(tag.id))).not.toBeInTheDocument()
+    expect(screen.queryByText(/현재 사용할 수 없는 태그|활성 태그로 교체/)).not.toBeInTheDocument()
+    expect(screen.queryByText('0 / 3개 선택')).not.toBeInTheDocument()
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!).tagIds).toEqual([tag.id]))
   })
 
   it('enables tag selection and publishes valid input after a tag retry succeeds', async () => {
@@ -129,6 +164,27 @@ describe('WritePostPage', () => {
     await waitFor(() => expect(createPost).toHaveBeenCalledWith(expect.objectContaining({ title: '재시도 제목', bodyMarkdown: '재시도 본문', tagIds: [tag.id] })))
     expect(listTags).toHaveBeenCalledTimes(2)
     await waitFor(() => expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`))
+  })
+
+  it('ignores an out-of-order tag retry response after the repository changes', async () => {
+    let resolveRetry!: (value: { ok: false; error: { code: 'network'; message: string } }) => void
+    const firstListTags = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: { code: 'network', message: '태그 연결 실패' } })
+      .mockImplementationOnce(() => new Promise(done => { resolveRetry = done }))
+    const local = storage(); const a = auth(authorId)
+    const view = wrap(<WritePostPage repository={repository({ listTags: firstListTags })} storage={local} navigate={vi.fn()} />, a)
+
+    await screen.findByText('태그 연결 실패')
+    fireEvent.click(screen.getByRole('button', { name: '태그 다시 불러오기' }))
+    await waitFor(() => expect(firstListTags).toHaveBeenCalledTimes(2))
+
+    const nextRepository = repository()
+    view.rerender(<AuthContext.Provider value={a}><WritePostPage repository={nextRepository} storage={local} navigate={vi.fn()} /></AuthContext.Provider>)
+    expect(await screen.findByRole('checkbox', { name: 'TypeScript' })).toBeEnabled()
+
+    await act(async () => resolveRetry({ ok: false, error: { code: 'network', message: '오래된 태그 실패' } }))
+    expect(screen.queryByText('오래된 태그 실패')).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'TypeScript' })).toBeEnabled()
   })
 
   it('persists a fresh idempotency key before asynchronous tag loading completes', async () => {
