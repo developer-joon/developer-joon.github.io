@@ -122,19 +122,21 @@ function assertIncludes(content, expected, relativePath, behavior) {
 }
 
 function attributeValue(attributes, name) {
-  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\u0060]+))`, 'i')
+  const htmlWhitespace = '[\\t\\n\\f\\r ]'
+  const pattern = new RegExp(`(?:^|${htmlWhitespace})${name}${htmlWhitespace}*=${htmlWhitespace}*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\u0060]+))`, 'i')
   const match = pattern.exec(attributes)
   return match ? match[1] ?? match[2] ?? match[3] : null
 }
 
 function hasCommunityAjaxOptOut(html) {
-  const anchorPattern = /<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi
-  for (const match of html.matchAll(anchorPattern)) {
+  const uncommentedHtml = html.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+  const anchorPattern = /<a(?=[\t\n\f\r \/>])((?:[^'"<>]|"[^"]*"|'[^']*')*)>([\s\S]*?)<\/a\s*>/gi
+  for (const match of uncommentedHtml.matchAll(anchorPattern)) {
     const href = attributeValue(match[1], 'href')
     const text = match[2].replace(/<[^>]*>/g, '').trim()
     if (href !== '/community/' || text !== 'Community') continue
     const classes = attributeValue(match[1], 'class')?.split(/\s+/) ?? []
-    return classes.includes('js-no-ajax')
+    if (classes.includes('js-no-ajax')) return true
   }
   return false
 }

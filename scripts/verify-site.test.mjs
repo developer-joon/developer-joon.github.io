@@ -99,6 +99,40 @@ test('rejects a generated homepage Community link without the AJAX opt-out class
   })
 })
 
+test('rejects prefixed data attributes masquerading as href and class', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a data-href="/community/" data-class="js-no-ajax">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly treated data-href and data-class as navigation attributes')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+test('rejects a Community AJAX opt-out that exists only in commented markup', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><!-- <a href="/community/" class="js-no-ajax">Community</a> --><a href="/community/">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a commented-out AJAX opt-out')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+test('accepts a marked Community navigation link after an unmarked matching link', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a href="/community/">Community</a><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav>')
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('accepts a marked Community link with a greater-than sign in a quoted attribute', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a>')
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
 test('rejects obsolete GitHub community authentication wording while allowing GitHub giscus disclosure', async () => {
   await withArtifact(async (root) => {
     await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 GitHub OAuth 로그인 시 GitHub 계정을 식별합니다. 처리 완료 후 최대 3년')
