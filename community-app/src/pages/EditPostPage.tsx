@@ -4,6 +4,7 @@ import { DraftNotice } from '../components/DraftNotice'
 import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import { normalizeCommunityReturnPath } from '../auth/auth'
+import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import type { CommunityRepository } from '../data/communityRepository'
 import type { UploadRepository } from '../data/uploadRepository'
 import type { ImageUploaderState, OwnedUploadedAttachment } from '../components/ImageUploader'
@@ -416,7 +417,7 @@ export function EditPostPage({ repository, uploadRepository, search, storage = w
   else if (loadError) content = <State title={loadError} alert><button ref={retryButtonRef} type="button" className="secondary-action" onClick={() => setAttempt(value => value + 1)}>다시 시도</button></State>
   else if (readState) content = <State title={stateTitle(readState)} />
   else if (!post || !tags || !initialDraft || existingAttachmentCount === null || auth.loading) content = <State title="수정할 글을 불러오고 있습니다" />
-  else if (!auth.user) content = <State title="로그인이 필요합니다"><button type="button" className="secondary-action" onClick={() => void auth.signInWithGitHub(safeEditPath(currentPath, postId))}>로그인하고 수정하기</button></State>
+  else if (!auth.user) content = <State title="로그인이 필요합니다"><button type="button" className="secondary-action" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeEditPath(currentPath, postId))}>로그인하고 수정하기</button></State>
   else if (auth.user.id !== post.author.id) content = <State title="이 글을 수정할 권한이 없습니다" />
   else {
     const activeIds = new Set(tags.map(tag => tag.id))
@@ -427,7 +428,7 @@ export function EditPostPage({ repository, uploadRepository, search, storage = w
     const retryAttachmentAction = submitError && currentWorkflow && currentWorkflow.phase !== 'uploaded' && !conflict
       ? <button type="button" className="secondary-action" disabled={mutationPending} onClick={() => { if (!mutationLock.current) setRecoveryAttempt(value => value + 1) }}>첨부 연결 다시 시도</button>
       : null
-    content = <><header className="editor-heading"><p className="post-detail-kicker">REVISE COMMUNITY NOTE</p><h1>글 수정</h1><p>수정과 삭제 권한은 서버에서도 현재 로그인 사용자 기준으로 다시 확인됩니다.</p></header><DraftNotice restored={restoredDraft} />{actorMismatch && <section className="editor-load-state" role="alert"><p>이 초안의 이미지는 다른 계정에서 업로드되었습니다. 원래 계정으로 로그인해 계속해 주세요.</p><button type="button" className="secondary-action" onClick={() => void auth.signOut()}>계정 바꾸기</button></section>}<PostEditor key={`${editorRevision}:${postId}:${auth.user.id}`} initialValue={initialDraft} tags={tags} unavailableTagLabels={unavailable} submitLabel="수정" onChange={autosave} onSubmit={update} disabled={mutationPending || workflowFrozen || actorMismatch} submissionError={submitError} submissionActions={<>{conflictActions}{retryAttachmentAction}</>} allowedImageOrigin={repository.publicAttachmentOrigin} uploadRepository={uploadRepository} uploadActorId={auth.user.id} initialAttachments={currentWorkflow && currentWorkflow.ownerId === auth.user.id ? currentWorkflow.attachments : []} existingAttachmentCount={existingAttachmentCount} onUploadStateChange={uploadChanged} auxiliaryActions={<>{needsLogin && <button type="button" className="secondary-action" onClick={() => void auth.signInWithGitHub(safeEditPath(currentPath, postId))}>다시 로그인</button>}<button type="button" className="danger-action" onClick={() => void remove()}>글 삭제</button></>} /></>
+    content = <><header className="editor-heading"><p className="post-detail-kicker">REVISE COMMUNITY NOTE</p><h1>글 수정</h1><p>수정과 삭제 권한은 서버에서도 현재 로그인 사용자 기준으로 다시 확인됩니다.</p></header><DraftNotice restored={restoredDraft} />{actorMismatch && <section className="editor-load-state" role="alert"><p>이 초안의 이미지는 다른 계정에서 업로드되었습니다. 원래 계정으로 로그인해 계속해 주세요.</p><button type="button" className="secondary-action" onClick={() => void auth.signOut()}>계정 바꾸기</button></section>}<PostEditor key={`${editorRevision}:${postId}:${auth.user.id}`} initialValue={initialDraft} tags={tags} unavailableTagLabels={unavailable} submitLabel="수정" onChange={autosave} onSubmit={update} disabled={mutationPending || workflowFrozen || actorMismatch} submissionError={submitError} submissionActions={<>{conflictActions}{retryAttachmentAction}</>} allowedImageOrigin={repository.publicAttachmentOrigin} uploadRepository={uploadRepository} uploadActorId={auth.user.id} initialAttachments={currentWorkflow && currentWorkflow.ownerId === auth.user.id ? currentWorkflow.attachments : []} existingAttachmentCount={existingAttachmentCount} onUploadStateChange={uploadChanged} auxiliaryActions={<>{needsLogin && <button type="button" className="secondary-action" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeEditPath(currentPath, postId))}>다시 로그인</button>}<button type="button" className="danger-action" onClick={() => void remove()}>글 삭제</button></>} /></>
   }
 
   return <div className="community-page editor-page"><AppHeader /><main>{content}</main><footer className="community-footer"><span>BREADLAB · EDITORIAL DESK</span><a href="/community/">글 목록</a></footer></div>

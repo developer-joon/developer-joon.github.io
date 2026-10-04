@@ -74,7 +74,7 @@ function auth(userId: string | null): AuthContextValue {
     session: userId ? {} as never : null,
     user: userId ? { id: userId } as User : null,
     error: null,
-    signInWithGitHub: vi.fn(),
+    signIn: vi.fn(),
     signOut: vi.fn(),
   }
 }

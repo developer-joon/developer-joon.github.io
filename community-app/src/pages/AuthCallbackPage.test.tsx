@@ -22,7 +22,8 @@ describe('AuthCallbackPage', () => {
 
     render(<StrictMode><AuthCallbackPage client={client} search="?code=one-time-code" navigate={navigate} /></StrictMode>)
 
-    expect(screen.getByRole('status')).toHaveTextContent('GitHub 로그인을 확인하고 있습니다.')
+    expect(screen.getByRole('heading', { name: '로그인을 확인하고 있습니다.' })).toBeInTheDocument()
+    expect(screen.queryByText(/GitHub/)).not.toBeInTheDocument()
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/community/write/?draft=local'))
     expect(client.exchangeCodeForSession).toHaveBeenCalledOnce()
     expect(client.exchangeCodeForSession).toHaveBeenCalledWith('one-time-code')
@@ -35,7 +36,7 @@ describe('AuthCallbackPage', () => {
     const navigate = vi.fn()
     render(<AuthCallbackPage client={client} search="?error=access_denied&error_description=The+user+denied+access" navigate={navigate} />)
 
-    expect(screen.getByRole('alert')).toHaveTextContent('GitHub 로그인이 취소되었거나 완료되지 않았습니다.')
+    expect(screen.getByRole('heading', { name: '로그인이 취소되었거나 완료되지 않았습니다.' })).toBeInTheDocument()
     expect(client.exchangeCodeForSession).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '원래 화면에서 다시 시도' }))
     expect(navigate).toHaveBeenCalledWith('/community/write/?draft=kept')
@@ -58,7 +59,7 @@ describe('AuthCallbackPage', () => {
     const navigate = vi.fn()
     render(<AuthCallbackPage client={callbackClient(exchangeCodeForSession)} search="?code=retry-code&returnTo=%2Fcommunity%2Fpost%2F%3Fid%3D123" navigate={navigate} />)
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('GitHub 로그인을 완료하지 못했습니다. 다시 시도해 주세요.')
+    expect(await screen.findByRole('heading', { name: '로그인을 완료하지 못했습니다. 다시 시도해 주세요.' })).toBeInTheDocument()
     expect(localStorage.getItem('community-draft:v1')).toBe('keep me')
     fireEvent.click(screen.getByRole('button', { name: '원래 화면에서 다시 시도' }))
 

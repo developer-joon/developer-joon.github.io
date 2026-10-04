@@ -11,6 +11,10 @@ const routeCases = [
 ] as const
 
 describe('resolveCommunityRoute', () => {
+  it('uses provider-neutral callback copy', () => {
+    expect(resolveCommunityRoute('/community/auth/callback').statusDescription).toBe('로그인 결과를 안전하게 확인하는 화면을 만들고 있습니다.')
+  })
+
   it.each(routeCases)('resolves %s to its Korean placeholder', (pathname, statusTitle) => {
     expect(resolveCommunityRoute(pathname).statusTitle).toBe(statusTitle)
   })

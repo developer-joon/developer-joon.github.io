@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { User } from '@supabase/supabase-js'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
+import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import type { CommunityRepository } from '../data/communityRepository'
 import type { UploadRepository } from '../data/uploadRepository'
 import { draftKey } from '../lib/draftStore'
@@ -21,7 +22,7 @@ function storage() {
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) }, values }
 }
 function auth(userId: string | null): AuthContextValue {
-  return { loading: false, pending: false, session: userId ? {} as never : null, user: userId ? { id: userId } as User : null, error: null, signInWithGitHub: vi.fn(), signOut: vi.fn() }
+  return { loading: false, pending: false, session: userId ? {} as never : null, user: userId ? { id: userId } as User : null, error: null, signIn: vi.fn(), signOut: vi.fn() }
 }
 function wrap(ui: React.ReactNode, value: AuthContextValue) { return render(<AuthContext.Provider value={value}>{ui}</AuthContext.Provider>) }
 function repository(overrides: Partial<CommunityRepository> = {}) {
@@ -89,7 +90,7 @@ describe('WritePostPage', () => {
     wrap(<WritePostPage repository={repository()} storage={local} navigate={vi.fn()} currentPath="/community/write?from=home#draft" />, a)
     await screen.findByRole('checkbox', { name: 'TypeScript' }); fillValid()
     fireEvent.click(screen.getByRole('button', { name: '발행' }))
-    expect(a.signInWithGitHub).toHaveBeenCalledWith('/community/write/?from=home#draft')
+    expect(a.signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, '/community/write/?from=home#draft')
     expect(local.values.has(draftKey('write'))).toBe(true)
   })
 
@@ -250,7 +251,7 @@ describe('WritePostPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '발행' }))
     expect(await screen.findByText('로그인이 필요합니다.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '다시 로그인' }))
-    expect(a.signInWithGitHub).toHaveBeenCalledWith('/community/write/')
+    expect(a.signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, '/community/write/')
     fireEvent.click(screen.getByRole('button', { name: '발행' }))
     expect(await screen.findByText('서버 응답을 확인할 수 없습니다. 다시 시도해 주세요.')).toBeInTheDocument()
     expect(navigate).not.toHaveBeenCalled(); expect(local.values.has(draftKey('write'))).toBe(true)
@@ -499,7 +500,7 @@ describe('EditPostPage', () => {
     wrap(<EditPostPage repository={repository()} search={`?id=${postId}&from=list`} currentPath={`/community/edit?id=${postId}&from=list#editor`} storage={storage()} navigate={vi.fn()} />, a)
     expect(await screen.findByRole('heading', { name: '로그인이 필요합니다' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '로그인하고 수정하기' }))
-    expect(a.signInWithGitHub).toHaveBeenCalledWith(`/community/edit/?id=${postId}&from=list#editor`)
+    expect(a.signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, `/community/edit/?id=${postId}&from=list#editor`)
     expect(screen.queryByRole('heading', { name: '이 글을 수정할 권한이 없습니다' })).not.toBeInTheDocument()
   })
 
@@ -706,7 +707,7 @@ describe('EditPostPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '수정' }))
     expect(await screen.findByText('로그인이 필요합니다.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '다시 로그인' }))
-    expect(a.signInWithGitHub).toHaveBeenCalledWith(`/community/edit/?id=${postId}`)
+    expect(a.signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, `/community/edit/?id=${postId}`)
     expect(local.values.has(draftKey('edit', postId))).toBe(true)
   })
 

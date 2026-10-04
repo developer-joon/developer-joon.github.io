@@ -34,7 +34,7 @@ const communityRoutes: Record<string, CommunityRouteState> = {
   },
   '/community/auth/callback': {
     statusTitle: '로그인 확인 화면을 준비하고 있습니다',
-    statusDescription: 'GitHub 로그인 결과를 안전하게 확인하는 화면을 만들고 있습니다.',
+    statusDescription: '로그인 결과를 안전하게 확인하는 화면을 만들고 있습니다.',
   },
 }
 

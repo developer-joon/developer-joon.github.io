@@ -23,7 +23,7 @@ export function AuthCallbackPage({
   const authClient = client ?? (getSupabaseClient().auth as unknown as AuthClient)
   const started = useRef(false)
   const mounted = useRef(false)
-  const [state, setState] = useState<CallbackState>({ kind: 'loading', message: 'GitHub 로그인을 확인하고 있습니다.' })
+  const [state, setState] = useState<CallbackState>({ kind: 'loading', message: '로그인을 확인하고 있습니다.' })
 
   useEffect(() => {
     mounted.current = true
@@ -37,7 +37,7 @@ export function AuthCallbackPage({
     if (oauthError) {
       setState({
         kind: 'error',
-        message: 'GitHub 로그인이 취소되었거나 완료되지 않았습니다.',
+        message: '로그인이 취소되었거나 완료되지 않았습니다.',
         returnPath,
       })
       return () => { mounted.current = false }
@@ -52,14 +52,14 @@ export function AuthCallbackPage({
       .then((result) => {
         if (!mounted.current) return
         if (result.error || !result.data.session) {
-          setState({ kind: 'error', message: 'GitHub 로그인을 완료하지 못했습니다. 다시 시도해 주세요.', returnPath })
+          setState({ kind: 'error', message: '로그인을 완료하지 못했습니다. 다시 시도해 주세요.', returnPath })
           return
         }
         const destination = consumePendingReturnPath(storage as Storage, params.get('returnTo'))
         navigate(destination)
       })
       .catch(() => {
-        if (mounted.current) setState({ kind: 'error', message: 'GitHub 로그인을 완료하지 못했습니다. 다시 시도해 주세요.', returnPath })
+        if (mounted.current) setState({ kind: 'error', message: '로그인을 완료하지 못했습니다. 다시 시도해 주세요.', returnPath })
       })
 
     return () => { mounted.current = false }
@@ -69,7 +69,7 @@ export function AuthCallbackPage({
     <div className="community-page auth-callback-page">
       <main>
         <section className="auth-callback-state" role={state.kind === 'loading' ? 'status' : 'alert'}>
-          <p className="post-detail-kicker">GITHUB AUTHENTICATION</p>
+          <p className="post-detail-kicker">OAUTH AUTHENTICATION</p>
           <h1>{state.message}</h1>
           {state.kind === 'error' && (
             <div className="auth-callback-actions">

@@ -74,7 +74,7 @@ describe('App', () => {
     const uploadRepository = uploadRepositoryStub()
     const auth = {
       loading: false, pending: false, session: {} as never, user: { id: '56000000-0000-4000-8000-000000000030' } as never,
-      error: null, signInWithGitHub: vi.fn(), signOut: vi.fn(),
+      error: null, signIn: vi.fn(), signOut: vi.fn(),
     } satisfies AuthContextValue
 
     render(<AuthContext.Provider value={auth}><App pathname="/community/write/" repository={repository} uploadRepository={uploadRepository} /></AuthContext.Provider>)
@@ -109,7 +109,7 @@ describe('App', () => {
     } as unknown as CommunityRepository
     const auth = {
       loading: false, pending: false, session: {} as never, user: { id: '56000000-0000-4000-8000-000000000030' } as never,
-      error: null, signInWithGitHub: vi.fn(), signOut: vi.fn(),
+      error: null, signIn: vi.fn(), signOut: vi.fn(),
     } satisfies AuthContextValue
 
     render(<AuthContext.Provider value={auth}><App pathname="/community/admin/reports/" search="?status=open" hash="#queue" repository={repository} /></AuthContext.Provider>)

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
+import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AdminReportsPage } from './AdminReportsPage'
 import type { CommunityRepository } from '../data/communityRepository'
 import type { AdminReportItem } from '../types/community'
@@ -10,7 +11,7 @@ const report: AdminReportItem = {
   reporter: { id: '20000000-0000-4000-8000-000000000001', login: 'reporter', displayName: null, avatarUrl: null },
   target: { type: 'comment', id: '30000000-0000-4000-8000-000000000001', available: false },
 }
-const signedOut = { loading: false, pending: false, session: null, user: null, error: null, signInWithGitHub: vi.fn(), signOut: vi.fn() } satisfies AuthContextValue
+const signedOut = { loading: false, pending: false, session: null, user: null, error: null, signIn: vi.fn(), signOut: vi.fn() } satisfies AuthContextValue
 const signedIn = { ...signedOut, session: {} as never, user: { id: '40000000-0000-4000-8000-000000000001' } as never }
 function repo(overrides: Partial<CommunityRepository> = {}) {
   return { isAdmin: vi.fn(), listAdminReports: vi.fn(), listModerationAuditLogs: vi.fn(), setReportStatus: vi.fn(), moderatePost: vi.fn(), moderateComment: vi.fn(), ...overrides } as unknown as CommunityRepository
@@ -21,9 +22,9 @@ describe('AdminReportsPage', () => {
     const login = vi.fn()
     const { rerender } = render(<AuthContext.Provider value={{ ...signedOut, loading: true }}><AdminReportsPage repository={repo()} currentPath="/community/admin/reports/?status=open#queue" /></AuthContext.Provider>)
     expect(screen.getByRole('status')).toHaveTextContent('로그인 상태를 확인')
-    rerender(<AuthContext.Provider value={{ ...signedOut, signInWithGitHub: login }}><AdminReportsPage repository={repo()} currentPath="/community/admin/reports/?status=open#queue" /></AuthContext.Provider>)
-    fireEvent.click(screen.getByRole('button', { name: 'GitHub로 관리자 로그인' }))
-    expect(login).toHaveBeenCalledWith('/community/admin/reports/?status=open#queue')
+    rerender(<AuthContext.Provider value={{ ...signedOut, signIn: login }}><AdminReportsPage repository={repo()} currentPath="/community/admin/reports/?status=open#queue" /></AuthContext.Provider>)
+    fireEvent.click(screen.getByRole('button', { name: 'Google로 관리자 로그인' }))
+    expect(login).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, '/community/admin/reports/?status=open#queue')
   })
 
   it('checks DB admin before queue access and denies non-admins', async () => {

@@ -3,6 +3,7 @@ import type { CommunityRepository } from '../data/communityRepository'
 import { parsePostId } from '../lib/postQuery'
 import type { CommentCursor, PublicComment, PublicPostRead } from '../types/community'
 import { useAuth } from '../auth/AuthProvider'
+import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AppHeader } from '../components/AppHeader'
 import { CommentComposer, type CommentSubmitIntent } from '../components/CommentComposer'
 import { CommentThread } from '../components/CommentThread'
@@ -149,7 +150,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
   }, [postId, read, repository])
 
   function login() {
-    void auth.signInWithGitHub(currentPath)
+    void auth.signIn(DEFAULT_AUTH_PROVIDER, currentPath)
   }
 
   function setPostReactionDesired(desired: boolean) {

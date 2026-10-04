@@ -15,13 +15,15 @@ function client(session: unknown, overrides: Partial<AuthClient> = {}): AuthClie
 }
 
 describe('AppHeader authentication', () => {
-  it('offers an accessible GitHub login while signed out', async () => {
+  it('offers only the enabled Google login while signed out', async () => {
     const signInWithOAuth = vi.fn().mockResolvedValue({ data: {}, error: null })
     render(<AuthProvider client={client(null, { signInWithOAuth })}><AppHeader /></AuthProvider>)
 
-    const button = await screen.findByRole('button', { name: 'GitHub로 로그인' })
+    const button = await screen.findByRole('button', { name: 'Google로 로그인' })
+    expect(button).toHaveTextContent('Google 로그인')
+    expect(screen.queryByText(/카카오|Kakao|GitHub/)).not.toBeInTheDocument()
     fireEvent.click(button)
-    expect(signInWithOAuth).toHaveBeenCalledWith(expect.objectContaining({ provider: 'github' }))
+    expect(signInWithOAuth).toHaveBeenCalledWith(expect.objectContaining({ provider: 'google' }))
   })
 
   it('shows safe user identity and logout while signed in', async () => {
@@ -49,13 +51,20 @@ describe('AppHeader authentication', () => {
     expect(screen.getByRole('button', { name: '로그인 상태 확인 중' })).toBeDisabled()
   })
 
-  it('announces the pending GitHub connection state through the button name', async () => {
+  it('announces the pending Google connection state through the button name', async () => {
     const signInWithOAuth = vi.fn(() => new Promise(() => undefined))
     render(<AuthProvider client={client(null, { signInWithOAuth: signInWithOAuth as AuthClient['signInWithOAuth'] })}><AppHeader /></AuthProvider>)
-    const login = await screen.findByRole('button', { name: 'GitHub로 로그인' })
+    const login = await screen.findByRole('button', { name: 'Google로 로그인' })
 
     fireEvent.click(login)
 
-    expect(screen.getByRole('button', { name: 'GitHub 연결 중' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Google 연결 중' })).toBeDisabled()
+  })
+
+  it('uses the provider-neutral fallback for users without identity metadata', async () => {
+    const session = { user: { id: 'user-1', email: null, user_metadata: {} } }
+    render(<AuthProvider client={client(session)}><AppHeader /></AuthProvider>)
+
+    expect(await screen.findByText('커뮤니티 사용자')).toBeInTheDocument()
   })
 })

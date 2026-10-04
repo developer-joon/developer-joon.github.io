@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CommunityRepository } from '../data/communityRepository'
 import type { CommunityResult, CommentPage, PublicPostRead, ReactionState } from '../types/community'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
+import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { PostDetailPage } from './PostDetailPage'
 
 const postId = '56000000-0000-4000-8000-000000000010'
@@ -201,7 +202,7 @@ describe('PostDetailPage', () => {
 
 
 function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue {
-  return { loading:false, pending:false, session:null, user:null, error:null, signInWithGitHub:vi.fn(), signOut:vi.fn(), ...overrides }
+  return { loading:false, pending:false, session:null, user:null, error:null, signIn:vi.fn(), signOut:vi.fn(), ...overrides }
 }
 
 describe('PostDetailPage interactions', () => {
@@ -223,7 +224,7 @@ describe('PostDetailPage interactions', () => {
     const login = await screen.findByRole('button', { name: '로그인하고 댓글 작성하기' })
     expect(await screen.findByText('아직 공개된 댓글이 없습니다.')).toBeInTheDocument()
     fireEvent.click(login)
-    expect(auth.signInWithGitHub).toHaveBeenCalledWith(currentPath)
+    expect(auth.signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, currentPath)
     expect(createComment).not.toHaveBeenCalled()
     expect(setCommentReaction).not.toHaveBeenCalled()
 
@@ -248,7 +249,7 @@ describe('PostDetailPage interactions', () => {
     const auth = authValue()
     render(<AuthContext.Provider value={auth}><PostDetailPage repository={repo} search={`?id=${postId}`} currentPath={`/community/post?id=${postId}#discussion`} /></AuthContext.Provider>)
     fireEvent.click(await screen.findByRole('button', { name: '로그인하고 반응 남기기, 현재 7개' }))
-    expect(auth.signInWithGitHub).toHaveBeenCalledWith(`/community/post?id=${postId}#discussion`)
+    expect(auth.signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, `/community/post?id=${postId}#discussion`)
     expect(setPostReaction).not.toHaveBeenCalled()
   })
 
@@ -269,8 +270,8 @@ describe('PostDetailPage interactions', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '로그인하고 게시글 신고하기' }))
     fireEvent.click(await screen.findByRole('button', { name: '로그인하고 댓글 신고하기' }))
-    expect(auth.signInWithGitHub).toHaveBeenNthCalledWith(1, currentPath)
-    expect(auth.signInWithGitHub).toHaveBeenNthCalledWith(2, currentPath)
+    expect(auth.signIn).toHaveBeenNthCalledWith(1, DEFAULT_AUTH_PROVIDER, currentPath)
+    expect(auth.signIn).toHaveBeenNthCalledWith(2, DEFAULT_AUTH_PROVIDER, currentPath)
     expect(createReport).not.toHaveBeenCalled()
 
     rerender(
