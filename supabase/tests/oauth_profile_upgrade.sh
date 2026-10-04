@@ -5,8 +5,14 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cli="$repo_root/community-app/node_modules/.bin/supabase"
 db_container="supabase_db_developer-joon-community-design"
 original_001="$repo_root/supabase/fixtures/oauth-profile-upgrade/202610040001_original.sql"
+canonical_001="$repo_root/supabase/migrations/202610040001_provider_neutral_profile_provisioning.sql"
 prior_behavior="$repo_root/supabase/fixtures/oauth-profile-upgrade/prior_behavior.sql"
 assertions="$repo_root/supabase/fixtures/oauth-profile-upgrade/assertions.sql"
+
+if ! cmp --silent "$original_001" "$canonical_001"; then
+  printf 'Canonical OAuth migration 001 differs from its immutable fixture.\n' >&2
+  exit 1
+fi
 
 cleanup() {
   original_status=$?
