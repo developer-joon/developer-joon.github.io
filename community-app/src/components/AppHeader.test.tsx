@@ -1,7 +1,13 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { AuthProvider, type AuthClient } from '../auth/AuthProvider'
+import { AuthContext, AuthProvider, type AuthClient, type AuthContextValue } from '../auth/AuthProvider'
+import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AppHeader } from './AppHeader'
+
+vi.mock('../auth/providers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../auth/providers')>()
+  return { ...actual, ENABLED_AUTH_PROVIDERS: ['github', 'google'] as const }
+})
 
 function client(session: unknown, overrides: Partial<AuthClient> = {}): AuthClient {
   return {
@@ -15,15 +21,25 @@ function client(session: unknown, overrides: Partial<AuthClient> = {}): AuthClie
 }
 
 describe('AppHeader authentication', () => {
-  it('offers only the enabled Google login while signed out', async () => {
-    const signInWithOAuth = vi.fn().mockResolvedValue({ data: {}, error: null })
-    render(<AuthProvider client={client(null, { signInWithOAuth })}><AppHeader /></AuthProvider>)
+  it('offers exactly one Google login using the default auth provider', () => {
+    const signIn = vi.fn().mockResolvedValue(undefined)
+    const auth: AuthContextValue = {
+      loading: false,
+      pending: false,
+      session: null,
+      user: null,
+      error: null,
+      signIn,
+      signOut: vi.fn(),
+    }
+    render(<AuthContext.Provider value={auth}><AppHeader /></AuthContext.Provider>)
 
-    const button = await screen.findByRole('button', { name: 'Google로 로그인' })
+    const button = screen.getByRole('button', { name: 'Google로 로그인' })
+    expect(screen.getAllByRole('button')).toHaveLength(1)
     expect(button).toHaveTextContent('Google 로그인')
     expect(screen.queryByText(/카카오|Kakao|GitHub/)).not.toBeInTheDocument()
     fireEvent.click(button)
-    expect(signInWithOAuth).toHaveBeenCalledWith(expect.objectContaining({ provider: 'google' }))
+    expect(signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER)
   })
 
   it('shows safe user identity and logout while signed in', async () => {
