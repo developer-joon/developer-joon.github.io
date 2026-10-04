@@ -31,7 +31,7 @@ describe('App', () => {
       listTags: async () => ({ ok: true, data: [] }),
     } as unknown as CommunityRepository
     render(<App pathname="/community/" search="?q=missing" repository={repository} />)
-    expect(screen.getByRole('heading', { name: '개발자가 쓰고 답하는 공간' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '자유게시판' })).toBeInTheDocument()
     expect(await screen.findByText('검색 결과가 없습니다')).toBeInTheDocument()
   })
 

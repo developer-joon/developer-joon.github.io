@@ -184,6 +184,29 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('keeps shared hero layout intact and scopes the board-only compact layout', () => {
+    expect(read('src/pages/CommunityHomePage.tsx')).toContain('className="community-hero community-board-hero"')
+
+    const mobileShell = computedDeclarations(['community-hero'], 'section', 767)
+    expect(mobileShell.display).toBe('grid')
+    expect(mobileShell.gap).toBe('24px')
+    expect(mobileShell['grid-template-columns']).toBe('1fr')
+    expect(mobileShell.padding).toBe('54px 0 92px')
+
+    const desktopShell = computedDeclarations(['community-hero'], 'section', 1024)
+    expect(desktopShell['grid-template-columns']).toBe('minmax(0, 1.45fr) minmax(17rem, .75fr)')
+    expect(desktopShell.padding).toBe('80px 0 72px')
+
+    const desktopBoard = computedDeclarations(['community-hero', 'community-board-hero'], 'section', 1024)
+    expect(desktopBoard['grid-template-columns']).toBe('1fr')
+    expect(desktopBoard.padding).toBe('44px 0 36px')
+
+    const desktopAction = computedDeclarations(['community-hero', 'primary-action'], 'a', 1024)
+    expect(desktopAction.position).toBe('absolute')
+    expect(desktopAction.right).toBe('0')
+    expect(desktopAction.bottom).toBe('72px')
+  })
+
   it('uses a shared site footer on every community shell', () => {
     expect(read('src/components/AppFooter.tsx')).toContain('Build things. Ship fast. Learn always.')
     expect(read('src/components/AppFooter.tsx')).toContain('Ria &amp; Seoa PaPa')

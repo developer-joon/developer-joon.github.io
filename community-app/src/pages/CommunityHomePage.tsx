@@ -247,7 +247,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
     <div className="community-page">
       <AppHeader />
       <main>
-        <section className="community-hero" aria-labelledby="community-heading">
+        <section className="community-hero community-board-hero" aria-labelledby="community-heading">
           <h1 id="community-heading">자유게시판</h1>
         </section>
 
