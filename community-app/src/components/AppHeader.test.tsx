@@ -52,11 +52,19 @@ describe('AppHeader authentication', () => {
         user_metadata: { user_name: longIdentity },
       },
     }
-    render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
+    const view = render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
+    fireEvent(window, new Event('resize'))
 
-    expect(await screen.findByText(longIdentity)).toHaveAttribute('title', longIdentity)
-    expect(document.querySelector('.auth-identity img')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '로그아웃' }))
+    const identity = await screen.findByText(longIdentity)
+    expect(identity).toHaveAttribute('title', longIdentity)
+    expect(identity).toHaveClass('auth-identity')
+    expect(identity.querySelector('img')).toBeNull()
+    expect(screen.getByRole('link', { name: '글쓰기' })).toHaveClass('header-write')
+    const logout = screen.getByRole('button', { name: '로그아웃' })
+    expect(logout).toBeInTheDocument()
+    expect(view.container.querySelector('header')).toContainElement(identity)
+    fireEvent.click(logout)
     expect(signOut).toHaveBeenCalledOnce()
   })
 

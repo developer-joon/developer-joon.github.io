@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { AUTH_RETURN_PATH_KEY } from './auth'
 import { AuthProvider, useAuth, type AuthClient } from './AuthProvider'
+import { draftKey } from '../lib/draftStore'
 
 const user = { id: 'user-1', email: 'dev@example.com', user_metadata: { user_name: 'breaddev' } }
 const session = { user, access_token: 'secret-token' }
@@ -31,6 +33,11 @@ function Harness({ onState }: { onState?: (value: ReturnType<typeof useAuth>) =>
     </div>
   )
 }
+
+beforeEach(() => {
+  localStorage.clear()
+  sessionStorage.clear()
+})
 
 describe('AuthProvider', () => {
   it('exposes only the provider-neutral sign-in API', async () => {
@@ -132,7 +139,7 @@ describe('AuthProvider', () => {
     expect(signInWithOAuth).not.toHaveBeenCalled()
     expect(states).toContainEqual({ pending: true, error: null })
     expect(screen.getByText('idle')).toBeInTheDocument()
-    expect(states.at(-1)).toEqual({ pending: false, error: fixedMessage })
+    await waitFor(() => expect(states.at(-1)).toEqual({ pending: false, error: fixedMessage }))
     expect(screen.queryByText(/OAuth provider is not enabled/iu)).not.toBeInTheDocument()
   })
 
@@ -153,5 +160,55 @@ describe('AuthProvider', () => {
 
     await waitFor(() => expect(screen.getByText('로그인 상태를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.')).toBeInTheDocument())
     expect(screen.getByText('signed-out')).toBeInTheDocument()
+  })
+
+  it('preserves write and edit drafts when Google OAuth start fails', async () => {
+    const writeKey = draftKey('write')
+    const editKey = draftKey('edit', '56000000-0000-4000-8000-000000000010')
+    localStorage.setItem(writeKey, '{"kind":"write","title":"keep write"}')
+    localStorage.setItem(editKey, '{"kind":"edit","title":"keep edit"}')
+    const rawError = 'provider upstream leaked internal detail'
+    const signInWithOAuth = vi.fn().mockResolvedValue({
+      data: { provider_token: 'provider-secret', provider_refresh_token: 'provider-refresh-secret' },
+      error: { message: rawError },
+    })
+
+    render(<AuthProvider client={client({ signInWithOAuth })} origin="https://www.breadlab.ai"><Harness /></AuthProvider>)
+    await screen.findByText('signed-out')
+    fireEvent.click(screen.getByRole('button', { name: 'login' }))
+
+    expect(await screen.findByText('Google 로그인을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.')).toBeInTheDocument()
+    expect(screen.queryByText(rawError)).not.toBeInTheDocument()
+    expect(localStorage.getItem(writeKey)).toBe('{"kind":"write","title":"keep write"}')
+    expect(localStorage.getItem(editKey)).toBe('{"kind":"edit","title":"keep edit"}')
+    expect(sessionStorage.getItem(AUTH_RETURN_PATH_KEY)).toBe('/community/write/')
+    const persistedValues = [localStorage, sessionStorage]
+      .flatMap((storage) => [...Array(storage.length)].map((_, index) => storage.getItem(storage.key(index)!)))
+      .join('\n')
+    expect(persistedValues).not.toContain('provider-secret')
+    expect(persistedValues).not.toContain('provider-refresh-secret')
+  })
+
+  it('reads only the user from a restored session and never accesses or persists provider tokens', async () => {
+    const providerToken = vi.fn(() => 'provider-secret')
+    const providerRefreshToken = vi.fn(() => 'provider-refresh-secret')
+    const restoredSession = { user, access_token: 'supabase-access-token' }
+    Object.defineProperties(restoredSession, {
+      provider_token: { enumerable: true, get: providerToken },
+      provider_refresh_token: { enumerable: true, get: providerRefreshToken },
+    })
+    const storage = { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() }
+
+    render(<AuthProvider
+      client={client({ getSession: vi.fn().mockResolvedValue({ data: { session: restoredSession }, error: null }) })}
+      storage={storage}
+    ><Harness /></AuthProvider>)
+
+    expect(await screen.findByText('dev@example.com')).toBeInTheDocument()
+    expect(providerToken).not.toHaveBeenCalled()
+    expect(providerRefreshToken).not.toHaveBeenCalled()
+    expect(storage.getItem).not.toHaveBeenCalled()
+    expect(storage.setItem).not.toHaveBeenCalled()
+    expect(storage.removeItem).not.toHaveBeenCalled()
   })
 })
