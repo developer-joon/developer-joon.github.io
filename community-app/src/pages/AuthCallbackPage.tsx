@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { consumePendingReturnPath, DEFAULT_COMMUNITY_RETURN_PATH, peekPendingReturnPath } from '../auth/auth'
 import type { AuthClient } from '../auth/AuthProvider'
 import { getSupabaseClient } from '../lib/supabase'
+import { AppHeader } from '../components/AppHeader'
+import { AppFooter } from '../components/AppFooter'
 
 interface AuthCallbackPageProps {
   client?: AuthClient
@@ -67,6 +69,7 @@ export function AuthCallbackPage({
 
   return (
     <div className="community-page auth-callback-page">
+      <AppHeader />
       <main>
         <section className="auth-callback-state" role={state.kind === 'loading' ? 'status' : 'alert'}>
           <p className="post-detail-kicker">OAUTH AUTHENTICATION</p>
@@ -81,6 +84,7 @@ export function AuthCallbackPage({
           )}
         </section>
       </main>
+      <AppFooter />
     </div>
   )
 }

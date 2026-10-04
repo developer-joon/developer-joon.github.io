@@ -1,11 +1,25 @@
 :root {
-  --paper: #f4f0e7;
-  --paper-deep: #e8e1d4;
-  --ink: #1e211e;
-  --muted: #686b64;
-  --line: #b8b3a9;
-  --blue: #1557b0;
-  --blue-dark: #0f3f83;
-  --serif: Georgia, "Noto Serif KR", serif;
-  --sans: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+  --background: #ffffff;
+  --background-alt: #f4f5f6;
+  --text-dark: #2A2F36;
+  --text-medium: #6C7A89;
+  --text-light: #ABB7B7;
+  --accent: #3498db;
+  --border: #dddddd;
+  --error: #D64541;
+  --font-family: "Muli", sans-serif;
+  --weight-light: 300;
+  --weight-regular: 400;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --paper: var(--background);
+  --paper-deep: var(--background-alt);
+  --ink: var(--text-dark);
+  --muted: var(--text-medium);
+  --line: var(--border);
+  --blue: var(--accent);
+  --blue-dark: var(--accent);
+  --serif: var(--font-family);
+  --sans: var(--font-family);
 }

@@ -5,6 +5,7 @@ import type { CommentCursor, PublicComment, PublicPostRead } from '../types/comm
 import { useAuth } from '../auth/AuthProvider'
 import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AppHeader } from '../components/AppHeader'
+import { AppFooter } from '../components/AppFooter'
 import { CommentComposer, type CommentSubmitIntent } from '../components/CommentComposer'
 import { CommentThread } from '../components/CommentThread'
 import { MarkdownContent } from '../components/MarkdownContent'
@@ -260,6 +261,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
       <div className="community-page post-detail-page">
         <AppHeader />
         <main><PageState title="올바르지 않은 게시글 주소입니다" /></main>
+        <AppFooter />
       </div>
     )
   }
@@ -413,7 +415,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     <div className="community-page post-detail-page">
       <AppHeader />
       <main>{content}</main>
-      <footer className="community-footer"><span>BREADLAB · 개발 기록과 열린 대화</span><a href="/privacy/">개인정보 처리방침</a></footer>
+      <AppFooter />
     </div>
   )
 }

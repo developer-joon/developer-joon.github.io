@@ -116,7 +116,7 @@ describe('App', () => {
 
     expect(await screen.findByRole('heading', { name: '신고 운영 데스크' })).toBeInTheDocument()
     expect(repository.isAdmin).toHaveBeenCalledTimes(1)
-    expect(repository.listAdminReports).toHaveBeenCalledWith({ status: 'active', limit: 50 })
+    await waitFor(() => expect(repository.listAdminReports).toHaveBeenCalledWith({ status: 'active', limit: 50 }))
   })
 
   it('renders a friendly Korean configuration error', () => {

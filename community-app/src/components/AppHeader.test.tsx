@@ -145,7 +145,7 @@ describe('AppHeader community actions', () => {
         .find((rule) => [...rule.cssRules].some(
           (nestedRule) => nestedRule instanceof CSSStyleRule && nestedRule.selectorText === '.auth-identity',
         ))
-      expect(mobileRule?.conditionText).toBe('(max-width: 700px)')
+      expect(mobileRule?.conditionText).toBe('(max-width: 1023px)')
       const narrowIdentityRule = [...(mobileRule?.cssRules ?? [])]
         .find((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === '.auth-identity')
       expect(narrowIdentityRule?.style.maxWidth).toBe('min(20vw, 5rem)')

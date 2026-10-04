@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthProvider'
 import { AUTH_PROVIDER_DEFINITIONS, DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AppHeader } from '../components/AppHeader'
+import { AppFooter } from '../components/AppFooter'
 import { ModerationActions } from '../components/ModerationActions'
 import { ReportQueue } from '../components/ReportQueue'
 import type { CommunityRepository } from '../data/communityRepository'
@@ -259,5 +260,5 @@ export function AdminReportsPage({ repository, currentPath }: Props) {
 }
 
 function AdminShell({ children }: { children: React.ReactNode }) {
-  return <div className="community-page admin-reports-page"><AppHeader /><main>{children}</main></div>
+  return <div className="community-page admin-reports-page"><AppHeader /><main>{children}</main><AppFooter /></div>
 }

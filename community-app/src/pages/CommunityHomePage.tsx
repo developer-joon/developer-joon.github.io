@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { CommunityRepository } from '../data/communityRepository'
 import { AppHeader } from '../components/AppHeader'
+import { AppFooter } from '../components/AppFooter'
 import { PostList } from '../components/PostList'
 import { SearchBar } from '../components/SearchBar'
 import { SortTabs } from '../components/SortTabs'
@@ -247,7 +248,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
       <AppHeader />
       <main>
         <section className="community-hero" aria-labelledby="community-heading">
-          <p className="community-kicker">BREADLAB COMMUNITY · 공개 개발 기록</p>
+          <p className="community-kicker">COMMUNITY · 공개 개발 기록</p>
           <div>
             <h1 id="community-heading">개발자가 쓰고 <span>답하는 공간</span></h1>
             <p>질문보다 오래 남는 경험, 답변보다 구체적인 시행착오를 나눕니다. 모든 공개 글은 로그인 없이 읽을 수 있습니다.</p>
@@ -322,7 +323,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
           </div>
         )}
       </main>
-      <footer className="community-footer"><span>BREADLAB · 개발 기록과 열린 대화</span><a href="/privacy/">개인정보 처리방침</a></footer>
+      <AppFooter />
     </div>
   )
 }

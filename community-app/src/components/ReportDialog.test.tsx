@@ -96,10 +96,10 @@ describe('ReportDialog', () => {
 
     const status = await screen.findByRole('status', { name: '신고 접수 완료' })
     expect(status).toHaveTextContent('신고가 접수되었습니다.')
-    expect(document.activeElement).toBe(status)
+    await waitFor(() => expect(document.activeElement).toBe(status))
     fireEvent.click(screen.getByRole('button', { name: '닫기' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(document.activeElement).toBe(trigger)
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
 
     fireEvent.click(trigger)
     fireEvent.click(screen.getByRole('button', { name: '신고 제출' }))
