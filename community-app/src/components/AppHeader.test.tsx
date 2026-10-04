@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -26,29 +26,93 @@ function client(session: unknown, overrides: Partial<AuthClient> = {}): AuthClie
   }
 }
 
-describe('AppHeader authentication', () => {
-  it('offers exactly one Google login using the default auth provider', () => {
-    const signIn = vi.fn().mockResolvedValue(undefined)
-    const auth: AuthContextValue = {
-      loading: false,
-      pending: false,
-      session: null,
-      user: null,
-      error: null,
-      signIn,
-      signOut: vi.fn(),
-    }
-    render(<AuthContext.Provider value={auth}><AppHeader /></AuthContext.Provider>)
+function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue {
+  return {
+    loading: false,
+    pending: false,
+    session: null,
+    user: null,
+    error: null,
+    signIn: vi.fn(),
+    signOut: vi.fn(),
+    ...overrides,
+  }
+}
 
-    const button = screen.getByRole('button', { name: 'Google로 로그인' })
-    expect(screen.getAllByRole('button')).toHaveLength(1)
-    expect(button).toHaveTextContent('Google 로그인')
+function globalShell() {
+  const header = screen.getByRole('banner')
+  const navigation = within(header).getByRole('navigation', { name: '주요 메뉴' })
+  const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
+  return { header, navigation, actions }
+}
+
+describe('AppHeader global shell', () => {
+  it('matches the Jekyll brand and exact global navigation order', () => {
+    render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
+
+    const { header, navigation } = globalShell()
+    expect(within(header).getByRole('link', { name: 'Ria & Seoa PaPa' })).toHaveAttribute('href', '/')
+    expect(within(navigation).getAllByRole('link').map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
+      ['0 → 1', '/lab/'],
+      ['Blog', '/blog/'],
+      ['Community', '/community/'],
+      ['Shop', '/shop/'],
+      ['About', '/about'],
+    ])
+    expect(within(navigation).getByRole('link', { name: 'Community' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('keeps account controls and identity outside the global header and navigation', () => {
+    const user = { id: 'user-1', email: 'dev@example.com', user_metadata: { user_name: 'breaddev' } } as unknown as AuthContextValue['user']
+    render(<AuthContext.Provider value={authValue({ user })}><AppHeader /></AuthContext.Provider>)
+
+    const { header, navigation, actions } = globalShell()
+    expect(within(header).queryByText('breaddev')).not.toBeInTheDocument()
+    expect(within(header).queryByRole('button', { name: /로그인|로그아웃/ })).not.toBeInTheDocument()
+    expect(within(navigation).queryByText('breaddev')).not.toBeInTheDocument()
+    expect(within(navigation).queryByRole('button')).not.toBeInTheDocument()
+    expect(header).not.toContainElement(actions)
+    expect(navigation).not.toContainElement(actions)
+    expect(within(actions).getByText('breaddev')).toBeInTheDocument()
+    expect(within(actions).getByRole('button', { name: '로그아웃' })).toBeInTheDocument()
+  })
+
+  it('provides an accessible mobile menu toggle without removing links from the DOM', () => {
+    render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
+
+    const navigation = screen.getByRole('navigation', { name: '주요 메뉴' })
+    const toggle = screen.getByRole('button', { name: '주요 메뉴 열기' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).toHaveAttribute('aria-controls', navigation.id)
+    expect(within(navigation).getAllByRole('link')).toHaveLength(5)
+
+    fireEvent.click(toggle)
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle).toHaveAccessibleName('주요 메뉴 닫기')
+    expect(within(navigation).getAllByRole('link')).toHaveLength(5)
+  })
+})
+
+describe('AppHeader community actions', () => {
+  it('offers one Write link and one Google login using the default auth provider', () => {
+    const signIn = vi.fn().mockResolvedValue(undefined)
+    render(<AuthContext.Provider value={authValue({ signIn })}><AppHeader /></AuthContext.Provider>)
+
+    const { actions } = globalShell()
+    const write = within(actions).getByRole('link', { name: '글쓰기' })
+    const login = within(actions).getByRole('button', { name: 'Google로 로그인' })
+    expect(screen.getAllByRole('link', { name: '글쓰기' })).toHaveLength(1)
+    expect(write).toHaveAttribute('href', '/community/write/')
+    expect(login).toHaveTextContent('Google 로그인')
     expect(screen.queryByText(/카카오|Kakao|GitHub/)).not.toBeInTheDocument()
-    fireEvent.click(button)
+
+    fireEvent.click(login)
+
     expect(signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER)
   })
 
-  it('shows safe user identity and logout while signed in', async () => {
+  it('shows a bounded safe identity and logout while signed in', async () => {
     const signOut = vi.fn().mockResolvedValue({ error: null })
     const longIdentity = '<img src=x onerror=alert(1)>'.repeat(12)
     const session = {
@@ -63,7 +127,7 @@ describe('AppHeader authentication', () => {
     document.head.append(stylesheet)
 
     try {
-      const view = render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
+      render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
 
       const identity = await screen.findByText(longIdentity)
       expect(identity).toHaveAttribute('title', longIdentity)
@@ -86,10 +150,7 @@ describe('AppHeader authentication', () => {
         .find((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === '.auth-identity')
       expect(narrowIdentityRule?.style.maxWidth).toBe('min(20vw, 5rem)')
 
-      expect(screen.getByRole('link', { name: '글쓰기' })).toHaveClass('header-write')
       const logout = screen.getByRole('button', { name: '로그아웃' })
-      expect(logout).toBeInTheDocument()
-      expect(view.container.querySelector('header')).toContainElement(identity)
       fireEvent.click(logout)
       expect(signOut).toHaveBeenCalledOnce()
     } finally {
@@ -97,21 +158,24 @@ describe('AppHeader authentication', () => {
     }
   })
 
-  it('disables auth actions while the session is loading', () => {
+  it('keeps loading and pending auth actions accessible and disabled', async () => {
     const getSession = vi.fn(() => new Promise(() => undefined))
-    render(<AuthProvider client={client(null, { getSession: getSession as AuthClient['getSession'] })}><AppHeader /></AuthProvider>)
-
+    const loadingView = render(<AuthProvider client={client(null, { getSession: getSession as AuthClient['getSession'] })}><AppHeader /></AuthProvider>)
     expect(screen.getByRole('button', { name: '로그인 상태 확인 중' })).toBeDisabled()
-  })
+    loadingView.unmount()
 
-  it('announces the pending Google connection state through the button name', async () => {
     const signInWithOAuth = vi.fn(() => new Promise(() => undefined))
     render(<AuthProvider client={client(null, { signInWithOAuth: signInWithOAuth as AuthClient['signInWithOAuth'] })}><AppHeader /></AuthProvider>)
     const login = await screen.findByRole('button', { name: 'Google로 로그인' })
-
     fireEvent.click(login)
-
     expect(screen.getByRole('button', { name: 'Google 연결 중' })).toBeDisabled()
+  })
+
+  it('announces auth errors in the community action row', () => {
+    render(<AuthContext.Provider value={authValue({ error: '로그인에 실패했습니다.' })}><AppHeader /></AuthContext.Provider>)
+
+    const { actions } = globalShell()
+    expect(within(actions).getByRole('status')).toHaveTextContent('로그인에 실패했습니다.')
   })
 
   it('uses the provider-neutral fallback for users without identity metadata', async () => {
