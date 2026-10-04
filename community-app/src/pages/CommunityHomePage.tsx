@@ -248,12 +248,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
       <AppHeader />
       <main>
         <section className="community-hero" aria-labelledby="community-heading">
-          <p className="community-kicker">COMMUNITY · 공개 개발 기록</p>
-          <div>
-            <h1 id="community-heading">개발자가 쓰고 <span>답하는 공간</span></h1>
-            <p>질문보다 오래 남는 경험, 답변보다 구체적인 시행착오를 나눕니다. 모든 공개 글은 로그인 없이 읽을 수 있습니다.</p>
-          </div>
-          <a className="primary-action" href="/community/write/">글쓰기</a>
+          <h1 id="community-heading">자유게시판</h1>
         </section>
 
         <section className="community-tools" aria-label="게시글 탐색">

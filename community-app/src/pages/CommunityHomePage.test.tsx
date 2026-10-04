@@ -51,11 +51,14 @@ describe('CommunityHomePage', () => {
   it('lets anonymous visitors read the public post list', async () => {
     render(<CommunityHomePage repository={repository()} initialSearch="" />)
 
-    expect(screen.getByRole('heading', { name: '개발자가 쓰고 답하는 공간' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: '자유게시판' })).toBeInTheDocument()
+    expect(screen.queryByText('COMMUNITY · 공개 개발 기록')).not.toBeInTheDocument()
+    expect(screen.queryByText('개발자가 쓰고 답하는 공간')).not.toBeInTheDocument()
+    expect(screen.queryByText('질문보다 오래 남는 경험, 답변보다 구체적인 시행착오를 나눕니다. 모든 공개 글은 로그인 없이 읽을 수 있습니다.')).not.toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: post.title })).toBeInTheDocument()
     expect(screen.getByText('공지')).toBeInTheDocument()
-    expect(screen.getAllByRole('link', { name: '글쓰기' })).toHaveLength(2)
-    expect(screen.getAllByRole('link', { name: '글쓰기' })[0]).toHaveAttribute('href', '/community/write/')
+    expect(screen.getAllByRole('link', { name: '글쓰기' })).toHaveLength(1)
+    expect(screen.getByRole('link', { name: '글쓰기' })).toHaveAttribute('href', '/community/write/')
   })
 
   it('preserves filters in the URL query contract', async () => {
