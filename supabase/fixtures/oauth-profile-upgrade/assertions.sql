@@ -23,6 +23,17 @@ begin
   if (select metadata_provider is not null from public.profiles where id = '64000000-0000-0000-0000-000000000005') then
     raise exception 'admin-created profile was incorrectly claimed by the Google migration';
   end if;
+  if not exists (
+    select 1 from public.profiles
+     where id = '64000000-0000-0000-0000-000000000009'
+       and github_user_id is null
+       and login = 'google-' || md5('64000000-0000-0000-0000-000000000009')
+       and display_name = 'Backfilled Google'
+       and avatar_url is null
+       and metadata_provider = 'google'
+  ) then
+    raise exception '002 did not backfill the missing Google profile with sanitized metadata';
+  end if;
 
   if has_column_privilege('anon', 'public.profiles', 'metadata_provider', 'SELECT')
      or has_column_privilege('authenticated', 'public.profiles', 'metadata_provider', 'SELECT') then
