@@ -62,10 +62,14 @@ describe('WritePostPage', () => {
     const listTags = vi.fn(() => new Promise(() => undefined)) as CommunityRepository['listTags']
     wrap(<WritePostPage repository={repository({ listTags, createPost })} storage={local} navigate={vi.fn()} />, auth(authorId))
 
-    expect(screen.getByRole('status')).toHaveTextContent('태그를 불러오고 있습니다.')
+    const tagStatus = screen.getByRole('status')
+    const tagSelector = screen.getByRole('group', { name: '태그' })
+    expect(tagStatus).toHaveTextContent('태그를 불러오고 있습니다.')
     expect(screen.getByLabelText('제목')).toBeEnabled()
     expect(screen.getByLabelText('본문')).toBeEnabled()
-    expect(screen.getByRole('group', { name: '태그' })).toBeDisabled()
+    expect(tagSelector).toBeDisabled()
+    expect(tagSelector.nextElementSibling).toBe(tagStatus)
+    expect(screen.getByLabelText('본문').compareDocumentPosition(tagStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     const publish = screen.getByRole('button', { name: '발행' })
     expect(publish).toBeDisabled()
 
@@ -82,11 +86,15 @@ describe('WritePostPage', () => {
     const listTags = vi.fn().mockResolvedValue({ ok: false, error: { code: 'network', message: '태그 연결 실패' } })
     wrap(<WritePostPage repository={repository({ listTags, createPost })} storage={local} navigate={vi.fn()} />, auth(authorId))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('태그 연결 실패')
-    expect(screen.getByRole('button', { name: '태그 다시 불러오기' })).toBeInTheDocument()
+    const tagAlert = await screen.findByRole('alert')
+    const tagSelector = screen.getByRole('group', { name: '태그' })
+    expect(tagAlert).toHaveTextContent('태그 연결 실패')
+    expect(screen.getByRole('button', { name: '태그 다시 불러오기' })).toBeEnabled()
+    expect(tagSelector.nextElementSibling).toBe(tagAlert)
+    expect(screen.getByLabelText('본문').compareDocumentPosition(tagAlert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByLabelText('제목')).toBeEnabled()
     expect(screen.getByLabelText('본문')).toBeEnabled()
-    expect(screen.getByRole('group', { name: '태그' })).toBeDisabled()
+    expect(tagSelector).toBeDisabled()
     const publish = screen.getByRole('button', { name: '발행' })
     expect(publish).toBeDisabled()
 
