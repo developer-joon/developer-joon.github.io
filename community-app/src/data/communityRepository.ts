@@ -167,7 +167,9 @@ function isNullableString(value: unknown): value is string | null {
 function isSafeCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+// PostgreSQL's uuid type accepts canonical UUID text regardless of RFC version/variant bits.
+// Seeded stable IDs therefore need syntax validation rather than UUID-generation validation.
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const isoTimestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/
 function isUuid(value: unknown): value is string {
   return typeof value === 'string' && uuidPattern.test(value)

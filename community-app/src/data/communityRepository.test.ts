@@ -277,14 +277,14 @@ describe('community repository public list contract', () => {
       publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
       listTags: () => {
         calls.push('listTags')
-        return Promise.resolve({ data: [{ id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' }], error: null })
+        return Promise.resolve({ data: [{ id: 'a1000000-0000-0000-0000-000000000001', slug: 'ai-agent', label: 'AI·Agent' }], error: null })
       },
       rpc: () => Promise.resolve({ data: null, error: null }),
     }
 
     expect(await createCommunityRepository(client).listTags()).toEqual({
       ok: true,
-      data: [{ id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' }],
+      data: [{ id: 'a1000000-0000-0000-0000-000000000001', slug: 'ai-agent', label: 'AI·Agent' }],
     })
     expect(calls).toEqual(['listTags'])
   })
