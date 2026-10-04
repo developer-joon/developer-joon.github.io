@@ -24,7 +24,9 @@ function Harness({ onState }: { onState?: (value: ReturnType<typeof useAuth>) =>
     <div>
       <span>{auth.loading ? 'loading' : auth.user?.email ?? 'signed-out'}</span>
       <span>{auth.error}</span>
-      <button onClick={() => void auth.signInWithGitHub('/community/write/')}>login</button>
+      <span>{auth.pending ? 'pending' : 'idle'}</span>
+      <button onClick={() => void auth.signIn?.('google', '/community/write/')}>login</button>
+      <button onClick={() => void auth.signIn?.('github', '/community/private/')}>disabled login</button>
       <button onClick={() => void auth.signOut()}>logout</button>
     </div>
   )
@@ -86,21 +88,38 @@ describe('AuthProvider', () => {
     expect(screen.getByText('dev@example.com')).toBeInTheDocument()
   })
 
-  it('starts GitHub login and reports a disabled provider in Korean', async () => {
-    const signInWithOAuth = vi.fn().mockResolvedValue({
-      data: {},
-      error: { message: 'Unsupported provider: provider is not enabled' },
-    })
+  it('starts Google login with the canonical callback', async () => {
+    const signInWithOAuth = vi.fn().mockResolvedValue({ data: {}, error: null })
     render(<AuthProvider client={client({ signInWithOAuth })} origin="https://www.breadlab.ai"><Harness /></AuthProvider>)
     await screen.findByText('signed-out')
 
     fireEvent.click(screen.getByRole('button', { name: 'login' }))
 
-    expect(await screen.findByText('GitHub 로그인이 현재 활성화되어 있지 않습니다. 운영자에게 알려 주세요.')).toBeInTheDocument()
-    expect(signInWithOAuth).toHaveBeenCalledWith({
-      provider: 'github',
+    await waitFor(() => expect(signInWithOAuth).toHaveBeenCalledWith({
+      provider: 'google',
       options: { redirectTo: 'https://www.breadlab.ai/community/auth/callback/' },
-    })
+    }))
+  })
+
+  it('rejects a runtime disabled provider without SDK access and clears pending with fixed Korean copy', async () => {
+    const signInWithOAuth = vi.fn()
+    const states: Array<{ pending: boolean; error: string | null }> = []
+    render(
+      <AuthProvider client={client({ signInWithOAuth })} origin="https://www.breadlab.ai">
+        <Harness onState={({ pending, error }) => states.push({ pending, error })} />
+      </AuthProvider>,
+    )
+    await screen.findByText('signed-out')
+
+    fireEvent.click(screen.getByRole('button', { name: 'disabled login' }))
+
+    const fixedMessage = 'GitHub 로그인이 현재 활성화되어 있지 않습니다. 운영자에게 알려 주세요.'
+    expect(await screen.findByText(fixedMessage)).toBeInTheDocument()
+    expect(signInWithOAuth).not.toHaveBeenCalled()
+    expect(states).toContainEqual({ pending: true, error: null })
+    expect(screen.getByText('idle')).toBeInTheDocument()
+    expect(states.at(-1)).toEqual({ pending: false, error: fixedMessage })
+    expect(screen.queryByText(/OAuth provider is not enabled/iu)).not.toBeInTheDocument()
   })
 
   it('logs out and reports rejected logout calls without clearing browser drafts', async () => {

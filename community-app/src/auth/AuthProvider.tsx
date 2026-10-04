@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AuthChangeEvent, Session, User } from '@supabase/supabase-js'
 import { getSupabaseClient } from '../lib/supabase'
-import { authErrorMessage, signInWithGitHub as startGitHubSignIn, type OAuthClient } from './auth'
+import { authErrorMessage, startOAuthSignIn, type OAuthClient } from './auth'
+import type { CommunityOAuthProvider } from './providers'
 
 type AuthErrorLike = { message?: string; code?: string } | null
 
@@ -20,6 +21,7 @@ export interface AuthContextValue {
   session: Session | null
   user: User | null
   error: string | null
+  signIn?(provider: CommunityOAuthProvider, returnPath?: string): Promise<void>
   signInWithGitHub(returnPath?: string): Promise<void>
   signOut(): Promise<void>
 }
@@ -30,6 +32,7 @@ const defaultAuth: AuthContextValue = {
   session: null,
   user: null,
   error: null,
+  signIn: async () => undefined,
   signInWithGitHub: async () => undefined,
   signOut: async () => undefined,
 }
@@ -90,13 +93,16 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
     }
   }, [authClient])
 
-  const login = useCallback(async (returnPath = `${window.location.pathname}${window.location.search}${window.location.hash}`) => {
+  const login = useCallback(async (
+    provider: CommunityOAuthProvider,
+    returnPath = `${window.location.pathname}${window.location.search}${window.location.hash}`,
+  ) => {
     setPending(true)
     setError(null)
     try {
-      await startGitHubSignIn(authClient, returnPath, callbackOrigin, returnStorage)
+      await startOAuthSignIn(authClient, provider, returnPath, callbackOrigin, returnStorage)
     } catch (caught) {
-      if (mounted.current) setError(authErrorMessage(caught, 'sign-in'))
+      if (mounted.current) setError(authErrorMessage(caught, 'sign-in', provider))
     } finally {
       if (mounted.current) setPending(false)
     }
@@ -116,15 +122,21 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
     }
   }, [authClient])
 
+  const loginWithGitHub = useCallback(
+    (returnPath?: string) => login('github', returnPath),
+    [login],
+  )
+
   const value = useMemo<AuthContextValue>(() => ({
     loading,
     pending,
     session,
     user: session?.user ?? null,
     error,
-    signInWithGitHub: login,
+    signIn: login,
+    signInWithGitHub: loginWithGitHub,
     signOut: logout,
-  }), [error, loading, login, logout, pending, session])
+  }), [error, loading, login, loginWithGitHub, logout, pending, session])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
