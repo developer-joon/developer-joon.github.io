@@ -131,7 +131,7 @@
 .auth-callback-state > p:not(.post-detail-kicker) { max-width: 42rem; color: var(--muted); line-height: 1.7; overflow-wrap: anywhere; }
 .auth-callback-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin-top: 28px; }
 @media (max-width: 1023px) {
-  .global-navigation { position: fixed; z-index: 1000; inset: 0; visibility: hidden; opacity: 0; overflow-y: auto; flex-direction: column; align-items: flex-start; justify-content: center; gap: 0; background: rgb(255 255 255 / 95%); padding: 80px max(20px, calc((100vw - 680px) / 2)); transition: opacity .2s ease-in-out, visibility .2s ease-in-out; }
+  .global-navigation { position: fixed; z-index: 1000; inset: 0; visibility: hidden; opacity: 0; overflow-y: auto; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 0; background: rgb(255 255 255 / 95%); padding: 80px max(20px, calc((100vw - 680px) / 2)); transition: opacity .2s ease-in-out, visibility .2s ease-in-out; }
   .global-navigation.is-open { visibility: visible; opacity: 1; }
   .global-navigation a { width: 100%; padding: 10px 0; font-size: 30px; }
   .community-actions { padding-block: 8px; }

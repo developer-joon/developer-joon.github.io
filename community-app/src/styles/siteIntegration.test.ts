@@ -163,6 +163,12 @@ describe('Jekyll visual contract', () => {
     expect(communityCss).toMatch(/@media \(min-width: 1024px\)[\s\S]*\.menu-toggle\s*\{[\s\S]*display:\s*none/)
   })
 
+  it('top-aligns the mobile navigation instead of adding centered empty space', () => {
+    const navigation = computedDeclarations(['global-navigation'], 'nav', 767)
+    expect(navigation['justify-content']).toBe('flex-start')
+    expect(navigation.padding).toBe('80px max(20px, calc((100vw - 680px) / 2))')
+  })
+
   it.each([
     [767, '20px', '30px'],
     [768, '25px', '0'],

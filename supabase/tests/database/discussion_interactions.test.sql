@@ -1,6 +1,6 @@
 begin;
 
-select plan(62);
+select plan(63);
 
 insert into auth.users(id,aud,role,email) values
  ('81000000-0000-0000-0000-000000000001','authenticated','authenticated','discussion-a@example.test'),
@@ -86,6 +86,7 @@ select is(public.get_public_post_v3('82999999-0000-0000-0000-000000000099'),'{"k
 select is(public.get_public_post_v3('82000000-0000-0000-0000-000000000003'),'{"kind":"deleted","comment_count":1}'::jsonb,'deleted tombstone counts every discussion slot');
 select is(public.get_public_post_v3('82000000-0000-0000-0000-000000000001')->'post'->'viewer_reacted','false'::jsonb,'anon post viewer state is false');
 select is(public.get_public_post_v3('82000000-0000-0000-0000-000000000001')->'post'->>'comment_count','4','published count equals all slots');
+select is(public.get_public_post_v3('82000000-0000-0000-0000-000000000001')->'post'->>'attachment_count','0','published detail preserves the attachment count contract');
 select is((select jsonb_agg(item->>'kind') from jsonb_array_elements(public.list_public_post_comments_v2('82000000-0000-0000-0000-000000000001')->'items') item),'["hidden","published","deleted","hidden"]'::jsonb,'hidden/deleted roots and replies preserve deterministic slots');
 select is((public.list_public_post_comments_v2('82000000-0000-0000-0000-000000000001')->'items'->0),jsonb_build_object('id','84000000-0000-0000-0000-000000000001'::uuid,'parent_id',null,'kind','hidden'),'hidden placeholder has exact minimal keys');
 select is((public.list_public_post_comments_v2('82000000-0000-0000-0000-000000000001')->'items'->2),jsonb_build_object('id','84000000-0000-0000-0000-000000000003'::uuid,'parent_id',null,'kind','deleted'),'deleted placeholder has exact minimal keys');
