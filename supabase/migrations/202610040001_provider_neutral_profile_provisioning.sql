@@ -79,7 +79,11 @@ begin
     profile_display_name,
     profile_avatar_url
   )
-  on conflict (id) do nothing;
+  on conflict (id) do update
+     set display_name = excluded.display_name,
+         avatar_url = excluded.avatar_url,
+         updated_at = pg_catalog.clock_timestamp()
+   where public.profiles.github_user_id is null;
 end;
 $$;
 

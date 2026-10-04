@@ -1,6 +1,6 @@
 begin;
 
-select plan(57);
+select plan(68);
 
 select col_is_null(
   'public',
@@ -102,6 +102,43 @@ select ok(
 );
 select is((select display_name from public.profiles where id = '62000000-0000-0000-0000-000000000001'), 'Google Person', 'Google display name is trimmed');
 select is((select avatar_url from public.profiles where id = '62000000-0000-0000-0000-000000000001'), 'https://lh3.googleusercontent.com/a/avatar', 'valid Google HTTPS avatar is retained');
+
+update public.profiles
+   set created_at = '2000-01-01 00:00:00+00',
+       updated_at = '2000-01-01 00:00:00+00'
+ where id = '62000000-0000-0000-0000-000000000001';
+select lives_ok(
+  $$update auth.identities
+       set identity_data = '{"full_name":"  Refreshed Google Person  ","avatar_url":"https://lh3.googleusercontent.com/a/refreshed"}'::jsonb
+     where provider = 'google'
+       and provider_id = '109876543210987654321'$$,
+  'trusted Google identity metadata can refresh its Google-created profile'
+);
+select is(
+  (select jsonb_build_array(id, github_user_id, login) from public.profiles where id = '62000000-0000-0000-0000-000000000001'),
+  jsonb_build_array('62000000-0000-0000-0000-000000000001'::uuid, null, 'google-' || md5('62000000-0000-0000-0000-000000000001')),
+  'Google metadata refresh does not overwrite id, legacy GitHub claim, or login'
+);
+select is((select display_name from public.profiles where id = '62000000-0000-0000-0000-000000000001'), 'Refreshed Google Person', 'Google metadata refresh trims display name');
+select is((select avatar_url from public.profiles where id = '62000000-0000-0000-0000-000000000001'), 'https://lh3.googleusercontent.com/a/refreshed', 'Google metadata refresh retains a valid HTTPS avatar');
+select cmp_ok((select updated_at from public.profiles where id = '62000000-0000-0000-0000-000000000001'), '>', '2000-01-01 00:00:00+00'::timestamptz, 'Google metadata refresh advances updated_at');
+
+update public.profiles
+   set updated_at = '2001-01-01 00:00:00+00'
+ where id = '62000000-0000-0000-0000-000000000001';
+select lives_ok(
+  $$update auth.identities
+       set identity_data = jsonb_build_object(
+         'full_name', repeat('x', 121),
+         'avatar_url', 'javascript:alert(1)'
+       )
+     where provider = 'google'
+       and provider_id = '109876543210987654321'$$,
+  'invalid refreshed Google metadata is sanitized without blocking the identity update'
+);
+select is((select display_name from public.profiles where id = '62000000-0000-0000-0000-000000000001'), null, 'invalid refreshed Google display name is sanitized to null');
+select is((select avatar_url from public.profiles where id = '62000000-0000-0000-0000-000000000001'), null, 'malicious refreshed Google avatar is sanitized to null');
+select cmp_ok((select updated_at from public.profiles where id = '62000000-0000-0000-0000-000000000001'), '>', '2001-01-01 00:00:00+00'::timestamptz, 'sanitized Google metadata refresh advances updated_at');
 
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '62000000-0000-0000-0000-000000000001', true);
@@ -317,6 +354,31 @@ select lives_ok(
 );
 select is((select github_user_id from public.profiles where id = '62000000-0000-0000-0000-000000000006'), 98006::bigint, 'linked Google identity does not clear the legacy GitHub claim');
 select is((select login from public.profiles where id = '62000000-0000-0000-0000-000000000006'), 'legacy-octo', 'linked Google identity does not overwrite the GitHub login');
+update public.profiles
+   set created_at = '2002-01-01 00:00:00+00',
+       updated_at = '2002-01-01 00:00:00+00'
+ where id = '62000000-0000-0000-0000-000000000006';
+select lives_ok(
+  $$update auth.identities
+       set identity_data = '{"full_name":"Must Still Not Replace GitHub","avatar_url":"https://example.test/google.png"}'::jsonb
+     where provider = 'google'
+       and provider_id = '509876543210987654321'$$,
+  'refreshing linked Google metadata leaves a legacy GitHub profile unchanged'
+);
+select is(
+  (select jsonb_build_array(id, github_user_id, login, display_name, avatar_url, updated_at)
+     from public.profiles
+    where id = '62000000-0000-0000-0000-000000000006'),
+  jsonb_build_array(
+    '62000000-0000-0000-0000-000000000006'::uuid,
+    98006,
+    'legacy-octo',
+    'Legacy Octo',
+    'https://avatars.githubusercontent.com/u/98006',
+    '2002-01-01 00:00:00+00'::timestamptz
+  ),
+  'legacy GitHub profile remains a complete no-op on Google metadata refresh'
+);
 
 select * from finish();
 rollback;
