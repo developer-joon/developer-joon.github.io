@@ -1,6 +1,6 @@
 begin;
 
-select plan(71);
+select plan(24);
 
 select has_function(
   'private',
@@ -33,7 +33,7 @@ select ok(
        and p.proname in ('provision_oauth_profile', 'provision_oauth_profile_identity')
        and has_function_privilege('anon', p.oid, 'EXECUTE')
   ),
-  'anon cannot execute the provisioning function'
+  'anon cannot execute the provisioning functions'
 );
 select ok(
   not exists (
@@ -44,22 +44,20 @@ select ok(
        and p.proname in ('provision_oauth_profile', 'provision_oauth_profile_identity')
        and has_function_privilege('authenticated', p.oid, 'EXECUTE')
   ),
-  'authenticated cannot execute the provisioning function'
+  'authenticated cannot execute the provisioning functions'
 );
 
 select lives_ok(
-  $$
-    insert into auth.users (
+  $$insert into auth.users (
       id, aud, role, email, raw_app_meta_data, raw_user_meta_data
     ) values (
       '61000000-0000-0000-0000-000000000001',
       'authenticated',
       'authenticated',
-      'github-valid@example.test',
+      'github-disabled@example.test',
       '{"provider":"github","providers":["github"]}'::jsonb,
-      '{"provider_id":"99999","user_name":"attacker","full_name":"Attacker","avatar_url":"https://attacker.test/avatar.png"}'::jsonb
-    )
-  $$,
+      '{"provider_id":"99999","user_name":"attacker"}'::jsonb
+    )$$,
   'auth user insert remains available before its identity is inserted'
 );
 select is(
@@ -68,364 +66,97 @@ select is(
   'user-editable metadata cannot provision a profile'
 );
 select lives_ok(
-  $$
-    insert into auth.identities (provider_id, user_id, identity_data, provider)
+  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
     values (
       '96001',
       '61000000-0000-0000-0000-000000000001',
-      '{"user_name":"  Octo-Cat  ","full_name":"  Octo Cat  ","avatar_url":"https://avatars.githubusercontent.com/u/96001?v=4"}'::jsonb,
+      '{"user_name":"Octo-Cat","full_name":"Octo Cat","avatar_url":"https://avatars.githubusercontent.com/u/96001"}'::jsonb,
       'github'
-    )
-  $$,
-  'trusted GitHub identity provisions without blocking identity insert'
-);
-select is(
-  (select github_user_id from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  96001::bigint,
-  'numeric GitHub provider id is persisted from auth identities'
-);
-select is(
-  (select login from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  'Octo-Cat',
-  'GitHub identity login is trimmed'
-);
-select is(
-  (select display_name from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  'Octo Cat',
-  'optional identity display name is trimmed'
-);
-select is(
-  (select avatar_url from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  'https://avatars.githubusercontent.com/u/96001?v=4',
-  'safe HTTPS identity avatar URL is retained'
+    )$$,
+  'valid GitHub identity remains insertable while GitHub login is disabled'
 );
 select is(
   (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  1,
-  'exactly one profile is provisioned'
+  0,
+  'valid GitHub identity does not provision a profile'
 );
-
-set local role authenticated;
-select set_config('request.jwt.claim.sub', '61000000-0000-0000-0000-000000000001', true);
 select lives_ok(
-  $$select public.create_post(
-    'Provisioned author',
-    'The OAuth-created user can mutate immediately.',
-    array['a1000000-0000-0000-0000-000000000002'::uuid],
-    'profile-provisioning-immediate-mutation'
-  )$$,
-  'identity-provisioned GitHub user can call protected mutations immediately'
-);
-reset role;
-
-select lives_ok(
-  $$
-    update auth.users
-       set raw_user_meta_data = '{"provider_id":"97001","user_name":"attacker-renamed","full_name":"Owned","avatar_url":"https://attacker.test/owned.png"}'::jsonb
-     where id = '61000000-0000-0000-0000-000000000001'
-  $$,
+  $$update auth.users
+       set raw_user_meta_data = '{"provider_id":"97001","user_name":"attacker-renamed"}'::jsonb
+     where id = '61000000-0000-0000-0000-000000000001'$$,
   'direct raw user metadata update remains an allowed auth operation'
 );
 select is(
-  (select github_user_id from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  96001::bigint,
-  'raw user metadata cannot rebind the immutable GitHub identity'
-);
-select is(
-  (select login from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  'Octo-Cat',
-  'raw user metadata cannot alter login'
-);
-select is(
-  (select display_name from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  'Octo Cat',
-  'raw user metadata cannot alter display name'
-);
-select is(
-  (select avatar_url from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  'https://avatars.githubusercontent.com/u/96001?v=4',
-  'raw user metadata cannot alter avatar URL'
-);
-
-select lives_ok(
-  $$
-    insert into auth.users (
-      id, aud, role, email, raw_app_meta_data, raw_user_meta_data
-    ) values (
-      '61000000-0000-0000-0000-000000000002',
-      'authenticated',
-      'authenticated',
-      'raw-only@example.test',
-      '{"provider":"github"}'::jsonb,
-      '{"provider_id":"96002","user_name":"raw-only"}'::jsonb
-    )
-  $$,
-  'raw metadata-only auth user remains insertable'
-);
-select is(
-  (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000002'),
+  (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
   0,
-  'raw metadata-only auth user receives no profile'
+  'raw user metadata update cannot create a profile'
 );
-
 select lives_ok(
-  $$
-    update auth.identities
-       set identity_data = '{"user_name":" octo-cat-renamed ","full_name":" Renamed Cat ","avatar_url":"javascript:alert(1)"}'::jsonb
+  $$update auth.identities
+       set identity_data = '{"user_name":"octo-cat-renamed","full_name":"Renamed Cat"}'::jsonb
      where provider = 'github'
-       and provider_id = '96001'
-  $$,
-  'trusted GitHub identity metadata refresh is idempotent'
-);
-select is(
-  (select github_user_id from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  96001::bigint,
-  'trusted refresh preserves immutable GitHub identity'
-);
-select is(
-  (select login from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  'octo-cat-renamed',
-  'trusted refresh updates login'
-);
-select is(
-  (select display_name from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  'Renamed Cat',
-  'trusted refresh updates display name'
-);
-select is(
-  (select avatar_url from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  null,
-  'invalid trusted avatar URL degrades to null'
+       and provider_id = '96001'$$,
+  'disabled GitHub identity metadata remains updatable'
 );
 select is(
   (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  1,
-  'trusted refresh does not duplicate the profile'
-);
-select throws_ok(
-  $$
-    update auth.identities
-       set provider_id = '96002'
-     where provider = 'github'
-       and provider_id = '96001'
-  $$,
-  '23514',
-  'GitHub identity does not match existing profile',
-  'an existing profile cannot be rebound to another GitHub identity'
-);
-select is(
-  (select github_user_id from public.profiles where id = '61000000-0000-0000-0000-000000000001'),
-  96001::bigint,
-  'failed identity takeover leaves the profile unchanged'
+  0,
+  'disabled GitHub identity update does not provision a profile'
 );
 
 select lives_ok(
-  $$
-    insert into auth.users (id, aud, role, email)
-    values (
-      '61000000-0000-0000-0000-000000000011',
-      'authenticated',
-      'authenticated',
-      'github-conflict@example.test'
-    )
-  $$,
-  'conflicting identity auth user remains insertable'
+  $$insert into auth.users (id, aud, role, email)
+    values ('61000000-0000-0000-0000-000000000008', 'authenticated', 'authenticated', 'legacy-github@example.test')$$,
+  'legacy GitHub auth user remains insertable'
 );
-select throws_ok(
-  $$
-    insert into auth.identities (provider_id, user_id, identity_data, provider)
+select lives_ok(
+  $$insert into public.profiles (id, github_user_id, login, display_name, avatar_url)
     values (
-      '96001',
-      '61000000-0000-0000-0000-000000000011',
-      '{"user_name":"another-account"}'::jsonb,
+      '61000000-0000-0000-0000-000000000008',
+      96008,
+      'legacy-fixture',
+      'Legacy Fixture',
+      'https://avatars.githubusercontent.com/u/96008'
+    )$$,
+  'legacy GitHub profile shape remains insertable after github_user_id becomes nullable'
+);
+select lives_ok(
+  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
+    values (
+      '96008',
+      '61000000-0000-0000-0000-000000000008',
+      '{"user_name":"replacement","full_name":"Must Not Replace"}'::jsonb,
       'github'
-    )
-  $$,
-  '23505'
+    )$$,
+  'linking the matching disabled GitHub identity leaves the legacy profile available'
 );
 select is(
-  (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000011'),
-  0,
-  'GitHub identity conflict creates no second profile'
+  (select jsonb_build_array(github_user_id, login, display_name, avatar_url)
+     from public.profiles
+    where id = '61000000-0000-0000-0000-000000000008'),
+  jsonb_build_array(96008, 'legacy-fixture', 'Legacy Fixture', 'https://avatars.githubusercontent.com/u/96008'),
+  'legacy GitHub profile data is preserved after identity insertion'
 );
-
-select lives_ok(
-  $$
-    insert into auth.users (
-      id, aud, role, email, raw_app_meta_data, raw_user_meta_data
-    ) values (
-      '61000000-0000-0000-0000-000000000003',
-      'authenticated',
-      'authenticated',
-      'email-provider@example.test',
-      '{"provider":"email"}'::jsonb,
-      '{"provider_id":"96003","user_name":"not-github"}'::jsonb
-    )
-  $$,
-  'non-GitHub auth user remains insertable'
-);
-select lives_ok(
-  $$
-    insert into auth.identities (provider_id, user_id, identity_data, provider)
-    values (
-      'email-provider@example.test',
-      '61000000-0000-0000-0000-000000000003',
-      '{"user_name":"not-github"}'::jsonb,
-      'email'
-    )
-  $$,
-  'non-GitHub identity remains insertable'
-);
-select is(
-  (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000003'),
-  0,
-  'non-GitHub identity does not provision a profile'
-);
-select lives_ok(
-  $$
-    update auth.users
-       set raw_app_meta_data = '{"provider":"github","providers":["github"]}'::jsonb,
-           raw_user_meta_data = '{"provider_id":"96003","user_name":"raw-linked-github"}'::jsonb
-     where id = '61000000-0000-0000-0000-000000000003'
-  $$,
-  'user-editable provider metadata update remains an allowed auth operation'
-);
-select is(
-  (select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000003'),
-  0,
-  'user-editable provider metadata cannot create a profile'
-);
-select lives_ok(
-  $$
-    insert into auth.identities (provider_id, user_id, identity_data, provider)
-    values (
-      '96003',
-      '61000000-0000-0000-0000-000000000003',
-      '{"user_name":" linked-github ","full_name":"Linked User","avatar_url":"https://example.test/avatar.png"}'::jsonb,
-      'github'
-    )
-  $$,
-  'trusted GitHub account linking provisions the missing profile'
-);
-select is(
-  (select github_user_id from public.profiles where id = '61000000-0000-0000-0000-000000000003'),
-  96003::bigint,
-  'trusted GitHub account linking persists provider id'
-);
-
-select lives_ok(
-  $$
-    insert into auth.users (id, aud, role, email)
-    values
-      ('61000000-0000-0000-0000-000000000004', 'authenticated', 'authenticated', 'zero-id@example.test'),
-      ('61000000-0000-0000-0000-000000000005', 'authenticated', 'authenticated', 'nonnumeric-id@example.test'),
-      ('61000000-0000-0000-0000-000000000009', 'authenticated', 'authenticated', 'negative-id@example.test'),
-      ('61000000-0000-0000-0000-000000000010', 'authenticated', 'authenticated', 'overflow-id@example.test')
-  $$,
-  'invalid provider id auth users remain insertable'
-);
-select lives_ok(
-  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
-     values ('0', '61000000-0000-0000-0000-000000000004', '{"user_name":"zero-id"}'::jsonb, 'github')$$,
-  'zero GitHub provider id does not block identity insert'
-);
-select is((select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000004'), 0, 'zero GitHub provider id fails closed');
-select lives_ok(
-  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
-     values ('not-a-number', '61000000-0000-0000-0000-000000000005', '{"user_name":"nonnumeric-id"}'::jsonb, 'github')$$,
-  'nonnumeric GitHub provider id does not block identity insert'
-);
-select is((select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000005'), 0, 'nonnumeric GitHub provider id fails closed');
-select lives_ok(
-  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
-     values ('-96009', '61000000-0000-0000-0000-000000000009', '{"user_name":"negative-id"}'::jsonb, 'github')$$,
-  'negative GitHub provider id does not block identity insert'
-);
-select is((select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000009'), 0, 'negative GitHub provider id fails closed');
-select lives_ok(
-  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
-     values ('999999999999999999999999', '61000000-0000-0000-0000-000000000010', '{"user_name":"overflow-id"}'::jsonb, 'github')$$,
-  'overflowing GitHub provider id does not block identity insert'
-);
-select is((select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000010'), 0, 'overflowing GitHub provider id fails closed');
-
-select lives_ok(
-  $$insert into auth.users (id, aud, role, email)
-     values ('61000000-0000-0000-0000-000000000006', 'authenticated', 'authenticated', 'bad-login@example.test')$$,
-  'invalid login auth user remains insertable'
-);
-select lives_ok(
-  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
-     values ('96006', '61000000-0000-0000-0000-000000000006', '{"user_name":"bad login!"}'::jsonb, 'github')$$,
-  'invalid GitHub login does not block identity insert'
-);
-select is((select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000006'), 0, 'invalid GitHub login fails closed');
-
-select lives_ok(
-  $$insert into auth.users (id, aud, role, email)
-     values ('61000000-0000-0000-0000-000000000012', 'authenticated', 'authenticated', 'consecutive-hyphens@example.test')$$,
-  'consecutive-hyphen login auth user remains insertable'
-);
-select lives_ok(
-  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
-     values ('96012', '61000000-0000-0000-0000-000000000012', '{"user_name":"octo--cat"}'::jsonb, 'github')$$,
-  'consecutive-hyphen GitHub login does not block identity insert'
-);
-select is((select count(*)::integer from public.profiles where id = '61000000-0000-0000-0000-000000000012'), 0, 'consecutive-hyphen GitHub login fails closed');
-
-select lives_ok(
-  $$insert into auth.users (id, aud, role, email)
-     values ('61000000-0000-0000-0000-000000000007', 'authenticated', 'authenticated', 'optional-invalid@example.test')$$,
-  'invalid optional metadata auth user remains insertable'
-);
-select lives_ok(
-  $$insert into auth.identities (provider_id, user_id, identity_data, provider)
-     values (
-       '96007',
-       '61000000-0000-0000-0000-000000000007',
-       '{"user_name":"valid-login","full_name":"   ","avatar_url":"javascript:alert(1)"}'::jsonb,
-       'github'
-     )$$,
-  'invalid optional identity metadata does not block profile creation'
-);
-select is((select github_user_id from public.profiles where id = '61000000-0000-0000-0000-000000000007'), 96007::bigint, 'valid identity still provisions with invalid optional metadata');
-select is((select login from public.profiles where id = '61000000-0000-0000-0000-000000000007'), 'valid-login', 'valid identity login is preserved');
-select is((select display_name from public.profiles where id = '61000000-0000-0000-0000-000000000007'), null, 'blank display name degrades to null');
-select is((select avatar_url from public.profiles where id = '61000000-0000-0000-0000-000000000007'), null, 'invalid avatar URL degrades to null');
 select lives_ok(
   $$update auth.identities
-       set identity_data = jsonb_build_object(
-         'user_name', 'valid-login',
-         'full_name', repeat('x', 121),
-         'avatar_url', '   '
-       )
+       set provider_id = '96009',
+           identity_data = '{"user_name":"replacement-again"}'::jsonb
      where provider = 'github'
-       and provider_id = '96007'$$,
-  'other invalid optional identity metadata also permits trusted refresh'
-);
-select is((select display_name from public.profiles where id = '61000000-0000-0000-0000-000000000007'), null, 'overlong display name degrades to null');
-select is((select avatar_url from public.profiles where id = '61000000-0000-0000-0000-000000000007'), null, 'blank avatar URL degrades to null');
-
-select lives_ok(
-  $$insert into auth.users (id, aud, role, email)
-    values ('61000000-0000-0000-0000-000000000008', 'authenticated', 'authenticated', 'manual-fixture@example.test')$$,
-  'existing manual auth fixture shape remains insertable'
-);
-select lives_ok(
-  $$insert into public.profiles (id, github_user_id, login, display_name)
-    values ('61000000-0000-0000-0000-000000000008', 96008, 'manual-fixture', 'Manual Fixture')$$,
-  'existing manual profile fixture shape remains insertable'
+       and provider_id = '96008'$$,
+  'disabled GitHub identity changes do not conflict with legacy profile claims'
 );
 select is(
-  (select login from public.profiles where id = '61000000-0000-0000-0000-000000000008'),
-  'manual-fixture',
-  'manual profile fixture is preserved'
+  (select jsonb_build_array(github_user_id, login, display_name, avatar_url)
+     from public.profiles
+    where id = '61000000-0000-0000-0000-000000000008'),
+  jsonb_build_array(96008, 'legacy-fixture', 'Legacy Fixture', 'https://avatars.githubusercontent.com/u/96008'),
+  'legacy GitHub profile data is preserved after identity update'
 );
 
 set local role authenticated;
-select set_config('request.jwt.claim.sub', '61000000-0000-0000-0000-000000000001', true);
+select set_config('request.jwt.claim.sub', '61000000-0000-0000-0000-000000000008', true);
 select throws_ok(
-  $$update public.profiles set display_name = 'Browser overwrite' where id = '61000000-0000-0000-0000-000000000001'$$,
+  $$update public.profiles set display_name = 'Browser overwrite' where id = '61000000-0000-0000-0000-000000000008'$$,
   '42501',
   'permission denied for table profiles',
   'browser role cannot write profile presentation fields directly'

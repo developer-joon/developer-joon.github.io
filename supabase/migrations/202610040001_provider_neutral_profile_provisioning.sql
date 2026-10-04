@@ -1,4 +1,4 @@
--- Provision provider-neutral application profiles from trusted OAuth identities.
+-- Provision provider-neutral application profiles from trusted Google identities.
 
 alter table public.profiles
   alter column github_user_id drop not null;
@@ -21,13 +21,11 @@ set search_path = ''
 as $$
 declare
   provider_id_text text;
-  github_id bigint;
   profile_login text;
   profile_display_name text;
   profile_avatar_url text;
-  existing_github_id bigint;
 begin
-  if identity_provider not in ('google', 'github', 'kakao')
+  if identity_provider is distinct from 'google'
      or identity_user_id is null
      or pg_catalog.jsonb_typeof(identity_data) is distinct from 'object' then
     return;
@@ -40,32 +38,7 @@ begin
     return;
   end if;
 
-  if identity_provider = 'github' then
-    if provider_id_text !~ '^[0-9]+$' then
-      return;
-    end if;
-
-    begin
-      github_id := provider_id_text::bigint;
-    exception
-      when numeric_value_out_of_range then
-        return;
-    end;
-
-    if github_id <= 0 then
-      return;
-    end if;
-
-    profile_login := pg_catalog.btrim(identity_data ->> 'user_name');
-    if profile_login is null
-       or pg_catalog.char_length(profile_login) not between 1 and 39
-       or profile_login !~ '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'
-       or profile_login ~ '--' then
-      return;
-    end if;
-  else
-    profile_login := identity_provider || '-' || pg_catalog.md5(identity_user_id::text);
-  end if;
+  profile_login := identity_provider || '-' || pg_catalog.md5(identity_user_id::text);
 
   profile_display_name := pg_catalog.btrim(
     coalesce(identity_data ->> 'full_name', identity_data ->> 'name')
@@ -93,48 +66,6 @@ begin
     pg_catalog.hashtextextended('oauth-profile-provider:' || identity_provider || ':' || provider_id_text, 0)
   );
 
-  if identity_provider <> 'github' then
-    insert into public.profiles (
-      id,
-      github_user_id,
-      login,
-      display_name,
-      avatar_url
-    ) values (
-      identity_user_id,
-      null,
-      profile_login,
-      profile_display_name,
-      profile_avatar_url
-    )
-    on conflict (id) do nothing;
-
-    return;
-  end if;
-
-  select p.github_user_id
-    into existing_github_id
-    from public.profiles as p
-   where p.id = identity_user_id
-   for update;
-
-  if found
-     and existing_github_id is not null
-     and existing_github_id <> github_id then
-    raise exception 'GitHub identity does not match existing profile'
-      using errcode = '23514';
-  end if;
-
-  if exists (
-    select 1
-      from public.profiles as p
-     where p.github_user_id = github_id
-       and p.id <> identity_user_id
-  ) then
-    raise exception 'GitHub identity is already linked to another profile'
-      using errcode = '23505';
-  end if;
-
   insert into public.profiles (
     id,
     github_user_id,
@@ -143,19 +74,12 @@ begin
     avatar_url
   ) values (
     identity_user_id,
-    github_id,
+    null,
     profile_login,
     profile_display_name,
     profile_avatar_url
   )
-  on conflict (id) do update
-    set github_user_id = excluded.github_user_id,
-        login = excluded.login,
-        display_name = excluded.display_name,
-        avatar_url = excluded.avatar_url,
-        updated_at = pg_catalog.clock_timestamp()
-    where public.profiles.github_user_id is null
-       or public.profiles.github_user_id = excluded.github_user_id;
+  on conflict (id) do nothing;
 end;
 $$;
 
@@ -186,23 +110,26 @@ create trigger identities_provision_oauth_profile
 after insert or update of provider_id, user_id, identity_data, provider on auth.identities
 for each row execute function private.provision_oauth_profile();
 
--- Backfill only users that are still missing an application profile. Existing
--- GitHub profiles are deliberately untouched, and auth-managed rows are never
--- updated merely to fire a trigger.
-do $$
+-- Backfill only pre-existing Google identities whose users are still missing
+-- an application profile. Existing legacy profiles are deliberately untouched,
+-- and auth-managed rows are never updated merely to fire a trigger.
+create function private.backfill_oauth_profiles()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
 declare
   trusted_identity record;
 begin
   for trusted_identity in
     select i.provider, i.provider_id, i.user_id, i.identity_data
       from auth.identities as i
-     where i.provider in ('google', 'github', 'kakao')
+     where i.provider = 'google'
        and not exists (
          select 1 from public.profiles as p where p.id = i.user_id
        )
-     order by i.user_id,
-              case i.provider when 'github' then 0 when 'google' then 1 else 2 end,
-              i.provider_id
+     order by i.user_id, i.provider_id
   loop
     begin
       perform private.provision_oauth_profile_identity(
@@ -218,3 +145,8 @@ begin
   end loop;
 end;
 $$;
+
+alter function private.backfill_oauth_profiles() owner to postgres;
+revoke all on function private.backfill_oauth_profiles() from public, anon, authenticated;
+
+select private.backfill_oauth_profiles();
