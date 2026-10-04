@@ -983,10 +983,26 @@ test('default runner bounds TERM-to-KILL for an uncooperative process tree befor
   const state = fixture()
   const originalPath = process.env.PATH
   const originalMarker = process.env.RELEASE_GATE_CLEANUP_MARKER
+  let pid
+  let descendantPid
+  const isRunning = () => {
+    if (!pid) return false
+    try {
+      process.kill(pid, 0)
+      if (process.platform === 'linux') {
+        const status = readFileSync(`/proc/${pid}/stat`, 'utf8')
+        if (/^\d+ \(.+\) Z /.test(status)) return false
+      }
+      return true
+    } catch (error) {
+      if (error?.code === 'ESRCH' || error?.code === 'ENOENT') return false
+      throw error
+    }
+  }
   try {
     const bin = path.join(state.root, 'bin')
     const marker = path.join(state.root, 'cleanup-ran')
-    const descendantPid = path.join(state.root, 'descendant.pid')
+    descendantPid = path.join(state.root, 'descendant.pid')
     mkdirSync(bin)
     const npm = path.join(bin, 'npm')
     writeFileSync(npm, '#!/bin/sh\nprintf cleaned > "$RELEASE_GATE_CLEANUP_MARKER"\n')
@@ -1009,8 +1025,7 @@ test('default runner bounds TERM-to-KILL for an uncooperative process tree befor
     `
     const controller = new AbortController()
     const started = Date.now()
-    setTimeout(() => controller.abort('SIGTERM'), 80)
-    await assert.rejects(runReleaseGate(
+    const gate = assert.rejects(runReleaseGate(
       { mode: 'local', evidencePath: state.evidence },
       {
         revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
@@ -1024,14 +1039,50 @@ test('default runner bounds TERM-to-KILL for an uncooperative process tree befor
           steps: [{ name: 'uncooperative', command: process.execPath, args: ['-e', parent], environment: {} }],
         },
       },
-    ), /aborted by SIGTERM/i)
+    ), /aborted by SIGTERM/i).then(
+      () => undefined,
+      (error) => error,
+    )
+    let readinessError
+    const readinessDeadline = Date.now() + 2_000
+    while (!pid && Date.now() < readinessDeadline) {
+      try {
+        const contents = readFileSync(descendantPid, 'utf8').trim()
+        if (/^[1-9]\d*$/.test(contents)) {
+          const candidate = Number(contents)
+          if (Number.isSafeInteger(candidate)) {
+            pid = candidate
+            if (isRunning()) {
+              controller.abort('SIGTERM')
+              break
+            }
+            pid = undefined
+          }
+        }
+      } catch (error) {
+        if (error?.code !== 'ENOENT' && error?.code !== 'ESRCH') throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    if (!pid) {
+      controller.abort('SIGTERM')
+      readinessError = new Error('timed out waiting for a valid live descendant PID')
+    }
+    const gateError = await gate
+    if (readinessError) throw readinessError
+    if (gateError) throw gateError
     const elapsed = Date.now() - started
     assert.ok(elapsed < 800, `abort took ${elapsed}ms`)
     assert.equal(readFileSync(marker, 'utf8'), 'cleaned')
-    const pid = Number(readFileSync(descendantPid, 'utf8'))
     await new Promise((resolve) => setTimeout(resolve, 50))
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' })
   } finally {
+    if (!pid && descendantPid) {
+      try { pid = Number(readFileSync(descendantPid, 'utf8')) } catch (error) { if (error?.code !== 'ENOENT') throw error }
+    }
+    if (isRunning()) {
+      try { process.kill(pid, 'SIGKILL') } catch (error) { if (error?.code !== 'ESRCH') throw error }
+    }
     if (originalPath === undefined) delete process.env.PATH
     else process.env.PATH = originalPath
     if (originalMarker === undefined) delete process.env.RELEASE_GATE_CLEANUP_MARKER
