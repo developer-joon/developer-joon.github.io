@@ -121,24 +121,165 @@ function assertIncludes(content, expected, relativePath, behavior) {
   }
 }
 
-function attributeValue(attributes, name) {
-  const htmlWhitespace = '[\\t\\n\\f\\r ]'
-  const pattern = new RegExp(`(?:^|${htmlWhitespace})${name}${htmlWhitespace}*=${htmlWhitespace}*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\u0060]+))`, 'i')
-  const match = pattern.exec(attributes)
-  return match ? match[1] ?? match[2] ?? match[3] : null
+const htmlWhitespace = /[\t\n\f\r ]/
+const rawTextElements = new Set(['iframe', 'noembed', 'noscript', 'script', 'style', 'textarea', 'title', 'xmp'])
+const inertElements = new Set(['template'])
+
+function findTagEnd(html, start) {
+  let quote = null
+  for (let position = start; position < html.length; position += 1) {
+    const character = html[position]
+    if (quote) {
+      if (character === quote) quote = null
+    } else if (character === '"' || character === "'") {
+      quote = character
+    } else if (character === '>') {
+      return position
+    }
+  }
+  return -1
+}
+
+function parseStartTag(source) {
+  let position = 0
+  while (htmlWhitespace.test(source[position] ?? '')) position += 1
+  const nameStart = position
+  while (/[A-Za-z0-9:-]/.test(source[position] ?? '')) position += 1
+  if (position === nameStart) return null
+
+  const name = source.slice(nameStart, position).toLowerCase()
+  const attributes = new Map()
+  let selfClosing = false
+  while (position < source.length) {
+    while (htmlWhitespace.test(source[position] ?? '')) position += 1
+    if (position === source.length) break
+    if (source[position] === '/' && position === source.length - 1) {
+      selfClosing = true
+      break
+    }
+
+    const attributeStart = position
+    while (position < source.length && !htmlWhitespace.test(source[position]) && !['/', '=', '"', "'", '<'].includes(source[position])) {
+      position += 1
+    }
+    if (position === attributeStart) return null
+    const attributeName = source.slice(attributeStart, position).toLowerCase()
+    if (attributes.has(attributeName)) return null
+
+    while (htmlWhitespace.test(source[position] ?? '')) position += 1
+    let value = null
+    if (source[position] === '=') {
+      position += 1
+      while (htmlWhitespace.test(source[position] ?? '')) position += 1
+      if (position === source.length) return null
+      const quote = source[position]
+      if (quote === '"' || quote === "'") {
+        const valueStart = ++position
+        while (position < source.length && source[position] !== quote) position += 1
+        if (position === source.length) return null
+        value = source.slice(valueStart, position)
+        position += 1
+      } else {
+        const valueStart = position
+        while (position < source.length && !htmlWhitespace.test(source[position])) position += 1
+        value = source.slice(valueStart, position)
+        if (!value || /["'<=`]/.test(value)) return null
+      }
+    }
+    attributes.set(attributeName, value)
+  }
+  return { attributes, name, selfClosing }
+}
+
+function skipRawTextElement(html, lowerHtml, position, name) {
+  const closingPrefix = `</${name}`
+  while (position < html.length) {
+    const closingStart = lowerHtml.indexOf(closingPrefix, position)
+    if (closingStart === -1) return -1
+    const boundary = html[closingStart + closingPrefix.length]
+    if (boundary === '>' || htmlWhitespace.test(boundary ?? '')) {
+      const closingEnd = findTagEnd(html, closingStart + closingPrefix.length)
+      return closingEnd === -1 ? -1 : closingEnd + 1
+    }
+    position = closingStart + closingPrefix.length
+  }
+  return -1
 }
 
 function hasCommunityAjaxOptOut(html) {
-  const uncommentedHtml = html.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
-  const anchorPattern = /<a(?=[\t\n\f\r \/>])((?:[^'"<>]|"[^"]*"|'[^']*')*)>([\s\S]*?)<\/a\s*>/gi
-  for (const match of uncommentedHtml.matchAll(anchorPattern)) {
-    const href = attributeValue(match[1], 'href')
-    const text = match[2].replace(/<[^>]*>/g, '').trim()
-    if (href !== '/community/' || text !== 'Community') continue
-    const classes = attributeValue(match[1], 'class')?.split(/\s+/) ?? []
-    if (classes.includes('js-no-ajax')) return true
+  const lowerHtml = html.toLowerCase()
+  const inertStack = []
+  let anchor = null
+  let foundValidCommunityLink = false
+  let position = 0
+
+  while (position < html.length) {
+    const tagStart = html.indexOf('<', position)
+    const textEnd = tagStart === -1 ? html.length : tagStart
+    if (anchor && inertStack.length === 0) anchor.text += html.slice(position, textEnd)
+    if (tagStart === -1) break
+
+    if (html.startsWith('<!--', tagStart)) {
+      const commentEnd = html.indexOf('-->', tagStart + 4)
+      if (commentEnd === -1) return false
+      position = commentEnd + 3
+      continue
+    }
+
+    const next = html[tagStart + 1]
+    if (!next || (!/[A-Za-z!/]/.test(next))) {
+      if (anchor && inertStack.length === 0) anchor.text += '<'
+      position = tagStart + 1
+      continue
+    }
+
+    const tagEnd = findTagEnd(html, tagStart + 1)
+    if (tagEnd === -1) return false
+    let source = html.slice(tagStart + 1, tagEnd)
+    const closing = /^\s*\//.test(source)
+    if (closing) source = source.replace(/^\s*\/\s*/, '')
+    if (/^\s*[!?]/.test(source)) {
+      position = tagEnd + 1
+      continue
+    }
+
+    if (closing) {
+      const match = /^([A-Za-z0-9:-]+)\s*$/.exec(source)
+      if (!match) return false
+      const name = match[1].toLowerCase()
+      if (inertElements.has(name)) {
+        if (inertStack.at(-1) !== name) return false
+        inertStack.pop()
+      } else if (name === 'a' && inertStack.length === 0) {
+        if (!anchor) return false
+        const classes = anchor.attributes.get('class')?.split(/\s+/) ?? []
+        if (anchor.attributes.get('href') === '/community/' && anchor.text.trim() === 'Community' && classes.includes('js-no-ajax')) {
+          foundValidCommunityLink = true
+        }
+        anchor = null
+      }
+      position = tagEnd + 1
+      continue
+    }
+
+    const tag = parseStartTag(source)
+    if (!tag) return false
+    if (rawTextElements.has(tag.name)) {
+      const afterRawText = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
+      if (afterRawText === -1) return false
+      position = afterRawText
+      continue
+    }
+    if (inertElements.has(tag.name)) {
+      inertStack.push(tag.name)
+    } else if (tag.name === 'a' && inertStack.length === 0) {
+      if (anchor || tag.selfClosing) return false
+      anchor = { attributes: tag.attributes, text: '' }
+    }
+    position = tagEnd + 1
   }
-  return false
+
+  return anchor === null && inertStack.length === 0 && foundValidCommunityLink
 }
 
 function communityAssetReferences(html, shellPath) {

@@ -117,6 +117,38 @@ test('rejects a Community AJAX opt-out that exists only in commented markup', as
   })
 })
 
+test('rejects a Community AJAX opt-out that exists only in a plain-text script', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><script type="text/plain"><a href="/community/" class="js-no-ajax">Community</a></script><a href="/community/">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an AJAX opt-out inside a plain-text script')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+test('rejects a Community AJAX opt-out that exists only in a template', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><template><a href="/community/" class="js-no-ajax">Community</a></template><a href="/community/">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an AJAX opt-out inside a template')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+  })
+})
+
+for (const [container, openingTag, closingTag] of [
+  ['plain-text script', '<script type="text/plain"/>', '</script>'],
+  ['template', '<template/>', ''],
+]) {
+  test(`treats a self-closing flag on a ${container} as ignored`, async () => {
+    await withArtifact(async (root) => {
+      await put(root, 'index.html', `<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/">${openingTag}<a href="/community/" class="js-no-ajax">Community</a>${closingTag}<a href="/community/">Community</a>`)
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly honored a self-closing flag on a ${container}`)
+      assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
+    })
+  })
+}
+
 test('accepts a marked Community navigation link after an unmarked matching link', async () => {
   await withArtifact(async (root) => {
     await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a href="/community/">Community</a><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav>')
@@ -128,6 +160,14 @@ test('accepts a marked Community navigation link after an unmarked matching link
 test('accepts a marked Community link with a greater-than sign in a quoted attribute', async () => {
   await withArtifact(async (root) => {
     await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a>')
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('accepts visible Community text inside nested markup with a quoted greater-than attribute', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
