@@ -58,7 +58,9 @@ Docker 빌드는 고정된 `linux/amd64` 이미지와 UID 10001의 비-root 사�
 - [Free Plan 백업·복구](docs/operations/community-backup-restore.md)
 - [롤백·forward-fix](docs/operations/community-rollback.md)
 - [검증된 릴리스 체크리스트](docs/operations/community-release-checklist.md)
-- [GitHub OAuth 설정](docs/operations/community-oauth-setup.md)
+- [Google OAuth 설정](docs/operations/community-oauth-setup.md)
+
+Google is the only enabled community OAuth provider for the current production release. Google returns through the production Supabase Auth callback and Supabase returns to `https://www.breadlab.ai/community/auth/callback/`. Kakao and GitHub are future providers and remain disabled; the separate GitHub-backed giscus blog comments are unchanged.
 
 커뮤니티 release gate는 검증과 외부 evidence 생성만 담당합니다. The release gate never deploys or performs a hosted mutation. 각 변경은 runbook의 별도 수동 승인 경계를 따릅니다.
 

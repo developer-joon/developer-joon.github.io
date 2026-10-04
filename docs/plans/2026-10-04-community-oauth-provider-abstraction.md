@@ -494,7 +494,7 @@ Expected: clean worktree with only the intended feature commits.
 Write only:
 
 ```dotenv
-VITE_SUPABASE_URL=https://giuxonxvuqrdnmjwvhvt.supabase.co
+VITE_SUPABASE_URL=https://<development-project-ref>.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=<provided development publishable key>
 ```
 
@@ -519,9 +519,9 @@ http://localhost:5173/community/
 Open the local community, select `Google로 로그인`, and verify the redirect chain targets:
 
 ```text
-https://giuxonxvuqrdnmjwvhvt.supabase.co/auth/v1/authorize
+https://<development-project-ref>.supabase.co/auth/v1/authorize
 Google account selection/consent
-https://giuxonxvuqrdnmjwvhvt.supabase.co/auth/v1/callback
+https://<development-project-ref>.supabase.co/auth/v1/callback
 http://localhost:5173/community/auth/callback/
 ```
 

@@ -7,7 +7,8 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Record release revision, operator, approver, UTC start, and external evidence paths.
 - [ ] Confirm local Docker, hosted development, and production are the only boundaries; there is no staging project.
 - [ ] Confirm development and production project refs are nonempty and distinct.
-- [ ] Confirm separate GitHub OAuth Apps, exact redirect allow-lists, keys, private Storage, and test identities.
+- [ ] Confirm separate Google OAuth clients, exact redirect allow-lists, keys, private Storage, and test identities.
+- [ ] Confirm Google is the only enabled community OAuth provider; Kakao and GitHub are future providers and remain disabled. The separate giscus GitHub integration is unchanged.
 - [ ] Confirm only publishable keys are public. Privileged keys/password/OAuth secrets are absent from CLI literals, repository, evidence, logs, Actions artifacts, and Pages.
 - [ ] Check current Free Plan active-project, database, Storage, egress, Functions, `pg_cron`, and `pg_net` quotas. Do not auto-enable paid overage.
 - [ ] If hosted development is paused, use Dashboard **Resume project** and repeat health checks. No artificial keepalive and never fall back to production.
@@ -25,7 +26,7 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Read-only development gate passes against the dedicated hosted development ref.
 - [ ] Obtain development-only mutation approval; inspect migration dry run.
 - [ ] Apply reviewed development migration and deploy the explicit Function set to `--project-ref "$DEVELOPMENT_PROJECT_REF"`.
-- [ ] Verify separate development GitHub OAuth App and exact redirect allow-list.
+- [ ] Verify the separate development Google OAuth client returns through `https://${DEVELOPMENT_PROJECT_REF}.supabase.co/auth/v1/callback`, then to `http://localhost:5173/community/auth/callback/`; confirm Kakao/GitHub remain disabled.
 - [ ] Run Task 16 development cloud integration for Auth, migration, Functions, OAuth, and private Storage.
 - [ ] Record every synthetic row/Auth user/object as operator-recorded fixture IDs.
 - [ ] Cleanup uses exact IDs only; repeat reads/listing and record zero-residue read-back.
@@ -58,7 +59,7 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 
 - [ ] Obtain Pages approval for the exact source revision and verified artifact.
 - [ ] Deploy once through `.github/workflows/jekyll.yml`; do not upload or patch an artifact manually.
-- [ ] Verify workflow SHA, canonical routes, six community shells, assets, snapshots/sitemap, privacy page, and OAuth callback route.
+- [ ] Verify workflow SHA, canonical routes, six community shells, assets, snapshots/sitemap, privacy page, and the production application callback `https://www.breadlab.ai/community/auth/callback/`.
 
 ## 7. separately approved bounded write canary
 
@@ -128,5 +129,5 @@ gh workflow view community-snapshots.yml --repo "$GITHUB_REPOSITORY"
 - Supabase CLI backup/restore: https://supabase.com/docs/guides/platform/migrating-within-supabase/backup-restore
 - Supabase Storage downloads: https://supabase.com/docs/guides/storage/management/download-objects
 - Supabase scheduled Functions: https://supabase.com/docs/guides/functions/schedule-functions
-- GitHub OAuth Apps: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app
+- Google OAuth 2.0 web server applications: https://developers.google.com/identity/protocols/oauth2/web-server
 - GitHub Pages workflows: https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages

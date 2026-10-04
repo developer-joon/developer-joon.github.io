@@ -297,7 +297,18 @@ async function main() {
     const privacy = await readText(privacyPath)
     assertIncludes(privacy, '<title>개인정보처리방침 – Ria & Seoa PaPa</title>', privacyPath, 'expected title')
     assertIncludes(privacy, '<link rel="canonical" href="https://www.breadlab.ai/privacy">', privacyPath, 'canonical URL')
-    assertIncludes(privacy, 'GitHub OAuth', privacyPath, 'GitHub OAuth privacy disclosure')
+    assertIncludes(privacy, '커뮤니티 Google OAuth 로그인', privacyPath, 'Google community OAuth disclosure')
+    assertIncludes(privacy, 'Supabase Auth', privacyPath, 'Supabase Auth processor disclosure')
+    assertIncludes(privacy, '안정적인 provider subject', privacyPath, 'stable provider subject disclosure')
+    assertIncludes(privacy, '인증 계층에서만', privacyPath, 'auth-layer-only provider subject use')
+    assertIncludes(privacy, '개인정보가 아닌 결정적 로그인 이름', privacyPath, 'deterministic non-PII login disclosure')
+    assertIncludes(privacy, '최대 120자의 Google 표시 이름', privacyPath, 'bounded Google display name disclosure')
+    assertIncludes(privacy, '최대 2,048자의 HTTPS 프로필 이미지 URL', privacyPath, 'bounded Google avatar URL disclosure')
+    assertIncludes(privacy, '사용자 ID와 로그인 세션', privacyPath, 'user and session identifier disclosure')
+    assertIncludes(privacy, '이메일과 provider access token 또는 refresh token은 공개 프로필에 저장하지 않습니다', privacyPath, 'public-profile email and provider-token exclusion')
+    if (/커뮤니티.{0,80}(?:GitHub OAuth|GitHub 계정.{0,30}(?:로그인|식별))/is.test(privacy)) {
+      fail(`${privacyPath} contains obsolete GitHub community authentication disclosure`)
+    }
     assertIncludes(privacy, '처리 완료 후 최대 3년', privacyPath, 'report retention disclosure')
   }
 

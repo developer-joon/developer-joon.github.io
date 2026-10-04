@@ -5,10 +5,12 @@ This runbook is the operator boundary for the Free Plan community release. It as
 | Boundary | Purpose | Required isolation |
 |---|---|---|
 | local Docker | Destructive, exhaustive migration, database, browser, and fixture testing | No hosted credentials; disposable local Auth, database, Functions, Storage, and test identities |
-| hosted development | Internet-reachable development cloud integration | A dedicated Free project, synthetic data only, its own project ref, separate GitHub OAuth App, exact redirect allow-list, separate keys, separate Storage objects, and separate administrator test identity |
-| production | Real users and data | A second Free project with a distinct project ref, separate GitHub OAuth App, exact redirect allow-list, separate keys, separate Storage, and separate test identities |
+| hosted development | Internet-reachable development cloud integration | A dedicated Free project, synthetic data only, its own project ref, separate Google OAuth client, exact redirect allow-list, separate keys, separate Storage objects, and separate administrator test identity |
+| production | Real users and data | A second Free project with a distinct project ref, separate Google OAuth client, exact redirect allow-list, separate keys, separate Storage, and separate test identities |
 
 The development and production project refs must be distinct. Never repurpose production as development, never copy production credentials into local or development configuration, and never use production when development is paused.
+
+Google is the only enabled community OAuth provider for this release. Kakao and GitHub are future providers and must remain disabled in local, hosted development, and production Auth configuration. This restriction does not affect the separate GitHub-backed giscus blog comment system.
 
 ## Roles and approval boundaries
 
@@ -98,7 +100,7 @@ node scripts/release-gate.mjs --mode local \
   --evidence "${LOCAL_EVIDENCE_PATH:?set an absolute path outside the repository}"
 ```
 
-After local E2E is green, run hosted development read-only gate evidence, then perform the separately approved Task 16 authenticated integration procedure. Development integration must exercise reviewed migrations, all deployed Functions, GitHub OAuth, and private Storage with synthetic fixtures only.
+After local E2E is green, run hosted development read-only gate evidence, then perform the separately approved Task 16 authenticated integration procedure. Development integration must exercise reviewed migrations, all deployed Functions, Google OAuth through the development Supabase `/auth/v1/callback`, and private Storage with synthetic fixtures only. Confirm Supabase returns to `http://localhost:5173/community/auth/callback/` and that Kakao/GitHub remain disabled.
 
 **Development mutation stop point:** do not continue without `DEVELOPMENT_MUTATION_APPROVAL` and a reviewed revision.
 
@@ -215,8 +217,9 @@ Incident record: detection time, operator/approver, revision, affected boundary,
 
 - Supabase local CLI: https://supabase.com/docs/guides/local-development/cli/getting-started
 - Supabase Auth redirect URLs: https://supabase.com/docs/guides/auth/redirect-urls
+- Supabase Google Auth: https://supabase.com/docs/guides/auth/social-login/auth-google
 - Supabase Functions deployment: https://supabase.com/docs/guides/functions/deploy
 - Scheduled Functions with `pg_cron`/`pg_net`: https://supabase.com/docs/guides/functions/schedule-functions
 - Supabase Free project pausing: https://supabase.com/docs/guides/platform/free-project-pausing
-- GitHub OAuth Apps: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app
+- Google OAuth 2.0 web server applications: https://developers.google.com/identity/protocols/oauth2/web-server
 - GitHub Pages custom workflows: https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages

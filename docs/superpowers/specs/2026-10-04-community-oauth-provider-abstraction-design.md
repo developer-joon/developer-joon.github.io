@@ -26,7 +26,7 @@ Approved direction: replace the GitHub-only authentication API with a provider-n
 | Boundary | Project ref | Purpose |
 | --- | --- | --- |
 | Local browser | none | Unit, component, callback, and build verification with synthetic auth clients |
-| Hosted development | `giuxonxvuqrdnmjwvhvt` | Real Google OAuth redirect, Supabase session, profile, RLS, and logout verification |
+| Hosted development | `<development-project-ref>` | Real Google OAuth redirect, Supabase session, profile, RLS, and logout verification |
 | Production | `uoexlthefwuawlbzxwik` | Explicitly excluded from this implementation and verification cycle |
 
 The browser receives only the development project URL and publishable key. Google Client Secret, Supabase access tokens, database passwords, service-role keys, and provider tokens must not enter the repository, browser artifact, logs, screenshots, or test evidence.
@@ -34,7 +34,7 @@ The browser receives only the development project URL and publishable key. Googl
 Development browser configuration remains untracked in `community-app/.env.local`:
 
 ```dotenv
-VITE_SUPABASE_URL=https://giuxonxvuqrdnmjwvhvt.supabase.co
+VITE_SUPABASE_URL=https://<development-project-ref>.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=<development browser-safe publishable key>
 ```
 
@@ -120,7 +120,7 @@ The first implementation must preserve narrow-layout behavior: long authenticate
 1. The user selects `Google로 로그인`.
 2. The application stores the validated current community path in session storage.
 3. Supabase redirects to Google using the provider configuration stored in the development project.
-4. Google returns to `https://giuxonxvuqrdnmjwvhvt.supabase.co/auth/v1/callback`.
+4. Google returns to `https://<development-project-ref>.supabase.co/auth/v1/callback`.
 5. Supabase returns to `http://localhost:5173/community/auth/callback/`.
 6. The static callback page exchanges the authorization code once.
 7. The application consumes and removes the pending return path and navigates with replacement semantics.
@@ -178,7 +178,7 @@ Verify the built callback shell exists and scan the static artifact for privileg
 
 ### Hosted development verification
 
-Against only `giuxonxvuqrdnmjwvhvt`:
+Against only `<development-project-ref>`:
 
 1. start Vite on `http://localhost:5173` with untracked public development configuration;
 2. confirm the login action redirects through the development Supabase project and Google;

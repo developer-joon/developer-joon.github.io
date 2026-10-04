@@ -23,9 +23,10 @@ featured_image: /images/demo/about.jpg
 ### 댓글 작성 시
 본 사이트는 [giscus](https://giscus.app/) 기반 댓글 시스템을 사용합니다. 댓글 작성 시 GitHub 계정을 통해 인증되며, 댓글 데이터는 GitHub Discussions에 저장됩니다. 본 사이트는 GitHub 계정 정보를 별도로 수집하거나 저장하지 않습니다.
 
-### 커뮤니티 GitHub OAuth 로그인 시
-- **계정 프로필 정보**: GitHub의 변경되지 않는 숫자 사용자 ID, 로그인 이름, 표시 이름, 프로필 이미지 URL
-- **인증 정보**: 커뮤니티 내부 사용자 ID와 로그인 세션 정보. GitHub 비밀번호와 GitHub OAuth client secret은 본 사이트가 수집하거나 저장하지 않습니다.
+### 커뮤니티 Google OAuth 로그인 시
+- **Supabase Auth 인증 정보**: Google이 제공하는 안정적인 provider subject는 Supabase Auth의 인증 계층에서만 계정 연결에 사용합니다. 애플리케이션 공개 프로필에는 이 값을 복사하지 않습니다.
+- **커뮤니티 공개 프로필**: Supabase 사용자 ID, 사용자 UUID에서 만든 개인정보가 아닌 결정적 로그인 이름, 최대 120자의 Google 표시 이름, 최대 2,048자의 HTTPS 프로필 이미지 URL을 처리합니다. 유효하지 않거나 범위를 넘는 표시 이름과 이미지 URL은 저장하지 않습니다.
+- **세션 정보**: Supabase 사용자 ID와 로그인 세션을 인증·권한 확인에 사용합니다. 이메일과 provider access token 또는 refresh token은 공개 프로필에 저장하지 않습니다.
 
 ### 커뮤니티 이용 시
 - **사용자 콘텐츠**: 게시글과 댓글의 제목·본문, 반응, 첨부 이미지, 작성·수정·삭제 시각
@@ -40,7 +41,7 @@ featured_image: /images/demo/about.jpg
 - **사이트 통계 분석**: 방문자 수, 인기 콘텐츠 파악 (Google Analytics)
 - **광고 서비스 제공**: Google AdSense를 통한 맞춤 광고 표시
 - **사이트 개선**: 이용 패턴 분석을 통한 콘텐츠 및 서비스 품질 향상
-- **커뮤니티 제공**: GitHub 계정 식별, 게시글·댓글·반응·이미지 제공과 사용자 요청 처리
+- **커뮤니티 제공**: Google 계정과 연결된 Supabase 사용자 식별, 게시글·댓글·반응·이미지 제공과 사용자 요청 처리
 - **안전한 운영**: 신고 검토, 악용 방지, 권한 관리, 보안 및 분쟁 대응
 
 ---
@@ -79,9 +80,9 @@ Google Analytics 및 Google AdSense를 통해 수집되는 데이터는 각 서�
 
 본 사이트는 이용자의 개인정보를 판매하지 않습니다. 서비스 제공 과정에서 다음 사업자가 정보를 처리할 수 있습니다.
 
-- **GitHub**: OAuth 로그인 및 giscus 댓글 제공
+- **GitHub**: giscus 댓글 인증과 GitHub Discussions 댓글 저장 제공
 - **Supabase**: 커뮤니티 인증, 데이터베이스, 첨부 파일 저장과 서버 기능 제공
-- **Google**: Analytics와 AdSense 제공
+- **Google**: 커뮤니티 OAuth 인증, Analytics와 AdSense 제공
 
 각 사업자의 처리는 해당 사업자의 개인정보 보호정책과 보관 정책을 따릅니다. 그 밖에는 다음 경우에만 정보를 제공합니다.
 

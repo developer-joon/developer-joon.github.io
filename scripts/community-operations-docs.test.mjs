@@ -69,7 +69,7 @@ async function makeValidArtifact() {
   const snapshotId = '11111111-1111-4111-8111-111111111111'
   const snapshotUrl = `https://www.breadlab.ai/community/content/${snapshotId}/`
   await put(root, `community/content/${snapshotId}/index.html`, `<link rel="canonical" href="${snapshotUrl}"><meta property="og:type" content="article"><meta property="og:url" content="${snapshotUrl}"><script type="application/ld+json">{"@type":"BlogPosting"}</script>`)
-  await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">GitHub OAuth 처리 완료 후 최대 3년')
+  await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 Google OAuth 로그인은 Supabase Auth를 사용합니다. 안정적인 provider subject는 인증 계층에서만 사용하고 공개 프로필에는 개인정보가 아닌 결정적 로그인 이름, 최대 120자의 Google 표시 이름, 최대 2,048자의 HTTPS 프로필 이미지 URL, 사용자 ID와 로그인 세션 정보를 처리합니다. 이메일과 provider access token 또는 refresh token은 공개 프로필에 저장하지 않습니다. 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
   await put(root, 'robots.txt', 'User-agent: *\nAllow: /\nSitemap: https://www.breadlab.ai/sitemap.xml\n')
   await put(root, 'sitemap.xml', [
@@ -98,7 +98,7 @@ test('defines three isolated environments and exact OAuth boundaries', async () 
     /hosted development/i,
     /production/i,
     /distinct project ref/i,
-    /separate GitHub OAuth App/i,
+    /separate Google OAuth client/i,
     /redirect allow-list/i,
     /separate (?:publishable )?keys/i,
     /separate Storage/i,
@@ -110,7 +110,26 @@ test('defines three isolated environments and exact OAuth boundaries', async () 
     /https:\/\/www\.breadlab\.ai\/community\/auth\/callback\//,
     /https:\/\/\$\{DEVELOPMENT_PROJECT_REF\}\.supabase\.co\/auth\/v1\/callback/,
     /https:\/\/\$\{PRODUCTION_PROJECT_REF\}\.supabase\.co\/auth\/v1\/callback/,
+    /Google is the only enabled community OAuth provider/i,
+    /Kakao and GitHub.*(?:future|disabled)/i,
   ])
+  assert.doesNotMatch(oauth, /GitHub OAuth App|initiate GitHub login/i)
+})
+
+test('production-facing OAuth docs require Google-only enablement and contain no GitHub recovery/configuration instructions', async () => {
+  const oauth = await operationText('community-oauth-setup.md')
+  const runbook = await operationText('community-release-runbook.md')
+  const checklist = await operationText('community-release-checklist.md')
+  const readme = await readFile(path.join(repoRoot, 'README.md'), 'utf8')
+  const productionDocs = `${oauth}\n${runbook}\n${checklist}\n${readme}`
+
+  assertMatches(productionDocs, [
+    /Google is the only enabled community OAuth provider/i,
+    /Kakao and GitHub.*(?:future|disabled)/i,
+    /Google.*Supabase.*\/auth\/v1\/callback/is,
+    /production.*https:\/\/www\.breadlab\.ai\/community\/auth\/callback\//is,
+  ])
+  assert.doesNotMatch(productionDocs, /GitHub OAuth App|GitHub provider with PKCE|initiate GitHub login|development GitHub OAuth/i)
 })
 
 test('documents Free Plan pause, capacity, quota, and backup constraints', async () => {
@@ -579,7 +598,7 @@ test('documents forward-only database and source-driven Pages rollback', async (
   ])
 })
 
-test('uses only official Supabase and GitHub documentation links', async () => {
+test('uses only official Supabase, Google, and GitHub documentation links', async () => {
   const text = await allOperationsText()
   assertMatches(text, [
     /https:\/\/supabase\.com\/docs\/guides\/local-development\/cli\/getting-started/,
@@ -588,12 +607,12 @@ test('uses only official Supabase and GitHub documentation links', async () => {
     /https:\/\/supabase\.com\/docs\/guides\/storage\/management\/download-objects/,
     /https:\/\/supabase\.com\/docs\/guides\/functions\/deploy/,
     /https:\/\/supabase\.com\/docs\/guides\/functions\/schedule-functions/,
-    /https:\/\/docs\.github\.com\/en\/apps\/oauth-apps\/building-oauth-apps\/creating-an-oauth-app/,
+    /https:\/\/developers\.google\.com\/identity\/protocols\/oauth2\/web-server/,
     /https:\/\/docs\.github\.com\/en\/pages\/getting-started-with-github-pages\/using-custom-workflows-with-github-pages/,
   ])
-  const documentationUrls = text.match(/https:\/\/(?:supabase\.com\/docs|docs\.github\.com)\/[^\s)>]+/g) ?? []
+  const documentationUrls = text.match(/https:\/\/(?:supabase\.com\/docs|docs\.github\.com|developers\.google\.com)\/[^\s)>]+/g) ?? []
   for (const url of documentationUrls) {
-    assert.ok(url.startsWith('https://supabase.com/docs/') || url.startsWith('https://docs.github.com/'), `non-authoritative documentation URL: ${url}`)
+    assert.ok(url.startsWith('https://supabase.com/docs/') || url.startsWith('https://docs.github.com/') || url.startsWith('https://developers.google.com/'), `non-authoritative documentation URL: ${url}`)
   }
 })
 

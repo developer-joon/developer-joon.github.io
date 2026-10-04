@@ -44,7 +44,7 @@ async function makeValidArtifact() {
     await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img srcset="/community/assets/logo-Xy12Za34.png 1x, https://cdn.example/logo.png 2x, data:image/png;base64,AA== 3x"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
   }
   await put(root, snapshotPath, `<title>Published snapshot example | Breadlab 커뮤니티</title><link rel="canonical" href="${snapshotUrl}"><meta property="og:type" content="article"><meta property="og:url" content="${snapshotUrl}"><script type="application/ld+json">{"@type":"BlogPosting"}</script>`)
-  await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">GitHub OAuth 처리 완료 후 최대 3년')
+  await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 Google OAuth 로그인은 Supabase Auth를 사용합니다. 안정적인 provider subject는 인증 계층에서만 사용하고 공개 프로필에는 개인정보가 아닌 결정적 로그인 이름, 최대 120자의 Google 표시 이름, 최대 2,048자의 HTTPS 프로필 이미지 URL, 사용자 ID와 로그인 세션 정보를 처리합니다. 이메일과 provider access token 또는 refresh token은 공개 프로필에 저장하지 않습니다. 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
   await put(root, 'robots.txt', 'User-agent: *\nAllow: /\nSitemap: https://www.breadlab.ai/sitemap.xml\n')
   await put(root, 'sitemap.xml', [
@@ -87,6 +87,25 @@ test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects obsolete GitHub community authentication wording while allowing GitHub giscus disclosure', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 GitHub OAuth 로그인 시 GitHub 계정을 식별합니다. 처리 완료 후 최대 3년')
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /obsolete GitHub community authentication disclosure/)
+    assert.doesNotMatch(result.stderr, /giscus.*obsolete/i)
+  })
+})
+
+test('rejects a privacy artifact missing the bounded Google profile and auth-layer data disclosure', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 Google OAuth 로그인은 Supabase Auth를 사용합니다. 처리 완료 후 최대 3년')
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /stable provider subject|deterministic non-PII login|bounded Google display name|bounded Google avatar URL|public-profile email and provider-token exclusion/)
   })
 })
 
