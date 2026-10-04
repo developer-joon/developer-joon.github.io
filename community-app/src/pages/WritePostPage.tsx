@@ -256,6 +256,10 @@ export function WritePostPage({ repository, uploadRepository, storage = window.l
   }
 
   async function publish(value: PostInput) {
+    if (!tags) {
+      setSubmitError('태그를 불러온 뒤 발행해 주세요.')
+      return
+    }
     if (mutationLock.current || uploadState.current.blocked) {
       setSubmitError('이미지 업로드 또는 정리를 완료한 뒤 발행해 주세요.')
       return
@@ -348,6 +352,6 @@ export function WritePostPage({ repository, uploadRepository, storage = window.l
     {tagError && <section className="editor-load-state" role="alert"><p>{tagError}</p><button type="button" className="secondary-action" onClick={() => setTagAttempt(value => value + 1)}>태그 다시 불러오기</button></section>}
     {!tagError && !tags && <p className="editor-load-state" role="status">태그를 불러오고 있습니다.</p>}
     {actorMismatch && <section className="editor-load-state" role="alert"><p>이 초안의 이미지는 다른 계정에서 업로드되었습니다. 원래 계정으로 로그인해 계속해 주세요.</p><button type="button" className="secondary-action" onClick={() => void auth.signOut()}>계정 바꾸기</button></section>}
-    {tags && <PostEditor key={`${editorRevision}:${draftRef.current.idempotencyKey}:${auth.user?.id ?? 'anonymous'}`} initialValue={draftRef.current} tags={tags} submitLabel="발행" onChange={autosave} onSubmit={publish} disabled={mutationPending || workflowFrozen || actorMismatch} submissionError={submitError} submissionActions={<>{conflictActions}{retryAttachmentAction}</>} allowedImageOrigin={repository.publicAttachmentOrigin} uploadRepository={uploadRepository} uploadActorId={auth.user?.id} initialAttachments={currentWorkflow && currentWorkflow.ownerId === auth.user?.id ? currentWorkflow.attachments : []} onUploadStateChange={uploadChanged} auxiliaryActions={needsLogin ? <button type="button" className="secondary-action" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeWritePath(currentPath))}>다시 로그인</button> : null} />}
+    <PostEditor key={`${editorRevision}:${draftRef.current.idempotencyKey}:${auth.user?.id ?? 'anonymous'}`} initialValue={draftRef.current} tags={tags ?? []} submitLabel="발행" onChange={autosave} onSubmit={publish} disabled={mutationPending || workflowFrozen || actorMismatch} submitDisabled={!tags} tagSelectionDisabled={!tags} submissionError={submitError} submissionActions={<>{conflictActions}{retryAttachmentAction}</>} allowedImageOrigin={repository.publicAttachmentOrigin} uploadRepository={uploadRepository} uploadActorId={auth.user?.id} initialAttachments={currentWorkflow && currentWorkflow.ownerId === auth.user?.id ? currentWorkflow.attachments : []} onUploadStateChange={uploadChanged} auxiliaryActions={needsLogin ? <button type="button" className="secondary-action" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeWritePath(currentPath))}>다시 로그인</button> : null} />
   </main><footer className="community-footer"><span>BREADLAB · EDITORIAL DESK</span><a href="/community/">글 목록</a></footer></div>
 }

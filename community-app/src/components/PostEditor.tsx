@@ -18,6 +18,8 @@ interface PostEditorProps {
   submissionError?: string | null
   auxiliaryActions?: ReactNode
   disabled?: boolean
+  submitDisabled?: boolean
+  tagSelectionDisabled?: boolean
   submissionActions?: ReactNode
   uploadRepository?: UploadRepository
   uploadActorId?: string
@@ -26,7 +28,7 @@ interface PostEditorProps {
   onUploadStateChange?(state: ImageUploaderState): void
 }
 
-export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange, unavailableTagLabels = [], allowedImageOrigin, submissionError, auxiliaryActions, disabled = false, submissionActions, uploadRepository, uploadActorId, initialAttachments = [], existingAttachmentCount = 0, onUploadStateChange }: PostEditorProps) {
+export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange, unavailableTagLabels = [], allowedImageOrigin, submissionError, auxiliaryActions, disabled = false, submitDisabled = false, tagSelectionDisabled = false, submissionActions, uploadRepository, uploadActorId, initialAttachments = [], existingAttachmentCount = 0, onUploadStateChange }: PostEditorProps) {
   const [value, setValue] = useState(initialValue)
   const [errors, setErrors] = useState<PostErrors>({})
   const [preview, setPreview] = useState(false)
@@ -66,7 +68,7 @@ export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange
   }
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (submitting.current || disabled || uploadBlocked) return
+    if (submitting.current || disabled || submitDisabled || uploadBlocked) return
     const result = validatePostInput(value)
     const nextErrors = result.ok ? {} : result.errors
     if (hasUnavailableTags) nextErrors.tagIds = '현재 사용할 수 없는 태그를 해제하고 활성 태그를 선택해 주세요.'
@@ -108,9 +110,9 @@ export function PostEditor({ initialValue, tags, submitLabel, onSubmit, onChange
       </div>}
       </div>
       {uploadRepository && uploadActorId && <ImageUploader repository={uploadRepository} actorId={uploadActorId} bodyLength={value.bodyMarkdown.length} onInsert={insertImage} onStateChange={imageStateChanged} initialAttachments={initialAttachments} existingCount={existingAttachmentCount} disabled={busy} />}
-      <TagSelector tags={tags} selected={value.tagIds} onChange={tagIds => update({ ...value, tagIds })} error={errors.tagIds} unavailableLabels={unavailableTagLabels} />
+      <TagSelector tags={tags} selected={value.tagIds} onChange={tagIds => update({ ...value, tagIds })} error={errors.tagIds} unavailableLabels={unavailableTagLabels} disabled={tagSelectionDisabled} />
       <div className="editor-actions">
-        <button className="editor-submit" type="submit" disabled={uploadBlocked}>{pending ? '처리 중' : submitLabel}</button>
+        <button className="editor-submit" type="submit" disabled={uploadBlocked || submitDisabled}>{pending ? '처리 중' : submitLabel}</button>
         {auxiliaryActions}
       </div>
       </fieldset>

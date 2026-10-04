@@ -58,6 +58,18 @@ describe('PostEditor', () => {
     expect(screen.getByRole('button', { name: '글 삭제' })).toBeDisabled()
   })
 
+  it('disables and guards submit without disabling editor fields', () => {
+    const submit = vi.fn()
+    render(<PostEditor initialValue={{ title: '제목', bodyMarkdown: '본문', tagIds: [tags[0].id] }} tags={tags} onSubmit={submit} submitLabel="발행" submitDisabled />)
+
+    expect(screen.getByLabelText('제목')).toBeEnabled()
+    expect(screen.getByLabelText('본문')).toBeEnabled()
+    const button = screen.getByRole('button', { name: '발행' })
+    expect(button).toBeDisabled()
+    fireEvent.submit(button.closest('form')!)
+    expect(submit).not.toHaveBeenCalled()
+  })
+
   it('focuses and scrolls a new asynchronous submission alert without focusing on ordinary render', async () => {
     const scrollIntoView = vi.fn()
     HTMLElement.prototype.scrollIntoView = scrollIntoView

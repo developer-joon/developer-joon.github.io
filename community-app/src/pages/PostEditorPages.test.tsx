@@ -57,6 +57,72 @@ describe('WritePostPage', () => {
     expect(screen.queryByText(/안전하게 임시 저장/)).not.toBeInTheDocument()
   })
 
+  it('keeps the editor editable and autosaving while tags are loading but blocks publish', async () => {
+    const local = storage(); const createPost = vi.fn()
+    const listTags = vi.fn(() => new Promise(() => undefined)) as CommunityRepository['listTags']
+    wrap(<WritePostPage repository={repository({ listTags, createPost })} storage={local} navigate={vi.fn()} />, auth(authorId))
+
+    expect(screen.getByRole('status')).toHaveTextContent('태그를 불러오고 있습니다.')
+    expect(screen.getByLabelText('제목')).toBeEnabled()
+    expect(screen.getByLabelText('본문')).toBeEnabled()
+    expect(screen.getByRole('group', { name: '태그' })).toBeDisabled()
+    const publish = screen.getByRole('button', { name: '발행' })
+    expect(publish).toBeDisabled()
+
+    await waitFor(() => expect(local.values.has(draftKey('write'))).toBe(true))
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '로딩 중 제목' } })
+    fireEvent.change(screen.getByLabelText('본문'), { target: { value: '로딩 중 본문' } })
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!)).toEqual(expect.objectContaining({ title: '로딩 중 제목', bodyMarkdown: '로딩 중 본문' })))
+    fireEvent.submit(publish.closest('form')!)
+    expect(createPost).not.toHaveBeenCalled()
+  })
+
+  it('keeps the editor editable and autosaving after tags fail with an explicit retry', async () => {
+    const local = storage(); const createPost = vi.fn()
+    const listTags = vi.fn().mockResolvedValue({ ok: false, error: { code: 'network', message: '태그 연결 실패' } })
+    wrap(<WritePostPage repository={repository({ listTags, createPost })} storage={local} navigate={vi.fn()} />, auth(authorId))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('태그 연결 실패')
+    expect(screen.getByRole('button', { name: '태그 다시 불러오기' })).toBeInTheDocument()
+    expect(screen.getByLabelText('제목')).toBeEnabled()
+    expect(screen.getByLabelText('본문')).toBeEnabled()
+    expect(screen.getByRole('group', { name: '태그' })).toBeDisabled()
+    const publish = screen.getByRole('button', { name: '발행' })
+    expect(publish).toBeDisabled()
+
+    await waitFor(() => expect(local.values.has(draftKey('write'))).toBe(true))
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '실패 뒤 제목' } })
+    fireEvent.change(screen.getByLabelText('본문'), { target: { value: '실패 뒤 본문' } })
+    await waitFor(() => expect(JSON.parse(local.values.get(draftKey('write'))!)).toEqual(expect.objectContaining({ title: '실패 뒤 제목', bodyMarkdown: '실패 뒤 본문' })))
+    fireEvent.submit(publish.closest('form')!)
+    expect(createPost).not.toHaveBeenCalled()
+  })
+
+  it('enables tag selection and publishes valid input after a tag retry succeeds', async () => {
+    const local = storage(); const navigate = vi.fn()
+    const listTags = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: { code: 'network', message: '태그 연결 실패' } })
+      .mockResolvedValueOnce({ ok: true, data: [tag] })
+    const createPost = vi.fn().mockResolvedValue({ ok: true, data: postId })
+    wrap(<WritePostPage repository={repository({ listTags, createPost })} storage={local} navigate={navigate} />, auth(authorId))
+
+    await screen.findByText('태그 연결 실패')
+    fireEvent.change(screen.getByLabelText('제목'), { target: { value: '재시도 제목' } })
+    fireEvent.change(screen.getByLabelText('본문'), { target: { value: '재시도 본문' } })
+    fireEvent.click(screen.getByRole('button', { name: '태그 다시 불러오기' }))
+
+    const checkbox = await screen.findByRole('checkbox', { name: 'TypeScript' })
+    expect(checkbox).toBeEnabled()
+    fireEvent.click(checkbox)
+    const publish = screen.getByRole('button', { name: '발행' })
+    expect(publish).toBeEnabled()
+    fireEvent.click(publish)
+
+    await waitFor(() => expect(createPost).toHaveBeenCalledWith(expect.objectContaining({ title: '재시도 제목', bodyMarkdown: '재시도 본문', tagIds: [tag.id] })))
+    expect(listTags).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(`/community/post/?id=${postId}`))
+  })
+
   it('persists a fresh idempotency key before asynchronous tag loading completes', async () => {
     const local = storage()
     const repo = repository({ listTags: vi.fn(() => new Promise(() => undefined)) as CommunityRepository['listTags'] })
