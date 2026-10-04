@@ -12,6 +12,19 @@ function uploadRepositoryStub() {
 }
 
 describe('App', () => {
+  it('keeps the shared header and footer visible while a lazy route loads', () => {
+    const repository = {
+      getPost: () => new Promise(() => undefined),
+      listComments: () => new Promise(() => undefined),
+    } as unknown as CommunityRepository
+
+    render(<App pathname="/community/post/" search="?id=56000000-0000-4000-8000-000000000010" repository={repository} />)
+
+    expect(screen.getByRole('banner')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('게시글 화면을 준비하고 있습니다.')
+    expect(screen.getByRole('contentinfo')).toBeInTheDocument()
+  })
+
   it('renders the public community home route', async () => {
     const repository = {
       listPosts: async () => ({ ok: true, data: { items: [], nextCursor: null } }),

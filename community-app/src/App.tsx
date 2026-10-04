@@ -36,6 +36,16 @@ interface AppProps {
   uploadRepository?: UploadRepository
 }
 
+function LazyRouteFallback({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="community-page">
+      <AppHeader />
+      <main><section className="state-panel" role="status">{children}</section></main>
+      <AppFooter />
+    </div>
+  )
+}
+
 export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, authClient, onAuthCallbackNavigate }: AppProps) {
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (normalizedPathname === '/community') {
@@ -43,19 +53,19 @@ export function App({ pathname = window.location.pathname, search = window.locat
   }
   if (normalizedPathname === '/community/post') {
     return (
-      <Suspense fallback={<div className="page" role="status">게시글 화면을 준비하고 있습니다.</div>}>
+      <Suspense fallback={<LazyRouteFallback>게시글 화면을 준비하고 있습니다.</LazyRouteFallback>}>
         <PostDetailPage repository={repository ?? getCommunityRepository()} search={search} currentPath={`${pathname}${search}${hash}`} />
       </Suspense>
     )
   }
   if (normalizedPathname === '/community/write') {
-    return <Suspense fallback={<div className="page" role="status">글쓰기 화면을 준비하고 있습니다.</div>}><WritePostPage repository={repository ?? getCommunityRepository()} uploadRepository={uploadRepository ?? getUploadRepository()} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+    return <Suspense fallback={<LazyRouteFallback>글쓰기 화면을 준비하고 있습니다.</LazyRouteFallback>}><WritePostPage repository={repository ?? getCommunityRepository()} uploadRepository={uploadRepository ?? getUploadRepository()} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/edit') {
-    return <Suspense fallback={<div className="page" role="status">글 수정 화면을 준비하고 있습니다.</div>}><EditPostPage repository={repository ?? getCommunityRepository()} uploadRepository={uploadRepository ?? getUploadRepository()} search={search} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+    return <Suspense fallback={<LazyRouteFallback>글 수정 화면을 준비하고 있습니다.</LazyRouteFallback>}><EditPostPage repository={repository ?? getCommunityRepository()} uploadRepository={uploadRepository ?? getUploadRepository()} search={search} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/admin/reports') {
-    return <Suspense fallback={<div className="page" role="status">신고 운영 데스크를 준비하고 있습니다.</div>}><AdminReportsPage repository={repository ?? getCommunityRepository()} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+    return <Suspense fallback={<LazyRouteFallback>신고 운영 데스크를 준비하고 있습니다.</LazyRouteFallback>}><AdminReportsPage repository={repository ?? getCommunityRepository()} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/auth/callback') {
     return <AuthCallbackPage client={authClient} search={search} navigate={onAuthCallbackNavigate} />
