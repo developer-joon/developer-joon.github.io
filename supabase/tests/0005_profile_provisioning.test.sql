@@ -4,9 +4,9 @@ select plan(71);
 
 select has_function(
   'private',
-  'provision_github_profile',
+  'provision_oauth_profile',
   array[]::text[],
-  'GitHub profile provisioning function exists'
+  'provider-neutral OAuth profile trigger function exists'
 );
 select hasnt_trigger(
   'auth',
@@ -17,7 +17,7 @@ select hasnt_trigger(
 select has_trigger(
   'auth',
   'identities',
-  'identities_provision_github_profile',
+  'identities_provision_oauth_profile',
   'trusted auth identities provisioning trigger exists'
 );
 select ok(not has_table_privilege('anon', 'public.profiles', 'INSERT'), 'anon cannot insert profiles directly');
@@ -30,7 +30,7 @@ select ok(
       from pg_proc p
       join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'private'
-       and p.proname = 'provision_github_profile'
+       and p.proname in ('provision_oauth_profile', 'provision_oauth_profile_identity')
        and has_function_privilege('anon', p.oid, 'EXECUTE')
   ),
   'anon cannot execute the provisioning function'
@@ -41,7 +41,7 @@ select ok(
       from pg_proc p
       join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'private'
-       and p.proname = 'provision_github_profile'
+       and p.proname in ('provision_oauth_profile', 'provision_oauth_profile_identity')
        and has_function_privilege('authenticated', p.oid, 'EXECUTE')
   ),
   'authenticated cannot execute the provisioning function'

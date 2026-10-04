@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
@@ -25,6 +25,15 @@ describe('AdminReportsPage', () => {
     rerender(<AuthContext.Provider value={{ ...signedOut, signIn: login }}><AdminReportsPage repository={repo()} currentPath="/community/admin/reports/?status=open#queue" /></AuthContext.Provider>)
     fireEvent.click(screen.getByRole('button', { name: 'Google로 관리자 로그인' }))
     expect(login).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, '/community/admin/reports/?status=open#queue')
+  })
+
+  it('shows visible accessible provider copy while admin sign-in is pending', () => {
+    render(<AuthContext.Provider value={{ ...signedOut, pending: true }}><AdminReportsPage repository={repo()} currentPath="/community/admin/reports/" /></AuthContext.Provider>)
+    const gate = screen.getByRole('heading', { name: '관리자 로그인이 필요합니다' }).closest('section')
+    expect(gate).not.toBeNull()
+    const button = within(gate!).getByRole('button', { name: 'Google 연결 중' })
+    expect(button).toBeDisabled()
+    expect(button).toHaveTextContent('Google 연결 중')
   })
 
   it('checks DB admin before queue access and denies non-admins', async () => {

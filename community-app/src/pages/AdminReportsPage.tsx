@@ -235,7 +235,7 @@ export function AdminReportsPage({ repository, currentPath }: Props) {
   }
 
   if (auth.loading) return <AdminShell><p className="admin-gate" role="status">로그인 상태를 확인하고 있습니다.</p></AdminShell>
-  if (!actorId) return <AdminShell><section className="admin-gate"><p className="community-kicker">ADMIN ACCESS</p><h1>관리자 로그인이 필요합니다</h1><p>신고 기록은 인증된 운영자만 확인할 수 있습니다.</p><button type="button" disabled={auth.pending} onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, currentPath)}>{AUTH_PROVIDER_DEFINITIONS[DEFAULT_AUTH_PROVIDER].loginLabel.replace(' 로그인', ' 관리자 로그인')}</button></section></AdminShell>
+  if (!actorId) return <AdminShell><section className="admin-gate"><p className="community-kicker">ADMIN ACCESS</p><h1>관리자 로그인이 필요합니다</h1><p>신고 기록은 인증된 운영자만 확인할 수 있습니다.</p><button type="button" disabled={auth.pending} onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, currentPath)}>{auth.pending ? AUTH_PROVIDER_DEFINITIONS[DEFAULT_AUTH_PROVIDER].pendingLabel : AUTH_PROVIDER_DEFINITIONS[DEFAULT_AUTH_PROVIDER].adminLoginLabel}</button></section></AdminShell>
   if (adminState === 'checking' || (adminState === 'allowed' && !isAuthorized)) return <AdminShell><p className="admin-gate" role="status">데이터베이스에서 관리자 권한을 확인하고 있습니다.</p></AdminShell>
   if (adminState === 'denied') return <AdminShell><section className="admin-gate"><p className="community-kicker">ACCESS DENIED</p><h1>접근 권한이 없습니다</h1><p>이 계정에는 신고 관리 권한이 없습니다.</p></section></AdminShell>
   if (adminState === 'error') return <AdminShell><section className="admin-gate admin-error" role="alert"><h1>권한을 확인하지 못했습니다</h1><p>{adminError}</p><button type="button" onClick={() => setAdminAttempt(value => value + 1)}>다시 시도</button></section></AdminShell>
