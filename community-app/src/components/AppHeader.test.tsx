@@ -115,6 +115,8 @@ describe('AppHeader global shell', () => {
     const toggle = screen.getByRole('button', { name: '주요 메뉴 열기' })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(toggle).toHaveAttribute('aria-controls', navigation.id)
+    expect(toggle).not.toHaveTextContent(/menu|메뉴/i)
+    expect(toggle.querySelector('.menu-toggle__icon')).toHaveAttribute('aria-hidden', 'true')
     expect(within(navigation).getAllByRole('link')).toHaveLength(5)
 
     fireEvent.click(toggle)

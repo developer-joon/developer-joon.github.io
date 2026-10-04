@@ -101,7 +101,7 @@ export function AppHeader({ showCommunityActions = true }: AppHeaderProps) {
           aria-label={mobileNavigation && menuOpen ? '주요 메뉴 닫기' : '주요 메뉴 열기'}
           onClick={() => { if (mobileNavigation) setMenuOpen((open) => !open) }}
         >
-          <span aria-hidden="true">Menu</span>
+          <span className="menu-toggle__icon" aria-hidden="true"><span /></span>
         </button>
         <nav ref={navigationRef} id="global-navigation" className={mobileNavigation && menuOpen ? 'global-navigation is-open' : 'global-navigation'} aria-label="주요 메뉴">
           {globalLinks.map((link) => (
