@@ -212,13 +212,13 @@ isOneToOne: false
                   ]
                 },"profiles": {
                   Row: {
-                    "avatar_url": string | null,"created_at": string,"display_name": string | null,"github_user_id": number | null,"id": string,"login": string,"updated_at": string
+                    "avatar_url": string | null,"created_at": string,"display_name": string | null,"github_user_id": number | null,"id": string,"login": string,"metadata_provider": string | null,"updated_at": string
                   }
                   Insert: {
-                    "avatar_url"?: string | null,"created_at"?: string,"display_name"?: string | null,"github_user_id"?: number | null,"id": string,"login": string,"updated_at"?: string
+                    "avatar_url"?: string | null,"created_at"?: string,"display_name"?: string | null,"github_user_id"?: number | null,"id": string,"login": string,"metadata_provider"?: string | null,"updated_at"?: string
                   }
                   Update: {
-                    "avatar_url"?: string | null,"created_at"?: string,"display_name"?: string | null,"github_user_id"?: number | null,"id"?: string,"login"?: string,"updated_at"?: string
+                    "avatar_url"?: string | null,"created_at"?: string,"display_name"?: string | null,"github_user_id"?: number | null,"id"?: string,"login"?: string,"metadata_provider"?: string | null,"updated_at"?: string
                   }
                   Relationships: [
 
