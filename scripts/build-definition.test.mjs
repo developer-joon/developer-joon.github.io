@@ -116,6 +116,23 @@ test('builds community snapshots from fixtures by default and requires live cred
   assert.match(build, /SUPABASE_PUBLISHABLE_KEY:\?SUPABASE_PUBLISHABLE_KEY is required in live mode/)
 })
 
+test('keeps all six community entry titles aligned with the release verifier contract', async () => {
+  const verifier = await readFile(path.join(repoRoot, 'scripts/verify-site.mjs'), 'utf8')
+  const titles = new Map([
+    ['community-app/index.html', '<title>Community · Ria &amp; Seoa PaPa</title>'],
+    ['community-app/write/index.html', '<title>글쓰기 · Ria &amp; Seoa PaPa</title>'],
+    ['community-app/post/index.html', '<title>게시글 · Ria &amp; Seoa PaPa</title>'],
+    ['community-app/edit/index.html', '<title>글 수정 · Ria &amp; Seoa PaPa</title>'],
+    ['community-app/admin/reports/index.html', '<title>신고 관리 · Ria &amp; Seoa PaPa</title>'],
+    ['community-app/auth/callback/index.html', '<title>로그인 처리 · Ria &amp; Seoa PaPa</title>'],
+  ])
+
+  for (const [relativePath, expectedTitle] of titles) {
+    assert.ok((await readFile(path.join(repoRoot, relativePath), 'utf8')).includes(expectedTitle))
+    assert.ok(verifier.includes(expectedTitle), `release verifier title is stale for ${relativePath}`)
+  }
+})
+
 test('keeps Pages upload and deploy in the reusable Jekyll workflow with live snapshot credentials', async () => {
   const workflow = await readFile(path.join(repoRoot, '.github/workflows/jekyll.yml'), 'utf8')
   const workflowDirectory = path.join(repoRoot, '.github/workflows')

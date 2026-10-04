@@ -2,11 +2,12 @@
   --background: #ffffff;
   --background-alt: #f4f5f6;
   --text-dark: #2A2F36;
-  --text-medium: #6C7A89;
-  --text-light: #ABB7B7;
-  --accent: #3498db;
+  --text-medium: #5d6875;
+  --text-light: #6c757d;
+  --accent: #2176ad;
+  --accent-legacy: #3498db;
   --border: #dddddd;
-  --error: #D64541;
+  --error: #c53531;
   --font-family: "Muli", sans-serif;
   --weight-light: 300;
   --weight-regular: 400;

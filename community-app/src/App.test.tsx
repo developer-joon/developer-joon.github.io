@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { App, ConfigurationErrorScreen } from './App'
 import type { AuthClient } from './auth/AuthProvider'
@@ -142,5 +142,15 @@ describe('App', () => {
     expect(
       screen.getByRole('link', { name: '기존 블로그로 돌아가기' }),
     ).toHaveAttribute('href', '/')
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('현재 커뮤니티 연결 정보를 불러올 수 없습니다.')
+    expect(alert).not.toContainElement(screen.getByRole('banner'))
+    expect(alert).not.toContainElement(screen.getByRole('navigation', { name: '주요 메뉴' }))
+    expect(alert).not.toContainElement(screen.getByRole('contentinfo'))
+    expect(screen.queryByRole('region', { name: '커뮤니티 작업' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '글쓰기' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Google.*로그인/ })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('banner')).getByRole('link', { name: 'Ria & Seoa PaPa' })).toBeInTheDocument()
   })
 })

@@ -1,14 +1,44 @@
 /// <reference types="node" />
 
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, AuthProvider, type AuthClient, type AuthContextValue } from '../auth/AuthProvider'
 import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AppHeader } from './AppHeader'
 
 const communityCss = readFileSync(resolve(process.cwd(), 'src/styles/community.css'), 'utf8')
+
+function stubMobileViewport(initialMatches = true) {
+  let matches = initialMatches
+  const listeners = new Set<(event: MediaQueryListEvent) => void>()
+  const media = '(max-width: 1023px)'
+  const result = {
+    get matches() { return matches },
+    media,
+    onchange: null,
+    addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.add(listener),
+    removeEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener),
+    addListener: (listener: (event: MediaQueryListEvent) => void) => listeners.add(listener),
+    removeListener: (listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener),
+    dispatchEvent: () => true,
+  } as MediaQueryList
+  vi.stubGlobal('matchMedia', vi.fn(() => result))
+  return {
+    listenerCount: () => listeners.size,
+    setMatches(next: boolean) {
+      matches = next
+      const event = { matches, media } as MediaQueryListEvent
+      listeners.forEach((listener) => listener(event))
+    },
+  }
+}
+
+afterEach(() => {
+  document.body.style.overflow = ''
+  vi.unstubAllGlobals()
+})
 
 vi.mock('../auth/providers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../auth/providers')>()
@@ -78,6 +108,7 @@ describe('AppHeader global shell', () => {
   })
 
   it('provides an accessible mobile menu toggle without removing links from the DOM', () => {
+    stubMobileViewport()
     render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
 
     const navigation = screen.getByRole('navigation', { name: '주요 메뉴' })
@@ -91,6 +122,64 @@ describe('AppHeader global shell', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(toggle).toHaveAccessibleName('주요 메뉴 닫기')
     expect(within(navigation).getAllByRole('link')).toHaveLength(5)
+  })
+
+  it('moves focus into the mobile menu, traps Tab, closes on Escape, and restores focus and scroll', () => {
+    stubMobileViewport()
+    document.body.style.overflow = 'clip'
+    render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
+    const navigation = screen.getByRole('navigation', { name: '주요 메뉴' })
+    const links = within(navigation).getAllByRole('link')
+    const toggle = screen.getByRole('button', { name: '주요 메뉴 열기' })
+
+    toggle.focus()
+    fireEvent.click(toggle)
+    expect(links[0]).toHaveFocus()
+    expect(document.body.style.overflow).toBe('hidden')
+
+    fireEvent.keyDown(links[0], { key: 'Tab', shiftKey: true })
+    expect(toggle).toHaveFocus()
+    links.at(-1)!.focus()
+    fireEvent.keyDown(links.at(-1)!, { key: 'Tab' })
+    expect(toggle).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).toHaveFocus()
+    expect(document.body.style.overflow).toBe('clip')
+  })
+
+  it('closes the mobile menu on link activation', () => {
+    stubMobileViewport()
+    render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
+    fireEvent.click(screen.getByRole('button', { name: '주요 메뉴 열기' }))
+    const blogLink = screen.getByRole('link', { name: 'Blog' })
+    blogLink.addEventListener('click', (event) => event.preventDefault(), { once: true })
+    fireEvent.click(blogLink)
+    expect(screen.getByRole('button', { name: '주요 메뉴 열기' })).toHaveAttribute('aria-expanded', 'false')
+    expect(document.body.style.overflow).toBe('')
+  })
+
+  it('cleans up the modal menu when desktop navigation activates or the header unmounts', () => {
+    const viewport = stubMobileViewport()
+    document.body.style.overflow = 'auto'
+    const view = render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
+    const toggle = screen.getByRole('button', { name: '주요 메뉴 열기' })
+    fireEvent.click(toggle)
+    expect(viewport.listenerCount()).toBe(1)
+    expect(document.body.style.overflow).toBe('hidden')
+
+    act(() => viewport.setMatches(false))
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(document.body.style.overflow).toBe('auto')
+    expect(screen.getByRole('navigation', { name: '주요 메뉴' })).not.toHaveClass('is-open')
+    expect(within(screen.getByRole('navigation', { name: '주요 메뉴' })).getAllByRole('link')).toHaveLength(5)
+
+    act(() => viewport.setMatches(true))
+    fireEvent.click(toggle)
+    view.unmount()
+    expect(document.body.style.overflow).toBe('auto')
+    expect(viewport.listenerCount()).toBe(0)
   })
 })
 

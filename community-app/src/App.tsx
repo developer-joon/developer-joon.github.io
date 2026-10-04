@@ -96,13 +96,13 @@ export function App({ pathname = window.location.pathname, search = window.locat
 
 export function ConfigurationErrorScreen() {
   return (
-    <div className="community-page error" role="alert">
-      <AppHeader />
+    <div className="community-page error">
+      <AppHeader showCommunityActions={false} />
       <main>
-        <section className="community-hero">
+        <section className="community-hero" role="alert" aria-labelledby="configuration-error-title">
           <div>
             <p className="community-kicker">COMMUNITY · CONFIGURATION</p>
-            <h1>커뮤니티 설정을 확인해 주세요</h1>
+            <h1 id="configuration-error-title">커뮤니티 설정을 확인해 주세요</h1>
           </div>
           <p>현재 커뮤니티 연결 정보를 불러올 수 없습니다. 운영자에게 알려 주세요.</p>
         </section>

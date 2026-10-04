@@ -88,18 +88,56 @@ function computedDeclarations(classes: string[], tag: string, viewportWidth: num
   return Object.fromEntries(Object.entries(resolved).map(([property, result]) => [property, result.value]))
 }
 
+function tokenValue(name: string) {
+  return tokens.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6});`, 'i'))?.[1]
+}
+
+function relativeLuminance(hex: string) {
+  const channels = hex.slice(1).match(/.{2}/g)!.map((channel) => {
+    const value = Number.parseInt(channel, 16) / 255
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+}
+
+function contrastRatio(foreground: string, background: string) {
+  const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
 describe('Jekyll visual contract', () => {
-  it('uses the exact site palette and Muli font tokens without the old editorial palette', () => {
+  it('keeps the recognizable site palette while assigning accessible functional colors', () => {
     expect(tokens).toContain('--background: #ffffff;')
     expect(tokens).toContain('--background-alt: #f4f5f6;')
     expect(tokens).toContain('--text-dark: #2A2F36;')
-    expect(tokens).toContain('--text-medium: #6C7A89;')
-    expect(tokens).toContain('--text-light: #ABB7B7;')
-    expect(tokens).toContain('--accent: #3498db;')
+    expect(tokens).toContain('--text-medium: #5d6875;')
+    expect(tokens).toContain('--text-light: #6c757d;')
+    expect(tokens).toContain('--accent: #2176ad;')
+    expect(tokens).toContain('--accent-legacy: #3498db;')
     expect(tokens).toContain('--border: #dddddd;')
+    expect(tokens).toContain('--error: #c53531;')
     expect(tokens).toContain('--font-family: "Muli", sans-serif;')
     expect(`${tokens}\n${globalCss}\n${communityCss}`).not.toMatch(/Georgia|#(?:f4f0e7|e8e1d4|f7f1e6|faf7f0|262824|1e211e|1557b0|0f3f83)/i)
     expect(communityCss).toMatch(/\.markdown-content pre[^}]*background:\s*var\(--text-dark\)[^}]*color:\s*#fff/)
+  })
+
+  it('meets WCAG AA contrast for representative normal text, links, controls, metadata, and errors', () => {
+    const usages = [
+      ['body text', 'text-medium', 'background'],
+      ['ordinary links', 'text-dark', 'background'],
+      ['accent links and outlined controls', 'accent', 'background'],
+      ['accent button labels', 'background', 'accent'],
+      ['footer metadata', 'text-light', 'background'],
+      ['errors', 'error', 'background'],
+    ] as const
+
+    for (const [usage, foregroundToken, backgroundToken] of usages) {
+      const foreground = tokenValue(foregroundToken)
+      const background = tokenValue(backgroundToken)
+      expect(foreground, `${usage} foreground token`).toBeDefined()
+      expect(background, `${usage} background token`).toBeDefined()
+      expect(contrastRatio(foreground!, background!), `${usage} contrast`).toBeGreaterThanOrEqual(4.5)
+    }
   })
 
   it('loads the same Muli weights as the Jekyll site', () => {

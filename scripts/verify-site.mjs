@@ -480,12 +480,12 @@ async function main() {
   }
 
   const communityShells = [
-    ['community/index.html', '<title>Breadlab 커뮤니티</title>'],
-    ['community/write/index.html', '<title>글쓰기 | Breadlab 커뮤니티</title>'],
-    ['community/post/index.html', '<title>게시글 | Breadlab 커뮤니티</title>'],
-    ['community/edit/index.html', '<title>글 수정 | Breadlab 커뮤니티</title>'],
-    ['community/admin/reports/index.html', '<title>신고 관리 | Breadlab 커뮤니티</title>'],
-    ['community/auth/callback/index.html', '<title>로그인 처리 | Breadlab 커뮤니티</title>'],
+    ['community/index.html', '<title>Community · Ria &amp; Seoa PaPa</title>'],
+    ['community/write/index.html', '<title>글쓰기 · Ria &amp; Seoa PaPa</title>'],
+    ['community/post/index.html', '<title>게시글 · Ria &amp; Seoa PaPa</title>'],
+    ['community/edit/index.html', '<title>글 수정 · Ria &amp; Seoa PaPa</title>'],
+    ['community/admin/reports/index.html', '<title>신고 관리 · Ria &amp; Seoa PaPa</title>'],
+    ['community/auth/callback/index.html', '<title>로그인 처리 · Ria &amp; Seoa PaPa</title>'],
   ]
   for (const [relativePath, title] of communityShells) {
     const html = await readText(relativePath)
