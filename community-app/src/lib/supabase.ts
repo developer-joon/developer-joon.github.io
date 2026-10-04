@@ -3,6 +3,7 @@ import { parseEnv } from '../config/env'
 import type { Database } from '../types/database'
 
 let browserClient: SupabaseClient<Database> | undefined
+let anonymousBrowserClient: SupabaseClient<Database> | undefined
 
 export function getSupabaseClient(): SupabaseClient<Database> {
   if (browserClient) {
@@ -19,4 +20,20 @@ export function getSupabaseClient(): SupabaseClient<Database> {
     },
   })
   return browserClient
+}
+
+export function getAnonymousSupabaseClient(): SupabaseClient<Database> {
+  if (anonymousBrowserClient) {
+    return anonymousBrowserClient
+  }
+
+  const env = parseEnv(import.meta.env)
+  anonymousBrowserClient = createClient<Database>(env.supabaseUrl, env.supabasePublishableKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  })
+  return anonymousBrowserClient
 }

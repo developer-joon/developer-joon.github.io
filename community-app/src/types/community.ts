@@ -188,6 +188,11 @@ export interface CommunityError {
   message: string
 }
 
+export interface CommunityRecovery {
+  code: 'session_cleared'
+  message: string
+}
+
 export type CommunityResult<T> =
-  | { ok: true; data: T }
+  | { ok: true; data: T; recovery?: CommunityRecovery }
   | { ok: false; error: CommunityError }

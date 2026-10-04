@@ -34,7 +34,7 @@ import type {
   UpdatePostInput,
 } from '../types/community'
 import type { Database } from '../types/database'
-import { getSupabaseClient } from '../lib/supabase'
+import { getAnonymousSupabaseClient, getSupabaseClient } from '../lib/supabase'
 import { parseEnv } from '../config/env'
 import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
 
@@ -58,6 +58,11 @@ export interface CommunityClient {
   publicAttachmentUrl(attachmentId: string): string
   listTags(): PromiseLike<QueryResponse>
   rpc<Name extends RpcName>(name: Name, args: RpcArgs<Name>): PromiseLike<QueryResponse>
+}
+
+interface PublicReadRecovery {
+  clearSession(): PromiseLike<void>
+  anonymousClient: CommunityClient
 }
 
 interface RawTag { id: string; slug: string; label: string }
@@ -99,7 +104,7 @@ function mapError(error: unknown): CommunityError {
   }
   const sourceCode = sourceCodeFrom(error)
   switch (sourceCode) {
-    case 'PGRST301': return { code: 'auth_required', sourceCode, message: '로그인이 필요합니다.' }
+    case 'PGRST301': case 'PGRST303': return { code: 'auth_required', sourceCode, message: '로그인이 필요합니다.' }
     case '42501': return { code: 'forbidden', sourceCode, message: '요청할 권한이 없습니다.' }
     case '22023': case '23514': return { code: 'validation', sourceCode, message: '입력 내용을 확인해 주세요.' }
     case '23505': return { code: 'conflict', sourceCode, message: '이미 처리된 요청입니다.' }
@@ -128,6 +133,24 @@ async function execute<T>(operation: () => PromiseLike<QueryResponse>, map: (dat
       message: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
     })
   }
+}
+async function executePublic<T>(
+  client: CommunityClient,
+  recovery: PublicReadRecovery | undefined,
+  operation: (target: CommunityClient) => PromiseLike<QueryResponse>,
+  map: (data: unknown) => T,
+): Promise<CommunityResult<T>> {
+  const first = await execute(() => operation(client), map)
+  if (first.ok || first.error.code !== 'auth_required' || !recovery) return first
+  try {
+    await recovery.clearSession()
+  } catch {
+    return first
+  }
+  const retry = await execute(() => operation(recovery.anonymousClient), map)
+  return retry.ok
+    ? { ...retry, recovery: { code: 'session_cleared', message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' } }
+    : retry
 }
 function mapTag(tag: RawTag): CommunityTag { return { id: tag.id, slug: tag.slug, label: tag.label } }
 function tagsFrom(value: unknown): CommunityTag[] { return Array.isArray(value) ? (value as RawTag[]).map(mapTag) : [] }
@@ -416,13 +439,26 @@ function mapModerationAuditPage(data: unknown, limit: number, targetType?: Moder
   return { items, hasMore: data.has_more, nextCursor }
 }
 
-export function createCommunityRepository(client: CommunityClient) {
+export function createCommunityRepository(client: CommunityClient, recovery?: PublicReadRecovery) {
   const publicAttachmentOrigin = new URL(client.publicAttachmentUrl('00000000-0000-4000-8000-000000000000')).origin
+  let clearingSession: Promise<void> | undefined
+  const publicRecovery = recovery ? {
+    anonymousClient: recovery.anonymousClient,
+    clearSession: async () => {
+      if (clearingSession) return clearingSession
+      clearingSession = (async () => recovery.clearSession())()
+      try {
+        await clearingSession
+      } finally {
+        clearingSession = undefined
+      }
+    },
+  } : undefined
   return {
     publicAttachmentOrigin,
     async listPosts(input: PostListInput): Promise<CommunityResult<PostPage>> {
       const sort = input.sort ?? 'newest'
-      return execute(() => client.rpc('list_public_posts', {
+      return executePublic(client, publicRecovery, target => target.rpc('list_public_posts', {
         p_sort: sort, p_limit: input.limit, p_search: input.search?.trim() || undefined,
         p_tag_id: input.tagId, p_cursor_is_pinned: input.cursor?.isPinned,
         p_cursor_created_at: input.cursor?.createdAt, p_cursor_rank: input.cursor?.rank ?? undefined,
@@ -441,8 +477,10 @@ export function createCommunityRepository(client: CommunityClient) {
       })
     },
     async getPost(postId: string): Promise<CommunityResult<PublicPostRead>> {
-      return execute(
-        () => client.rpc('get_public_post_v3', { p_post_id: postId }),
+      return executePublic(
+        client,
+        publicRecovery,
+        target => target.rpc('get_public_post_v3', { p_post_id: postId }),
         data => mapPublicPostRead(data, client.publicAttachmentUrl),
       )
     },
@@ -450,7 +488,7 @@ export function createCommunityRepository(client: CommunityClient) {
       if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
         return failure({ code: 'validation', sourceCode: 'INVALID_COMMENT_LIMIT', message: '입력 내용을 확인해 주세요.' })
       }
-      return execute(() => client.rpc('list_public_post_comments_v2', {
+      return executePublic(client, publicRecovery, target => target.rpc('list_public_post_comments_v2', {
         p_post_id: input.postId,
         p_limit: input.limit,
         p_cursor_root_created_at: input.cursor?.rootCreatedAt,
@@ -461,7 +499,7 @@ export function createCommunityRepository(client: CommunityClient) {
       }), mapCommentPage)
     },
     async listTags(): Promise<CommunityResult<CommunityTag[]>> {
-      return execute(() => client.listTags(), data => {
+      return executePublic(client, publicRecovery, target => target.listTags(), data => {
         if (!Array.isArray(data) || !data.every(isDetailTag)) throw new Error('invalid tag response')
         return data.map(mapTag)
       })
@@ -561,8 +599,7 @@ export function createCommunityRepository(client: CommunityClient) {
 }
 export type CommunityRepository = ReturnType<typeof createCommunityRepository>
 
-function createBrowserCommunityClient(): CommunityClient {
-  const client = getSupabaseClient()
+function createBrowserCommunityClient(client = getSupabaseClient()): CommunityClient {
   const { supabaseUrl } = parseEnv(import.meta.env)
   return {
     publicAttachmentUrl: attachmentId => new URL(`/functions/v1/public-attachment/${attachmentId}`, supabaseUrl).toString(),
@@ -572,6 +609,15 @@ function createBrowserCommunityClient(): CommunityClient {
 }
 let browserRepository: CommunityRepository | undefined
 export function getCommunityRepository(): CommunityRepository {
-  browserRepository ??= createCommunityRepository(createBrowserCommunityClient())
+  if (!browserRepository) {
+    const client = getSupabaseClient()
+    browserRepository = createCommunityRepository(createBrowserCommunityClient(client), {
+      clearSession: async () => {
+        const { error } = await client.auth.signOut({ scope: 'local' })
+        if (error) throw error
+      },
+      anonymousClient: createBrowserCommunityClient(getAnonymousSupabaseClient()),
+    })
+  }
   return browserRepository
 }

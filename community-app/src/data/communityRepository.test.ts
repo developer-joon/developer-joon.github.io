@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-const browserClient = vi.hoisted(() => ({ rpc: vi.fn() }))
-vi.mock('../lib/supabase', () => ({ getSupabaseClient: () => browserClient }))
+const browserClient = vi.hoisted(() => ({ rpc: vi.fn(), auth: { signOut: vi.fn() } }))
+const anonymousBrowserClient = vi.hoisted(() => ({ rpc: vi.fn() }))
+vi.mock('../lib/supabase', () => ({
+  getSupabaseClient: () => browserClient,
+  getAnonymousSupabaseClient: () => anonymousBrowserClient,
+}))
 vi.mock('../config/env', () => ({
   parseEnv: () => ({
     supabaseUrl: 'https://abcdefghijklmnopqrst.supabase.co',
@@ -60,6 +64,29 @@ function setup() {
     setDetailResponse(value: QueryResponse) { detailResponse = value },
     setCommentsResponse(value: QueryResponse) { commentsResponse = value },
     setMutationResponse(value: QueryResponse) { mutationResponse = value },
+  }
+}
+
+function staleSessionRecoverySetup() {
+  const primaryCalls: string[] = []
+  const anonymousCalls: string[] = []
+  const clearSession = vi.fn().mockResolvedValue(undefined)
+  let primaryResponse: QueryResponse = { data: null, error: { code: 'PGRST303', message: 'JWT expired' } }
+  let anonymousResponse: QueryResponse = { data: [], error: null }
+  const client = (calls: string[], response: () => QueryResponse): CommunityClient => ({
+    publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
+    listTags: () => { calls.push('listTags'); return Promise.resolve(response()) },
+    rpc: (name) => { calls.push(name); return Promise.resolve(response()) },
+  })
+  const primary = client(primaryCalls, () => primaryResponse)
+  const anonymous = client(anonymousCalls, () => anonymousResponse)
+  return {
+    repository: createCommunityRepository(primary, { clearSession, anonymousClient: anonymous }),
+    primaryCalls,
+    anonymousCalls,
+    clearSession,
+    setPrimaryResponse(value: QueryResponse) { primaryResponse = value },
+    setAnonymousResponse(value: QueryResponse) { anonymousResponse = value },
   }
 }
 
@@ -146,6 +173,101 @@ describe('community repository public list contract', () => {
       ok: false,
       error: { code: 'unknown', sourceCode: 'INVALID_RESPONSE', message: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' },
     })
+  })
+
+  it('classifies a stale authenticated JWT on public entry as auth required', async () => {
+    const value = setup()
+    value.setListResponse({
+      data: null,
+      error: { code: 'PGRST303', message: 'JWT expired', details: 'stale bearer token' },
+    })
+
+    expect(await value.repository.listPosts({ limit: 20, sort: 'newest' })).toEqual({
+      ok: false,
+      error: {
+        code: 'auth_required',
+        sourceCode: 'PGRST303',
+        message: '로그인이 필요합니다.',
+      },
+    })
+  })
+
+  it.each([
+    ['listPosts', 'list_public_posts', { data: [row], error: null }],
+    ['getPost', 'get_public_post_v3', { data: { kind: 'published', post: detailRow }, error: null }],
+    ['listComments', 'list_public_post_comments_v2', { data: { items: [], has_more: false, next_cursor: null }, error: null }],
+    ['listTags', 'listTags', { data: [{ id: '56000000-0000-4000-8000-000000000040', slug: 'typescript', label: 'TypeScript' }], error: null }],
+  ] as const)('clears a stale session and retries %s anonymously once', async (method, expectedCall, response) => {
+    const value = staleSessionRecoverySetup()
+    value.setAnonymousResponse(response)
+    const inputs = {
+      listPosts: { limit: 20, sort: 'newest' as const },
+      getPost: detailRow.id,
+      listComments: { postId: detailRow.id, limit: 50 },
+      listTags: undefined,
+    }
+
+    const result = await (value.repository[method] as (input?: never) => Promise<unknown>)(inputs[method] as never)
+
+    expect(result).toMatchObject({
+      ok: true,
+      recovery: { code: 'session_cleared', message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' },
+    })
+    expect(value.primaryCalls).toEqual([expectedCall])
+    expect(value.clearSession).toHaveBeenCalledOnce()
+    expect(value.anonymousCalls).toEqual([expectedCall])
+  })
+
+  it('does not retry malformed successful public payloads anonymously', async () => {
+    const value = staleSessionRecoverySetup()
+    value.setPrimaryResponse({ data: { kind: 'published', post: { ...detailRow, id: 'bad' } }, error: null })
+
+    expect(await value.repository.getPost(detailRow.id)).toMatchObject({ ok: false, error: { sourceCode: 'INVALID_RESPONSE' } })
+    expect(value.clearSession).not.toHaveBeenCalled()
+    expect(value.anonymousCalls).toEqual([])
+  })
+
+  it('stops after one anonymous public-read retry', async () => {
+    const value = staleSessionRecoverySetup()
+    value.setAnonymousResponse({ data: null, error: { code: 'PGRST303', message: 'still expired' } })
+
+    expect(await value.repository.listPosts({ limit: 20 })).toMatchObject({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST303' } })
+    expect(value.primaryCalls).toEqual(['list_public_posts'])
+    expect(value.clearSession).toHaveBeenCalledOnce()
+    expect(value.anonymousCalls).toEqual(['list_public_posts'])
+  })
+
+  it('wires the browser repository to local sign-out and the non-persisting anonymous client', async () => {
+    browserClient.rpc.mockResolvedValueOnce({ data: null, error: { code: 'PGRST303', message: 'JWT expired' } })
+    browserClient.auth.signOut.mockResolvedValueOnce({ error: null })
+    anonymousBrowserClient.rpc.mockResolvedValueOnce({ data: [row], error: null })
+
+    const result = await getCommunityRepository().listPosts({ limit: 20, sort: 'newest' })
+
+    expect(browserClient.auth.signOut).toHaveBeenCalledWith({ scope: 'local' })
+    expect(anonymousBrowserClient.rpc).toHaveBeenCalledOnce()
+    expect(result).toMatchObject({ ok: true, data: { items: [{ id: row.id }] }, recovery: { code: 'session_cleared' } })
+  })
+
+  it('coalesces session clearing for concurrent stale public reads', async () => {
+    browserClient.auth.signOut.mockClear()
+    let finishSignOut: ((value: { error: null }) => void) | undefined
+    const signOut = new Promise<{ error: null }>((resolve) => { finishSignOut = resolve })
+    browserClient.rpc
+      .mockResolvedValueOnce({ data: null, error: { code: 'PGRST303', message: 'JWT expired' } })
+      .mockResolvedValueOnce({ data: null, error: { code: 'PGRST303', message: 'JWT expired' } })
+    browserClient.auth.signOut.mockReturnValueOnce(signOut)
+    anonymousBrowserClient.rpc
+      .mockResolvedValueOnce({ data: [row], error: null })
+      .mockResolvedValueOnce({ data: { kind: 'published', post: detailRow }, error: null })
+
+    const posts = getCommunityRepository().listPosts({ limit: 20 })
+    const detail = getCommunityRepository().getPost(detailRow.id)
+    await vi.waitFor(() => expect(browserClient.auth.signOut).toHaveBeenCalledOnce())
+    finishSignOut?.({ error: null })
+
+    await expect(posts).resolves.toMatchObject({ ok: true, recovery: { code: 'session_cleared' } })
+    await expect(detail).resolves.toMatchObject({ ok: true, recovery: { code: 'session_cleared' } })
   })
 
   it('calls only the typed list RPC and maps server excerpt, counters, and every tag', async () => {
@@ -329,6 +451,28 @@ describe('community repository mutation response validation', () => {
 })
 
 describe('community repository mutation failures', () => {
+  it.each([
+    ['createPost', { title: '제목', bodyMarkdown: '본문', tagIds: [], idempotencyKey: 'create' }],
+    ['updatePost', { postId: detailRow.id, title: '제목', bodyMarkdown: '본문', tagIds: [] }],
+    ['deletePost', detailRow.id],
+    ['createComment', { postId: detailRow.id, parentId: null, bodyMarkdown: '댓글', idempotencyKey: 'comment' }],
+    ['setPostReaction', [detailRow.id, true]],
+    ['setCommentReaction', ['56000000-0000-4000-8000-000000000021', true]],
+    ['createReport', { targetType: 'post', targetId: detailRow.id, reasonCode: 'spam', detail: null, idempotencyKey: 'report' }],
+    ['setReportStatus', { reportId: detailRow.id, expectedStatus: 'open', desiredStatus: 'reviewing', reason: 'review', idempotencyKey: 'status' }],
+    ['moderatePost', { postId: detailRow.id, expectedStatus: 'published', expectedLocked: false, expectedPinned: false, action: 'hide', reason: 'policy', idempotencyKey: 'post' }],
+    ['moderateComment', { commentId: '56000000-0000-4000-8000-000000000021', expectedStatus: 'published', action: 'hide', reason: 'policy', idempotencyKey: 'moderate-comment' }],
+    ['setTagActive', { tagId: '56000000-0000-4000-8000-000000000040', expectedActive: true, desiredActive: false, reason: 'retire', idempotencyKey: 'tag' }],
+  ] as const)('never retries the %s mutation anonymously after a stale-session failure', async (method, input) => {
+    const value = staleSessionRecoverySetup()
+    const repositoryMethod = value.repository[method] as (...args: never[]) => Promise<unknown>
+    const args = Array.isArray(input) ? input : [input]
+
+    expect(await repositoryMethod(...args as never[])).toMatchObject({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST303' } })
+    expect(value.clearSession).not.toHaveBeenCalled()
+    expect(value.anonymousCalls).toEqual([])
+  })
+
   it.each([
     ['createPost', { title: '제목', bodyMarkdown: '본문', tagIds: ['tag-1'], idempotencyKey: 'key' }, 'PGRST301', 'auth_required'],
     ['createPost', { title: '제목', bodyMarkdown: '본문', tagIds: ['tag-1'], idempotencyKey: 'key' }, '22023', 'validation'],
