@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   AUTH_RETURN_PATH_KEY,
+  authErrorMessage,
   consumePendingReturnPath,
   normalizeCommunityReturnPath,
-  signInWithGitHub,
+  startOAuthSignIn,
 } from './auth'
+import type { CommunityOAuthProvider } from './providers'
 
 const safeCases = [
   ['/community/', '/community/'],
@@ -54,13 +56,14 @@ describe('community OAuth return paths', () => {
   })
 })
 
-describe('signInWithGitHub', () => {
-  it('stores a validated path and starts GitHub OAuth at the same-origin callback', async () => {
+describe('startOAuthSignIn', () => {
+  it('stores a validated path and starts Google OAuth at the same-origin callback', async () => {
     const signInWithOAuth = vi.fn().mockResolvedValue({ data: {}, error: null })
     const storage = window.sessionStorage
 
-    await signInWithGitHub(
+    await startOAuthSignIn(
       { signInWithOAuth },
+      'google',
       '/community/post/?id=123',
       'https://www.breadlab.ai',
       storage,
@@ -68,7 +71,7 @@ describe('signInWithGitHub', () => {
 
     expect(storage.getItem(AUTH_RETURN_PATH_KEY)).toBe('/community/post/?id=123')
     expect(signInWithOAuth).toHaveBeenCalledWith({
-      provider: 'github',
+      provider: 'google',
       options: { redirectTo: 'https://www.breadlab.ai/community/auth/callback/' },
     })
   })
@@ -77,8 +80,66 @@ describe('signInWithGitHub', () => {
     const signInWithOAuth = vi.fn().mockResolvedValue({ data: {}, error: null })
     const storage = window.sessionStorage
 
-    await signInWithGitHub({ signInWithOAuth }, 'https://evil.example/', 'https://www.breadlab.ai', storage)
+    await startOAuthSignIn(
+      { signInWithOAuth },
+      'google',
+      'https://evil.example/',
+      'https://www.breadlab.ai',
+      storage,
+    )
 
     expect(storage.getItem(AUTH_RETURN_PATH_KEY)).toBe('/community/')
+  })
+
+  it.each(['kakao', 'github', 'naver'] as const)('rejects disabled provider %s before storage or SDK access', async (provider) => {
+    const signInWithOAuth = vi.fn()
+    const storage = {
+      getItem: vi.fn(),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    }
+
+    await expect(startOAuthSignIn(
+      { signInWithOAuth },
+      provider as CommunityOAuthProvider,
+      '/community/',
+      'https://www.breadlab.ai',
+      storage,
+    )).rejects.toThrow(/not enabled/iu)
+
+    expect(storage.getItem).not.toHaveBeenCalled()
+    expect(storage.setItem).not.toHaveBeenCalled()
+    expect(storage.removeItem).not.toHaveBeenCalled()
+    expect(signInWithOAuth).not.toHaveBeenCalled()
+  })
+})
+
+describe('authErrorMessage', () => {
+  it('maps disabled-provider errors to registry copy without exposing raw text', () => {
+    const rawMessage = 'provider disabled: tenant-internal-detail'
+    const message = authErrorMessage({ message: rawMessage }, 'sign-in', 'google')
+
+    expect(message).toBe('Google 로그인이 현재 활성화되어 있지 않습니다. 운영자에게 알려 주세요.')
+    expect(message).not.toContain(rawMessage)
+  })
+
+  it('maps generic OAuth errors using the selected provider without exposing raw text', () => {
+    const rawMessage = 'upstream exploded with secret provider detail'
+    const message = authErrorMessage({ message: rawMessage }, 'sign-in', 'google')
+
+    expect(message).toBe('Google 로그인을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.')
+    expect(message).not.toContain(rawMessage)
+  })
+
+  it('maps an arbitrary runtime provider to safe default copy', () => {
+    const rawMessage = 'provider unsupported: tenant-internal-detail'
+    const message = authErrorMessage(
+      { message: rawMessage },
+      'sign-in',
+      'naver' as CommunityOAuthProvider,
+    )
+
+    expect(message).toBe('Google 로그인이 현재 활성화되어 있지 않습니다. 운영자에게 알려 주세요.')
+    expect(message).not.toContain(rawMessage)
   })
 })

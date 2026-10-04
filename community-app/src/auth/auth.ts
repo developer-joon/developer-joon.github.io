@@ -1,3 +1,10 @@
+import {
+  AUTH_PROVIDER_DEFINITIONS,
+  DEFAULT_AUTH_PROVIDER,
+  isEnabledAuthProvider,
+  type CommunityOAuthProvider,
+} from './providers'
+
 export const AUTH_RETURN_PATH_KEY = 'breadlab.community.auth.return-path:v1'
 export const DEFAULT_COMMUNITY_RETURN_PATH = '/community/'
 export const COMMUNITY_AUTH_CALLBACK_PATH = '/community/auth/callback/'
@@ -8,7 +15,7 @@ type OAuthError = { message?: string; code?: string } | null
 
 export interface OAuthClient {
   signInWithOAuth(options: {
-    provider: 'github'
+    provider: CommunityOAuthProvider
     options: { redirectTo: string }
   }): Promise<{ data: unknown; error: OAuthError }>
 }
@@ -75,7 +82,11 @@ export function consumePendingReturnPath(storage: StorageLike, queryReturnPath?:
   return returnPath
 }
 
-export function authErrorMessage(error: unknown, action: 'initialize' | 'sign-in' | 'sign-out'): string {
+export function authErrorMessage(
+  error: unknown,
+  action: 'initialize' | 'sign-in' | 'sign-out',
+  provider: CommunityOAuthProvider = DEFAULT_AUTH_PROVIDER,
+): string {
   const message = typeof error === 'object' && error !== null && 'message' in error
     ? String((error as { message?: unknown }).message ?? '')
     : error instanceof Error ? error.message : String(error ?? '')
@@ -83,23 +94,27 @@ export function authErrorMessage(error: unknown, action: 'initialize' | 'sign-in
     ? String((error as { code?: unknown }).code ?? '')
     : ''
   const providerDisabled = /provider.*(?:disabled|not enabled|unsupported)|unsupported.*provider/iu.test(`${code} ${message}`)
+  const providerDefinition = AUTH_PROVIDER_DEFINITIONS[provider]
+    ?? AUTH_PROVIDER_DEFINITIONS[DEFAULT_AUTH_PROVIDER]
 
   if (action === 'sign-in' && providerDisabled) {
-    return 'GitHub 로그인이 현재 활성화되어 있지 않습니다. 운영자에게 알려 주세요.'
+    return providerDefinition.unavailableMessage
   }
   if (action === 'initialize') return '로그인 상태를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.'
   if (action === 'sign-out') return '로그아웃하지 못했습니다. 잠시 후 다시 시도해 주세요.'
-  return 'GitHub 로그인을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.'
+  return `${providerDefinition.buttonLabel}을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.`
 }
 
-export async function signInWithGitHub(
+export async function startOAuthSignIn(
   client: OAuthClient,
+  provider: CommunityOAuthProvider,
   returnPath: unknown,
   origin: string,
   storage: StorageLike,
 ): Promise<void> {
+  if (!isEnabledAuthProvider(provider)) throw new Error('OAuth provider is not enabled')
   storePendingReturnPath(storage, returnPath)
   const redirectTo = new URL(COMMUNITY_AUTH_CALLBACK_PATH, origin).toString()
-  const result = await client.signInWithOAuth({ provider: 'github', options: { redirectTo } })
+  const result = await client.signInWithOAuth({ provider, options: { redirectTo } })
   if (result.error) throw result.error
 }
