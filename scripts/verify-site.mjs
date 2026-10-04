@@ -121,6 +121,24 @@ function assertIncludes(content, expected, relativePath, behavior) {
   }
 }
 
+function attributeValue(attributes, name) {
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\u0060]+))`, 'i')
+  const match = pattern.exec(attributes)
+  return match ? match[1] ?? match[2] ?? match[3] : null
+}
+
+function hasCommunityAjaxOptOut(html) {
+  const anchorPattern = /<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi
+  for (const match of html.matchAll(anchorPattern)) {
+    const href = attributeValue(match[1], 'href')
+    const text = match[2].replace(/<[^>]*>/g, '').trim()
+    if (href !== '/community/' || text !== 'Community') continue
+    const classes = attributeValue(match[1], 'class')?.split(/\s+/) ?? []
+    return classes.includes('js-no-ajax')
+  }
+  return false
+}
+
 function communityAssetReferences(html, shellPath) {
   const references = []
   const attributePattern = /\b(src|href|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi
@@ -282,8 +300,8 @@ async function main() {
     assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'canonical URL')
   }
   const home = await readText('index.html')
-  if (!/<a href="\/community\/"[^>]*>Community<\/a>/.test(home)) {
-    fail('index.html is missing the Community navigation link')
+  if (!hasCommunityAjaxOptOut(home)) {
+    fail('index.html Community navigation link must include the js-no-ajax class')
   }
 
   const privacyPath = files.includes('privacy.html')

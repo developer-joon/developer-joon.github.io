@@ -31,7 +31,7 @@ async function put(root, relativePath, content = '') {
 async function makeValidArtifact() {
   const root = await mkdtemp(path.join(tmpdir(), 'verify-site-test-'))
   const routes = [
-    ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>', 'https://www.breadlab.ai/', '<a href="/community/">Community</a>'],
+    ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>', 'https://www.breadlab.ai/', '<a class="menu__list__item__link js-no-ajax" href="/community/">Community</a>'],
     ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/', ''],
     ['lab/index.html', '<title>0 → 1 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
     ['blog/ceph-cluster-install-with-helm.html', '<title>[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm', ''],
@@ -87,6 +87,15 @@ test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects a generated homepage Community link without the AJAX opt-out class', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link" href="/community/">Community</a>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a Community link handled by the Jekyll AJAX loader')
+    assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
   })
 })
 
