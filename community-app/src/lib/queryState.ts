@@ -1,4 +1,5 @@
 import type { PostCursor, PostSort } from '../types/community'
+import { isCanonicalUuid } from './uuid'
 
 export interface CommunityQueryState {
   search: string
@@ -82,7 +83,7 @@ export function parseCommunityQuery(search: string): CommunityQueryState {
   const tag = params.get('tag')?.trim() ?? ''
   return {
     search: normalizeCommunitySearch(params.get('q') ?? ''),
-    tagId: uuidPattern.test(tag) ? tag : null,
+    tagId: isCanonicalUuid(tag) ? tag : null,
     sort,
     cursor: parseCursor(params.get('cursor'), sort),
   }

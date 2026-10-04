@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseCommunityQuery, serializeCommunityQuery } from './queryState'
 
-const tagId = '11111111-1111-4111-8111-111111111111'
+const tagId = 'a1000000-0000-0000-0000-000000000001'
 const postId = '22222222-2222-4222-8222-222222222222'
 
 const cursor = {
@@ -13,6 +13,14 @@ const cursor = {
 }
 
 describe('community query state', () => {
+  it('round-trips a seeded tag id from the initial URL', () => {
+    const initialSearch = `?tag=${tagId}&sort=popular`
+    const state = parseCommunityQuery(initialSearch)
+
+    expect(state.tagId).toBe(tagId)
+    expect(serializeCommunityQuery(state)).toBe(initialSearch)
+  })
+
   it('parses supported search, tag, and sort values', () => {
     expect(parseCommunityQuery(`?q=react&tag=${tagId}&sort=popular`)).toEqual({
       search: 'react',

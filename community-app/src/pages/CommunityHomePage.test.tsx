@@ -4,7 +4,7 @@ import type { CommunityRepository } from '../data/communityRepository'
 import { parseCommunityQuery, serializeCommunityQuery } from '../lib/queryState'
 import { CommunityHomePage } from './CommunityHomePage'
 
-const tagId = '11111111-1111-4111-8111-111111111111'
+const tagId = 'a1000000-0000-0000-0000-000000000001'
 
 const post = {
   id: 'post-1',
@@ -70,6 +70,19 @@ describe('CommunityHomePage', () => {
     fireEvent.click(screen.getByRole('button', { name: '검색' }))
 
     expect(onQueryChange).toHaveBeenCalledWith('?q=%EB%B3%B4%EC%95%88&sort=popular')
+  })
+
+  it('preserves a seeded tag filter after selecting its button', async () => {
+    const onQueryChange = vi.fn()
+    const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null } })
+    render(<CommunityHomePage repository={repository({ listPosts })} initialSearch="" onQueryChange={onQueryChange} />)
+    await screen.findByRole('heading', { name: post.title })
+
+    fireEvent.click(screen.getByRole('button', { name: '개발' }))
+
+    expect(onQueryChange).toHaveBeenCalledWith(`?tag=${tagId}`)
+    await waitFor(() => expect(listPosts).toHaveBeenLastCalledWith(expect.objectContaining({ tagId })))
+    expect(screen.getByRole('button', { name: '개발' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('enforces the 200-character search limit in the input and submitted state', async () => {

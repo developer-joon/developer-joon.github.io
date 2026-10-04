@@ -101,7 +101,7 @@ node --test scripts/*.test.mjs
 git diff --check
 ```
 
-Expected: app 532 tests, scripts 233 tests, typecheck, lint, build 모두 통과.
+Expected: 전체 앱 테스트, scripts 테스트, typecheck, lint, build 모두 통과.
 
 **Step 2: Docker artifact 검증**
 
