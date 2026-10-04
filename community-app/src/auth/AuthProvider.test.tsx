@@ -110,7 +110,14 @@ describe('AuthProvider', () => {
   })
 
   it('starts Google login with the canonical callback', async () => {
-    const signInWithOAuth = vi.fn().mockResolvedValue({ data: {}, error: null })
+    const providerToken = vi.fn(() => { throw new Error('provider_token must not be read') })
+    const providerRefreshToken = vi.fn(() => { throw new Error('provider_refresh_token must not be read') })
+    const data = {}
+    Object.defineProperties(data, {
+      provider_token: { enumerable: true, get: providerToken },
+      provider_refresh_token: { enumerable: true, get: providerRefreshToken },
+    })
+    const signInWithOAuth = vi.fn().mockResolvedValue({ data, error: null })
     render(<AuthProvider client={client({ signInWithOAuth })} origin="https://www.breadlab.ai"><Harness /></AuthProvider>)
     await screen.findByText('signed-out')
 
@@ -120,6 +127,28 @@ describe('AuthProvider', () => {
       provider: 'google',
       options: { redirectTo: 'https://www.breadlab.ai/community/auth/callback/' },
     }))
+    await waitFor(() => expect(screen.getByText('idle')).toBeInTheDocument())
+    expect(providerToken).not.toHaveBeenCalled()
+    expect(providerRefreshToken).not.toHaveBeenCalled()
+  })
+
+  it('preserves real write and edit draft storage bytes after Google OAuth starts', async () => {
+    const writeKey = draftKey('write')
+    const editKey = draftKey('edit', '56000000-0000-4000-8000-000000000010')
+    const writeSentinel = '  {"kind":"write","title":"keep Ω write"}\n'
+    const editSentinel = '\t{"kind":"edit","title":"keep edit 🔒"}  '
+    localStorage.setItem(writeKey, writeSentinel)
+    localStorage.setItem(editKey, editSentinel)
+    const signInWithOAuth = vi.fn().mockResolvedValue({ data: {}, error: null })
+
+    render(<AuthProvider client={client({ signInWithOAuth })} origin="https://www.breadlab.ai"><Harness /></AuthProvider>)
+    await screen.findByText('signed-out')
+    fireEvent.click(screen.getByRole('button', { name: 'login' }))
+
+    await waitFor(() => expect(signInWithOAuth).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.getByText('idle')).toBeInTheDocument())
+    expect(localStorage.getItem(writeKey)).toBe(writeSentinel)
+    expect(localStorage.getItem(editKey)).toBe(editSentinel)
   })
 
   it('rejects a runtime disabled provider without SDK access and clears pending with fixed Korean copy', async () => {

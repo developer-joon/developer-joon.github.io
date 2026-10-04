@@ -1,8 +1,14 @@
+/// <reference types="node" />
+
 import { fireEvent, render, screen } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, AuthProvider, type AuthClient, type AuthContextValue } from '../auth/AuthProvider'
 import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AppHeader } from './AppHeader'
+
+const communityCss = readFileSync(resolve(process.cwd(), 'src/styles/community.css'), 'utf8')
 
 vi.mock('../auth/providers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../auth/providers')>()
@@ -53,6 +59,9 @@ describe('AppHeader authentication', () => {
       },
     }
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
+    const stylesheet = document.createElement('style')
+    stylesheet.textContent = communityCss
+    document.head.append(stylesheet)
     const view = render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
     fireEvent(window, new Event('resize'))
 
@@ -60,6 +69,19 @@ describe('AppHeader authentication', () => {
     expect(identity).toHaveAttribute('title', longIdentity)
     expect(identity).toHaveClass('auth-identity')
     expect(identity.querySelector('img')).toBeNull()
+    const identityStyle = getComputedStyle(identity)
+    expect(identityStyle.overflow).toBe('hidden')
+    expect(identityStyle.textOverflow).toBe('ellipsis')
+    expect(identityStyle.whiteSpace).toBe('nowrap')
+    expect(identityStyle.minWidth).toBe('0px')
+    expect(identityStyle.maxWidth).toBe('256px')
+    const narrowIdentityRule = [...document.styleSheets]
+      .flatMap((sheet) => [...sheet.cssRules])
+      .filter((rule): rule is CSSMediaRule => rule instanceof CSSMediaRule)
+      .filter((rule) => rule.conditionText === '(max-width: 700px)')
+      .flatMap((rule) => [...rule.cssRules])
+      .find((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === '.auth-identity')
+    expect(narrowIdentityRule?.style.maxWidth).toBe('min(20vw, 5rem)')
     expect(screen.getByRole('link', { name: '글쓰기' })).toHaveClass('header-write')
     const logout = screen.getByRole('button', { name: '로그아웃' })
     expect(logout).toBeInTheDocument()
