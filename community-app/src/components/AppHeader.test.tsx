@@ -58,36 +58,43 @@ describe('AppHeader authentication', () => {
         user_metadata: { user_name: longIdentity },
       },
     }
-    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
     const stylesheet = document.createElement('style')
     stylesheet.textContent = communityCss
     document.head.append(stylesheet)
-    const view = render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
-    fireEvent(window, new Event('resize'))
 
-    const identity = await screen.findByText(longIdentity)
-    expect(identity).toHaveAttribute('title', longIdentity)
-    expect(identity).toHaveClass('auth-identity')
-    expect(identity.querySelector('img')).toBeNull()
-    const identityStyle = getComputedStyle(identity)
-    expect(identityStyle.overflow).toBe('hidden')
-    expect(identityStyle.textOverflow).toBe('ellipsis')
-    expect(identityStyle.whiteSpace).toBe('nowrap')
-    expect(identityStyle.minWidth).toBe('0px')
-    expect(identityStyle.maxWidth).toBe('256px')
-    const narrowIdentityRule = [...document.styleSheets]
-      .flatMap((sheet) => [...sheet.cssRules])
-      .filter((rule): rule is CSSMediaRule => rule instanceof CSSMediaRule)
-      .filter((rule) => rule.conditionText === '(max-width: 700px)')
-      .flatMap((rule) => [...rule.cssRules])
-      .find((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === '.auth-identity')
-    expect(narrowIdentityRule?.style.maxWidth).toBe('min(20vw, 5rem)')
-    expect(screen.getByRole('link', { name: '글쓰기' })).toHaveClass('header-write')
-    const logout = screen.getByRole('button', { name: '로그아웃' })
-    expect(logout).toBeInTheDocument()
-    expect(view.container.querySelector('header')).toContainElement(identity)
-    fireEvent.click(logout)
-    expect(signOut).toHaveBeenCalledOnce()
+    try {
+      const view = render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
+
+      const identity = await screen.findByText(longIdentity)
+      expect(identity).toHaveAttribute('title', longIdentity)
+      expect(identity).toHaveClass('auth-identity')
+      expect(identity.querySelector('img')).toBeNull()
+      const identityStyle = getComputedStyle(identity)
+      expect(identityStyle.overflow).toBe('hidden')
+      expect(identityStyle.textOverflow).toBe('ellipsis')
+      expect(identityStyle.whiteSpace).toBe('nowrap')
+      expect(identityStyle.minWidth).toBe('0px')
+      expect(identityStyle.maxWidth).toBe('256px')
+
+      const mobileRule = [...stylesheet.sheet!.cssRules]
+        .filter((rule): rule is CSSMediaRule => rule instanceof CSSMediaRule)
+        .find((rule) => [...rule.cssRules].some(
+          (nestedRule) => nestedRule instanceof CSSStyleRule && nestedRule.selectorText === '.auth-identity',
+        ))
+      expect(mobileRule?.conditionText).toBe('(max-width: 700px)')
+      const narrowIdentityRule = [...(mobileRule?.cssRules ?? [])]
+        .find((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === '.auth-identity')
+      expect(narrowIdentityRule?.style.maxWidth).toBe('min(20vw, 5rem)')
+
+      expect(screen.getByRole('link', { name: '글쓰기' })).toHaveClass('header-write')
+      const logout = screen.getByRole('button', { name: '로그아웃' })
+      expect(logout).toBeInTheDocument()
+      expect(view.container.querySelector('header')).toContainElement(identity)
+      fireEvent.click(logout)
+      expect(signOut).toHaveBeenCalledOnce()
+    } finally {
+      stylesheet.remove()
+    }
   })
 
   it('disables auth actions while the session is loading', () => {
