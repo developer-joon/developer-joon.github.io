@@ -128,6 +128,8 @@ test('keeps Pages upload and deploy in the reusable Jekyll workflow with live sn
   assert.match(workflow, /COMMUNITY_SNAPSHOT_MODE: live/)
   assert.match(workflow, /SUPABASE_URL: \$\{\{ vars\.SUPABASE_URL \}\}/)
   assert.match(workflow, /SUPABASE_PUBLISHABLE_KEY: \$\{\{ secrets\.SUPABASE_PUBLISHABLE_KEY \}\}/)
+  assert.match(workflow, /VITE_SUPABASE_URL: \$\{\{ vars\.SUPABASE_URL \}\}/, 'Vite must receive the public production URL')
+  assert.match(workflow, /VITE_SUPABASE_PUBLISHABLE_KEY: \$\{\{ secrets\.SUPABASE_PUBLISHABLE_KEY \}\}/, 'Vite must receive the browser-safe production key')
   assert.doesNotMatch(workflow, /SERVICE_ROLE/)
   assert.doesNotMatch(workflow, /contents: write/)
   assert.equal((workflow.match(/actions\/upload-pages-artifact@v3/g) ?? []).length, 1)

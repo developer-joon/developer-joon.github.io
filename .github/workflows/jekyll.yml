@@ -45,6 +45,8 @@ jobs:
           COMMUNITY_SNAPSHOT_MODE: live
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: ./scripts/build-site.sh
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
