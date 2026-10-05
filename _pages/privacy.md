@@ -39,7 +39,7 @@ featured_image: /images/demo/about.jpg
 수집된 정보는 다음 목적으로만 이용됩니다.
 
 - **사이트 통계 분석**: 방문자 수, 인기 콘텐츠 파악 (Google Analytics)
-- **광고 서비스 제공**: Google AdSense를 통한 맞춤 광고 표시
+- **광고 서비스 준비**: Google AdSense 재신청 심사 및 승인 이후 광고 제공 준비
 - **사이트 개선**: 이용 패턴 분석을 통한 콘텐츠 및 서비스 품질 향상
 - **커뮤니티 제공**: Google 계정과 연결된 Supabase 사용자 식별, 게시글·댓글·반응·이미지 제공과 사용자 요청 처리
 - **안전한 운영**: 신고 검토, 악용 방지, 권한 관리, 보안 및 분쟁 대응
@@ -55,7 +55,7 @@ featured_image: /images/demo/about.jpg
 - [Google Analytics 개인정보 보호 정책](https://policies.google.com/privacy)
 
 ### Google AdSense
-맞춤 광고를 제공하기 위해 Google AdSense를 사용합니다. Google은 쿠키를 사용하여 이용자의 관심사에 기반한 광고를 표시합니다.
+사이트에는 Google AdSense 신청을 위한 설정이 포함되어 있으며 현재 재신청 심사 중입니다. 광고 게재 승인은 아직 확정되지 않았습니다. 승인 후 광고가 활성화되면 Google이 쿠키를 사용해 이용자의 관심사에 기반한 광고를 표시할 수 있습니다.
 - [Google 광고 설정](https://adssettings.google.com/)에서 맞춤 광고를 비활성화할 수 있습니다
 - [Google 광고 정책](https://policies.google.com/technologies/ads)
 
@@ -66,7 +66,7 @@ featured_image: /images/demo/about.jpg
 
 ## 4. 개인정보의 보관 및 파기
 
-Google Analytics 및 Google AdSense를 통해 수집되는 데이터는 각 서비스의 보관 정책에 따릅니다. 커뮤니티 데이터는 다음 기준으로 보관·파기합니다.
+Google Analytics 및 승인 후 활성화되는 Google AdSense를 통해 수집되는 데이터는 각 서비스의 보관 정책에 따릅니다. 커뮤니티 데이터는 다음 기준으로 보관·파기합니다.
 
 - Google Analytics 데이터 보관: 26개월 (Google 기본 설정)
 - 이용자는 [Google 계정 설정](https://myaccount.google.com/)에서 데이터를 관리할 수 있습니다
@@ -82,7 +82,7 @@ Google Analytics 및 Google AdSense를 통해 수집되는 데이터는 각 서�
 
 - **GitHub**: giscus 댓글 인증과 GitHub Discussions 댓글 저장 제공
 - **Supabase**: 커뮤니티 인증, 데이터베이스, 첨부 파일 저장과 서버 기능 제공
-- **Google**: 커뮤니티 OAuth 인증, Analytics와 AdSense 제공
+- **Google**: 커뮤니티 OAuth 인증, Analytics, AdSense 신청 및 승인 후 광고 제공
 
 각 사업자의 처리는 해당 사업자의 개인정보 보호정책과 보관 정책을 따릅니다. 그 밖에는 다음 경우에만 정보를 제공합니다.
 

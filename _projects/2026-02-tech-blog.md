@@ -14,7 +14,7 @@ featured_image: '/images/project-tech-blog/cover.jpg'
     </div>
     <div style="text-align: center;">
       <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #4cc9f0;">AdSense</span>
-      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">승인 완료</div>
+      <div style="font-size: 1.8em; font-weight: 700; margin-top: 4px;">재신청 심사 중</div>
     </div>
     <div style="text-align: right;">
       <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 2px; color: #4cc9f0;">게시글</span>
@@ -57,7 +57,7 @@ SNS 공유       ──▶  뉴스레터 구독      장기 자산
 |------|------|------|
 | 블로그 운영 | 🟢 운영 중 | 기술·AI·자동화 실험을 계속 기록 |
 | 콘텐츠 | 🟢 발행 중 | 게시글 수는 상단에 동적으로 표시 |
-| Google AdSense | ✅ 승인 완료 | 광고 게재 승인이며 실제 수익 발생·규모와는 별개 |
+| Google AdSense | 🔄 재신청 심사 중 | 최초 신청 거절 후 다시 신청했으며 승인 여부는 아직 확정되지 않음 |
 | SEO·유입 개선 | 🔄 지속 개선 | 콘텐츠별 검색 노출과 읽기 경험을 점검 |
 | 제휴 마케팅·뉴스레터 | ⚪ 검토 항목 | 현재 도입 여부를 단정하지 않음 |
 
@@ -71,7 +71,7 @@ SNS 공유       ──▶  뉴스레터 구독      장기 자산
 | 호스팅 | GitHub Pages |
 | 댓글 | giscus (GitHub Discussions) |
 | 분석 | Google Analytics |
-| 광고 | Google AdSense ✅ |
+| 광고 | Google AdSense 재신청 심사 중 |
 | 콘텐츠 생성 | AI 비서 + 사람 협업 |
 | CI/CD | Fork → PR → 리뷰 → 병합 |
 
@@ -79,7 +79,7 @@ SNS 공유       ──▶  뉴스레터 구독      장기 자산
 
 ## 💰 수익 현황
 
-Google AdSense 승인은 완료됐지만, 승인이 곧 실제 수익을 의미하지는 않는다. 현재 공개된 확정 수익 집계는 없으므로 금액을 추정하거나 0원으로 단정하지 않는다.
+Google AdSense 최초 신청은 거절됐고 현재 다시 신청해 심사를 기다리고 있다. 아직 광고 게재 승인은 확정되지 않았으며, 공개된 확정 수익 집계도 없다.
 
 ---
 
