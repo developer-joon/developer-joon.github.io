@@ -51,6 +51,15 @@ function fillValid() {
 }
 
 describe('WritePostPage', () => {
+  it('shows the session-expiry notice when the public tag read recovers', async () => {
+    const recovery = { code: 'session_cleared' as const, message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' }
+    wrap(<WritePostPage repository={repository({
+      listTags: vi.fn().mockResolvedValue({ ok: true, data: [tag], recovery }),
+    })} storage={storage()} navigate={vi.fn()} />, auth(authorId))
+
+    expect(await screen.findByRole('alert', { name: '로그인 세션 만료' })).toHaveTextContent(recovery.message)
+  })
+
   it('describes local draft persistence without promising success', async () => {
     wrap(<WritePostPage repository={repository()} storage={storage()} navigate={vi.fn()} />, auth(authorId))
     expect(await screen.findByText('이 브라우저의 로컬 저장소에 임시 저장을 시도합니다.')).toBeInTheDocument()

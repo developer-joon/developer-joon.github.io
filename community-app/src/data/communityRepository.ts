@@ -61,7 +61,8 @@ export interface CommunityClient {
 }
 
 interface PublicReadRecovery {
-  clearSession(): PromiseLike<void>
+  getSessionAccessToken(): PromiseLike<string | null>
+  clearSessionIfAccessTokenMatches(accessToken: string): PromiseLike<boolean>
   anonymousClient: CommunityClient
 }
 
@@ -140,15 +141,27 @@ async function executePublic<T>(
   operation: (target: CommunityClient) => PromiseLike<QueryResponse>,
   map: (data: unknown) => T,
 ): Promise<CommunityResult<T>> {
+  let capturedAccessToken: string | null | undefined
+  if (recovery) {
+    try {
+      capturedAccessToken = await recovery.getSessionAccessToken()
+    } catch {
+      capturedAccessToken = undefined
+    }
+  }
   const first = await execute(() => operation(client), map)
   if (first.ok || first.error.code !== 'auth_required' || !recovery) return first
-  try {
-    await recovery.clearSession()
-  } catch {
-    return first
+  let sessionCleared = false
+  if (capturedAccessToken === undefined) return first
+  if (capturedAccessToken !== null) {
+    try {
+      sessionCleared = await recovery.clearSessionIfAccessTokenMatches(capturedAccessToken)
+    } catch {
+      return first
+    }
   }
   const retry = await execute(() => operation(recovery.anonymousClient), map)
-  return retry.ok
+  return retry.ok && sessionCleared
     ? { ...retry, recovery: { code: 'session_cleared', message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' } }
     : retry
 }
@@ -441,16 +454,19 @@ function mapModerationAuditPage(data: unknown, limit: number, targetType?: Moder
 
 export function createCommunityRepository(client: CommunityClient, recovery?: PublicReadRecovery) {
   const publicAttachmentOrigin = new URL(client.publicAttachmentUrl('00000000-0000-4000-8000-000000000000')).origin
-  let clearingSession: Promise<void> | undefined
+  const clearingSessions = new Map<string, Promise<boolean>>()
   const publicRecovery = recovery ? {
     anonymousClient: recovery.anonymousClient,
-    clearSession: async () => {
-      if (clearingSession) return clearingSession
-      clearingSession = (async () => recovery.clearSession())()
+    getSessionAccessToken: () => recovery.getSessionAccessToken(),
+    clearSessionIfAccessTokenMatches: async (accessToken: string) => {
+      const existing = clearingSessions.get(accessToken)
+      if (existing) return existing
+      const clearingSession = (async () => recovery.clearSessionIfAccessTokenMatches(accessToken))()
+      clearingSessions.set(accessToken, clearingSession)
       try {
-        await clearingSession
+        return await clearingSession
       } finally {
-        clearingSession = undefined
+        if (clearingSessions.get(accessToken) === clearingSession) clearingSessions.delete(accessToken)
       }
     },
   } : undefined
@@ -612,9 +628,18 @@ export function getCommunityRepository(): CommunityRepository {
   if (!browserRepository) {
     const client = getSupabaseClient()
     browserRepository = createCommunityRepository(createBrowserCommunityClient(client), {
-      clearSession: async () => {
+      getSessionAccessToken: async () => {
+        const { data, error } = await client.auth.getSession()
+        if (error) throw error
+        return data.session?.access_token ?? null
+      },
+      clearSessionIfAccessTokenMatches: async (accessToken) => {
+        const { data, error: sessionError } = await client.auth.getSession()
+        if (sessionError) throw sessionError
+        if (data.session?.access_token !== accessToken) return false
         const { error } = await client.auth.signOut({ scope: 'local' })
         if (error) throw error
+        return true
       },
       anonymousClient: createBrowserCommunityClient(getAnonymousSupabaseClient()),
     })

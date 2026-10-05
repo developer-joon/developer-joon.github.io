@@ -7,6 +7,7 @@ import { SearchBar } from '../components/SearchBar'
 import { SortTabs } from '../components/SortTabs'
 import { StatePanel } from '../components/StatePanel'
 import { TagFilter } from '../components/TagFilter'
+import { SessionRecoveryNotice, useSessionRecoveryNotice } from '../components/SessionRecoveryNotice'
 import { isValidPostCursor, parseCommunityQuery, serializeCommunityQuery, type CommunityQueryState } from '../lib/queryState'
 import type { CommunityError, CommunityTag, PostCursor, PostListItem } from '../types/community'
 
@@ -151,6 +152,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
   const [attempt, setAttempt] = useState(0)
   const [tagError, setTagError] = useState<CommunityError | null>(null)
   const [tagAttempt, setTagAttempt] = useState(0)
+  const [recovery, consumeRecovery] = useSessionRecoveryNotice()
 
   const applyQuery = useCallback((next: CommunityQueryState, ownsPreviousListing = false) => {
     const search = serializeCommunityQuery(next)
@@ -213,11 +215,14 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
     setTagError(null)
     void repository.listTags().then((result) => {
       if (!active) return
-      if (result.ok) setTags(result.data)
+      if (result.ok) {
+        consumeRecovery(result.recovery)
+        setTags(result.data)
+      }
       else setTagError(result.error)
     })
     return () => { active = false }
-  }, [repository, tagAttempt])
+  }, [consumeRecovery, repository, tagAttempt])
 
   useEffect(() => {
     let active = true
@@ -232,6 +237,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
     }).then((result) => {
       if (!active) return
       if (result.ok) {
+        consumeRecovery(result.recovery)
         setPosts(appendUniquePosts([], result.data.items).slice(0, pageSize))
         setPostsQuery(serializeCommunityQuery(query))
         setNextCursor(result.data.nextCursor)
@@ -241,7 +247,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
       setLoading(false)
     })
     return () => { active = false }
-  }, [attempt, query, repository])
+  }, [attempt, consumeRecovery, query, repository])
 
   return (
     <div className="community-page">
@@ -250,6 +256,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
         <section className="community-hero community-board-hero" aria-labelledby="community-heading">
           <h1 id="community-heading">자유게시판</h1>
         </section>
+        <SessionRecoveryNotice recovery={recovery} />
 
         <section className="community-tools" aria-label="게시글 탐색">
           <SearchBar value={query.search} onSubmit={(search) => applyFilters({ ...query, search })} />

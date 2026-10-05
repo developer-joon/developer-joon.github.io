@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { AppFooter } from '../components/AppFooter'
 import { DraftNotice } from '../components/DraftNotice'
+import { SessionRecoveryNotice, useSessionRecoveryNotice } from '../components/SessionRecoveryNotice'
 import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import { normalizeCommunityReturnPath } from '../auth/auth'
@@ -67,6 +68,7 @@ export function WritePostPage({ repository, uploadRepository, storage = window.l
   const mutationLock = useRef<symbol | null>(null)
   const uploadState = useRef<ImageUploaderState>({ blocked: false, attachments: [] })
   const [workflowFrozen, setWorkflowFrozen] = useState(Boolean(initial.current.draft.uploadWorkflow && initial.current.draft.uploadWorkflow.phase !== 'uploaded'))
+  const [recovery, consumeRecovery] = useSessionRecoveryNotice()
 
   const persistExactLocked = useCallback((draft: WriteDraft) => {
     if (!isPersistableDraft(draft)) return false
@@ -123,11 +125,11 @@ export function WritePostPage({ repository, uploadRepository, storage = window.l
     setTags(null); setTagError(null)
     void repository.listTags().then(result => {
       if (!active) return
-      if (result.ok) setTags(result.data)
+      if (result.ok) { consumeRecovery(result.recovery); setTags(result.data) }
       else setTagError(result.error.message)
     })
     return () => { active = false }
-  }, [repository, tagAttempt])
+  }, [consumeRecovery, repository, tagAttempt])
 
   useEffect(() => {
     const actorId = auth.user?.id
@@ -351,6 +353,7 @@ export function WritePostPage({ repository, uploadRepository, storage = window.l
     : !tags ? <p id={tagAvailabilityDescriptionId} className="editor-load-state" role="status">태그를 불러오고 있습니다.</p> : null
 
   return <div className="community-page editor-page"><AppHeader /><main>
+    <SessionRecoveryNotice recovery={recovery} />
     <header className="editor-heading"><p className="post-detail-kicker">NEW COMMUNITY NOTE</p><h1>새 글 쓰기</h1><p>이 브라우저의 로컬 저장소에 임시 저장을 시도합니다.</p></header>
     <DraftNotice restored={initial.current.restored} />
     {auth.loading && <p className="editor-auth-note" role="status">로그인 상태를 확인하고 있습니다. 작성 내용은 유지됩니다.</p>}

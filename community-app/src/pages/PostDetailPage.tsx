@@ -12,6 +12,7 @@ import { MarkdownContent } from '../components/MarkdownContent'
 import { PostMeta } from '../components/PostMeta'
 import { ReactionButton } from '../components/ReactionButton'
 import { ReportDialog } from '../components/ReportDialog'
+import { SessionRecoveryNotice, useSessionRecoveryNotice } from '../components/SessionRecoveryNotice'
 
 const commentPageSize = 50
 
@@ -66,6 +67,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
   const [failedPostReaction, setFailedPostReaction] = useState<boolean | null>(null)
   const [commentReactionPending, setCommentReactionPending] = useState<Set<string>>(new Set())
   const [commentMutationError, setCommentMutationError] = useState<string | null>(null)
+  const [recovery, consumeRecovery] = useSessionRecoveryNotice()
   const commentRequestGeneration = useRef(0)
   const mutationGeneration = useRef(0)
   const postReactionInvoking = useRef(false)
@@ -119,6 +121,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     void repository.getPost(postId).then((result) => {
       if (!active) return
       if (result.ok) {
+        consumeRecovery(result.recovery)
         setPostReaction(result.data.kind === 'published'
           ? { reacted: result.data.post.viewerReacted, count: result.data.post.reactionCount }
           : null)
@@ -128,7 +131,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
       }
     })
     return () => { active = false }
-  }, [attempt, auth.user?.id, postId, repository])
+  }, [attempt, auth.user?.id, consumeRecovery, postId, repository])
 
   useEffect(() => {
     if (!postId || (read?.kind !== 'published' && read?.kind !== 'deleted')) return
@@ -138,6 +141,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     void repository.listComments({ postId, limit: commentPageSize }).then((result) => {
       if (!active) return
       if (result.ok) {
+        consumeRecovery(result.recovery)
         commentsRef.current = appendUnique(commentsRef.current, result.data.items)
         setComments((current) => appendUnique(current, result.data.items))
         setHasMore(result.data.hasMore)
@@ -148,7 +152,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
       setCommentsLoading(false)
     })
     return () => { active = false }
-  }, [postId, read, repository])
+  }, [consumeRecovery, postId, read, repository])
 
   function login() {
     void auth.signIn(DEFAULT_AUTH_PROVIDER, currentPath)
@@ -241,6 +245,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     void repository.listComments({ postId, limit: commentPageSize, cursor: nextCursor }).then((result) => {
       if (requestGeneration !== commentRequestGeneration.current) return
       if (result.ok) {
+        consumeRecovery(result.recovery)
         const currentComments = commentsRef.current
         const nextComments = appendUnique(currentComments, result.data.items)
         const addedCount = visibleCommentCount(nextComments) - visibleCommentCount(currentComments)
@@ -414,7 +419,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
   return (
     <div className="community-page post-detail-page">
       <AppHeader />
-      <main>{content}</main>
+      <main><SessionRecoveryNotice recovery={recovery} />{content}</main>
       <AppFooter />
     </div>
   )

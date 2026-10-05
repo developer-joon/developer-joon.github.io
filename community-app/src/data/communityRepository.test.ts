@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-const browserClient = vi.hoisted(() => ({ rpc: vi.fn(), auth: { signOut: vi.fn() } }))
+const browserClient = vi.hoisted(() => ({ rpc: vi.fn(), auth: { getSession: vi.fn(), signOut: vi.fn() } }))
 const anonymousBrowserClient = vi.hoisted(() => ({ rpc: vi.fn() }))
 vi.mock('../lib/supabase', () => ({
   getSupabaseClient: () => browserClient,
@@ -70,7 +70,8 @@ function setup() {
 function staleSessionRecoverySetup() {
   const primaryCalls: string[] = []
   const anonymousCalls: string[] = []
-  const clearSession = vi.fn().mockResolvedValue(undefined)
+  const getSessionAccessToken = vi.fn().mockResolvedValue('stale-token')
+  const clearSessionIfAccessTokenMatches = vi.fn().mockResolvedValue(true)
   let primaryResponse: QueryResponse = { data: null, error: { code: 'PGRST303', message: 'JWT expired' } }
   let anonymousResponse: QueryResponse = { data: [], error: null }
   const client = (calls: string[], response: () => QueryResponse): CommunityClient => ({
@@ -81,10 +82,11 @@ function staleSessionRecoverySetup() {
   const primary = client(primaryCalls, () => primaryResponse)
   const anonymous = client(anonymousCalls, () => anonymousResponse)
   return {
-    repository: createCommunityRepository(primary, { clearSession, anonymousClient: anonymous }),
+    repository: createCommunityRepository(primary, { getSessionAccessToken, clearSessionIfAccessTokenMatches, anonymousClient: anonymous }),
     primaryCalls,
     anonymousCalls,
-    clearSession,
+    getSessionAccessToken,
+    clearSessionIfAccessTokenMatches,
     setPrimaryResponse(value: QueryResponse) { primaryResponse = value },
     setAnonymousResponse(value: QueryResponse) { anonymousResponse = value },
   }
@@ -214,7 +216,8 @@ describe('community repository public list contract', () => {
       recovery: { code: 'session_cleared', message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' },
     })
     expect(value.primaryCalls).toEqual([expectedCall])
-    expect(value.clearSession).toHaveBeenCalledOnce()
+    expect(value.clearSessionIfAccessTokenMatches).toHaveBeenCalledOnce()
+    expect(value.clearSessionIfAccessTokenMatches).toHaveBeenCalledWith('stale-token')
     expect(value.anonymousCalls).toEqual([expectedCall])
   })
 
@@ -223,7 +226,7 @@ describe('community repository public list contract', () => {
     value.setPrimaryResponse({ data: { kind: 'published', post: { ...detailRow, id: 'bad' } }, error: null })
 
     expect(await value.repository.getPost(detailRow.id)).toMatchObject({ ok: false, error: { sourceCode: 'INVALID_RESPONSE' } })
-    expect(value.clearSession).not.toHaveBeenCalled()
+    expect(value.clearSessionIfAccessTokenMatches).not.toHaveBeenCalled()
     expect(value.anonymousCalls).toEqual([])
   })
 
@@ -233,11 +236,14 @@ describe('community repository public list contract', () => {
 
     expect(await value.repository.listPosts({ limit: 20 })).toMatchObject({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST303' } })
     expect(value.primaryCalls).toEqual(['list_public_posts'])
-    expect(value.clearSession).toHaveBeenCalledOnce()
+    expect(value.clearSessionIfAccessTokenMatches).toHaveBeenCalledOnce()
     expect(value.anonymousCalls).toEqual(['list_public_posts'])
   })
 
   it('wires the browser repository to local sign-out and the non-persisting anonymous client', async () => {
+    browserClient.auth.getSession
+      .mockResolvedValueOnce({ data: { session: { access_token: 'stale-token' } }, error: null })
+      .mockResolvedValueOnce({ data: { session: { access_token: 'stale-token' } }, error: null })
     browserClient.rpc.mockResolvedValueOnce({ data: null, error: { code: 'PGRST303', message: 'JWT expired' } })
     browserClient.auth.signOut.mockResolvedValueOnce({ error: null })
     anonymousBrowserClient.rpc.mockResolvedValueOnce({ data: [row], error: null })
@@ -249,8 +255,23 @@ describe('community repository public list contract', () => {
     expect(result).toMatchObject({ ok: true, data: { items: [{ id: row.id }] }, recovery: { code: 'session_cleared' } })
   })
 
+  it('keeps a replacement browser session when the stale response belongs to the captured token', async () => {
+    browserClient.auth.signOut.mockClear()
+    browserClient.auth.getSession
+      .mockResolvedValueOnce({ data: { session: { access_token: 'stale-token' } }, error: null })
+      .mockResolvedValueOnce({ data: { session: { access_token: 'new-login-token' } }, error: null })
+    browserClient.rpc.mockResolvedValueOnce({ data: null, error: { code: 'PGRST303', message: 'JWT expired' } })
+    anonymousBrowserClient.rpc.mockResolvedValueOnce({ data: [row], error: null })
+
+    const result = await getCommunityRepository().listPosts({ limit: 20 })
+
+    expect(browserClient.auth.signOut).not.toHaveBeenCalled()
+    expect(result).toEqual({ ok: true, data: { items: [expect.objectContaining({ id: row.id })], nextCursor: null } })
+  })
+
   it('coalesces session clearing for concurrent stale public reads', async () => {
     browserClient.auth.signOut.mockClear()
+    browserClient.auth.getSession.mockResolvedValue({ data: { session: { access_token: 'stale-token' } }, error: null })
     let finishSignOut: ((value: { error: null }) => void) | undefined
     const signOut = new Promise<{ error: null }>((resolve) => { finishSignOut = resolve })
     browserClient.rpc
@@ -268,6 +289,71 @@ describe('community repository public list contract', () => {
 
     await expect(posts).resolves.toMatchObject({ ok: true, recovery: { code: 'session_cleared' } })
     await expect(detail).resolves.toMatchObject({ ok: true, recovery: { code: 'session_cleared' } })
+  })
+
+  it('does not clear or announce a new session when an older request reports a stale token late', async () => {
+    let currentToken: string | null = 'stale-token'
+    let finishOlder!: (value: QueryResponse) => void
+    const olderResponse = new Promise<QueryResponse>((resolve) => { finishOlder = resolve })
+    const primaryResponses = [olderResponse, Promise.resolve({ data: null, error: { code: 'PGRST303', message: 'JWT expired' } })]
+    const primary: CommunityClient = {
+      publicAttachmentUrl: attachmentId => `https://abcdefghijklmnopqrst.supabase.co/functions/v1/public-attachment/${attachmentId}`,
+      listTags: () => primaryResponses.shift()!,
+      rpc: () => primaryResponses.shift()!,
+    }
+    const anonymous: CommunityClient = {
+      publicAttachmentUrl: primary.publicAttachmentUrl,
+      listTags: () => Promise.resolve({ data: [], error: null }),
+      rpc: () => Promise.resolve({ data: [], error: null }),
+    }
+    const signOut = vi.fn(async (expectedToken: string) => {
+      if (currentToken !== expectedToken) return false
+      currentToken = null
+      return true
+    })
+    const repository = createCommunityRepository(primary, {
+      getSessionAccessToken: () => Promise.resolve(currentToken),
+      clearSessionIfAccessTokenMatches: signOut,
+      anonymousClient: anonymous,
+    })
+
+    const older = repository.listTags()
+    const recovered = await repository.listPosts({ limit: 20 })
+    expect(recovered).toMatchObject({ ok: true, recovery: { code: 'session_cleared' } })
+    currentToken = 'new-login-token'
+    finishOlder({ data: null, error: { code: 'PGRST303', message: 'older stale response' } })
+
+    await expect(older).resolves.toEqual({ ok: true, data: [] })
+    expect(currentToken).toBe('new-login-token')
+    expect(signOut).toHaveBeenNthCalledWith(2, 'stale-token')
+  })
+
+  it('returns the original auth error when conditional session clearing fails', async () => {
+    const value = staleSessionRecoverySetup()
+    value.clearSessionIfAccessTokenMatches.mockRejectedValueOnce(new Error('storage blocked'))
+
+    await expect(value.repository.listPosts({ limit: 20 })).resolves.toMatchObject({
+      ok: false, error: { code: 'auth_required', sourceCode: 'PGRST303' },
+    })
+    expect(value.anonymousCalls).toEqual([])
+  })
+
+  it('does not clear or retry a non-auth public-read error', async () => {
+    const value = staleSessionRecoverySetup()
+    value.setPrimaryResponse({ data: null, error: { code: '42501', message: 'denied' } })
+
+    await expect(value.repository.listPosts({ limit: 20 })).resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(value.clearSessionIfAccessTokenMatches).not.toHaveBeenCalled()
+    expect(value.anonymousCalls).toEqual([])
+  })
+
+  it('fails closed when the anonymous retry payload is malformed', async () => {
+    const value = staleSessionRecoverySetup()
+    value.setAnonymousResponse({ data: { unexpected: true }, error: null })
+
+    await expect(value.repository.getPost(detailRow.id)).resolves.toMatchObject({
+      ok: false, error: { sourceCode: 'INVALID_RESPONSE' },
+    })
   })
 
   it('calls only the typed list RPC and maps server excerpt, counters, and every tag', async () => {
@@ -469,7 +555,7 @@ describe('community repository mutation failures', () => {
     const args = Array.isArray(input) ? input : [input]
 
     expect(await repositoryMethod(...args as never[])).toMatchObject({ ok: false, error: { code: 'auth_required', sourceCode: 'PGRST303' } })
-    expect(value.clearSession).not.toHaveBeenCalled()
+    expect(value.clearSessionIfAccessTokenMatches).not.toHaveBeenCalled()
     expect(value.anonymousCalls).toEqual([])
   })
 

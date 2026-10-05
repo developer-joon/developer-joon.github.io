@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { AppFooter } from '../components/AppFooter'
 import { DraftNotice } from '../components/DraftNotice'
+import { SessionRecoveryNotice, useSessionRecoveryNotice } from '../components/SessionRecoveryNotice'
 import { PostEditor } from '../components/PostEditor'
 import { useAuth } from '../auth/AuthProvider'
 import { normalizeCommunityReturnPath } from '../auth/auth'
@@ -76,6 +77,7 @@ export function EditPostPage({ repository, uploadRepository, search, storage = w
   const [existingAttachmentCount, setExistingAttachmentCount] = useState<number | null>(null)
   const [workflowFrozen, setWorkflowFrozen] = useState(false)
   const [recoveryAttempt, setRecoveryAttempt] = useState(0)
+  const [recovery, consumeRecovery] = useSessionRecoveryNotice()
 
   useEffect(() => {
     const generation = ++lifecycle.current
@@ -89,6 +91,8 @@ export function EditPostPage({ repository, uploadRepository, search, storage = w
     setSubmitError(null); setConflict(false); conflictRef.current = false; baseline.current = { ok: false }; draftSaveFailed.current = false
     void Promise.all([repository.getPost(postId), repository.listTags()]).then(async ([postResult, tagResult]) => {
       if (!active) return
+      if (postResult.ok) consumeRecovery(postResult.recovery)
+      if (tagResult.ok) consumeRecovery(tagResult.recovery)
       if (!postResult.ok) { setLoadError(postResult.error.message); return }
       if (!tagResult.ok) { setLoadError(tagResult.error.message); return }
       setTags(tagResult.data)
@@ -120,7 +124,7 @@ export function EditPostPage({ repository, uploadRepository, search, storage = w
       }
     })
     return () => { active = false }
-  }, [attempt, key, postId, repository, storage])
+  }, [attempt, consumeRecovery, key, postId, repository, storage])
 
   useEffect(() => {
     if (loadError) retryButtonRef.current?.focus()
@@ -432,5 +436,5 @@ export function EditPostPage({ repository, uploadRepository, search, storage = w
     content = <><header className="editor-heading"><p className="post-detail-kicker">REVISE COMMUNITY NOTE</p><h1>글 수정</h1><p>수정과 삭제 권한은 서버에서도 현재 로그인 사용자 기준으로 다시 확인됩니다.</p></header><DraftNotice restored={restoredDraft} />{actorMismatch && <section className="editor-load-state" role="alert"><p>이 초안의 이미지는 다른 계정에서 업로드되었습니다. 원래 계정으로 로그인해 계속해 주세요.</p><button type="button" className="secondary-action" onClick={() => void auth.signOut()}>계정 바꾸기</button></section>}<PostEditor key={`${editorRevision}:${postId}:${auth.user.id}`} initialValue={initialDraft} tags={tags} unavailableTagLabels={unavailable} submitLabel="수정" onChange={autosave} onSubmit={update} disabled={mutationPending || workflowFrozen || actorMismatch} submissionError={submitError} submissionActions={<>{conflictActions}{retryAttachmentAction}</>} allowedImageOrigin={repository.publicAttachmentOrigin} uploadRepository={uploadRepository} uploadActorId={auth.user.id} initialAttachments={currentWorkflow && currentWorkflow.ownerId === auth.user.id ? currentWorkflow.attachments : []} existingAttachmentCount={existingAttachmentCount} onUploadStateChange={uploadChanged} auxiliaryActions={<>{needsLogin && <button type="button" className="secondary-action" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeEditPath(currentPath, postId))}>다시 로그인</button>}<button type="button" className="danger-action" onClick={() => void remove()}>글 삭제</button></>} /></>
   }
 
-  return <div className="community-page editor-page"><AppHeader /><main>{content}</main><AppFooter /></div>
+  return <div className="community-page editor-page"><AppHeader /><main><SessionRecoveryNotice recovery={recovery} />{content}</main><AppFooter /></div>
 }

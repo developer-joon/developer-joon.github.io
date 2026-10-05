@@ -61,6 +61,18 @@ describe('CommunityHomePage', () => {
     expect(screen.getByRole('link', { name: '글쓰기' })).toHaveAttribute('href', '/community/write/')
   })
 
+  it('shows one accessible session-expiry notice for concurrent recovered public reads', async () => {
+    const recovery = { code: 'session_cleared' as const, message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' }
+    render(<CommunityHomePage repository={repository({
+      listPosts: vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null }, recovery }),
+      listTags: vi.fn().mockResolvedValue({ ok: true, data: [{ id: tagId, slug: 'development', label: '개발' }], recovery }),
+    })} initialSearch="" />)
+
+    await screen.findByRole('heading', { name: post.title })
+    expect(screen.getAllByRole('alert', { name: '로그인 세션 만료' })).toHaveLength(1)
+    expect(screen.getByRole('alert', { name: '로그인 세션 만료' })).toHaveTextContent(recovery.message)
+  })
+
   it('preserves filters in the URL query contract', async () => {
     const onQueryChange = vi.fn()
     render(<CommunityHomePage repository={repository()} initialSearch="?sort=popular" onQueryChange={onQueryChange} />)

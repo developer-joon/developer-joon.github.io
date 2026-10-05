@@ -124,6 +124,18 @@ describe('PostDetailPage', () => {
     expect(await within(comments).findByText('reply')).toBeInTheDocument()
   })
 
+  it('shows one session-expiry notice when both post and comment reads recover', async () => {
+    const recovery = { code: 'session_cleared' as const, message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' }
+    const repo = repository(
+      () => Promise.resolve({ ...success(published), recovery }),
+      () => Promise.resolve({ ...success({ items: [rootComment], hasMore: false, nextCursor: null }), recovery }),
+    )
+    render(<PostDetailPage repository={repo} search={`?id=${postId}`} currentPath={`/community/post?id=${postId}`} />)
+
+    await screen.findByText('첫 댓글')
+    expect(screen.getAllByRole('alert', { name: '로그인 세션 만료' })).toHaveLength(1)
+  })
+
   it('disables post and comment reactions when the published post is locked', async () => {
     const setPostReaction = vi.fn()
     const setCommentReaction = vi.fn()
