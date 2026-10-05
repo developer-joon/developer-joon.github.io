@@ -206,7 +206,7 @@ describe('ReportDialog', () => {
 
     resolveRequest(success())
     const successStatus = await screen.findByRole('status', { name: '신고 접수 완료' })
-    expect(successStatus).toHaveFocus()
+    await waitFor(() => expect(successStatus).toHaveFocus())
     const close = screen.getByRole('button', { name: '닫기' })
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
     expect(close).toHaveFocus()
