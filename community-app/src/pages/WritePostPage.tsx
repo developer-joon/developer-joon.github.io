@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
+import { CommunityActions } from '../components/CommunityActions'
 import { AppFooter } from '../components/AppFooter'
 import { DraftNotice } from '../components/DraftNotice'
 import { SessionRecoveryNotice, useSessionRecoveryNotice } from '../components/SessionRecoveryNotice'
@@ -353,7 +354,7 @@ export function WritePostPage({ repository, uploadRepository, storage = window.l
     ? <section id={tagAvailabilityDescriptionId} className="editor-load-state" role="alert"><p>{tagError}</p><button type="button" className="secondary-action" onClick={() => setTagAttempt(value => value + 1)}>태그 다시 불러오기</button></section>
     : !tags ? <p id={tagAvailabilityDescriptionId} className="editor-load-state" role="status">태그를 불러오고 있습니다.</p> : null
 
-  return <div className="community-page editor-page"><AppHeader /><main>
+  return <div className="community-page editor-page"><AppHeader /><CommunityActions /><main>
     <SessionRecoveryNotice recovery={recovery} />
     <header className="editor-heading"><p className="post-detail-kicker">NEW COMMUNITY NOTE</p><h1>새 글 쓰기</h1><p>이 브라우저의 로컬 저장소에 임시 저장을 시도합니다.</p></header>
     <DraftNotice restored={initial.current.restored} />

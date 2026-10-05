@@ -5,6 +5,7 @@ import type { CommentCursor, PublicComment, PublicPostRead } from '../types/comm
 import { useAuth } from '../auth/AuthProvider'
 import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AppHeader } from '../components/AppHeader'
+import { CommunityActions } from '../components/CommunityActions'
 import { AppFooter } from '../components/AppFooter'
 import { CommentComposer, type CommentSubmitIntent } from '../components/CommentComposer'
 import { CommentThread } from '../components/CommentThread'
@@ -268,6 +269,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     return (
       <div className="community-page post-detail-page">
         <AppHeader />
+        <CommunityActions />
         <main><PageState title="올바르지 않은 게시글 주소입니다" /></main>
         <AppFooter />
       </div>
@@ -422,6 +424,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
   return (
     <div className="community-page post-detail-page">
       <AppHeader />
+      <CommunityActions />
       <main><SessionRecoveryNotice recovery={recovery} />{content}</main>
       <AppFooter />
     </div>

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, AuthProvider, type AuthClient, type AuthContextValue } from '../auth/AuthProvider'
 import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { AppHeader } from './AppHeader'
+import { CommunityActions } from './CommunityActions'
 
 const communityCss = readFileSync(resolve(process.cwd(), 'src/styles/community.css'), 'utf8')
 
@@ -73,8 +74,7 @@ function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue 
 function globalShell() {
   const header = screen.getByRole('banner')
   const navigation = within(header).getByRole('navigation', { name: '주요 메뉴' })
-  const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
-  return { header, navigation, actions }
+  return { header, navigation }
 }
 
 describe('AppHeader global shell', () => {
@@ -95,9 +95,10 @@ describe('AppHeader global shell', () => {
 
   it('keeps account controls and identity outside the global header and navigation', () => {
     const user = { id: 'user-1', email: 'dev@example.com', user_metadata: { user_name: 'breaddev' } } as unknown as AuthContextValue['user']
-    render(<AuthContext.Provider value={authValue({ user })}><AppHeader /></AuthContext.Provider>)
+    render(<AuthContext.Provider value={authValue({ user })}><AppHeader /><CommunityActions /></AuthContext.Provider>)
 
-    const { header, navigation, actions } = globalShell()
+    const { header, navigation } = globalShell()
+    const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
     expect(within(header).queryByText('breaddev')).not.toBeInTheDocument()
     expect(within(header).queryByRole('button', { name: /로그인|로그아웃/ })).not.toBeInTheDocument()
     expect(within(navigation).queryByText('breaddev')).not.toBeInTheDocument()
@@ -189,9 +190,9 @@ describe('AppHeader global shell', () => {
 describe('AppHeader community actions', () => {
   it('offers one Write link and one Google login using the default auth provider', () => {
     const signIn = vi.fn().mockResolvedValue(undefined)
-    render(<AuthContext.Provider value={authValue({ signIn })}><AppHeader /></AuthContext.Provider>)
+    render(<AuthContext.Provider value={authValue({ signIn })}><CommunityActions /></AuthContext.Provider>)
 
-    const { actions } = globalShell()
+    const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
     const write = within(actions).getByRole('link', { name: '글쓰기' })
     const login = within(actions).getByRole('button', { name: 'Google로 로그인' })
     expect(screen.getAllByRole('link', { name: '글쓰기' })).toHaveLength(1)
@@ -219,7 +220,7 @@ describe('AppHeader community actions', () => {
     document.head.append(stylesheet)
 
     try {
-      render(<AuthProvider client={client(session, { signOut })}><AppHeader /></AuthProvider>)
+      render(<AuthProvider client={client(session, { signOut })}><CommunityActions /></AuthProvider>)
 
       const identity = await screen.findByText(longIdentity)
       expect(identity).toHaveAttribute('title', longIdentity)
@@ -252,27 +253,27 @@ describe('AppHeader community actions', () => {
 
   it('keeps loading and pending auth actions accessible and disabled', async () => {
     const getSession = vi.fn(() => new Promise(() => undefined))
-    const loadingView = render(<AuthProvider client={client(null, { getSession: getSession as AuthClient['getSession'] })}><AppHeader /></AuthProvider>)
+    const loadingView = render(<AuthProvider client={client(null, { getSession: getSession as AuthClient['getSession'] })}><CommunityActions /></AuthProvider>)
     expect(screen.getByRole('button', { name: '로그인 상태 확인 중' })).toBeDisabled()
     loadingView.unmount()
 
     const signInWithOAuth = vi.fn(() => new Promise(() => undefined))
-    render(<AuthProvider client={client(null, { signInWithOAuth: signInWithOAuth as AuthClient['signInWithOAuth'] })}><AppHeader /></AuthProvider>)
+    render(<AuthProvider client={client(null, { signInWithOAuth: signInWithOAuth as AuthClient['signInWithOAuth'] })}><CommunityActions /></AuthProvider>)
     const login = await screen.findByRole('button', { name: 'Google로 로그인' })
     fireEvent.click(login)
     expect(screen.getByRole('button', { name: 'Google 연결 중' })).toBeDisabled()
   })
 
   it('announces auth errors in the community action row', () => {
-    render(<AuthContext.Provider value={authValue({ error: '로그인에 실패했습니다.' })}><AppHeader /></AuthContext.Provider>)
+    render(<AuthContext.Provider value={authValue({ error: '로그인에 실패했습니다.' })}><CommunityActions /></AuthContext.Provider>)
 
-    const { actions } = globalShell()
+    const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
     expect(within(actions).getByRole('status')).toHaveTextContent('로그인에 실패했습니다.')
   })
 
   it('uses the provider-neutral fallback for users without identity metadata', async () => {
     const session = { user: { id: 'user-1', email: null, user_metadata: {} } }
-    render(<AuthProvider client={client(session)}><AppHeader /></AuthProvider>)
+    render(<AuthProvider client={client(session)}><CommunityActions /></AuthProvider>)
 
     expect(await screen.findByText('커뮤니티 사용자')).toBeInTheDocument()
   })

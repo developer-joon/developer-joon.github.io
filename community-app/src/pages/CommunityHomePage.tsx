@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CommunityRepository } from '../data/communityRepository'
 import { AppHeader } from '../components/AppHeader'
 import { AppFooter } from '../components/AppFooter'
+import { CommunityActions } from '../components/CommunityActions'
 import { PostList } from '../components/PostList'
 import { SearchBar } from '../components/SearchBar'
 import { SortTabs } from '../components/SortTabs'
@@ -262,6 +263,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
             <h1 id="community-heading">자유게시판</h1>
           </div>
         </section>
+        <CommunityActions />
         <div className="community-main-content community-wrap">
           <SessionRecoveryNotice recovery={recovery} />
 
@@ -275,7 +277,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
             </div>
           )}
           <div className="list-heading">
-            <div><span>PUBLIC DESK</span><h2>커뮤니티 글</h2></div>
+            <h2>커뮤니티 글</h2>
             <SortTabs value={query.sort} onChange={(sort) => applyFilters({ ...query, sort })} />
           </div>
         </section>

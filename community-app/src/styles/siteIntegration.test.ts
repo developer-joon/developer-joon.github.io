@@ -170,17 +170,38 @@ describe('Jekyll visual contract', () => {
   })
 
   it.each([
-    [767, '20px', '30px'],
-    [768, '25px', '0'],
-    [1220, '30px', '0'],
-  ])('computes Jekyll header spacing and toggle alignment at %ipx', (viewportWidth, marginTop, toggleRight) => {
+    [767, '20px', '25px', '500px', '30px'],
+    [768, '25px', '30px', '680px', '0'],
+    [1024, '25px', '30px', '900px', '0'],
+    [1220, '30px', '35px', '1100px', '0'],
+  ])('computes the explicit Jekyll header contract at %ipx', (viewportWidth, marginTop, brandSize, maxWidth, toggleRight) => {
     const header = computedDeclarations(['community-header'], 'header', viewportWidth)
+    const brand = computedDeclarations(['community-brand'], 'a', viewportWidth)
     const toggle = computedDeclarations(['menu-toggle'], 'button', viewportWidth)
     expect(header['margin-top']).toBe(marginTop)
+    expect(header['max-width']).toBe(maxWidth)
     expect(header.position).toBe('relative')
+    expect(brand['font-size']).toBe(brandSize)
+    expect(brand['font-weight']).toBe('700')
+    expect(brand['letter-spacing']).toBe('-.02em')
+    expect(brand['line-height']).toBe('1')
     expect(toggle.position).toBe('absolute')
     expect(toggle.right).toBe(toggleRight)
     expect(toggle['z-index']).toBe('1004')
+  })
+
+  it.each([
+    [1024, '15px'],
+    [1220, '17px'],
+  ])('right-aligns desktop navigation exactly like Jekyll at %ipx', (viewportWidth, fontSize) => {
+    const navigation = computedDeclarations(['global-navigation'], 'nav', viewportWidth)
+    expect(navigation.position).toBe('absolute')
+    expect(navigation.top).toBe('50%')
+    expect(navigation.right).toBe('20px')
+    expect(navigation.transform).toBe('translateY(-50%)')
+    expect(navigation.gap).toBe('20px')
+    expect(navigation['font-size']).toBe(fontSize)
+    expect(navigation['font-weight']).toBe('600')
   })
 
   it('uses the accent for current navigation and keeps headline scales at 60px or less', () => {
@@ -197,6 +218,8 @@ describe('shared shell contract', () => {
     expect(homeSource).toMatch(/<section className="community-network-hero"[^>]*>\s*<div className="community-wrap">\s*<h1/)
     expect(homeSource).toMatch(/<div className="community-main-content community-wrap">/)
     expect(homeSource.match(/<h1\b/g)).toHaveLength(1)
+    expect(homeSource).not.toContain('PUBLIC DESK')
+    expect(homeSource).toMatch(/<\/section>\s*<CommunityActions \/>/)
 
     for (const [viewportWidth, maxWidth, paddingInline] of [
       [767, '500px', '20px'],
@@ -214,6 +237,24 @@ describe('shared shell contract', () => {
       expect(wrap['max-width'], `inner wrap max-width at ${viewportWidth}px`).toBe(maxWidth)
       expect(wrap['padding-inline'], `inner wrap padding at ${viewportWidth}px`).toBe(paddingInline)
     }
+  })
+
+  it.each([
+    [767, '40px', '18px', '22px'],
+    [768, '50px', '20px', '30px'],
+    [1024, '60px', '20px', '30px'],
+    [1220, '80px', '22px', '35px'],
+  ])('uses Jekyll body rhythm at %ipx', (viewportWidth, sectionSpacing, bodySize, headingSize) => {
+    const content = computedDeclarations(['community-main-content'], 'div', viewportWidth)
+    const tools = computedDeclarations(['community-tools'], 'section', viewportWidth)
+    const heading = computedDeclarations(['list-heading'], 'h2', viewportWidth)
+    expect(content['font-size']).toBe(bodySize)
+    expect(content['line-height']).toBe('1.6')
+    expect(tools['padding-top']).toBe(sectionSpacing)
+    expect(heading['font-size']).toBe(headingSize)
+    expect(heading['font-weight']).toBe('700')
+    expect(heading['line-height']).toBe('1.2')
+    expect(heading['letter-spacing']).toBe('-.02em')
   })
 
   it('matches the Blog hero dimensions and heading typography at each breakpoint', () => {
@@ -262,6 +303,20 @@ describe('shared shell contract', () => {
       'src/pages/AuthCallbackPage.tsx',
       'src/pages/AdminReportsPage.tsx',
     ].every((path) => read(path).includes('<AppFooter />'))).toBe(true)
+  })
+
+  it.each([
+    [767, '40px', '18px'],
+    [768, '50px', '20px'],
+    [1024, '60px', '20px'],
+    [1220, '80px', '22px'],
+  ])('matches Jekyll footer spacing and tagline typography at %ipx', (viewportWidth, padding, fontSize) => {
+    const footer = computedDeclarations(['community-footer'], 'footer', viewportWidth)
+    const tagline = computedDeclarations(['community-footer', 'footer-tagline'], 'p', viewportWidth)
+    expect(footer.padding).toBe(`${padding} 0`)
+    expect(footer.display).toBe('block')
+    expect(tagline['font-size']).toBe(fontSize)
+    expect(tagline['line-height']).toBe('1.6')
   })
 
   it('does not present BREADLAB as a separate shell brand', () => {

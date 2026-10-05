@@ -7,6 +7,7 @@ import { useAuth, type AuthClient } from './auth/AuthProvider'
 import { getUploadRepository, type UploadRepository } from './data/uploadRepository'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
+import { CommunityActions } from './components/CommunityActions'
 
 const PostDetailPage = lazy(async () => {
   const module = await import('./pages/PostDetailPage')
@@ -40,6 +41,7 @@ function LazyRouteFallback({ children }: { children: React.ReactNode }) {
   return (
     <div className="community-page">
       <AppHeader />
+      <CommunityActions />
       <main><section className="state-panel" role="status">{children}</section></main>
       <AppFooter />
     </div>
@@ -77,6 +79,7 @@ export function App({ pathname = window.location.pathname, search = window.locat
   return (
     <div className="community-page">
       <AppHeader />
+      <CommunityActions />
       <main>
         <section className="community-hero" aria-labelledby="community-title">
           <div>
@@ -99,7 +102,7 @@ export function App({ pathname = window.location.pathname, search = window.locat
 export function ConfigurationErrorScreen() {
   return (
     <div className="community-page error">
-      <AppHeader showCommunityActions={false} />
+      <AppHeader />
       <main>
         <section className="community-hero" role="alert" aria-labelledby="configuration-error-title">
           <div>

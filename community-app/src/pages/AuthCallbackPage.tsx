@@ -3,6 +3,7 @@ import { consumePendingReturnPath, DEFAULT_COMMUNITY_RETURN_PATH, peekPendingRet
 import type { AuthClient } from '../auth/AuthProvider'
 import { getSupabaseClient } from '../lib/supabase'
 import { AppHeader } from '../components/AppHeader'
+import { CommunityActions } from '../components/CommunityActions'
 import { AppFooter } from '../components/AppFooter'
 
 interface AuthCallbackPageProps {
@@ -70,6 +71,7 @@ export function AuthCallbackPage({
   return (
     <div className="community-page auth-callback-page">
       <AppHeader />
+      <CommunityActions />
       <main>
         <section className="auth-callback-state" role={state.kind === 'loading' ? 'status' : 'alert'}>
           <p className="post-detail-kicker">OAUTH AUTHENTICATION</p>
