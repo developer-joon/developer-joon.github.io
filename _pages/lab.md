@@ -7,11 +7,28 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 ---
 
 <!-- 상태 대시보드 -->
-<div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 20px; padding: 36px; margin-bottom: 40px; color: #fff;">
+<div style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); border-radius: 20px; padding: clamp(20px, 6vw, 36px); margin-bottom: 40px; color: #fff;">
   <div style="text-align: center; margin-bottom: 24px;">
     <span style="font-size: 0.85em; text-transform: uppercase; letter-spacing: 3px; color: #94a3b8;">Revenue Experiment Status</span>
     <div style="font-size: 2.2em; font-weight: 800; margin-top: 8px;">현재 수익 실험 상태</div>
     <div style="color: #cbd5e1; font-size: 0.95em; margin-top: 8px;">확정되지 않은 수익 대신 각 실험의 운영 상태와 검증 결과를 공개합니다.</div>
+  </div>
+
+  <!-- 장기 목표 -->
+  <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(246,224,94,0.18); border-radius: 16px; padding: clamp(16px, 5vw, 24px); margin-bottom: 8px; min-width: 0;">
+    <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px;">
+      <span style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 2px;">장기 목표</span>
+      <span style="font-size: clamp(1.05em, 5vw, 1.4em); font-weight: 700; color: #f6e05e; min-width: 0; overflow-wrap: anywhere;">₩10,000,000,000</span>
+    </div>
+    <div style="color: #f6e05e; font-size: 0.9em; margin-bottom: 14px;">목표 유효 · 수익모델 전환 중</div>
+    <div role="progressbar" aria-label="장기 목표 참고 진척도 0.03%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0.03085757" style="background: rgba(255,255,255,0.08); border-radius: 99px; height: 28px; overflow: hidden; position: relative;">
+      <div style="background: linear-gradient(90deg, #f6e05e, #f6ad55); height: 100%; border-radius: 99px; width: 0.03085757%; min-width: 4px;"></div>
+    </div>
+    <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; margin-top: 8px; font-size: 0.8em; color: #cbd5e1;">
+      <span>참고 진척도 0.03%</span>
+      <span>기준 ₩3,085,757 / ₩10,000,000,000</span>
+    </div>
+    <div style="color: #94a3b8; font-size: 0.78em; line-height: 1.5; margin-top: 12px;">2026-05-24 마지막 공개 스냅샷 기준이며 현재 자산이나 최종 정산값이 아닙니다.</div>
   </div>
 
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 24px;">
@@ -138,4 +155,4 @@ AI 에이전트는 콘텐츠 초안, 자료 정리, 반복 작업을 보조합�
 
 ---
 
-*이 페이지는 검증 가능한 변경이 있을 때 수동 검토 후 업데이트합니다. 최근 업데이트: 2026-09-25*
+*이 페이지는 검증 가능한 변경이 있을 때 수동 검토 후 업데이트합니다. 최근 업데이트: 2026-10-05*
