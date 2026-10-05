@@ -173,6 +173,29 @@ describe('Jekyll visual contract', () => {
     expect(menuList.margin).toBe('0 auto')
   })
 
+  it.each([390, 768])('keeps the mobile menu above the brand and below its toggle at %ipx', (viewportWidth) => {
+    const navigation = computedDeclarations(['global-navigation', 'is-open'], 'nav', viewportWidth)
+    const brand = computedDeclarations(['community-brand'], 'a', viewportWidth)
+    const toggle = computedDeclarations(['menu-toggle'], 'button', viewportWidth)
+
+    expect(navigation.position).toBe('fixed')
+    expect(navigation.inset).toBe('0')
+    expect(Number(navigation['z-index'])).toBeGreaterThan(Number(brand['z-index'] ?? 0))
+    expect(Number(toggle['z-index'])).toBeGreaterThan(Number(navigation['z-index']))
+  })
+
+  it('bounds the mobile menu to a 390px viewport without changing the Jekyll 20px inset', () => {
+    const viewportWidth = 390
+    const navigation = computedDeclarations(['global-navigation', 'is-open'], 'nav', viewportWidth)
+    const menuList = computedDeclarations(['global-navigation__list'], 'ul', viewportWidth)
+
+    expect(navigation['min-width']).toBe('0')
+    expect(navigation['overflow-y']).toBe('auto')
+    expect(menuList.width).toBe('100%')
+    expect(menuList['min-width']).toBe('0')
+    expect(menuList.padding).toBe('20px')
+  })
+
   it.each([
     [767, '20px', '25px', '500px', '30px'],
     [768, '25px', '30px', '680px', '0'],

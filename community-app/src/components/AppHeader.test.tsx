@@ -102,7 +102,7 @@ describe('AppHeader global shell', () => {
     render(<AuthContext.Provider value={authValue({ user })}><AppHeader /><CommunityActions /></AuthContext.Provider>)
 
     const { header, navigation } = globalShell()
-    const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
+    const actions = screen.getByRole('region', { name: '계정 작업' })
     expect(within(header).queryByText('breaddev')).not.toBeInTheDocument()
     expect(within(header).queryByRole('button', { name: /로그인|로그아웃/ })).not.toBeInTheDocument()
     expect(within(navigation).queryByText('breaddev')).not.toBeInTheDocument()
@@ -196,7 +196,7 @@ describe('AppHeader community actions', () => {
     const signIn = vi.fn().mockResolvedValue(undefined)
     render(<AuthContext.Provider value={authValue({ signIn })}><CommunityActions /></AuthContext.Provider>)
 
-    const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
+    const actions = screen.getByRole('region', { name: '계정 작업' })
     const login = within(actions).getByRole('button', { name: 'Google로 로그인' })
     expect(within(actions).queryByRole('link', { name: '글쓰기' })).not.toBeInTheDocument()
     expect(login).toHaveTextContent('Google 로그인')
@@ -269,7 +269,7 @@ describe('AppHeader community actions', () => {
   it('announces auth errors in the community action row', () => {
     render(<AuthContext.Provider value={authValue({ error: '로그인에 실패했습니다.' })}><CommunityActions /></AuthContext.Provider>)
 
-    const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
+    const actions = screen.getByRole('region', { name: '계정 작업' })
     expect(within(actions).getByRole('status')).toHaveTextContent('로그인에 실패했습니다.')
   })
 

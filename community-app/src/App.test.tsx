@@ -165,7 +165,7 @@ describe('App', () => {
     expect(alert).not.toContainElement(screen.getByRole('banner'))
     expect(alert).not.toContainElement(screen.getByRole('navigation', { name: '주요 메뉴' }))
     expect(alert).not.toContainElement(screen.getByRole('contentinfo'))
-    expect(screen.queryByRole('region', { name: '커뮤니티 작업' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: '계정 작업' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: '글쓰기' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Google.*로그인/ })).not.toBeInTheDocument()
     expect(within(screen.getByRole('banner')).getByRole('link', { name: 'Ria & Seoa PaPa' })).toBeInTheDocument()

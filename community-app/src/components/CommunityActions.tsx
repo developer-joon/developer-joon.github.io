@@ -14,7 +14,7 @@ export function CommunityActions() {
   const loginLabel = auth.loading ? '로그인 상태 확인 중' : auth.pending ? definition.pendingLabel : definition.loginLabel
 
   return (
-    <section className="community-actions" aria-label="커뮤니티 작업">
+    <section className="community-actions" aria-label="계정 작업">
       <div className="header-auth">
         {auth.user ? (
           <>

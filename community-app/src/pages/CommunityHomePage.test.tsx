@@ -70,7 +70,7 @@ describe('CommunityHomePage', () => {
     const listingHeading = screen.getByRole('heading', { level: 2, name: '커뮤니티 글' })
     expect(listingHeading.parentElement).toContainElement(writeLink)
     expect(writeLink.parentElement).toContainElement(screen.getByRole('group', { name: '게시글 정렬' }))
-    expect(screen.getByRole('region', { name: '커뮤니티 작업' })).not.toContainElement(writeLink)
+    expect(screen.getByRole('region', { name: '계정 작업' })).not.toContainElement(writeLink)
   })
 
   it('shows one accessible session-expiry notice for concurrent recovered public reads', async () => {
