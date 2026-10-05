@@ -306,14 +306,16 @@ describe('shared shell contract', () => {
   })
 
   it.each([
-    [767, '40px', '18px'],
-    [768, '50px', '20px'],
-    [1024, '60px', '20px'],
-    [1220, '80px', '22px'],
-  ])('matches Jekyll footer spacing and tagline typography at %ipx', (viewportWidth, padding, fontSize) => {
+    [767, '40px', '20px', '18px'],
+    [768, '50px', '0', '20px'],
+    [1024, '60px', '0', '20px'],
+    [1220, '80px', '0', '22px'],
+  ])('matches Jekyll footer spacing and tagline typography at %ipx', (viewportWidth, paddingBlock, paddingInline, fontSize) => {
     const footer = computedDeclarations(['community-footer'], 'footer', viewportWidth)
     const tagline = computedDeclarations(['community-footer', 'footer-tagline'], 'p', viewportWidth)
-    expect(footer.padding).toBe(`${padding} 0`)
+    expect(communityCss).not.toMatch(/\.community-footer\s*\{[^}]*\bpadding\s*:/)
+    expect(footer['padding-block']).toBe(paddingBlock)
+    expect(footer['padding-inline']).toBe(paddingInline)
     expect(footer.display).toBe('block')
     expect(tagline['font-size']).toBe(fontSize)
     expect(tagline['line-height']).toBe('1.6')
