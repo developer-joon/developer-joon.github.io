@@ -5,9 +5,28 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8')
+
+const extractScssBlock = (source: string, marker: string): string => {
+  const markerIndex = source.indexOf(marker)
+  if (markerIndex === -1) throw new Error(`Missing SCSS marker: ${marker}`)
+
+  const openingBrace = source.indexOf('{', markerIndex + marker.length)
+  if (openingBrace === -1) throw new Error(`Missing SCSS block for: ${marker}`)
+
+  let depth = 1
+  for (let index = openingBrace + 1; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1
+    if (source[index] === '}') depth -= 1
+    if (depth === 0) return source.slice(openingBrace + 1, index)
+  }
+
+  throw new Error(`Unclosed SCSS block for: ${marker}`)
+}
+
 const tokens = read('src/styles/tokens.css')
 const globalCss = read('src/styles/global.css')
 const communityCss = read('src/styles/community.css')
+const jekyllHeaderScss = read('../_sass/_includes/_header.scss')
 const entryHtml = [
   'index.html',
   'write/index.html',
@@ -232,6 +251,22 @@ describe('Jekyll visual contract', () => {
     expect(menuList.gap).toBe('20px')
     expect(menuList['font-size']).toBe(fontSize)
     expect(menuList['font-weight']).toBe('600')
+  })
+
+  it('uses one explicit 20px menu gap and matching link line-height in both shells', () => {
+    const navigationLink = computedDeclarations(['global-navigation'], 'a', 1220)
+    const menuListBlock = extractScssBlock(jekyllHeaderScss, '.menu__list')
+    const desktopMenuListBlock = extractScssBlock(menuListBlock, '@include mq(tabletl)')
+    const mobileMenuListBlock = menuListBlock.slice(0, menuListBlock.indexOf('@include mq(tabletl)'))
+    const menuLinkBlock = extractScssBlock(jekyllHeaderScss, '.menu__list__item__link')
+    const baseMenuLinkBlock = menuLinkBlock.split('@include mq(tabletl)')[0]
+
+    expect(navigationLink['line-height']).toBe('1')
+    expect(desktopMenuListBlock).toMatch(/display:\s*flex;/)
+    expect(desktopMenuListBlock).toMatch(/gap:\s*20px;/)
+    expect(mobileMenuListBlock).not.toMatch(/display:\s*flex;|gap:/)
+    expect(jekyllHeaderScss).not.toContain('.menu__list__item {')
+    expect(baseMenuLinkBlock).toMatch(/line-height:\s*1;/)
   })
 
   it('uses a stable scrollbar gutter and changes only color for current navigation', () => {

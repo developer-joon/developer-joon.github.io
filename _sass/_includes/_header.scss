@@ -180,27 +180,19 @@
 	}
 
 	@include mq(tabletl) {
+		display: flex;
+		align-items: center;
+		gap: 20px;
 		max-width: none;
 		margin: 0;
 		padding: 0;
 	}
 }
 
-.menu__list__item {
-
-	@include mq(tabletl) {
-		display: inline-block;
-		margin-left: 20px;
-
-		&:first-child {
-			margin-left: 0;
-		}
-	}
-}
-
 .menu__list__item__link {
 	font-size: $menu-small;
 	font-weight: $menu-weight;
+	line-height: 1;
 	color: $text-dark-color;
 	padding: 10px 0;
 
