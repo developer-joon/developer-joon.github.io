@@ -253,6 +253,44 @@ describe('Jekyll visual contract', () => {
     expect(menuList['font-weight']).toBe('600')
   })
 
+  it('matches Jekyll mobile line boxes and hamburger alignment', () => {
+    const mobileMenuList = computedDeclarations(['global-navigation__list'], 'ul', 390)
+    const tabletMenuList = computedDeclarations(['global-navigation__list'], 'ul', 768)
+    const mobileMenuLink = computedDeclarations(['global-navigation'], 'a', 390)
+    const mobileToggle = computedDeclarations(['menu-toggle'], 'button', 390)
+    const tabletToggle = computedDeclarations(['menu-toggle'], 'button', 768)
+    const toggleIcon = computedDeclarations(['menu-toggle__icon'], 'span', 390)
+
+    expect(mobileMenuList['font-size']).toBe('18px')
+    expect(mobileMenuList['line-height']).toBe('1.6')
+    expect(tabletMenuList['font-size']).toBe('20px')
+    expect(tabletMenuList['line-height']).toBe('1.6')
+    expect(mobileMenuLink['font-size']).toBe('30px')
+    expect(mobileMenuLink['font-weight']).toBe('600')
+    expect(mobileToggle.width).toBe('32px')
+    expect(mobileToggle.height).toBe('38px')
+    expect(mobileToggle.padding).toBe('9px 0')
+    expect(mobileToggle.right).toBe('30px')
+    expect(tabletToggle.right).toBe('0')
+    expect(toggleIcon['margin-left']).toBe('8px')
+  })
+
+  it('uses matching inline mobile link boxes and block desktop link boxes in both shells', () => {
+    const mobileNavigationLink = computedDeclarations(['global-navigation'], 'a', 390)
+    const desktopNavigationLink = computedDeclarations(['global-navigation'], 'a', 1024)
+    const largeDesktopNavigationLink = computedDeclarations(['global-navigation'], 'a', 1220)
+    const menuLinkBlock = extractScssBlock(jekyllHeaderScss, '.menu__list__item__link')
+    const baseMenuLinkBlock = menuLinkBlock.split('@include mq(tabletl)')[0]
+    const desktopMenuLinkBlock = extractScssBlock(menuLinkBlock, '@include mq(tabletl)')
+
+    expect(mobileNavigationLink.display).toBe('inline')
+    expect(baseMenuLinkBlock).toMatch(/display:\s*inline;/)
+    expect(desktopNavigationLink.display).toBe('block')
+    expect(desktopNavigationLink['font-size']).toBe('15px')
+    expect(largeDesktopNavigationLink['font-size']).toBe('17px')
+    expect(desktopMenuLinkBlock).toMatch(/display:\s*block;/)
+  })
+
   it('uses one explicit 20px menu gap and matching link line-height in both shells', () => {
     const navigationLink = computedDeclarations(['global-navigation'], 'a', 1220)
     const menuListBlock = extractScssBlock(jekyllHeaderScss, '.menu__list')
