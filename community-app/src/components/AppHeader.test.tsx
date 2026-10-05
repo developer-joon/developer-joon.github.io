@@ -65,6 +65,7 @@ function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue 
     error: null,
     signIn: vi.fn(),
     signOut: vi.fn(),
+    invalidateStaleSession: vi.fn(() => false),
     ...overrides,
   }
 }

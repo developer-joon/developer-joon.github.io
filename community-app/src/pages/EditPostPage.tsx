@@ -87,12 +87,13 @@ export function EditPostPage({ repository, uploadRepository, search, storage = w
   useEffect(() => {
     if (!postId || !key) return
     let active = true
+    const requestSession = auth.session
     setLoadError(null); setPost(null); setReadState(null); setTags(null); setInitialDraft(null); setRestoredDraft(false); setExistingAttachmentCount(null); setWorkflowFrozen(false)
     setSubmitError(null); setConflict(false); conflictRef.current = false; baseline.current = { ok: false }; draftSaveFailed.current = false
     void Promise.all([repository.getPost(postId), repository.listTags()]).then(async ([postResult, tagResult]) => {
       if (!active) return
-      if (postResult.ok) consumeRecovery(postResult.recovery)
-      if (tagResult.ok) consumeRecovery(tagResult.recovery)
+      if (postResult.ok) consumeRecovery(postResult.recovery, requestSession)
+      if (tagResult.ok) consumeRecovery(tagResult.recovery, requestSession)
       if (!postResult.ok) { setLoadError(postResult.error.message); return }
       if (!tagResult.ok) { setLoadError(tagResult.error.message); return }
       setTags(tagResult.data)
@@ -124,7 +125,7 @@ export function EditPostPage({ repository, uploadRepository, search, storage = w
       }
     })
     return () => { active = false }
-  }, [attempt, consumeRecovery, key, postId, repository, storage])
+  }, [attempt, auth.session, consumeRecovery, key, postId, repository, storage])
 
   useEffect(() => {
     if (loadError) retryButtonRef.current?.focus()

@@ -11,7 +11,7 @@ const report: AdminReportItem = {
   reporter: { id: '20000000-0000-4000-8000-000000000001', login: 'reporter', displayName: null, avatarUrl: null },
   target: { type: 'comment', id: '30000000-0000-4000-8000-000000000001', available: false },
 }
-const signedOut = { loading: false, pending: false, session: null, user: null, error: null, signIn: vi.fn(), signOut: vi.fn() } satisfies AuthContextValue
+const signedOut = { loading: false, pending: false, session: null, user: null, error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => false) } satisfies AuthContextValue
 const signedIn = { ...signedOut, session: {} as never, user: { id: '40000000-0000-4000-8000-000000000001' } as never }
 function repo(overrides: Partial<CommunityRepository> = {}) {
   return { isAdmin: vi.fn(), listAdminReports: vi.fn(), listModerationAuditLogs: vi.fn(), setReportStatus: vi.fn(), moderatePost: vi.fn(), moderateComment: vi.fn(), ...overrides } as unknown as CommunityRepository

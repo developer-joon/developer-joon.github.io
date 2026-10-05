@@ -76,6 +76,7 @@ function auth(userId: string | null): AuthContextValue {
     error: null,
     signIn: vi.fn(),
     signOut: vi.fn(),
+    invalidateStaleSession: vi.fn(() => false),
   }
 }
 

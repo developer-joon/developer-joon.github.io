@@ -61,8 +61,6 @@ export interface CommunityClient {
 }
 
 interface PublicReadRecovery {
-  getSessionAccessToken(): PromiseLike<string | null>
-  clearSessionIfAccessTokenMatches(accessToken: string): PromiseLike<boolean>
   anonymousClient: CommunityClient
 }
 
@@ -141,28 +139,11 @@ async function executePublic<T>(
   operation: (target: CommunityClient) => PromiseLike<QueryResponse>,
   map: (data: unknown) => T,
 ): Promise<CommunityResult<T>> {
-  let capturedAccessToken: string | null | undefined
-  if (recovery) {
-    try {
-      capturedAccessToken = await recovery.getSessionAccessToken()
-    } catch {
-      capturedAccessToken = undefined
-    }
-  }
   const first = await execute(() => operation(client), map)
   if (first.ok || first.error.code !== 'auth_required' || !recovery) return first
-  let sessionCleared = false
-  if (capturedAccessToken === undefined) return first
-  if (capturedAccessToken !== null) {
-    try {
-      sessionCleared = await recovery.clearSessionIfAccessTokenMatches(capturedAccessToken)
-    } catch {
-      return first
-    }
-  }
   const retry = await execute(() => operation(recovery.anonymousClient), map)
-  return retry.ok && sessionCleared
-    ? { ...retry, recovery: { code: 'session_cleared', message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' } }
+  return retry.ok
+    ? { ...retry, recovery: { code: 'session_stale', message: '로그인 세션이 만료되었습니다. Google로 다시 로그인해 주세요.' } }
     : retry
 }
 function mapTag(tag: RawTag): CommunityTag { return { id: tag.id, slug: tag.slug, label: tag.label } }
@@ -454,27 +435,11 @@ function mapModerationAuditPage(data: unknown, limit: number, targetType?: Moder
 
 export function createCommunityRepository(client: CommunityClient, recovery?: PublicReadRecovery) {
   const publicAttachmentOrigin = new URL(client.publicAttachmentUrl('00000000-0000-4000-8000-000000000000')).origin
-  const clearingSessions = new Map<string, Promise<boolean>>()
-  const publicRecovery = recovery ? {
-    anonymousClient: recovery.anonymousClient,
-    getSessionAccessToken: () => recovery.getSessionAccessToken(),
-    clearSessionIfAccessTokenMatches: async (accessToken: string) => {
-      const existing = clearingSessions.get(accessToken)
-      if (existing) return existing
-      const clearingSession = (async () => recovery.clearSessionIfAccessTokenMatches(accessToken))()
-      clearingSessions.set(accessToken, clearingSession)
-      try {
-        return await clearingSession
-      } finally {
-        if (clearingSessions.get(accessToken) === clearingSession) clearingSessions.delete(accessToken)
-      }
-    },
-  } : undefined
   return {
     publicAttachmentOrigin,
     async listPosts(input: PostListInput): Promise<CommunityResult<PostPage>> {
       const sort = input.sort ?? 'newest'
-      return executePublic(client, publicRecovery, target => target.rpc('list_public_posts', {
+      return executePublic(client, recovery, target => target.rpc('list_public_posts', {
         p_sort: sort, p_limit: input.limit, p_search: input.search?.trim() || undefined,
         p_tag_id: input.tagId, p_cursor_is_pinned: input.cursor?.isPinned,
         p_cursor_created_at: input.cursor?.createdAt, p_cursor_rank: input.cursor?.rank ?? undefined,
@@ -495,7 +460,7 @@ export function createCommunityRepository(client: CommunityClient, recovery?: Pu
     async getPost(postId: string): Promise<CommunityResult<PublicPostRead>> {
       return executePublic(
         client,
-        publicRecovery,
+        recovery,
         target => target.rpc('get_public_post_v3', { p_post_id: postId }),
         data => mapPublicPostRead(data, client.publicAttachmentUrl),
       )
@@ -504,7 +469,7 @@ export function createCommunityRepository(client: CommunityClient, recovery?: Pu
       if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
         return failure({ code: 'validation', sourceCode: 'INVALID_COMMENT_LIMIT', message: '입력 내용을 확인해 주세요.' })
       }
-      return executePublic(client, publicRecovery, target => target.rpc('list_public_post_comments_v2', {
+      return executePublic(client, recovery, target => target.rpc('list_public_post_comments_v2', {
         p_post_id: input.postId,
         p_limit: input.limit,
         p_cursor_root_created_at: input.cursor?.rootCreatedAt,
@@ -515,7 +480,7 @@ export function createCommunityRepository(client: CommunityClient, recovery?: Pu
       }), mapCommentPage)
     },
     async listTags(): Promise<CommunityResult<CommunityTag[]>> {
-      return executePublic(client, publicRecovery, target => target.listTags(), data => {
+      return executePublic(client, recovery, target => target.listTags(), data => {
         if (!Array.isArray(data) || !data.every(isDetailTag)) throw new Error('invalid tag response')
         return data.map(mapTag)
       })
@@ -628,19 +593,6 @@ export function getCommunityRepository(): CommunityRepository {
   if (!browserRepository) {
     const client = getSupabaseClient()
     browserRepository = createCommunityRepository(createBrowserCommunityClient(client), {
-      getSessionAccessToken: async () => {
-        const { data, error } = await client.auth.getSession()
-        if (error) throw error
-        return data.session?.access_token ?? null
-      },
-      clearSessionIfAccessTokenMatches: async (accessToken) => {
-        const { data, error: sessionError } = await client.auth.getSession()
-        if (sessionError) throw sessionError
-        if (data.session?.access_token !== accessToken) return false
-        const { error } = await client.auth.signOut({ scope: 'local' })
-        if (error) throw error
-        return true
-      },
       anonymousClient: createBrowserCommunityClient(getAnonymousSupabaseClient()),
     })
   }

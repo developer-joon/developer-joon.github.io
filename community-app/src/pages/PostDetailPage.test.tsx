@@ -125,12 +125,12 @@ describe('PostDetailPage', () => {
   })
 
   it('shows one session-expiry notice when both post and comment reads recover', async () => {
-    const recovery = { code: 'session_cleared' as const, message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' }
+    const recovery = { code: 'session_stale' as const, message: '로그인 세션이 만료되었습니다. Google로 다시 로그인해 주세요.' }
     const repo = repository(
       () => Promise.resolve({ ...success(published), recovery }),
       () => Promise.resolve({ ...success({ items: [rootComment], hasMore: false, nextCursor: null }), recovery }),
     )
-    render(<PostDetailPage repository={repo} search={`?id=${postId}`} currentPath={`/community/post?id=${postId}`} />)
+    render(<AuthContext.Provider value={authValue({ invalidateStaleSession: vi.fn(() => true) })}><PostDetailPage repository={repo} search={`?id=${postId}`} currentPath={`/community/post?id=${postId}`} /></AuthContext.Provider>)
 
     await screen.findByText('첫 댓글')
     expect(screen.getAllByRole('alert', { name: '로그인 세션 만료' })).toHaveLength(1)
@@ -214,7 +214,7 @@ describe('PostDetailPage', () => {
 
 
 function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue {
-  return { loading:false, pending:false, session:null, user:null, error:null, signIn:vi.fn(), signOut:vi.fn(), ...overrides }
+  return { loading:false, pending:false, session:null, user:null, error:null, signIn:vi.fn(), signOut:vi.fn(), invalidateStaleSession:vi.fn(() => false), ...overrides }
 }
 
 describe('PostDetailPage interactions', () => {

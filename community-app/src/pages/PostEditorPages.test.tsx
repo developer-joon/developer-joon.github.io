@@ -22,7 +22,7 @@ function storage() {
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) }, values }
 }
 function auth(userId: string | null): AuthContextValue {
-  return { loading: false, pending: false, session: userId ? {} as never : null, user: userId ? { id: userId } as User : null, error: null, signIn: vi.fn(), signOut: vi.fn() }
+  return { loading: false, pending: false, session: userId ? {} as never : null, user: userId ? { id: userId } as User : null, error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => true) }
 }
 function wrap(ui: React.ReactNode, value: AuthContextValue) { return render(<AuthContext.Provider value={value}>{ui}</AuthContext.Provider>) }
 function repository(overrides: Partial<CommunityRepository> = {}) {
@@ -52,7 +52,7 @@ function fillValid() {
 
 describe('WritePostPage', () => {
   it('shows the session-expiry notice when the public tag read recovers', async () => {
-    const recovery = { code: 'session_cleared' as const, message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' }
+    const recovery = { code: 'session_stale' as const, message: '로그인 세션이 만료되었습니다. Google로 다시 로그인해 주세요.' }
     wrap(<WritePostPage repository={repository({
       listTags: vi.fn().mockResolvedValue({ ok: true, data: [tag], recovery }),
     })} storage={storage()} navigate={vi.fn()} />, auth(authorId))
@@ -607,6 +607,20 @@ describe('WritePostPage', () => {
 })
 
 describe('EditPostPage', () => {
+  it('deduplicates the actionable recovery notice when both edit reads recover', async () => {
+    const recovery = { code: 'session_stale' as const, message: '로그인 세션이 만료되었습니다. Google로 다시 로그인해 주세요.' }
+    const a = auth(authorId)
+    wrap(<EditPostPage repository={repository({
+      getPost: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'published', post }, recovery }),
+      listTags: vi.fn().mockResolvedValue({ ok: true, data: [tag], recovery }),
+    })} search={`?id=${postId}`} storage={storage()} navigate={vi.fn()} />, a)
+
+    expect(await screen.findByDisplayValue('서버 제목')).toBeInTheDocument()
+    expect(screen.getAllByRole('alert', { name: '로그인 세션 만료' })).toHaveLength(1)
+    expect(screen.getByRole('alert', { name: '로그인 세션 만료' })).toHaveTextContent('Google로 다시 로그인해 주세요.')
+    expect(a.invalidateStaleSession).toHaveBeenCalledOnce()
+  })
+
   it('announces an edit-load lock failure and focuses its retry action', async () => {
     Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined })
 

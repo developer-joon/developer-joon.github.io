@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommunityRepository } from '../data/communityRepository'
 import { parseCommunityQuery, serializeCommunityQuery } from '../lib/queryState'
 import { CommunityHomePage } from './CommunityHomePage'
+import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 
 const tagId = 'a1000000-0000-0000-0000-000000000001'
 
@@ -62,15 +63,17 @@ describe('CommunityHomePage', () => {
   })
 
   it('shows one accessible session-expiry notice for concurrent recovered public reads', async () => {
-    const recovery = { code: 'session_cleared' as const, message: '로그인 세션이 만료되었습니다. 다시 로그인해 주세요.' }
-    render(<CommunityHomePage repository={repository({
+    const recovery = { code: 'session_stale' as const, message: '로그인 세션이 만료되었습니다. Google로 다시 로그인해 주세요.' }
+    const auth = { loading: false, pending: false, session: null, user: null, error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => true) } satisfies AuthContextValue
+    render(<AuthContext.Provider value={auth}><CommunityHomePage repository={repository({
       listPosts: vi.fn().mockResolvedValue({ ok: true, data: { items: [post], nextCursor: null }, recovery }),
       listTags: vi.fn().mockResolvedValue({ ok: true, data: [{ id: tagId, slug: 'development', label: '개발' }], recovery }),
-    })} initialSearch="" />)
+    })} initialSearch="" /></AuthContext.Provider>)
 
     await screen.findByRole('heading', { name: post.title })
     expect(screen.getAllByRole('alert', { name: '로그인 세션 만료' })).toHaveLength(1)
     expect(screen.getByRole('alert', { name: '로그인 세션 만료' })).toHaveTextContent(recovery.message)
+    expect(auth.invalidateStaleSession).toHaveBeenCalledOnce()
   })
 
   it('preserves filters in the URL query contract', async () => {

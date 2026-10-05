@@ -106,6 +106,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     if (!postId) return
     commentRequestGeneration.current += 1
     let active = true
+    const requestSession = auth.session
     setRead(null)
     setPostReaction(null)
     setPostError(null)
@@ -121,7 +122,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
     void repository.getPost(postId).then((result) => {
       if (!active) return
       if (result.ok) {
-        consumeRecovery(result.recovery)
+        consumeRecovery(result.recovery, requestSession)
         setPostReaction(result.data.kind === 'published'
           ? { reacted: result.data.post.viewerReacted, count: result.data.post.reactionCount }
           : null)
@@ -131,17 +132,18 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
       }
     })
     return () => { active = false }
-  }, [attempt, auth.user?.id, consumeRecovery, postId, repository])
+  }, [attempt, auth.session, auth.user?.id, consumeRecovery, postId, repository])
 
   useEffect(() => {
     if (!postId || (read?.kind !== 'published' && read?.kind !== 'deleted')) return
     let active = true
+    const requestSession = auth.session
     setCommentsLoading(true)
     setCommentsError(null)
     void repository.listComments({ postId, limit: commentPageSize }).then((result) => {
       if (!active) return
       if (result.ok) {
-        consumeRecovery(result.recovery)
+        consumeRecovery(result.recovery, requestSession)
         commentsRef.current = appendUnique(commentsRef.current, result.data.items)
         setComments((current) => appendUnique(current, result.data.items))
         setHasMore(result.data.hasMore)
@@ -152,7 +154,7 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
       setCommentsLoading(false)
     })
     return () => { active = false }
-  }, [consumeRecovery, postId, read, repository])
+  }, [auth.session, consumeRecovery, postId, read, repository])
 
   function login() {
     void auth.signIn(DEFAULT_AUTH_PROVIDER, currentPath)
@@ -239,13 +241,14 @@ export function PostDetailPage({ repository, search, currentPath }: PostDetailPa
   function loadMoreComments() {
     if (!postId || !nextCursor || commentsLoading) return
     const requestGeneration = commentRequestGeneration.current
+    const requestSession = auth.session
     setCommentsLoading(true)
     setCommentsError(null)
     setCommentAnnouncement(null)
     void repository.listComments({ postId, limit: commentPageSize, cursor: nextCursor }).then((result) => {
       if (requestGeneration !== commentRequestGeneration.current) return
       if (result.ok) {
-        consumeRecovery(result.recovery)
+        consumeRecovery(result.recovery, requestSession)
         const currentComments = commentsRef.current
         const nextComments = appendUnique(currentComments, result.data.items)
         const addedCount = visibleCommentCount(nextComments) - visibleCommentCount(currentComments)

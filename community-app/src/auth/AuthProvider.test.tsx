@@ -74,6 +74,53 @@ describe('AuthProvider', () => {
     expect(unsubscribe).toHaveBeenCalledOnce()
   })
 
+  it('invalidates only the expected session in memory without signing out or touching storage', async () => {
+    const signOut = vi.fn().mockResolvedValue({ error: null })
+    const storage = { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() }
+    let auth: ReturnType<typeof useAuth> | undefined
+    render(
+      <AuthProvider client={client({ getSession: vi.fn().mockResolvedValue({ data: { session }, error: null }), signOut })} storage={storage}>
+        <Harness onState={(value) => { auth = value }} />
+      </AuthProvider>,
+    )
+    await screen.findByText('dev@example.com')
+    const expectedSession = auth!.session
+
+    act(() => expect(auth!.invalidateStaleSession(expectedSession)).toBe(true))
+
+    expect(screen.getByText('signed-out')).toBeInTheDocument()
+    expect(signOut).not.toHaveBeenCalled()
+    expect(storage.removeItem).not.toHaveBeenCalled()
+  })
+
+  it('does not let a delayed stale response invalidate a newly-created session', async () => {
+    let listener: ((event: string, session: unknown) => void) | undefined
+    const signOut = vi.fn().mockResolvedValue({ error: null })
+    let auth: ReturnType<typeof useAuth> | undefined
+    const replacement = { user: { ...user, email: 'new@example.com' }, access_token: 'new-login-token' }
+    render(
+      <AuthProvider client={client({
+        getSession: vi.fn().mockResolvedValue({ data: { session }, error: null }),
+        signOut,
+        onAuthStateChange: vi.fn((callback) => {
+          listener = callback
+          return { data: { subscription: { unsubscribe: vi.fn() } } }
+        }),
+      })}>
+        <Harness onState={(value) => { auth = value }} />
+      </AuthProvider>,
+    )
+    await screen.findByText('dev@example.com')
+    const staleSession = auth!.session
+    act(() => listener?.('SIGNED_IN', replacement))
+    expect(screen.getByText('new@example.com')).toBeInTheDocument()
+
+    act(() => expect(auth!.invalidateStaleSession(staleSession)).toBe(false))
+
+    expect(screen.getByText('new@example.com')).toBeInTheDocument()
+    expect(signOut).not.toHaveBeenCalled()
+  })
+
   it('does not update after an unmounted initialization resolves', async () => {
     let resolve: ((value: unknown) => void) | undefined
     const getSession = vi.fn(() => new Promise((done) => { resolve = done }))

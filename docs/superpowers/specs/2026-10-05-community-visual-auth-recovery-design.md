@@ -56,13 +56,14 @@ The public listing must remain available even when the persisted authentication 
 
 Implementation will first add an authenticated-entry regression test and capture the repository error classification. The fix will follow the observed failure mode rather than weakening all payload validation:
 
-1. Initialize authentication before treating the first authenticated request as final.
+1. Initialize authentication before mounting routes that issue the first public read.
 2. Classify invalid or expired JWT responses as authentication-session failures instead of a generic unknown error.
-3. Clear only the unusable auth session through the Supabase auth client.
-4. Retry the public read once as an anonymous read so Community remains readable.
-5. Show a bounded notice asking the visitor to sign in again; do not show the generic full-page failure when the anonymous retry succeeds.
-6. Do not retry mutations anonymously. Post creation, reactions, comments, reports, and moderation remain authenticated and fail closed.
-7. Preserve strict response validation. Anonymous fallback must not accept malformed payloads.
+3. Retry the public read once through the non-persisting anonymous client so Community remains readable.
+4. Never call automatic `signOut` or remove persisted auth storage during recovery. Supabase exposes no public compare-and-swap operation that can atomically prove the stored session is still the one that caused the stale response; a token pre-check followed by asynchronous `signOut` can therefore delete a login completed in between.
+5. Mark only the matching AuthContext session as stale in memory. The guarded transition changes the current UI to signed-out so the header offers Google login again, but leaves the persisted stale session untouched until a user-initiated re-login replaces it or a user-initiated sign-out clears it. A delayed response captured from an older session cannot invalidate a newly-created in-memory session.
+6. Show one bounded, actionable notice explaining that Google re-login is required; do not show the generic full-page failure when the anonymous retry succeeds.
+7. Do not retry mutations anonymously. Post creation, reactions, comments, reports, and moderation remain authenticated and fail closed.
+8. Preserve strict response validation. Anonymous fallback must not accept malformed payloads.
 
 If reproduction proves that the authenticated response payload, rather than the token, violates the contract, the server response will be corrected with a forward migration and tested for both anonymous and authenticated callers. The client validator will not be loosened to hide a server regression.
 
@@ -76,6 +77,7 @@ If reproduction proves that the authenticated response payload, rather than the 
 - Mobile menu keyboard lifecycle.
 - Authenticated entry with a valid session.
 - Expired/invalid persisted session recovery and one anonymous public-read retry.
+- In-memory stale-session invalidation without `signOut` or auth-storage removal, including a delayed-response/new-login race regression.
 - No anonymous retry for mutations.
 - Existing repository payload validation, auth, draft, post, comment, and moderation tests.
 - Typecheck, lint, build, static-site artifact verification, and DB tests if a migration is required.

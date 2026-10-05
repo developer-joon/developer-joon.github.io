@@ -1,10 +1,18 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
+import type { Session } from '@supabase/supabase-js'
+import { useAuth } from '../auth/AuthProvider'
 import type { CommunityRecovery } from '../types/community'
 
 export function useSessionRecoveryNotice() {
+  const auth = useAuth()
+  const invalidateStaleSession = useRef(auth.invalidateStaleSession)
+  invalidateStaleSession.current = auth.invalidateStaleSession
   const [recovery, setRecovery] = useState<CommunityRecovery | null>(null)
-  const consumeRecovery = useCallback((next: CommunityRecovery | undefined) => {
-    if (next) setRecovery((current) => current ?? next)
+  const handled = useRef(false)
+  const consumeRecovery = useCallback((next: CommunityRecovery | undefined, requestSession: Session | null) => {
+    if (!next || handled.current || !invalidateStaleSession.current(requestSession)) return
+    handled.current = true
+    setRecovery(next)
   }, [])
   return [recovery, consumeRecovery] as const
 }

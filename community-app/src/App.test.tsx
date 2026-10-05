@@ -35,6 +35,22 @@ describe('App', () => {
     expect(await screen.findByText('검색 결과가 없습니다')).toBeInTheDocument()
   })
 
+  it('waits for auth initialization before mounting a route that issues public reads', async () => {
+    const listPosts = vi.fn().mockResolvedValue({ ok: true, data: { items: [], nextCursor: null } })
+    const listTags = vi.fn().mockResolvedValue({ ok: true, data: [] })
+    const repository = { listPosts, listTags } as unknown as CommunityRepository
+    const base = { pending: false, session: null, user: null, error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => false) }
+    const view = render(<AuthContext.Provider value={{ ...base, loading: true }}><App pathname="/community/" repository={repository} /></AuthContext.Provider>)
+
+    expect(screen.getByRole('status')).toHaveTextContent('로그인 상태를 확인하고 있습니다.')
+    expect(listPosts).not.toHaveBeenCalled()
+    expect(listTags).not.toHaveBeenCalled()
+
+    view.rerender(<AuthContext.Provider value={{ ...base, loading: false }}><App pathname="/community/" repository={repository} /></AuthContext.Provider>)
+    await waitFor(() => expect(listPosts).toHaveBeenCalledOnce())
+    expect(listTags).toHaveBeenCalledOnce()
+  })
+
   it('routes the post shell to the real detail page with its search and repository', async () => {
     const repository = {
       getPost: async () => ({ ok: true, data: { kind: 'not_found' } }),
@@ -87,7 +103,7 @@ describe('App', () => {
     const uploadRepository = uploadRepositoryStub()
     const auth = {
       loading: false, pending: false, session: {} as never, user: { id: '56000000-0000-4000-8000-000000000030' } as never,
-      error: null, signIn: vi.fn(), signOut: vi.fn(),
+      error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => false),
     } satisfies AuthContextValue
 
     render(<AuthContext.Provider value={auth}><App pathname="/community/write/" repository={repository} uploadRepository={uploadRepository} /></AuthContext.Provider>)
@@ -122,7 +138,7 @@ describe('App', () => {
     } as unknown as CommunityRepository
     const auth = {
       loading: false, pending: false, session: {} as never, user: { id: '56000000-0000-4000-8000-000000000030' } as never,
-      error: null, signIn: vi.fn(), signOut: vi.fn(),
+      error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => false),
     } satisfies AuthContextValue
 
     render(<AuthContext.Provider value={auth}><App pathname="/community/admin/reports/" search="?status=open" hash="#queue" repository={repository} /></AuthContext.Provider>)

@@ -4,7 +4,7 @@
 
 **Goal:** Add an original Blog-sized Community banner, align the Community shell and body typography/spacing with Jekyll, and recover public reads from invalid persisted auth sessions without weakening mutation security.
 
-**Architecture:** Keep the standalone React application and its accessibility lifecycle. Add a local decorative SVG plus Jekyll-equivalent hero/shell CSS, then isolate authenticated public-read recovery at the Supabase client/repository boundary so only reads may retry anonymously. Preserve strict response validation and require an observed failing test before selecting the exact recovery branch.
+**Architecture:** Keep the standalone React application and its accessibility lifecycle. Add a local decorative SVG plus Jekyll-equivalent hero/shell CSS, then isolate authenticated public-read recovery at the Supabase client/repository boundary so only reads may retry anonymously. Automatic `signOut` is rejected because Supabase provides no public compare-and-swap for auth storage and an async clear can delete a newer login. Recovery instead guards an AuthContext-only in-memory signed-out transition against the session captured by the request, leaving persisted auth for user-initiated re-login/sign-out to replace or clear. Preserve strict response validation and require an observed failing test before selecting the exact recovery branch.
 
 **Tech Stack:** React 19, TypeScript, Vite, Vitest/Testing Library, Supabase JS/PostgREST, Jekyll/Sass, static SVG.
 
@@ -42,11 +42,13 @@
 **Steps:**
 1. Introduce the smallest boundary needed for an anonymous public-read client or a one-time read fallback.
 2. Classify invalid/expired JWT errors as auth-session failures instead of generic unknown errors.
-3. Clear the unusable session through Supabase auth and retry only the failed public read once anonymously.
-4. Return an actionable session-expired notice while allowing the recovered public content to render.
-5. Assert create/update/delete, reactions, comments, reports, and moderation never use the anonymous fallback.
-6. Run focused repository/auth/page tests to GREEN.
-7. Commit as `fix: recover community public reads from stale sessions`.
+3. Retry only the failed public read once through the non-persisting anonymous client; never call automatic `signOut` or remove auth storage because there is no public CAS protecting a login completed after the stale request began.
+4. Add an explicit AuthContext method that invalidates only the exact request session in memory, making the header offer Google login while retaining persisted auth until user-initiated re-login/sign-out.
+5. Return one actionable Google re-login notice while allowing the recovered public content to render, including direct EditPostPage dedupe coverage.
+6. Assert a delayed stale response cannot call `signOut`, alter a newly-created session, or cause any mutation to use the anonymous fallback.
+7. Assert create/update/delete, reactions, comments, reports, and moderation remain fail-closed.
+8. Run focused repository/auth/page tests to GREEN.
+9. Commit the follow-up as `fix: avoid stale recovery session race`.
 
 ### Task 3: Add the original Community network banner
 

@@ -3,7 +3,7 @@ import { resolveCommunityRoute } from './routes'
 import { getCommunityRepository, type CommunityRepository } from './data/communityRepository'
 import { CommunityHomePage } from './pages/CommunityHomePage'
 import { AuthCallbackPage } from './pages/AuthCallbackPage'
-import type { AuthClient } from './auth/AuthProvider'
+import { useAuth, type AuthClient } from './auth/AuthProvider'
 import { getUploadRepository, type UploadRepository } from './data/uploadRepository'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
@@ -47,7 +47,9 @@ function LazyRouteFallback({ children }: { children: React.ReactNode }) {
 }
 
 export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, authClient, onAuthCallbackNavigate }: AppProps) {
+  const auth = useAuth()
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
+  if (auth.loading) return <LazyRouteFallback>로그인 상태를 확인하고 있습니다.</LazyRouteFallback>
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
   }

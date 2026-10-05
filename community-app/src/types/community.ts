@@ -189,7 +189,7 @@ export interface CommunityError {
 }
 
 export interface CommunityRecovery {
-  code: 'session_cleared'
+  code: 'session_stale'
   message: string
 }
 

@@ -23,6 +23,7 @@ export interface AuthContextValue {
   error: string | null
   signIn(provider: CommunityOAuthProvider, returnPath?: string): Promise<void>
   signOut(): Promise<void>
+  invalidateStaleSession(expectedSession: Session | null): boolean
 }
 
 const defaultAuth: AuthContextValue = {
@@ -33,6 +34,7 @@ const defaultAuth: AuthContextValue = {
   error: null,
   signIn: async () => undefined,
   signOut: async () => undefined,
+  invalidateStaleSession: () => false,
 }
 
 export const AuthContext = createContext<AuthContextValue>(defaultAuth)
@@ -52,6 +54,7 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
+  const sessionRef = useRef<Session | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -61,6 +64,7 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
     const subscription = authClient.onAuthStateChange((_event, nextSession) => {
       if (!active) return
       authEventSeen = true
+      sessionRef.current = nextSession
       setSession(nextSession)
       setLoading(false)
       setError(null)
@@ -71,14 +75,17 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
         if (!active || authEventSeen) return
         if (result.error) {
           setError(authErrorMessage(result.error, 'initialize'))
+          sessionRef.current = null
           setSession(null)
         } else {
+          sessionRef.current = result.data.session
           setSession(result.data.session)
         }
         setLoading(false)
       })
       .catch((caught) => {
         if (!active || authEventSeen) return
+        sessionRef.current = null
         setSession(null)
         setError(authErrorMessage(caught, 'initialize'))
         setLoading(false)
@@ -112,13 +119,24 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
     try {
       const result = await authClient.signOut()
       if (result.error) throw result.error
-      if (mounted.current) setSession(null)
+      if (mounted.current) {
+        sessionRef.current = null
+        setSession(null)
+      }
     } catch (caught) {
       if (mounted.current) setError(authErrorMessage(caught, 'sign-out'))
     } finally {
       if (mounted.current) setPending(false)
     }
   }, [authClient])
+
+  const invalidateStaleSession = useCallback((expectedSession: Session | null) => {
+    if (sessionRef.current !== expectedSession) return false
+    sessionRef.current = null
+    setSession(null)
+    setError(null)
+    return true
+  }, [])
 
   const value = useMemo<AuthContextValue>(() => ({
     loading,
@@ -128,7 +146,8 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
     error,
     signIn: login,
     signOut: logout,
-  }), [error, loading, login, logout, pending, session])
+    invalidateStaleSession,
+  }), [error, invalidateStaleSession, loading, login, logout, pending, session])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

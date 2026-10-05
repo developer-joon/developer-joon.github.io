@@ -8,6 +8,7 @@ import { SortTabs } from '../components/SortTabs'
 import { StatePanel } from '../components/StatePanel'
 import { TagFilter } from '../components/TagFilter'
 import { SessionRecoveryNotice, useSessionRecoveryNotice } from '../components/SessionRecoveryNotice'
+import { useAuth } from '../auth/AuthProvider'
 import { isValidPostCursor, parseCommunityQuery, serializeCommunityQuery, type CommunityQueryState } from '../lib/queryState'
 import type { CommunityError, CommunityTag, PostCursor, PostListItem } from '../types/community'
 
@@ -137,6 +138,7 @@ function appendUniquePosts(current: PostListItem[], incoming: PostListItem[]) {
 }
 
 export function CommunityHomePage({ repository, initialSearch, onQueryChange }: CommunityHomePageProps) {
+  const auth = useAuth()
   const [usesCurrentLocation] = useState(() => initialSearch === undefined || initialSearch === window.location.search)
   const [query, setQuery] = useState<CommunityQueryState>(() => parseCommunityQuery(initialSearch ?? window.location.search))
   const [initialSnapshot] = useState(() => usesCurrentLocation
@@ -212,20 +214,22 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
 
   useEffect(() => {
     let active = true
+    const requestSession = auth.session
     setTagError(null)
     void repository.listTags().then((result) => {
       if (!active) return
       if (result.ok) {
-        consumeRecovery(result.recovery)
+        consumeRecovery(result.recovery, requestSession)
         setTags(result.data)
       }
       else setTagError(result.error)
     })
     return () => { active = false }
-  }, [consumeRecovery, repository, tagAttempt])
+  }, [auth.session, consumeRecovery, repository, tagAttempt])
 
   useEffect(() => {
     let active = true
+    const requestSession = auth.session
     setLoading(true)
     setError(null)
     void repository.listPosts({
@@ -237,7 +241,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
     }).then((result) => {
       if (!active) return
       if (result.ok) {
-        consumeRecovery(result.recovery)
+        consumeRecovery(result.recovery, requestSession)
         setPosts(appendUniquePosts([], result.data.items).slice(0, pageSize))
         setPostsQuery(serializeCommunityQuery(query))
         setNextCursor(result.data.nextCursor)
@@ -247,7 +251,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
       setLoading(false)
     })
     return () => { active = false }
-  }, [attempt, consumeRecovery, query, repository])
+  }, [attempt, auth.session, consumeRecovery, query, repository])
 
   return (
     <div className="community-page">

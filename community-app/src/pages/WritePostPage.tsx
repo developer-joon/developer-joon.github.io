@@ -122,14 +122,15 @@ export function WritePostPage({ repository, uploadRepository, storage = window.l
 
   useEffect(() => {
     let active = true
+    const requestSession = auth.session
     setTags(null); setTagError(null)
     void repository.listTags().then(result => {
       if (!active) return
-      if (result.ok) { consumeRecovery(result.recovery); setTags(result.data) }
+      if (result.ok) { consumeRecovery(result.recovery, requestSession); setTags(result.data) }
       else setTagError(result.error.message)
     })
     return () => { active = false }
-  }, [consumeRecovery, repository, tagAttempt])
+  }, [auth.session, consumeRecovery, repository, tagAttempt])
 
   useEffect(() => {
     const actorId = auth.user?.id
