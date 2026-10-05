@@ -163,10 +163,14 @@ describe('Jekyll visual contract', () => {
     expect(communityCss).toMatch(/@media \(min-width: 1024px\)[\s\S]*\.menu-toggle\s*\{[\s\S]*display:\s*none/)
   })
 
-  it('top-aligns the mobile navigation instead of adding centered empty space', () => {
-    const navigation = computedDeclarations(['global-navigation'], 'nav', 767)
-    expect(navigation['justify-content']).toBe('flex-start')
-    expect(navigation.padding).toBe('80px max(20px, calc((100vw - 680px) / 2))')
+  it.each([
+    [767, '20px', undefined],
+    [768, '40px 0 0', '70%'],
+  ])('matches the Jekyll mobile menu-list geometry at %ipx', (viewportWidth, padding, maxWidth) => {
+    const menuList = computedDeclarations(['global-navigation__list'], 'ul', viewportWidth)
+    expect(menuList.padding).toBe(padding)
+    expect(menuList['max-width']).toBe(maxWidth)
+    expect(menuList.margin).toBe('0 auto')
   })
 
   it.each([
@@ -176,11 +180,13 @@ describe('Jekyll visual contract', () => {
     [1220, '30px', '35px', '1100px', '0'],
   ])('computes the explicit Jekyll header contract at %ipx', (viewportWidth, marginTop, brandSize, maxWidth, toggleRight) => {
     const header = computedDeclarations(['community-header'], 'header', viewportWidth)
+    const headerWrap = computedDeclarations(['community-wrap', 'community-header__wrap'], 'div', viewportWidth)
     const brand = computedDeclarations(['community-brand'], 'a', viewportWidth)
     const toggle = computedDeclarations(['menu-toggle'], 'button', viewportWidth)
     expect(header['margin-top']).toBe(marginTop)
-    expect(header['max-width']).toBe(maxWidth)
-    expect(header.position).toBe('relative')
+    expect(header.width).toBe('100%')
+    expect(headerWrap['max-width']).toBe(maxWidth)
+    expect(headerWrap.position).toBe('relative')
     expect(brand['font-size']).toBe(brandSize)
     expect(brand['font-weight']).toBe('700')
     expect(brand['letter-spacing']).toBe('-.02em')
@@ -195,17 +201,25 @@ describe('Jekyll visual contract', () => {
     [1220, '17px'],
   ])('right-aligns desktop navigation exactly like Jekyll at %ipx', (viewportWidth, fontSize) => {
     const navigation = computedDeclarations(['global-navigation'], 'nav', viewportWidth)
+    const menuList = computedDeclarations(['global-navigation__list'], 'ul', viewportWidth)
     expect(navigation.position).toBe('absolute')
     expect(navigation.top).toBe('50%')
     expect(navigation.right).toBe('20px')
     expect(navigation.transform).toBe('translateY(-50%)')
-    expect(navigation.gap).toBe('20px')
-    expect(navigation['font-size']).toBe(fontSize)
-    expect(navigation['font-weight']).toBe('600')
+    expect(menuList.gap).toBe('20px')
+    expect(menuList['font-size']).toBe(fontSize)
+    expect(menuList['font-weight']).toBe('600')
   })
 
-  it('uses the accent for current navigation and keeps headline scales at 60px or less', () => {
+  it('uses a stable scrollbar gutter and changes only color for current navigation', () => {
+    expect(globalCss).toMatch(/html\s*\{[^}]*scrollbar-gutter:\s*stable/)
     expect(communityCss).toMatch(/\.global-navigation \.active-link[^}]*color:\s*var\(--accent\)/)
+    const activeRules = cssRules.filter((rule) => rule.selectors.includes('.global-navigation .active-link'))
+    expect(activeRules).toHaveLength(1)
+    expect(activeRules[0].declarations).toEqual({ color: 'var(--accent)' })
+  })
+
+  it('keeps headline scales at 60px or less', () => {
     expect(communityCss).not.toMatch(/(?:font-size:\s*clamp\([^;]*(?:6[1-9]|[7-9]\d|\d{3,})px|font-size:\s*(?:6[1-9]|[7-9]\d|\d{3,})px)/)
   })
 })
@@ -269,6 +283,7 @@ describe('shared shell contract', () => {
     for (const [viewportWidth, marginTop, padding, fontSize] of cases) {
       const hero = computedDeclarations(['community-network-hero'], 'section', viewportWidth)
       const heading = computedDeclarations(['community-network-hero'], 'h1', viewportWidth)
+      const paragraph = computedDeclarations(['community-network-hero'], 'p', viewportWidth)
       expect(hero['margin-top'], `hero margin at ${viewportWidth}px`).toBe(marginTop)
       expect(hero.padding, `hero padding at ${viewportWidth}px`).toBe(padding)
       expect(heading['font-size'], `heading size at ${viewportWidth}px`).toBe(fontSize)
@@ -276,7 +291,24 @@ describe('shared shell contract', () => {
       expect(heading['line-height']).toBe('1.2')
       expect(heading['letter-spacing']).toBe('-.03em')
       expect(heading.color).toBe('#fff')
+      expect(paragraph['font-size']).toBe(viewportWidth < 768 ? '18px' : viewportWidth < 1220 ? '20px' : '22px')
+      expect(paragraph['line-height']).toBe('1.6')
+      expect(paragraph['margin-top']).toBe(viewportWidth < 768 ? '15px' : viewportWidth < 1220 ? '25px' : '30px')
+      expect(paragraph['word-break']).toBe('keep-all')
     }
+  })
+
+  it('keeps listing actions together without narrow-screen overflow', () => {
+    const mobileHeading = computedDeclarations(['list-heading'], 'div', 767)
+    const mobileControls = computedDeclarations(['list-heading-controls'], 'div', 767)
+    const desktopControls = computedDeclarations(['list-heading-controls'], 'div', 1024)
+
+    expect(mobileHeading['flex-direction']).toBe('column')
+    expect(mobileControls.width).toBe('100%')
+    expect(mobileControls['min-width']).toBe('0')
+    expect(mobileControls['justify-content']).toBe('space-between')
+    expect(mobileControls['flex-wrap']).toBe('wrap')
+    expect(desktopControls['margin-left']).toBe('auto')
   })
 
   it('uses a local decorative network SVG with the Blog overlay treatment', () => {

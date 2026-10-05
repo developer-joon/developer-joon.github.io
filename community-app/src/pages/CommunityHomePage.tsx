@@ -260,7 +260,8 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
       <main>
         <section className="community-network-hero" aria-labelledby="community-heading">
           <div className="community-wrap">
-            <h1 id="community-heading">자유게시판</h1>
+            <h1 id="community-heading">Where ideas connect</h1>
+            <p>질문과 경험이 이어지는 자유로운 공간입니다.</p>
           </div>
         </section>
         <CommunityActions />
@@ -278,7 +279,10 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
           )}
           <div className="list-heading">
             <h2>커뮤니티 글</h2>
-            <SortTabs value={query.sort} onChange={(sort) => applyFilters({ ...query, sort })} />
+            <div className="list-heading-controls">
+              <SortTabs value={query.sort} onChange={(sort) => applyFilters({ ...query, sort })} />
+              <a className="listing-write" href="/community/write/">글쓰기</a>
+            </div>
           </div>
         </section>
 

@@ -53,8 +53,9 @@ describe('CommunityHomePage', () => {
     render(<CommunityHomePage repository={repository()} initialSearch="" />)
 
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
-    const boardHeading = screen.getByRole('heading', { level: 1, name: '자유게시판' })
+    const boardHeading = screen.getByRole('heading', { level: 1, name: 'Where ideas connect' })
     expect(boardHeading).toBeInTheDocument()
+    expect(screen.getByText('질문과 경험이 이어지는 자유로운 공간입니다.')).toBeInTheDocument()
     expect(boardHeading.closest('section')).toHaveClass('community-network-hero')
     expect(boardHeading.closest('section')).not.toHaveAttribute('aria-label')
     expect(boardHeading.closest('section')).not.toHaveAttribute('role', 'img')
@@ -64,7 +65,12 @@ describe('CommunityHomePage', () => {
     expect(await screen.findByRole('heading', { name: post.title })).toBeInTheDocument()
     expect(screen.getByText('공지')).toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: '글쓰기' })).toHaveLength(1)
-    expect(screen.getByRole('link', { name: '글쓰기' })).toHaveAttribute('href', '/community/write/')
+    const writeLink = screen.getByRole('link', { name: '글쓰기' })
+    expect(writeLink).toHaveAttribute('href', '/community/write/')
+    const listingHeading = screen.getByRole('heading', { level: 2, name: '커뮤니티 글' })
+    expect(listingHeading.parentElement).toContainElement(writeLink)
+    expect(writeLink.parentElement).toContainElement(screen.getByRole('group', { name: '게시글 정렬' }))
+    expect(screen.getByRole('region', { name: '커뮤니티 작업' })).not.toContainElement(writeLink)
   })
 
   it('shows one accessible session-expiry notice for concurrent recovered public reads', async () => {

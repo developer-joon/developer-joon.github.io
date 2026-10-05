@@ -15,7 +15,6 @@ export function CommunityActions() {
 
   return (
     <section className="community-actions" aria-label="커뮤니티 작업">
-      <a className="header-write" href="/community/write/">글쓰기</a>
       <div className="header-auth">
         {auth.user ? (
           <>

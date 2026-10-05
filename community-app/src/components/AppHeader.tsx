@@ -73,7 +73,8 @@ export function AppHeader() {
   }, [closeMenu, menuOpen, mobileNavigation])
 
   return (
-      <header className="community-header">
+    <header className="community-header">
+      <div className="community-header__wrap community-wrap">
         <a className="community-brand" href="/">Ria &amp; Seoa PaPa</a>
         <button
           ref={toggleRef}
@@ -87,18 +88,22 @@ export function AppHeader() {
           <span className="menu-toggle__icon" aria-hidden="true"><span /></span>
         </button>
         <nav ref={navigationRef} id="global-navigation" className={mobileNavigation && menuOpen ? 'global-navigation is-open' : 'global-navigation'} aria-label="주요 메뉴">
-          {globalLinks.map((link) => (
-            <a
-              key={link.href}
-              className={link.current ? 'active-link' : undefined}
-              href={link.href}
-              aria-current={link.current ? 'page' : undefined}
-              onClick={closeMenu}
-            >
-              {link.label}
-            </a>
-          ))}
+          <ul className="global-navigation__list">
+            {globalLinks.map((link) => (
+              <li key={link.href}>
+                <a
+                  className={link.current ? 'active-link' : undefined}
+                  href={link.href}
+                  aria-current={link.current ? 'page' : undefined}
+                  onClick={closeMenu}
+                >
+                  {link.label}
+                </a>
+              </li>
+            ))}
+          </ul>
         </nav>
-      </header>
+      </div>
+    </header>
   )
 }

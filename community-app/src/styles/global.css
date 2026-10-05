@@ -1,7 +1,7 @@
 @import './tokens.css';
 
 * { box-sizing: border-box; }
-html { background: var(--background); color: var(--text-dark); font-family: var(--font-family); font-weight: var(--weight-regular); }
+html { scrollbar-gutter: stable; background: var(--background); color: var(--text-dark); font-family: var(--font-family); font-weight: var(--weight-regular); }
 body { margin: 0; min-width: 320px; background: var(--background); color: var(--text-medium); line-height: 1.6; }
 button, input, textarea, select { font: inherit; }
 a { color: var(--text-dark); font-weight: var(--weight-semibold); transition: color .15s ease-in-out; }

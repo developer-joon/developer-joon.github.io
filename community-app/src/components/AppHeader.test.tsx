@@ -91,6 +91,10 @@ describe('AppHeader global shell', () => {
       ['About', '/about'],
     ])
     expect(within(navigation).getByRole('link', { name: 'Community' })).toHaveAttribute('aria-current', 'page')
+    expect(header.firstElementChild).toHaveClass('community-header__wrap', 'community-wrap')
+    const menuList = within(navigation).getByRole('list')
+    expect(menuList).toHaveClass('global-navigation__list')
+    expect(within(menuList).getAllByRole('listitem')).toHaveLength(5)
   })
 
   it('keeps account controls and identity outside the global header and navigation', () => {
@@ -188,15 +192,13 @@ describe('AppHeader global shell', () => {
 })
 
 describe('AppHeader community actions', () => {
-  it('offers one Write link and one Google login using the default auth provider', () => {
+  it('keeps content creation out of the account row and uses the default auth provider', () => {
     const signIn = vi.fn().mockResolvedValue(undefined)
     render(<AuthContext.Provider value={authValue({ signIn })}><CommunityActions /></AuthContext.Provider>)
 
     const actions = screen.getByRole('region', { name: '커뮤니티 작업' })
-    const write = within(actions).getByRole('link', { name: '글쓰기' })
     const login = within(actions).getByRole('button', { name: 'Google로 로그인' })
-    expect(screen.getAllByRole('link', { name: '글쓰기' })).toHaveLength(1)
-    expect(write).toHaveAttribute('href', '/community/write/')
+    expect(within(actions).queryByRole('link', { name: '글쓰기' })).not.toBeInTheDocument()
     expect(login).toHaveTextContent('Google 로그인')
     expect(screen.queryByText(/카카오|Kakao|GitHub/)).not.toBeInTheDocument()
 
