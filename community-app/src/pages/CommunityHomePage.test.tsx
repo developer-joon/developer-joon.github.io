@@ -52,7 +52,12 @@ describe('CommunityHomePage', () => {
   it('lets anonymous visitors read the public post list', async () => {
     render(<CommunityHomePage repository={repository()} initialSearch="" />)
 
-    expect(screen.getByRole('heading', { level: 1, name: '자유게시판' })).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    const boardHeading = screen.getByRole('heading', { level: 1, name: '자유게시판' })
+    expect(boardHeading).toBeInTheDocument()
+    expect(boardHeading.closest('section')).toHaveClass('community-network-hero')
+    expect(boardHeading.closest('section')).not.toHaveAttribute('aria-label')
+    expect(boardHeading.closest('section')).not.toHaveAttribute('role', 'img')
     expect(screen.queryByText('COMMUNITY · 공개 개발 기록')).not.toBeInTheDocument()
     expect(screen.queryByText('개발자가 쓰고 답하는 공간')).not.toBeInTheDocument()
     expect(screen.queryByText('질문보다 오래 남는 경험, 답변보다 구체적인 시행착오를 나눕니다. 모든 공개 글은 로그인 없이 읽을 수 있습니다.')).not.toBeInTheDocument()

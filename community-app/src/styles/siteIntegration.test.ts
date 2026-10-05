@@ -190,27 +190,37 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
-  it('keeps shared hero layout intact and scopes the board-only compact layout', () => {
-    expect(read('src/pages/CommunityHomePage.tsx')).toContain('className="community-hero community-board-hero"')
+  it('matches the Blog hero dimensions and heading typography at each breakpoint', () => {
+    expect(read('src/pages/CommunityHomePage.tsx')).toContain('className="community-network-hero"')
 
-    const mobileShell = computedDeclarations(['community-hero'], 'section', 767)
-    expect(mobileShell.display).toBe('grid')
-    expect(mobileShell.gap).toBe('24px')
-    expect(mobileShell['grid-template-columns']).toBe('1fr')
-    expect(mobileShell.padding).toBe('54px 0 92px')
+    const cases = [
+      [767, '20px', '60px 0 100px', '35px'],
+      [768, '25px', '120px 0 180px', '45px'],
+      [1220, '30px', '160px 0 220px', '60px'],
+    ] as const
 
-    const desktopShell = computedDeclarations(['community-hero'], 'section', 1024)
-    expect(desktopShell['grid-template-columns']).toBe('minmax(0, 1.45fr) minmax(17rem, .75fr)')
-    expect(desktopShell.padding).toBe('80px 0 72px')
+    for (const [viewportWidth, marginTop, padding, fontSize] of cases) {
+      const hero = computedDeclarations(['community-network-hero'], 'section', viewportWidth)
+      const heading = computedDeclarations(['community-network-hero'], 'h1', viewportWidth)
+      expect(hero['margin-top'], `hero margin at ${viewportWidth}px`).toBe(marginTop)
+      expect(hero.padding, `hero padding at ${viewportWidth}px`).toBe(padding)
+      expect(heading['font-size'], `heading size at ${viewportWidth}px`).toBe(fontSize)
+      expect(heading['font-weight']).toBe('700')
+      expect(heading['line-height']).toBe('1.2')
+      expect(heading['letter-spacing']).toBe('-.03em')
+      expect(heading.color).toBe('#fff')
+    }
+  })
 
-    const desktopBoard = computedDeclarations(['community-hero', 'community-board-hero'], 'section', 1024)
-    expect(desktopBoard['grid-template-columns']).toBe('1fr')
-    expect(desktopBoard.padding).toBe('44px 0 36px')
+  it('uses a local decorative network SVG with the Blog overlay treatment', () => {
+    const svg = read('../images/community/community-network.svg')
 
-    const desktopAction = computedDeclarations(['community-hero', 'primary-action'], 'a', 1024)
-    expect(desktopAction.position).toBe('absolute')
-    expect(desktopAction.right).toBe('0')
-    expect(desktopAction.bottom).toBe('72px')
+    expect(communityCss).toContain("url('/images/community/community-network.svg')")
+    expect(communityCss).toMatch(/\.community-network-hero::before[^}]*background:\s*rgb\(19 41 48 \/ 80%\)/)
+    expect(svg).toMatch(/^<svg\b/)
+    expect(svg).toMatch(/<(?:path|line|polyline)\b/)
+    expect(svg).toMatch(/<circle\b/)
+    expect(svg).not.toMatch(/<(?:text|title|desc)\b|(?:href|src)\s*=/i)
   })
 
   it('uses a shared site footer on every community shell', () => {
