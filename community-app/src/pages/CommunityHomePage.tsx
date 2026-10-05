@@ -254,13 +254,16 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
   }, [attempt, auth.session, consumeRecovery, query, repository])
 
   return (
-    <div className="community-page">
+    <div className="community-page community-home-page">
       <AppHeader />
       <main>
         <section className="community-network-hero" aria-labelledby="community-heading">
-          <h1 id="community-heading">자유게시판</h1>
+          <div className="community-wrap">
+            <h1 id="community-heading">자유게시판</h1>
+          </div>
         </section>
-        <SessionRecoveryNotice recovery={recovery} />
+        <div className="community-main-content community-wrap">
+          <SessionRecoveryNotice recovery={recovery} />
 
         <section className="community-tools" aria-label="게시글 탐색">
           <SearchBar value={query.search} onSubmit={(search) => applyFilters({ ...query, search })} />
@@ -298,7 +301,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
             <button className="secondary-action" type="button" onClick={() => setAttempt((value) => value + 1)}>다시 시도</button>
           </div>
         )}
-        {!error && (query.cursor || nextCursor) && (
+          {!error && (query.cursor || nextCursor) && (
           <div className="load-more-state">
             {query.cursor && (
               <button
@@ -327,7 +330,8 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
             </button>
             )}
           </div>
-        )}
+          )}
+        </div>
       </main>
       <AppFooter />
     </div>

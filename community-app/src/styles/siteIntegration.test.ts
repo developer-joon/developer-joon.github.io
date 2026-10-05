@@ -190,6 +190,32 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('keeps the Community banner full width while wrapping its title and listing content', () => {
+    const homeSource = read('src/pages/CommunityHomePage.tsx')
+
+    expect(homeSource).toContain('className="community-page community-home-page"')
+    expect(homeSource).toMatch(/<section className="community-network-hero"[^>]*>\s*<div className="community-wrap">\s*<h1/)
+    expect(homeSource).toMatch(/<div className="community-main-content community-wrap">/)
+    expect(homeSource.match(/<h1\b/g)).toHaveLength(1)
+
+    for (const [viewportWidth, maxWidth, paddingInline] of [
+      [767, '500px', '20px'],
+      [768, '680px', '0'],
+      [1024, '900px', '0'],
+      [1220, '1100px', '0'],
+    ] as const) {
+      const main = computedDeclarations(['community-page', 'community-home-page'], 'main', viewportWidth)
+      const wrap = computedDeclarations(['community-wrap'], 'div', viewportWidth)
+
+      expect(main.width, `home main width at ${viewportWidth}px`).toBe('100%')
+      expect(main['max-width'], `home main max-width at ${viewportWidth}px`).toBe('none')
+      expect(main['padding-inline'], `home main padding at ${viewportWidth}px`).toBe('0')
+      expect(wrap.width, `inner wrap width at ${viewportWidth}px`).toBe('100%')
+      expect(wrap['max-width'], `inner wrap max-width at ${viewportWidth}px`).toBe(maxWidth)
+      expect(wrap['padding-inline'], `inner wrap padding at ${viewportWidth}px`).toBe(paddingInline)
+    }
+  })
+
   it('matches the Blog hero dimensions and heading typography at each breakpoint', () => {
     expect(read('src/pages/CommunityHomePage.tsx')).toContain('className="community-network-hero"')
 
