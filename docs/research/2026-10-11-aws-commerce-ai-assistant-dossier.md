@@ -61,6 +61,38 @@ AWS 공식 Guidance와 GitHub 샘플은 공개된 배포형 reference implementa
 
 이 코드는 “AWS 서비스 조합법”을 보여 주는 데는 좋지만, 실제 커머스 구축 사례로 소개할 때는 **실행 가능한 demo와 production transaction system을 분리**해야 한다.
 
+### Guidance demo와 production target 비교
+
+아래 왼쪽은 기준 커밋에서 확인한 구현이고, 오른쪽은 그 구조를 실제 거래 시스템으로 전환할 때 필요한 목표 구조다. 오른쪽은 AWS가 공개한 Kate Spade 내부 구현도가 아니라 이 dossier의 권장 설계다.
+
+```mermaid
+flowchart LR
+    subgraph DEMO["AWS Guidance demo — 코드로 확인"]
+        D1["Streamlit / ECS"] --> D2["Bedrock Agent"]
+        D2 --> D3["Knowledge Base"]
+        D3 --> D4["S3 정적 상품 JSON"]
+        D3 --> D5["OpenSearch Serverless"]
+        D2 --> D6["Action Group / Lambda"]
+        D6 --> D7["UUID·합계만 반환"]
+        D1 --> D8["Process-memory cart"]
+    end
+
+    subgraph PROD["Production target — 권장 설계"]
+        P1["Web / App / Voice"] --> P2["Identity·Consent"]
+        P2 --> P3["Assistant Orchestrator"]
+        P3 --> P4["Catalog Search / RAG"]
+        P3 --> P5["Live Offer·Inventory API"]
+        P3 --> P6["Policy·Approval Engine"]
+        P6 --> P7["Idempotent Cart·Order API"]
+        P7 --> P8["Order Ledger / Payment"]
+        P8 --> P9["Fulfillment·Cancel·Return·Refund"]
+        P3 --> P10["Memory Store with TTL·Deletion"]
+        P3 --> P11["Redacted Logs·Trace·SLO"]
+    end
+
+    DEMO -. production gap .-> PROD
+```
+
 ### 세 자산의 관계
 
 | 자산 | 확인된 범위 | 동일시하면 안 되는 것 |
@@ -72,6 +104,50 @@ AWS 공식 Guidance와 GitHub 샘플은 공개된 배포형 reference implementa
 AWS가 외부 retailer에게 제공한다고 밝힌 것은 Rufus/Alexa에서 얻은 학습과 architecture pattern이다.[9] 동일 모델, 동일 query planner 또는 동일 production source code를 이전했다고 확대하면 안 된다. ASA가 retailer의 AWS 계정에서 실행되고 AWS가 고객 데이터를 공유하지 않는다는 설명도 AWS의 privacy claim으로 한정해야 한다.[9]
 
 ## 3. 공개 자료로 복원한 Rufus 아키텍처
+
+아래 그림은 Amazon이 단일 설계도로 공개한 공식 내부 구성도가 아니다. 공개된 제품·과학·AWS 자료를 바탕으로 확인 가능한 경계만 연결한 **logical architecture reconstruction**이다. 점선이나 내부 알고리즘을 임의로 채우지 않고, 비공개 항목은 본문에서 분리한다.[1][2][3][4][5]
+
+```mermaid
+flowchart TB
+    U["Customer — Web·App·Voice"] --> E["Session·Identity·Consent"]
+    E --> C["Deterministic Context\n주문 이력·계정·locale"]
+    E --> QP["Query Planner\n분류·검색원·tool plan"]
+
+    QP --> MR["Model Router"]
+    MR --> MC["Selected Model Class\nSmall·Frontier·Custom"]
+    MC --> IR["Infrastructure Router"]
+    IR --> CELL1["Region / Inference Cell A"]
+    IR --> CELL2["Region / Inference Cell B"]
+    CELL1 --> ACC1["ECS·ALB·vLLM·Neuron\nTrn1 / Inf2"]
+    CELL2 --> ACC2["ECS·ALB·vLLM·Neuron\nTrn1 / Inf2"]
+    ACC1 --> MEXEC["Selected Model Execution\nNova·Claude·Amazon models"]
+    ACC2 --> MEXEC
+
+    QP --> RET["Retrieval / Data Access"]
+    RET --> CAT["Catalog·Review·Q&A"]
+    RET --> SEARCH["Amazon Search·Stores API"]
+    RET --> WEB["External Web Sources"]
+    RET --> LIVE["Live Price·Inventory·Delivery"]
+
+    QP --> TOOLS["Commerce Tools"]
+    TOOLS --> CART["Cart·Reorder"]
+    TOOLS --> ALERT["Price Alert"]
+    TOOLS --> MANDATE["Auto-buy Mandate"]
+    MANDATE --> DURABLE["Deterministic Durable Service\n감시·정책·재시도·주문"]
+
+    C --> GEN["Answer Generation"]
+    MEXEC --> GEN
+    CAT --> GEN
+    SEARCH --> GEN
+    WEB --> GEN
+    LIVE --> GEN
+    CART --> GEN
+    ALERT --> GEN
+
+    GEN --> STREAM["Token Stream + UI Markup"]
+    STREAM --> HYD["Hydration Service\n실제 상품·가격·링크 결합"]
+    HYD --> U
+```
 
 ### 3.1 세 종류의 라우팅
 
@@ -131,6 +207,44 @@ Bedrock 도입이 자체 serving을 전면 대체했다는 증거는 없다. 공
 > “20만 원 이하 러닝화 중 내 사이즈 재고가 있고 금요일까지 배송되는 상품만 비교해 줘.”
 
 권장 trace는 `identity/consent → intent extraction → semantic retrieval → live offer·inventory 조회 → 배송·할인 policy → 근거와 조회시각이 있는 비교 → cart write 승인 → idempotent command → read-back`이다.
+
+### 4.1 상품 탐색부터 주문까지의 sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 사용자
+    participant UI as Web·App·Voice
+    participant IAM as Identity·Consent
+    participant Agent as Assistant Orchestrator
+    participant Search as Catalog Search / RAG
+    participant Offer as Live Offer·Inventory API
+    participant Policy as Policy·Approval Engine
+    participant Order as Cart·Order Service
+    participant Ledger as Order Ledger·Payment
+
+    User->>UI: 조건이 있는 상품 탐색 요청
+    UI->>IAM: 세션·계정·동의 범위 확인
+    IAM-->>Agent: 최소 권한 context
+    Agent->>Search: 의미 검색·비교 후보 요청
+    Search-->>Agent: 상품 후보 + 근거 + source version
+    Agent->>Offer: SKU별 가격·재고·배송일 조회
+    Offer-->>Agent: live offer + observed_at + TTL
+    Agent-->>UI: 근거와 조회 시각이 있는 비교 결과
+    User->>UI: 장바구니 추가 요청
+    UI->>Policy: 상품·variant·수량·금액 승인 확인
+    Policy-->>UI: 승인된 immutable quote
+    User->>UI: 명시적 확인
+    UI->>Order: idempotency key와 write command
+    Order->>Offer: 가격·재고 최종 재검증
+    alt 가격·재고가 유효함
+        Order->>Ledger: 주문·결제 transaction
+        Ledger-->>Order: authoritative order state
+        Order-->>UI: read-back된 주문 결과
+    else 가격 변경 또는 품절
+        Order-->>UI: 실패 사유 + 새 quote 요청
+    end
+```
 
 ## 5. 실패 모드와 production gap
 
