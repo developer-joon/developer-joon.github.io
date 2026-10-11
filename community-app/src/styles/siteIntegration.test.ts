@@ -163,6 +163,10 @@ describe('Jekyll visual contract', () => {
     expect(entryHtml.every((html) => html.includes('https://fonts.googleapis.com/css?family=Muli:300,400,600,700'))).toBe(true)
   })
 
+  it('loads the same favicon as the Jekyll site in every Community entry shell', () => {
+    expect(entryHtml.every((html) => html.includes('<link rel="shortcut icon" href="/images/favicon.ico" />'))).toBe(true)
+  })
+
   it.each([
     [767, '500px'],
     [768, '680px'],
