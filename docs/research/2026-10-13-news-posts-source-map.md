@@ -1,10 +1,10 @@
-# 2026-10-13 기술 뉴스 포스트 5편 source/overlap map
+# 2026-10-13~14 기술 뉴스 포스트 10편 source/overlap map
 
 ## Batch contract
 
-- 기준 시각: 2026-10-13 KST
-- 뉴스 범위: 2026-10-07~2026-10-12에 게시된 날짜가 확인되는 공식 원문
-- 산출물: Jekyll `_posts` 5편
+- 기준 시각: 1차 2026-10-13 KST, 추가 배치 2026-10-14 KST
+- 뉴스 범위: 2026-10-07~2026-10-13에 게시된 날짜가 확인되는 공식 원문
+- 산출물: Jekyll `_posts` 10편(기존 5편 + 추가 5편)
 - 본문 길이: Sources·front matter 제외 편당 약 8,000~14,000자
 - 인용 계약: 본문 `[n]`, 마지막 `## Sources`, 이어서 `[n] URL`
 - 이미지 계약: 고유한 고정 seed Picsum URL을 `featured_image`와 첫 본문 이미지에 동일하게 사용
@@ -74,3 +74,68 @@
 - 고유 논지: deterministic detector와 context classifier를 cascade로 두고, push-time fail-open/fail-closed, rotation, 예산 소진, generated artifact 우회를 하나의 운영 계약으로 묶는다.
 - 결론: AI 탐지는 secret lifecycle을 대체하지 않으며, 탐지 서비스 장애·오탐·크레딧 소진 때의 정책이 보안 수준을 결정한다.
 - 경계: alert scan 자동 업그레이드, private preview, coming soon, AI Credit 과금 계획을 서로 구분한다.
+
+## 6. Copilot 관리 정책의 freshness
+
+- 파일: `_posts/2026-10-14-copilot-managed-settings-policy-freshness.md`
+- 검색 의도: GitHub Copilot 관리 정책 변경이 stale cache와 구형 client 때문에 우회되지 않도록 배포하는 방법
+- 제안 제목: `정책을 바꿔도 클라이언트는 모를 수 있다: Copilot 관리 설정의 freshness와 fail-closed 시작`
+- 날짜가 확인된 1차 원문: 2026-10-13 GitHub Changelog
+- 주 출처: https://github.blog/changelog/2026-10-13-enterprise-managed-settings-enforcement-updates/
+- 가장 가까운 기존 글: `2026-09-25-coding-agent-operations-sandbox-permissions-opentelemetry.md`
+- 반복 금지: sandbox threat model 일반론, filesystem/network 격리 설정 목록, 일반적인 중앙 정책 권고
+- 고유 논지: 정책 값뿐 아니라 client가 어떤 시점에 어떤 revision을 확인했는지를 집행 계약으로 두고, 강제 remote refresh와 minimum client version을 rollout·장애·break-glass 관점에서 분리한다.
+- 결론: 중앙 정책의 존재가 아니라 최신 정책 확인 실패 때 client가 실행되지 않는지와 구형 client가 집행 surface에 남지 않는지가 실제 통제다.
+- 경계: 지원 client, 최초 로그인 전/후 server-managed 설정 차이, `sandbox` key부터 시작하는 minimum version 범위를 다른 설정 전체로 일반화하지 않는다.
+
+## 7. Copilot code review 비용 귀속과 호출 권한
+
+- 파일: `_posts/2026-10-14-copilot-code-review-billing-authorization.md`
+- 검색 의도: Copilot code review의 member quota, organization AI Credits, external license 요청을 분리해 운영하는 방법
+- 제안 제목: `AI 코드 리뷰 비용은 누가 내는가: Copilot quota·조직 예산·외부 라이선스 권한 분리`
+- 날짜가 확인된 1차 원문: 2026-10-08 GitHub Changelog
+- 주 출처: https://github.blog/changelog/2026-10-08-copilot-code-review-new-organization-billing-options-and-controls/
+- 가장 가까운 기존 글: `2026-10-05-ai-generated-vulnerability-report-quality-gate.md`, `2026-10-11-cloud-local-model-routing-criteria.md`
+- 반복 금지: AI review 품질 평가, generic model cost routing, 취약점 검증 파이프라인
+- 고유 논지: request authorization, entitlement owner, repository owner, cost center, budget exhaustion을 서로 다른 결정으로 모델링하고 fork·외부 collaborator·자동 review의 실패 모드를 설계한다.
+- 결론: 비용 주체 전환은 권한 부여가 아니며, 외부 license 허용 여부와 quota/budget 소진 시 review failure를 release gate에서 명시해야 한다.
+- 경계: member billing 기본값, organization billing의 AI Credits paid usage 요구, authorized-user 설정의 조직 상속 범위를 공식 문서 수준으로 한정한다.
+
+## 8. Dependabot anonymous registry
+
+- 파일: `_posts/2026-10-14-dependabot-anonymous-registry-egress.md`
+- 검색 의도: 인증 없는 사내 package mirror를 Dependabot에 연결할 때 credential·registry declaration·egress를 구분하는 방법
+- 제안 제목: `토큰이 없어도 registry 설정은 필요하다: Dependabot anonymous mirror와 egress 경계`
+- 날짜가 확인된 1차 원문: 2026-10-12 GitHub Changelog
+- 주 출처: https://github.blog/changelog/2026-10-12-anonymous-organization-level-registries-for-dependabot/
+- 가장 가까운 기존 글: `2026-09-25-mcp-supply-chain-delayed-tool-poisoning.md`, 기존 Kubernetes·npm 공급망 글
+- 반복 금지: 패키지 서명 일반론, MCP tool provenance, 단순 secret 관리 체크리스트
+- 고유 논지: no-auth는 no-policy가 아니며, Dependabot job의 도달 가능한 host 집합과 조직 registry binding을 별도 allowlist로 다룬다. placeholder token 제거와 registry 재생성이 필요한 migration도 운영 절차에 포함한다.
+- 결론: anonymous read mirror도 명시적 trust anchor이며, 인증 생략보다 mirror provenance·egress·scope·dependency confusion 방지가 핵심이다.
+- 경계: github.com GA와 GHES 3.24 예정 상태를 구분하고, `.npmrc` 등에만 적은 registry가 허용된다는 식으로 쓰지 않는다.
+
+## 9. Cloudflare D1 control plane
+
+- 파일: `_posts/2026-10-14-d1-control-plane-off-hot-path.md`
+- 검색 의도: 수백만 개의 작은 database를 운영할 때 control-plane metadata와 query hot path를 분리하는 설계
+- 제안 제목: `수백만 SQLite를 중앙 DB 하나로 관리하지 않는 법: D1 control plane을 hot path 밖으로 빼기`
+- 날짜가 확인된 1차 원문: 2026-10-13 Cloudflare Engineering
+- 주 출처: https://blog.cloudflare.com/d1-control-plane/
+- 가장 가까운 기존 글: `2026-03-14-Edge-Stack-Guide-Hono-Turso-Drizzle.md`, 일반 edge database 글
+- 반복 금지: D1 입문, ORM 비교, 일반 serverless database 장단점
+- 고유 논지: database-per-tenant 시대에 중앙 catalog lookup을 query path에 넣지 않고, metadata shard·asynchronous accounting·failure-domain 분리를 통해 control plane scale을 설계한다.
+- 결론: 많은 작은 database의 병목은 SQLite 자체보다 중앙 metadata와 usage aggregation이며, control-plane 장애가 data-plane query를 멈추지 않게 해야 한다.
+- 경계: 15x·65x·18x와 5.5 million 수치는 Cloudflare가 2026-10-08 기준으로 보고한 값이며 독립 측정이 아니다.
+
+## 10. AI cluster network의 세 평면
+
+- 파일: `_posts/2026-10-14-ai-network-scale-up-out-across.md`
+- 검색 의도: AI cluster에서 scale-up·scale-out·scale-across network가 해결하는 서로 다른 병목과 open networking의 운영 경계
+- 제안 제목: `AI 클러스터 네트워크는 하나가 아니다: scale-up·scale-out·scale-across를 분리해야 하는 이유`
+- 날짜가 확인된 1차 원문: 2026-10-12 Meta Engineering/OCP Summit
+- 주 출처: https://engineering.fb.com/2026/10/12/open-source/ocp-summit-2026-powering-ai-with-open-innovations-in-scale-up-scale-out-and-scale-across-networks/
+- 가장 가까운 기존 글: 기존 Kubernetes control-plane·분산 시스템 글, AI agent 운영 포스트
+- 반복 금지: 일반 GPU 성능 비교, Kubernetes networking 입문, AI agent orchestration
+- 고유 논지: accelerator domain 내부, rack/cluster fabric, datacenter 간 transport를 하나의 bandwidth 숫자로 합치지 않고 failure domain·congestion control·telemetry·open interface를 평면별 계약으로 본다.
+- 결론: AI infrastructure의 확장성은 최고 링크 속도보다 서로 다른 network plane 사이의 병목·장애·운영 책임을 어떻게 연결하는지에 달려 있다.
+- 경계: Meta가 발표한 hardware·FBOSS/open transport 항목과 업계 전체의 채택 상태를 구분하고, 공개 계획이나 ecosystem enablement를 이미 보편 배포된 표준처럼 쓰지 않는다.
