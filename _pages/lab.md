@@ -1,7 +1,7 @@
 ---
 title: 0 → 1
-subtitle: 수익모델의 진행·종료·연구 상태를 기록하는 실험실
-description: '개발자와 AI가 수익모델을 검증하는 실험실. 종료한 트레이딩 실험의 교훈과 블로그 운영, 자동화 기록, 다음 수익모델 연구를 투명하게 공개합니다.'
+subtitle: 수익모델의 진행·종료·검증 상태를 기록하는 실험실
+description: '개발자와 AI가 수익모델을 검증하는 실험실. 종료한 트레이딩 실험의 교훈과 블로그 운영, 자동화 기록, 꼬리노트 앱 출시 전 수익 실험을 투명하게 공개합니다.'
 permalink: /lab/
 featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
 ---
@@ -48,9 +48,9 @@ featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
       <div style="color: #68d391; font-size: 0.9em;">상태: {{ site.posts | size }}편 공개</div>
     </div>
     <div style="background: rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; text-align: center;">
-      <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">다음 수익모델</div>
-      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">연구 중</div>
-      <div style="color: #f6e05e; font-size: 0.9em;">상태: 후보 탐색·검증</div>
+      <div style="font-size: 0.8em; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;">꼬리노트</div>
+      <div style="font-size: 1.6em; font-weight: 700; margin-top: 6px;">MVP 구축</div>
+      <div style="color: #f6e05e; font-size: 0.9em; line-height: 1.5;">개발 중 · Apple Developer 등록 완료 · App Store 출시 전 · 매출 미검증</div>
     </div>
   </div>
 </div>
@@ -122,6 +122,24 @@ Jekyll + GitHub Pages 블로그를 운영하며 콘텐츠 기반 수익모델을
 
 ---
 
+## 📱 꼬리노트 앱 출시 전 수익 실험
+
+꼬리노트는 **내가 직접 수익을 내기 위해 만드는 첫 1인 개발 앱**입니다. 반려동물의 건강·생활 기록을 한곳에 모으는 제품이며, 진단·처방을 제공하거나 수의사의 판단을 대신하지 않습니다.
+
+> **개발 중 · Apple Developer 등록 완료 · App Store 출시 전 · 매출 미검증**
+
+- **완료:** Apple Developer Program 등록
+- **진행 중:** 기록·알림·리포트 MVP 개발
+- **미완료:** App Store 제출·심사·승인·출시, 다운로드와 매출 검증
+- **수익 가설:** 핵심 기록은 무료로 제공하고, 비민감 화면에만 광고를 제한적으로 배치합니다. 광고 제거·다중 반려동물·가족 공유·백업·장기 리포트는 인앱결제 후보로 검증합니다.
+- **AI 원칙:** AI는 선택형 부가기능입니다. 비용, 사용자 동의, 의료 판단을 하지 않는 경계를 고정하기 전에는 핵심 기능으로 두지 않습니다.
+
+검증 순서는 **MVP 개발 → 내부 테스트 → App Store 심사 제출 → 심사·승인 → 실제 출시 → 다운로드·반복 기록 → 광고·인앱결제 → 매출**입니다. 각 단계를 분리해 기록하며, Apple Developer 등록을 앱 승인이나 출시로 표현하지 않습니다.
+
+[꼬리노트 출시 전 수익 실험 설계 보기 →](/blog/kkorinote-first-app-revenue-experiment)
+
+---
+
 ## 🤖 AI 에이전트 자동화
 
 AI 에이전트는 콘텐츠 초안, 자료 정리, 반복 작업을 보조합니다. 자동으로 수익을 만들거나 모든 채널을 무인 운영한다는 의미는 아닙니다.
@@ -140,12 +158,6 @@ AI 에이전트는 콘텐츠 초안, 자료 정리, 반복 작업을 보조합�
 
 ---
 
-## 🔎 다음 수익모델 연구
-
-트레이딩 실험에서 얻은 운영 교훈을 바탕으로, 손실 한도와 중단 기준을 먼저 정하고 결과를 검증할 수 있는 새로운 수익모델을 연구하고 있습니다. 후보가 검증되기 전에는 예상 수익을 현재 수익처럼 공개하지 않습니다.
-
----
-
 ## 💡 원칙
 
 1. **투명하게** — 수익이든 손실이든 있는 그대로 공개
@@ -155,4 +167,4 @@ AI 에이전트는 콘텐츠 초안, 자료 정리, 반복 작업을 보조합�
 
 ---
 
-*이 페이지는 검증 가능한 변경이 있을 때 수동 검토 후 업데이트합니다. 최근 업데이트: 2026-10-05*
+*이 페이지는 검증 가능한 변경이 있을 때 수동 검토 후 업데이트합니다. 최근 업데이트: 2026-10-17*

@@ -33,7 +33,7 @@ Image 크기는 200MB부터 2GB까지 다섯 구간이었다. 각 agent와 versi
 
 V1은 같은 조건에서 image가 커질수록 약 5.4초에서 거의 30초까지 늘었다. Echo code 자체는 P75 약 34ms였다. 따라서 이 실험은 platform start path를 상대적으로 깨끗하게 분리한다. 반대로 production agent의 end-to-end latency를 증명하지는 않는다. Prompt 구성, model queue, token generation, Gateway, SaaS API, Memory, Browser와 Code Interpreter는 모두 빠져 있다.
 
-이 수치를 “AgentCore agent가 2초 안에 답한다”로 확대하면 안 된다. 이 수치는 평균도 p99도 아니다. 이 수치는 `us-east-1` 내부 client의 same-AZ 측정도 아니다. 이 수치는 private networking을 켠 VPC path도 아니다. 이 수치는 5,000 cold invocations를 쓴 공급자 자체 benchmark다. 그래서 도입 실험에서는 benchmark 조건을 보존한 cold-start fixture와 실제 end-to-end trace를 별도로 운영해야 한다.
+이 수치를 “AgentCore agent가 2초 안에 답한다”로 확대하면 안 된다. 평균도 p99도 아니며 `us-east-1` 내부 client의 same-AZ 측정도 아니다. Private networking을 켠 VPC path도 아니다. 5,000 cold invocations를 쓴 공급자 자체 benchmark다. 그래서 도입 실험에서는 benchmark 조건을 보존한 cold-start fixture와 실제 end-to-end trace를 별도로 운영해야 한다.
 
 Runtime V2는 준비된 환경을 snapshot으로 만든 뒤 새 instance마다 복원한다.[2] `/ping`이 처음 healthy를 반환하는 시점이 snapshot 기준이 된다. 초기화가 끝나기 전에 healthy를 반환하면 필요한 static state가 snapshot에 담기지 않을 수 있다. 반대로 120초 안에 healthy를 반환하지 못하면 creation이 실패한다. V2 create와 update는 snapshot 준비 때문에 수 분이 걸릴 수 있다.
 
@@ -364,7 +364,7 @@ Timeout이나 연결 종료는 실패가 아니라 **결과 미상**이다. blin
 
 ## Runtime version, named endpoint와 cohort-stable canary
 
-Runtime update는 complete configuration을 담은 immutable version을 만들고, named endpoint는 그중 한 version을 가리키는 pointer다.[42] `DEFAULT`는 최신 version으로 자동 이동하고 명시적으로 만든 endpoint는 update하기 전까지 기존 version에 남는다. 이 문서 계약에는 한 endpoint 안에서 90/10 weighted traffic을 분배한다는 의미가 없다. 따라서 named endpoint를 Lambda weighted alias처럼 읽으면 안 된다.
+Runtime update는 complete configuration을 담은 immutable version을 만들고 named endpoint는 그중 한 version을 가리키는 pointer다.[42] `DEFAULT`는 최신 version으로 자동 이동하고 명시적으로 만든 endpoint는 update하기 전까지 기존 version에 남는다. 이 문서 계약에는 한 endpoint 안에서 90/10 weighted traffic을 분배한다는 의미가 없다. 따라서 named endpoint를 Lambda weighted alias처럼 읽으면 안 된다.
 
 Canary는 API Gateway나 별도 ingress router에서 구현한다. API Gateway canary는 같은 stage의 base와 canary deployment 사이에 traffic percent를 둘 수 있다.[43] 그러나 agent session 중 version이 바뀌면 state와 tool semantics가 갈라질 수 있으므로 무작위 request 분할보다 `hash(tenant_id, subject_id 또는 conversation_id)` 기반 cohort를 stable/canary endpoint에 고정한다. Router decision에는 `cohort`, endpoint name, resolved Runtime version과 config digest를 기록한다.
 
@@ -435,7 +435,7 @@ AgentCore는 여러 framework/model을 쓰면서 공통 session isolation, tool 
 
 ## 결론
 
-서울 운영 원장은 호출 경로 순서로 읽는 편이 낫다. 먼저 WAF·API Gateway·Cognito와 network meter가 요청을 받는다. 다음으로 Runtime microVM 또는 self-managed compute가 CPU·memory·session을 소비한다. 그 안에서 Bedrock model input/output token이 움직이고, Gateway·Identity·Policy가 tool operation·credential·authorization을 만든다. Memory는 ingest·storage·retrieval, Browser와 Code Interpreter는 각각 compute·storage·network, Observability와 audit는 CloudWatch·S3·KMS, Evaluations는 evaluator token 또는 evaluation count를 더한다. 이 순서라야 한 사용자 요청이 어느 계층에서 비용과 지연을 만들었는지 trace와 CUR를 대조할 수 있다.
+서울 운영 원장은 호출 경로 순서로 읽는 편이 낫다. 먼저 WAF·API Gateway·Cognito와 network meter가 요청을 받는다. 다음으로 Runtime microVM 또는 self-managed compute가 CPU·memory·session을 소비한다. 그 안에서 Bedrock model input/output token이 움직이고 Gateway·Identity·Policy가 tool operation·credential·authorization을 만든다. Memory는 ingest·storage·retrieval, Browser와 Code Interpreter는 각각 compute·storage·network, Observability와 audit는 CloudWatch·S3·KMS, Evaluations는 evaluator token 또는 evaluation count를 더한다. 이 순서라야 한 사용자 요청이 어느 계층에서 비용과 지연을 만들었는지 trace와 CUR를 대조할 수 있다.
 
 이 목록은 전체 catalog가 아니다. Harness, Runtime Instances, Web Search, Optimization, Registry와 Payments를 채택하면 별도 책임·가격·failure domain이 생긴다. 그러나 2026년 10월 17일 서울 baseline에는 Runtime V2, Runtime Instances, Web Search와 Registry를 지원된 것으로 넣을 수 없다. 글로벌 가격표의 숫자도 서울 단가로 복사할 수 없다. 미지원 capability를 다른 리전에 둘 때는 latency, data residency, inter-region transfer와 양쪽 region 장애를 architecture의 일부로 다룬다.
 
