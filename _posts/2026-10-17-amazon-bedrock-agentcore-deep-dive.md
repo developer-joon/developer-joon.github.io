@@ -1,5 +1,5 @@
 ---
-title: 'Amazon Bedrock AgentCore 딥다이브: 모델 토큰과 에이전트 실행을 같은 청구서로 착각하지 않는 법'
+title: 'Amazon Bedrock AgentCore 딥다이브: 비용과 실행 경계'
 date: 2026-10-17 07:40:00 +0900
 categories: ["AI 에이전트"]
 description: 'Bedrock 모델 호출과 AgentCore Runtime·Gateway·Identity·Memory·Observability·Browser·Code Interpreter·Evaluations를 별도 API, quota, IAM, SLO, meter로 분해하고 실제 비용과 실패 경계를 계산한다.'
