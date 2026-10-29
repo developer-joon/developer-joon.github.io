@@ -473,3 +473,7 @@ for (const [change, secondSweep] of [
     }
   })
 }
+
+test('published fixture links the explorer with explicit fictional disclosure and document navigation',async()=>{
+ await withSetup(async ctx=>{ctx.fixture=publishedFixture;const result=run(ctx);assert.equal(result.status,0,result.stderr);const html=await readFile(path.join(ctx.output,UUID,'index.html'),'utf8');assert.match(html,/예시 데이터/);assert.match(html,/href="\/community\/benefits\/"[^>]*class="js-no-ajax"/);})
+})

@@ -214,7 +214,7 @@ function inlineMarkdown(source) {
     const url = safeUrl(match[3].trim())
     if (!url) result += label
     else if (image) result += `<img src="${escapeHtml(url)}" alt="${label}" loading="lazy">`
-    else result += `<a href="${escapeHtml(url)}" rel="nofollow ugc">${label}</a>`
+    else result += `<a href="${escapeHtml(url)}" ${url.startsWith('/community/')?'class="js-no-ajax" ':''}rel="nofollow ugc">${label}</a>`
     cursor = match.index + match[0].length
   }
   result += escapeHtml(source.slice(cursor))
