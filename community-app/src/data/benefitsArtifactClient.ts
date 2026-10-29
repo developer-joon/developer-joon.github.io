@@ -39,12 +39,80 @@ export class BenefitsArtifactClient {
     const response = await this.request(url, signal)
     signal?.throwIfAborted()
     if (!response.ok) throw new Error('데이터 요청 실패')
-    const raw = await response.text()
-    signal?.throwIfAborted()
-    const bytes = new TextEncoder().encode(raw).byteLength
-    if (raw.length > maxChars || bytes > maxBytes)
-      throw new Error('데이터 크기 초과')
-    account?.(raw.length, bytes)
+
+    const declaredLength = response.headers?.get?.('content-length')
+    if (declaredLength !== null && declaredLength !== undefined) {
+      if (!/^\d+$/.test(declaredLength)) {
+        response.body?.cancel().catch(() => undefined)
+        throw new Error('데이터 크기 정보 오류')
+      }
+      const declaredBytes = Number(declaredLength)
+      if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
+        response.body?.cancel().catch(() => undefined)
+        throw new Error('데이터 크기 초과')
+      }
+    }
+
+    if (!response.body || typeof response.body.getReader !== 'function') {
+      const raw = await response.text()
+      signal?.throwIfAborted()
+      const bytes = new TextEncoder().encode(raw).byteLength
+      if (raw.length > maxChars || bytes > maxBytes)
+        throw new Error('데이터 크기 초과')
+      account?.(raw.length, bytes)
+      return raw
+    }
+
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let byteLength = 0
+    let cancelled = false
+    const cancelReader = (reason?: unknown) => {
+      if (cancelled) return
+      cancelled = true
+      reader.cancel(reason).catch(() => undefined)
+    }
+    const abortReader = () => cancelReader(signal?.reason)
+    signal?.addEventListener('abort', abortReader, { once: true })
+    try {
+      while (true) {
+        signal?.throwIfAborted()
+        const { done, value } = await reader.read()
+        signal?.throwIfAborted()
+        if (done) break
+        if (!value || !Number.isSafeInteger(value.byteLength)) {
+          cancelReader()
+          throw new Error('데이터 응답 형식 오류')
+        }
+        if (value.byteLength > maxBytes - byteLength) {
+          cancelReader()
+          throw new Error('데이터 크기 초과')
+        }
+        account?.(0, value.byteLength)
+        byteLength += value.byteLength
+        chunks.push(Uint8Array.from(value))
+      }
+    } catch (error) {
+      cancelReader(error)
+      throw error
+    } finally {
+      signal?.removeEventListener('abort', abortReader)
+    }
+
+    const bytes = new Uint8Array(byteLength)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    let raw: string
+    try {
+      raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      throw new Error('데이터 UTF-8 오류')
+    }
+    if (raw.length > maxChars) throw new Error('데이터 크기 초과')
+    account?.(raw.length, 0)
     return raw
   }
 
@@ -204,13 +272,16 @@ export class BenefitsArtifactClient {
     let nextShard = 0
     let firstFailure: unknown
     const account = (chars: number, bytes: number) => {
+      if (
+        chars > DETAIL_BATCH_LIMIT - totalChars ||
+        bytes > DETAIL_BATCH_LIMIT - totalBytes
+      ) {
+        const error = new Error('상세 데이터 배치 크기 초과')
+        batchController.abort(error)
+        throw error
+      }
       totalChars += chars
       totalBytes += bytes
-      if (
-        totalChars > DETAIL_BATCH_LIMIT ||
-        totalBytes > DETAIL_BATCH_LIMIT
-      )
-        throw new Error('상세 데이터 배치 크기 초과')
     }
     const worker = async () => {
       while (!firstFailure && nextShard < shardUrls.length) {

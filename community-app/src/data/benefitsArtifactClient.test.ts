@@ -16,6 +16,47 @@ function client(change?: (url: string, raw: string) => string) {
 }
 const fixtureManifest = () => JSON.parse(fixture(manifest))
 const detailUrl = (id = 'example-001') => fixtureManifest().detail_shards[id]
+const encoder = new TextEncoder()
+const DETAIL_SHARD_LIMIT = 256_000
+const DETAIL_BATCH_LIMIT = 1_000_000
+
+function chunkedResponse(
+  chunks: Uint8Array[],
+  options: { contentLength?: number; delayMs?: number; onCancel?: () => void } = {},
+) {
+  let pulls = 0
+  let cancelled = false
+  const response = new Response(new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs))
+      if (cancelled) return
+      const chunk = chunks[pulls++]
+      if (chunk) controller.enqueue(chunk)
+      else controller.close()
+    },
+    cancel() {
+      cancelled = true
+      options.onCancel?.()
+    },
+  }, { highWaterMark: 0 }), {
+    headers: options.contentLength === undefined
+      ? undefined
+      : { 'content-length': String(options.contentLength) },
+  })
+  return { response, pulls: () => pulls }
+}
+
+async function loadedClient(
+  detailResponse: (url: string, signal?: AbortSignal) => Promise<Response>,
+) {
+  const c = new BenefitsArtifactClient(async (url, signal) =>
+    url.includes('/details/')
+      ? detailResponse(url, signal)
+      : new Response(fixture(url)), webcrypto.subtle as SubtleCrypto)
+  const m = await c.loadManifest()
+  const i = await c.loadCompanyIndex(m)
+  return { c, m, i }
+}
 describe('strict immutable benefits artifacts', () => {
   it('loads exact index, rankings and delayed detail counts', async () => {
     const c = client()
@@ -270,6 +311,117 @@ it('fails closed when aggregate detail bytes exceed the batch budget', async () 
       i.companies.slice(0, 50).map(({ company_id }) => company_id),
     ),
   ).rejects.toThrow(/상세 데이터.*초과/)
+})
+it('cancels an oversized streamed shard before reading the remaining network bytes', async () => {
+  const chunks = Array.from({ length: 16 }, () => new Uint8Array(32_000).fill(0x20))
+  let cancelled = 0
+  let stream: ReturnType<typeof chunkedResponse> | undefined
+  const state = await loadedClient(async () => {
+    stream = chunkedResponse(chunks, { onCancel: () => cancelled++ })
+    return stream.response
+  })
+  await expect(
+    state.c.loadCompanyDetail(state.m, state.i, 'example-001'),
+  ).rejects.toThrow('데이터 크기 초과')
+  expect(cancelled).toBe(1)
+  expect(stream!.pulls()).toBeLessThan(chunks.length)
+})
+it('rejects an over-limit Content-Length without reading even when the body is smaller', async () => {
+  let cancelled = 0
+  let stream: ReturnType<typeof chunkedResponse> | undefined
+  const state = await loadedClient(async (url) => {
+    stream = chunkedResponse([encoder.encode(fixture(url))], {
+      contentLength: DETAIL_SHARD_LIMIT + 1,
+      onCancel: () => cancelled++,
+    })
+    return stream.response
+  })
+  await expect(
+    state.c.loadCompanyDetail(state.m, state.i, 'example-001'),
+  ).rejects.toThrow('데이터 크기 초과')
+  expect(stream!.pulls()).toBe(0)
+  expect(cancelled).toBe(1)
+})
+it('does not trust an underreported Content-Length and counts multibyte network bytes', async () => {
+  const raw = fixture(detailUrl()) + '가'.repeat(90_000)
+  expect(raw.length).toBeLessThan(DETAIL_SHARD_LIMIT)
+  expect(encoder.encode(raw).byteLength).toBeGreaterThan(DETAIL_SHARD_LIMIT)
+  let cancelled = 0
+  const state = await loadedClient(async () => {
+    const bytes = encoder.encode(raw)
+    return chunkedResponse(
+      Array.from({ length: Math.ceil(bytes.length / 32_000) }, (_, index) =>
+        bytes.slice(index * 32_000, (index + 1) * 32_000)),
+      { contentLength: 1, onCancel: () => cancelled++ },
+    ).response
+  })
+  await expect(
+    state.c.loadCompanyDetail(state.m, state.i, 'example-001'),
+  ).rejects.toThrow('데이터 크기 초과')
+  expect(cancelled).toBe(1)
+})
+it('bounds aggregate streamed bytes across four workers and cancels the batch', async () => {
+  const requestedIds = ['example-001', 'example-002', 'example-003', 'example-004']
+  let delivered = 0
+  let cancelled = 0
+  const state = await loadedClient(async (url) => {
+    const fixtureBytes = encoder.encode(fixture(url))
+    const bytes = new Uint8Array(255_000).fill(0x20)
+    bytes.set(fixtureBytes)
+    const chunks = Array.from({ length: Math.ceil(bytes.length / 32_000) }, (_, index) =>
+      bytes.slice(index * 32_000, (index + 1) * 32_000))
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift()
+        if (!chunk) return controller.close()
+        delivered += chunk.byteLength
+        controller.enqueue(chunk)
+      },
+      cancel() { cancelled++ },
+    }, { highWaterMark: 0 }))
+  })
+  await expect(
+    state.c.loadCompanyDetails(state.m, state.i, requestedIds),
+  ).rejects.toThrow('상세 데이터 배치 크기 초과')
+  expect(cancelled).toBeGreaterThan(0)
+  expect(delivered).toBeLessThanOrEqual(DETAIL_BATCH_LIMIT + 4 * 32_000)
+})
+it('cancels a pending response reader when its caller aborts', async () => {
+  const controller = new AbortController()
+  let cancelled = 0
+  const state = await loadedClient(async () => chunkedResponse(
+    [encoder.encode(fixture(detailUrl()))],
+    { delayMs: 50, onCancel: () => cancelled++ },
+  ).response)
+  const pending = state.c.loadCompanyDetail(
+    state.m,
+    state.i,
+    'example-001',
+    controller.signal,
+  )
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  controller.abort()
+  await expect(pending).rejects.toHaveProperty('name', 'AbortError')
+  expect(cancelled).toBe(1)
+})
+it('uses bounded text fallback for fetch mocks without a response body', async () => {
+  const state = await loadedClient(async (url) => ({
+    ok: true,
+    headers: new Headers(),
+    body: null,
+    text: async () => fixture(url),
+  }) as Response)
+  await expect(
+    state.c.loadCompanyDetail(state.m, state.i, 'example-001'),
+  ).resolves.toHaveProperty('company_id', 'example-001')
+})
+it('rejects malformed UTF-8 instead of replacement-decoding accepted bytes', async () => {
+  const state = await loadedClient(async () => new Response(
+    new Uint8Array([0x7b, 0xff, 0x7d]),
+  ))
+  await expect(
+    state.c.loadCompanyDetail(state.m, state.i, 'example-001'),
+  ).rejects.toThrow('UTF-8')
 })
 it('rejects a company with more than the schema claim/source cap', async () => {
   const data = JSON.parse(fixture(detailUrl()))

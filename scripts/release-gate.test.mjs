@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { chmodSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -181,13 +181,85 @@ test('release workspaces are private, isolated, and cleanup removes only its own
     const first = await createReleaseWorkspace(root)
     const second = await createReleaseWorkspace(root)
     assert.notEqual(first.root, second.root)
+    assert.match(path.basename(first.root), new RegExp(first.runId))
     assert.equal(statSync(first.root).mode & 0o777, 0o700)
     assert.equal(statSync(second.root).mode & 0o777, 0o700)
+    assert.deepEqual(JSON.parse(readFileSync(first.marker, 'utf8')), { runId: first.runId })
+    assert.equal(statSync(first.marker).mode & 0o777, 0o600)
+    assert.equal(first.identity.realpath, realpathSync(first.root))
+    assert.equal(first.identity.dev, lstatSync(first.root).dev)
+    assert.equal(first.identity.ino, lstatSync(first.root).ino)
     writeFileSync(path.join(second.root, 'owned-by-second'), 'keep')
     await cleanupReleaseWorkspace(first, root)
     assert.equal(lstatSync(path.join(second.root, 'owned-by-second')).isFile(), true)
     assert.throws(() => lstatSync(first.root), /ENOENT/)
     await cleanupReleaseWorkspace(second, root)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release workspace cleanup refuses a replacement inode with a copied marker', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-replacement-'))
+  try {
+    const workspace = await createReleaseWorkspace(root)
+    const displaced = `${workspace.root}.displaced`
+    renameSync(workspace.root, displaced)
+    mkdirSync(workspace.root, { mode: 0o700 })
+    writeFileSync(workspace.marker, JSON.stringify({ runId: workspace.runId }), { mode: 0o600 })
+    await assert.rejects(cleanupReleaseWorkspace(workspace, root), /identity|inode|owned/i)
+    assert.equal(lstatSync(workspace.root).isDirectory(), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release workspace cleanup never follows a replacement symlink', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-symlink-'))
+  try {
+    const workspace = await createReleaseWorkspace(root)
+    const displaced = `${workspace.root}.displaced`
+    const victim = path.join(root, 'victim')
+    renameSync(workspace.root, displaced)
+    mkdirSync(victim)
+    writeFileSync(path.join(victim, 'sentinel'), 'keep')
+    symlinkSync(victim, workspace.root)
+    await assert.rejects(cleanupReleaseWorkspace(workspace, root), /symlink|owned|identity/i)
+    assert.equal(readFileSync(path.join(victim, 'sentinel'), 'utf8'), 'keep')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release workspace cleanup refuses a wrong ownership marker', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-marker-'))
+  try {
+    const workspace = await createReleaseWorkspace(root)
+    writeFileSync(workspace.marker, JSON.stringify({ runId: randomUUID() }), { mode: 0o600 })
+    await assert.rejects(cleanupReleaseWorkspace(workspace, root), /marker|owned/i)
+    assert.equal(lstatSync(workspace.root).isDirectory(), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release workspace cleanup revalidates the quarantined inode after a rename race', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-race-'))
+  try {
+    const workspace = await createReleaseWorkspace(root)
+    let replacement
+    await assert.rejects(
+      cleanupReleaseWorkspace(workspace, root, {
+        afterQuarantine(quarantine) {
+          replacement = `${quarantine}.replacement`
+          renameSync(quarantine, replacement)
+          mkdirSync(quarantine, { mode: 0o700 })
+          writeFileSync(path.join(quarantine, path.basename(workspace.marker)), JSON.stringify({ runId: workspace.runId }), { mode: 0o600 })
+        },
+      }),
+      /identity|inode|owned/i,
+    )
+    assert.equal(lstatSync(replacement).isDirectory(), true)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -1143,7 +1215,7 @@ test('default runner bounds TERM-to-KILL for an uncooperative process tree befor
       setInterval(() => {}, 100)
     `
     const controller = new AbortController()
-    const started = Date.now()
+    let started
     const gate = assert.rejects(runReleaseGate(
       { mode: 'local', evidencePath: state.evidence },
       {
@@ -1172,6 +1244,7 @@ test('default runner bounds TERM-to-KILL for an uncooperative process tree befor
           if (Number.isSafeInteger(candidate)) {
             pid = candidate
             if (isRunning()) {
+              started = Date.now()
               controller.abort('SIGTERM')
               break
             }

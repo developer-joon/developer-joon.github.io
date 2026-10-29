@@ -269,37 +269,174 @@ function step(name, command, args, environment = {}) {
 }
 
 const RELEASE_DIRECTORY_PREFIX = 'breadlab-community-release-'
+const RELEASE_OWNER_MARKER = '.release-workspace-owner.json'
+const WORKSPACE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
-function workspacePaths(root) {
+function workspacePaths(root, ownership = {}) {
   if (!path.isAbsolute(root)) throw new Error('release workspace root must be absolute')
   return {
     root,
     siteA: path.join(root, 'site-a'),
     siteB: path.join(root, 'site-b'),
     manifests: path.join(root, 'manifests'),
+    ...ownership,
   }
 }
 
-export async function createReleaseWorkspace(scratchRoot = process.env.TMPDIR || tmpdir()) {
-  const parent = path.resolve(scratchRoot)
-  const root = await mkdtemp(path.join(parent, RELEASE_DIRECTORY_PREFIX))
+function workspaceIdentity(stat, realpath) {
+  return {
+    realpath,
+    dev: stat.dev,
+    ino: stat.ino,
+    uid: stat.uid,
+    mode: stat.mode & 0o777,
+  }
+}
+
+function sameWorkspaceIdentity(stat, identity) {
+  return stat.dev === identity.dev &&
+    stat.ino === identity.ino &&
+    stat.uid === identity.uid &&
+    (stat.mode & 0o777) === identity.mode
+}
+
+async function validateWorkspaceMarker(marker, runId) {
+  const markerStat = lstatSync(marker)
+  if (markerStat.isSymbolicLink() || !markerStat.isFile() || markerStat.size > 128) {
+    throw new Error('refusing to clean a release workspace with an invalid owner marker')
+  }
+  if (markerStat.uid !== process.getuid() || (markerStat.mode & 0o777) !== 0o600) {
+    throw new Error('refusing to clean a release workspace with an unowned marker')
+  }
+  const handle = await open(
+    marker,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  )
+  try {
+    const openedStat = await handle.stat()
+    if (
+      openedStat.dev !== markerStat.dev ||
+      openedStat.ino !== markerStat.ino ||
+      openedStat.size > 128
+    ) {
+      throw new Error('refusing to clean a release workspace whose marker identity changed')
+    }
+    const raw = await handle.readFile({ encoding: 'utf8' })
+    let parsed
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      throw new Error('refusing to clean a release workspace with a malformed owner marker')
+    }
+    if (
+      !parsed ||
+      Object.keys(parsed).length !== 1 ||
+      parsed.runId !== runId
+    ) throw new Error('refusing to clean a release workspace with the wrong owner marker')
+  } finally {
+    await handle.close()
+  }
+}
+
+export async function createReleaseWorkspace(
+  scratchRoot = process.env.TMPDIR || tmpdir(),
+  runId = randomUUID(),
+) {
+  if (!WORKSPACE_UUID.test(runId)) throw new Error('release workspace run ID must be a UUID')
+  const parent = realpathSync(path.resolve(scratchRoot))
+  const root = await mkdtemp(path.join(parent, `${RELEASE_DIRECTORY_PREFIX}${runId}-`))
+  let identity
   try {
     await chmod(root, 0o700)
-    return deepFreeze(workspacePaths(root))
+    const rootStat = lstatSync(root)
+    const canonicalRoot = realpathSync(root)
+    identity = workspaceIdentity(rootStat, canonicalRoot)
+    if (
+      rootStat.isSymbolicLink() ||
+      !rootStat.isDirectory() ||
+      identity.uid !== process.getuid() ||
+      identity.mode !== 0o700
+    ) throw new Error('release workspace ownership or mode is invalid')
+    const marker = path.join(root, RELEASE_OWNER_MARKER)
+    await writeFile(marker, `${JSON.stringify({ runId })}\n`, {
+      mode: 0o600,
+      flag: 'wx',
+    })
+    await chmod(marker, 0o600)
+    return deepFreeze(workspacePaths(root, {
+      runId,
+      marker,
+      scratchRoot: parent,
+      identity,
+    }))
   } catch (error) {
-    await rm(root, { recursive: true, force: true }).catch(() => {})
+    try {
+      const current = lstatSync(root)
+      if (identity && sameWorkspaceIdentity(current, identity) && !current.isSymbolicLink()) {
+        await rm(root, { recursive: true, force: true })
+      }
+    } catch {
+      // Preserve the creation failure and never delete an identity we did not capture.
+    }
     throw error
   }
 }
 
-export async function cleanupReleaseWorkspace(workspace, scratchRoot = process.env.TMPDIR || tmpdir()) {
-  const parent = path.resolve(scratchRoot)
+export async function cleanupReleaseWorkspace(
+  workspace,
+  scratchRoot = process.env.TMPDIR || tmpdir(),
+  hooks = {},
+) {
+  const parent = realpathSync(path.resolve(scratchRoot))
   const root = path.resolve(workspace?.root ?? '')
+  const runId = workspace?.runId
+  const identity = workspace?.identity
+  const expectedPrefix = `${RELEASE_DIRECTORY_PREFIX}${runId}-`
   if (
+    !WORKSPACE_UUID.test(runId ?? '') ||
+    workspace?.scratchRoot !== parent ||
+    identity?.realpath !== root ||
     path.dirname(root) !== parent ||
-    !path.basename(root).startsWith(RELEASE_DIRECTORY_PREFIX)
+    !path.basename(root).startsWith(expectedPrefix) ||
+    workspace?.marker !== path.join(root, RELEASE_OWNER_MARKER)
   ) throw new Error('refusing to clean an unowned release workspace')
-  await rm(root, { recursive: true, force: true })
+
+  const rootStat = lstatSync(root)
+  if (
+    rootStat.isSymbolicLink() ||
+    !rootStat.isDirectory() ||
+    rootStat.uid !== process.getuid() ||
+    (rootStat.mode & 0o777) !== 0o700 ||
+    !sameWorkspaceIdentity(rootStat, identity) ||
+    realpathSync(root) !== identity.realpath
+  ) throw new Error('refusing to clean a release workspace whose identity changed')
+  await validateWorkspaceMarker(workspace.marker, runId)
+
+  const directory = await open(
+    root,
+    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+  )
+  const quarantine = path.join(parent, `${RELEASE_DIRECTORY_PREFIX}${runId}-cleanup-${randomUUID()}`)
+  try {
+    const openedStat = await directory.stat()
+    if (!sameWorkspaceIdentity(openedStat, identity)) {
+      throw new Error('refusing to clean a release workspace whose opened inode changed')
+    }
+    await rename(root, quarantine)
+    await hooks.afterQuarantine?.(quarantine)
+    const quarantinedStat = lstatSync(quarantine)
+    const stillOpenedStat = await directory.stat()
+    if (
+      quarantinedStat.isSymbolicLink() ||
+      !quarantinedStat.isDirectory() ||
+      !sameWorkspaceIdentity(quarantinedStat, identity) ||
+      !sameWorkspaceIdentity(stillOpenedStat, identity)
+    ) throw new Error('refusing to clean a release workspace whose quarantined identity changed')
+    await validateWorkspaceMarker(path.join(quarantine, RELEASE_OWNER_MARKER), runId)
+    await rm(quarantine, { recursive: true, force: false })
+  } finally {
+    await directory.close()
+  }
 }
 
 function localCoreSteps(workspace) {
@@ -1048,6 +1185,8 @@ export async function runReleaseGate(options, dependencies = {}) {
   const repoRoot = dependencies.repoRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const revision = dependencies.revision
   if (!REVISION.test(revision ?? '')) throw new Error('runReleaseGate requires a full lowercase Git revision')
+  const started = timestamp(clock)
+  const runId = randomUUID()
 
   const inputEvidencePaths = [
     options.localE2eEvidencePath,
@@ -1082,7 +1221,7 @@ export async function runReleaseGate(options, dependencies = {}) {
 
   const ownedWorkspace =
     !dependencies.plan && (options.mode === 'local' || options.mode === 'development')
-      ? await createReleaseWorkspace(scratchRoot)
+      ? await createReleaseWorkspace(scratchRoot, runId)
       : undefined
   const plan = dependencies.plan ?? buildReleasePlan(options, ownedWorkspace)
   const usesDefaultRunner = dependencies.runner === undefined
@@ -1096,8 +1235,6 @@ export async function runReleaseGate(options, dependencies = {}) {
     dependencies.executablePreflight ??
     (() => defaultExecutablePreflight(plan, repoRoot))
 
-  const started = timestamp(clock)
-  const runId = randomUUID()
   const steps = []
   let artifactManifest = null
   let readinessEvidence = null
