@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { webcrypto } from 'node:crypto'
+import { createHash, webcrypto } from 'node:crypto'
 import { BenefitsArtifactClient } from './benefitsArtifactClient'
+import { detailsSchema } from '../types/benefits'
 const root = `${process.cwd()}/public/`
 const fixture = (url: string) =>
   readFileSync(root + url.replace('/community/', ''), 'utf8')
@@ -219,6 +220,100 @@ it('requests only the independently bounded shards needed by displayed companies
   expect(requests.reduce((sum, request) => sum + request.bytes, 0)).toBeLessThan(
     100_000,
   )
+})
+it('loads detail shards with a fixed concurrency ceiling', async () => {
+  let active = 0
+  let peak = 0
+  const c = new BenefitsArtifactClient(async (url, signal) => {
+    if (url.includes('/details/')) {
+      active++
+      peak = Math.max(peak, active)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      signal?.throwIfAborted()
+      active--
+    }
+    return new Response(fixture(url))
+  }, webcrypto.subtle as SubtleCrypto)
+  const m = await c.loadManifest()
+  const i = await c.loadCompanyIndex(m)
+  await c.loadCompanyDetails(
+    m,
+    i,
+    i.companies.slice(0, 20).map(({ company_id }) => company_id),
+  )
+  expect(peak).toBeGreaterThan(1)
+  expect(peak).toBeLessThanOrEqual(4)
+})
+it('fails closed when aggregate detail bytes exceed the batch budget', async () => {
+  const changedManifest = fixtureManifest()
+  const padded = new Map<string, string>()
+  for (const url of Object.values(changedManifest.detail_shards) as string[]) {
+    const raw = fixture(url) + ' '.repeat(30_000)
+    padded.set(url, raw)
+    changedManifest.artifact_sha256[url].sha256 = createHash('sha256')
+      .update(raw)
+      .digest('hex')
+  }
+  const c = new BenefitsArtifactClient(async (url) => {
+    return new Response(
+      url === manifest
+        ? JSON.stringify(changedManifest)
+        : padded.get(url) ?? fixture(url),
+    )
+  }, webcrypto.subtle as SubtleCrypto)
+  const m = await c.loadManifest()
+  const i = await c.loadCompanyIndex(m)
+  await expect(
+    c.loadCompanyDetails(
+      m,
+      i,
+      i.companies.slice(0, 50).map(({ company_id }) => company_id),
+    ),
+  ).rejects.toThrow(/상세 데이터.*초과/)
+})
+it('rejects a company with more than the schema claim/source cap', async () => {
+  const data = JSON.parse(fixture(detailUrl()))
+  const company = (data.companies as { claims: Record<string, unknown>[] }[])[0]
+  const original = company.claims[0]
+  company.claims = Array.from({ length: 101 }, (_, index) => ({
+      ...original,
+      claim_id: `bounded-claim-${index}`,
+      benefit_type: `bounded-benefit-${index}`,
+  }))
+  const result = detailsSchema.safeParse(data)
+  expect(result.success).toBe(false)
+  if (!result.success) expect(result.error.issues).toContainEqual(
+    expect.objectContaining({ code: 'too_big', path: ['companies', 0, 'claims'] }),
+  )
+})
+it('aborts in-flight detail requests and does not start queued shards after failure', async () => {
+  const started: string[] = []
+  const aborted: string[] = []
+  const c = new BenefitsArtifactClient(async (url, signal) => {
+    if (!url.includes('/details/')) return new Response(fixture(url))
+    started.push(url)
+    if (started.length === 1) return new Response(fixture(url) + 'corrupt')
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 500)
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer)
+        aborted.push(url)
+        reject(signal.reason)
+      }, { once: true })
+    })
+    return new Response(fixture(url))
+  }, webcrypto.subtle as SubtleCrypto)
+  const m = await c.loadManifest()
+  const i = await c.loadCompanyIndex(m)
+  await expect(
+    c.loadCompanyDetails(
+      m,
+      i,
+      i.companies.slice(0, 20).map(({ company_id }) => company_id),
+    ),
+  ).rejects.toThrow()
+  expect(started.length).toBeLessThanOrEqual(4)
+  expect(aborted.length).toBeGreaterThan(0)
 })
 it('propagates abort through fetch and stops before artifact CPU validation', async () => {
   const controller = new AbortController()

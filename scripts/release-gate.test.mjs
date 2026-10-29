@@ -10,8 +10,11 @@ import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import {
   buildReleasePlan,
+  cleanupReleaseWorkspace,
+  createReleaseWorkspace,
   parseReleaseOptions,
   projectFingerprint,
+  resolveBrowserExecutable,
   runReleaseGate,
   validateEvidence,
 } from './release-gate.mjs'
@@ -112,7 +115,13 @@ test('defaults to local mode and builds the exact ordered local plan', () => {
 })
 
 test('local release plan executes real benefits browser acceptance against the built site', () => {
-  const step = buildReleasePlan(parse()).steps.find(
+  const workspace = {
+    root: '/private/run-1',
+    siteA: '/private/run-1/site-a',
+    siteB: '/private/run-1/site-b',
+    manifests: '/private/run-1/manifests',
+  }
+  const step = buildReleasePlan(parse(), workspace).steps.find(
     ({ name }) => name === 'test-benefits-browser',
   )
   assert.deepEqual(step, {
@@ -120,10 +129,95 @@ test('local release plan executes real benefits browser acceptance against the b
     command: 'node',
     args: [
       'scripts/check-benefits-browser.mjs',
-      '/tmp/breadlab-community-release-site-a/community',
+      '/private/run-1/site-a/community',
     ],
     environment: {},
   })
+})
+
+test('browser preflight prefers an explicit executable and rejects an invalid explicit path', () => {
+  const state = fixture()
+  try {
+    const explicit = path.join(state.root, 'explicit-chromium')
+    const fallback = path.join(state.root, 'chromium')
+    writeFileSync(explicit, '#!/bin/sh\n')
+    writeFileSync(fallback, '#!/bin/sh\n')
+    chmodSync(explicit, 0o700)
+    chmodSync(fallback, 0o700)
+    assert.equal(
+      resolveBrowserExecutable({ BENEFITS_CHROMIUM: explicit, PATH: state.root }),
+      realpathSync(explicit),
+    )
+    chmodSync(explicit, 0o600)
+    assert.throws(
+      () => resolveBrowserExecutable({ BENEFITS_CHROMIUM: explicit, PATH: state.root }),
+      /BENEFITS_CHROMIUM.*executable/i,
+    )
+  } finally {
+    state.close()
+  }
+})
+
+test('browser preflight discovers a supported PATH executable or fails clearly', () => {
+  const state = fixture()
+  try {
+    const chromium = path.join(state.root, 'chromium')
+    writeFileSync(chromium, '#!/bin/sh\n')
+    chmodSync(chromium, 0o700)
+    assert.equal(resolveBrowserExecutable({ PATH: state.root }), realpathSync(chromium))
+    unlinkSync(chromium)
+    assert.throws(
+      () => resolveBrowserExecutable({ PATH: state.root }),
+      /supported Chromium executable.*BENEFITS_CHROMIUM/i,
+    )
+  } finally {
+    state.close()
+  }
+})
+
+test('release workspaces are private, isolated, and cleanup removes only its owner run', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-parent-'))
+  try {
+    const first = await createReleaseWorkspace(root)
+    const second = await createReleaseWorkspace(root)
+    assert.notEqual(first.root, second.root)
+    assert.equal(statSync(first.root).mode & 0o777, 0o700)
+    assert.equal(statSync(second.root).mode & 0o777, 0o700)
+    writeFileSync(path.join(second.root, 'owned-by-second'), 'keep')
+    await cleanupReleaseWorkspace(first, root)
+    assert.equal(lstatSync(path.join(second.root, 'owned-by-second')).isFile(), true)
+    assert.throws(() => lstatSync(first.root), /ENOENT/)
+    await cleanupReleaseWorkspace(second, root)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release execution passes the preflight-resolved browser path explicitly', async () => {
+  const state = executionFixture()
+  try {
+    const browser = path.join(state.root, 'resolved-chromium')
+    const seen = []
+    state.dependencies.plan = compactPlan('local', state.evidence, [
+      'repository-preflight',
+      'test-benefits-browser',
+    ])
+    state.dependencies.executablePreflight = async () =>
+      new Map([
+        ['node', process.execPath],
+        ['npm', process.execPath],
+        ['BENEFITS_CHROMIUM', browser],
+      ])
+    state.dependencies.runner = async (releaseStep) => {
+      seen.push(releaseStep)
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    await runReleaseGate(state.options, state.dependencies)
+    const browserStep = seen.find(({ name }) => name === 'test-benefits-browser')
+    assert.equal(browserStep.environment.BENEFITS_CHROMIUM, browser)
+  } finally {
+    state.close()
+  }
 })
 
 test('development plan runs the exhaustive local core before hosted probes and its Task 16 sentinel', () => {
@@ -598,9 +692,18 @@ function executionFixture(mode = 'local') {
 }
 
 function compactPlan(mode, evidencePath, names) {
+  const evidenceDirectory =
+    typeof evidencePath === 'string' ? path.dirname(evidencePath) : '/private'
+  const workspaceRoot = path.join(evidenceDirectory, 'private-release-workspace')
   return {
     mode,
     evidencePath,
+    workspace: {
+      root: workspaceRoot,
+      siteA: path.join(workspaceRoot, 'site-a'),
+      siteB: path.join(workspaceRoot, 'site-b'),
+      manifests: path.join(workspaceRoot, 'manifests'),
+    },
     steps: names.map((name) => ({ name, command: 'node', args: [`${name}.mjs`], environment: {} })),
   }
 }
@@ -1312,6 +1415,7 @@ test('development 5xx, timeout, and paused-project responses fail with resume gu
 test('evidence schema rejects missing, unknown, and malformed keys', () => {
   const valid = {
     schemaVersion: 2,
+    runId: '123e4567-e89b-42d3-a456-426614174000',
     revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
     mode: 'local',
     status: 'passed',
@@ -1347,7 +1451,7 @@ test('evidence has revision, mode, UTC timing, step durations, artifact and data
     const evidence = state.evidence()
     assert.deepEqual(Object.keys(evidence).sort(), [
       'artifactManifest', 'databaseTests', 'developmentProjectFingerprint', 'durationMs', 'failure', 'finishedAt', 'mode',
-      'productionProjectFingerprint', 'readinessEvidence', 'revision', 'schemaVersion', 'startedAt', 'status', 'steps',
+      'productionProjectFingerprint', 'readinessEvidence', 'revision', 'runId', 'schemaVersion', 'startedAt', 'status', 'steps',
     ])
     assert.equal(evidence.revision, state.dependencies.revision)
     assert.equal(evidence.mode, 'development')
@@ -1497,12 +1601,12 @@ test('binds passed reproducibility evidence to identical manifest bytes and exac
   const state = executionFixture()
   try {
     const manifest = `${'a'.repeat(64)}  ./assets/app.js\n${'b'.repeat(64)}  ./index.html\n`
-    const manifestPaths = [
-      '/tmp/breadlab-community-release-manifests/build-1.sha256',
-      '/tmp/breadlab-community-release-manifests/build-2.sha256',
-    ]
     const reads = []
     state.dependencies.plan = compactPlan('local', state.evidence, ['test-database', 'verify-site-reproducibility'])
+    const manifestPaths = [
+      path.join(state.dependencies.plan.workspace.manifests, 'build-1.sha256'),
+      path.join(state.dependencies.plan.workspace.manifests, 'build-2.sha256'),
+    ]
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database' ? 'runner detail\nTests=7\nprivate-user@example.com\n' : '',

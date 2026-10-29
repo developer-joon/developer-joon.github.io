@@ -16,10 +16,12 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 ## 1. local exhaustive + Task 16 E2E
 
 - [ ] Clean working tree and supported Node, Docker, pinned Supabase CLI, Ruby/Jekyll toolchain.
+- [ ] Chromium preflight resolves an executable (explicit `BENEFITS_CHROMIUM` if set, otherwise a supported local candidate); browser acceptance is not skipped.
+- [ ] `TMPDIR` is private scratch; evidence has a run UUID and the mode-0700 per-run build/manifest directory is isolated from concurrent runs.
 - [ ] Local reset/upgrade tests, pgTAP, DB lint, frontend checks, all Node script tests.
 - [ ] Two fresh Docker site artifacts verify and reproduce byte-for-byte.
 - [ ] Task 16 E2E passes against local Docker; no intentional sentinel remains.
-- [ ] Local stack and temporary artifacts are cleaned; local evidence is current and revision-bound.
+- [ ] Local stack and only this run's temporary directory are cleaned; local evidence is current, run-identified, and revision-bound.
 
 ## 2. development cloud integration+cleanup
 

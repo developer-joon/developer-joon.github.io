@@ -134,7 +134,8 @@ export const claimSchema = z.strictObject({
 })
 export const detailSchema = z.strictObject({
   company_id: id,
-  claims: z.array(claimSchema),
+  // Every claim has exactly one source, so one cap bounds both collections.
+  claims: z.array(claimSchema).max(100),
   community_post_id: z.uuid().nullable(),
 })
 export const detailsSchema = z.strictObject({

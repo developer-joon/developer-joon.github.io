@@ -3,7 +3,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs'
-import { open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -267,10 +268,42 @@ function step(name, command, args, environment = {}) {
   return { name, command, args, environment }
 }
 
-function localCoreSteps() {
-  const siteA = '/tmp/breadlab-community-release-site-a'
-  const siteB = '/tmp/breadlab-community-release-site-b'
-  const manifest = '/tmp/breadlab-community-release-manifests'
+const RELEASE_DIRECTORY_PREFIX = 'breadlab-community-release-'
+
+function workspacePaths(root) {
+  if (!path.isAbsolute(root)) throw new Error('release workspace root must be absolute')
+  return {
+    root,
+    siteA: path.join(root, 'site-a'),
+    siteB: path.join(root, 'site-b'),
+    manifests: path.join(root, 'manifests'),
+  }
+}
+
+export async function createReleaseWorkspace(scratchRoot = process.env.TMPDIR || tmpdir()) {
+  const parent = path.resolve(scratchRoot)
+  const root = await mkdtemp(path.join(parent, RELEASE_DIRECTORY_PREFIX))
+  try {
+    await chmod(root, 0o700)
+    return deepFreeze(workspacePaths(root))
+  } catch (error) {
+    await rm(root, { recursive: true, force: true }).catch(() => {})
+    throw error
+  }
+}
+
+export async function cleanupReleaseWorkspace(workspace, scratchRoot = process.env.TMPDIR || tmpdir()) {
+  const parent = path.resolve(scratchRoot)
+  const root = path.resolve(workspace?.root ?? '')
+  if (
+    path.dirname(root) !== parent ||
+    !path.basename(root).startsWith(RELEASE_DIRECTORY_PREFIX)
+  ) throw new Error('refusing to clean an unowned release workspace')
+  await rm(root, { recursive: true, force: true })
+}
+
+function localCoreSteps(workspace) {
+  const { siteA, siteB, manifests } = workspace
   return [
     step('repository-preflight', 'git', ['status', '--porcelain']),
     step('start-local-supabase', 'npm', ['--prefix', 'community-app', 'run', 'db:start']),
@@ -292,7 +325,7 @@ function localCoreSteps() {
     step('build-site-b', './scripts/build-site-docker.sh', [siteB]),
     step('verify-site-a', 'node', ['scripts/verify-site.mjs', siteA]),
     step('verify-site-b', 'node', ['scripts/verify-site.mjs', siteB]),
-    step('verify-site-reproducibility', './scripts/verify-site-reproducibility.sh', [siteA, siteB, manifest]),
+    step('verify-site-reproducibility', './scripts/verify-site-reproducibility.sh', [siteA, siteB, manifests]),
     step('test-benefits-browser', 'node', [
       'scripts/check-benefits-browser.mjs',
       `${siteA}/community`,
@@ -300,13 +333,16 @@ function localCoreSteps() {
   ]
 }
 
-export function buildReleasePlan(options) {
+export function buildReleasePlan(
+  options,
+  workspace = workspacePaths(path.join(process.env.TMPDIR || tmpdir(), `${RELEASE_DIRECTORY_PREFIX}${randomUUID()}`)),
+) {
   let steps
   if (options.mode === 'local') {
-    steps = [...localCoreSteps(), step('local-e2e', 'node', ['scripts/community-e2e-sentinel.mjs'])]
+    steps = [...localCoreSteps(workspace), step('local-e2e', 'node', ['scripts/community-e2e-sentinel.mjs'])]
   } else if (options.mode === 'development') {
     steps = [
-      ...localCoreSteps(),
+      ...localCoreSteps(workspace),
       step('development-read-only-health', 'node', ['scripts/development-readonly-probe.mjs']),
       step('development-integration', 'node', ['scripts/development-integration-sentinel.mjs']),
     ]
@@ -315,11 +351,12 @@ export function buildReleasePlan(options) {
   } else {
     throw new Error(`unsupported release mode: ${options.mode}`)
   }
-  return deepFreeze({ mode: options.mode, evidencePath: options.evidencePath, steps })
+  return deepFreeze({ mode: options.mode, evidencePath: options.evidencePath, workspace, steps })
 }
 
 const EVIDENCE_KEYS = [
   'schemaVersion',
+  'runId',
   'revision',
   'mode',
   'status',
@@ -348,14 +385,11 @@ const LOCAL_READINESS_OUTPUT_KEYS = ['revision', 'finishedAt'].sort()
 const DEVELOPMENT_READINESS_OUTPUT_KEYS = ['revision', 'finishedAt', 'projectFingerprint'].sort()
 const PRODUCTION_BACKUP_READINESS_OUTPUT_KEYS = ['revision', 'finishedAt', 'projectFingerprint', 'backupChecksum'].sort()
 const REVISION = /^[a-f0-9]{40}$/
+const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
 const READINESS_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const PROJECT_ID = 'developer-joon-community-design'
-const ARTIFACT_PATHS = [
-  '/tmp/breadlab-community-release-site-a',
-  '/tmp/breadlab-community-release-site-b',
-  '/tmp/breadlab-community-release-manifests',
-]
+
 
 function exactKeys(value, expected, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} evidence must be an object`)
@@ -373,6 +407,7 @@ function validTime(value) {
 export function validateEvidence(evidence) {
   exactKeys(evidence, EVIDENCE_KEYS, 'release')
   if (evidence.schemaVersion !== 2) throw new Error('release evidence schemaVersion must be 2')
+  if (!RUN_ID.test(evidence.runId)) throw new Error('release evidence runId must be a UUID')
   if (!REVISION.test(evidence.revision)) throw new Error('release evidence revision must be a full lowercase Git revision')
   if (!MODES.has(evidence.mode)) throw new Error('release evidence mode is invalid')
   if (!['passed', 'failed'].includes(evidence.status)) throw new Error('release evidence status is invalid')
@@ -728,17 +763,56 @@ function cleanupStep() {
   }
 }
 
+function isExecutableFile(candidate) {
+  try {
+    if (!statSync(candidate).isFile()) return false
+    accessSync(candidate, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const BROWSER_COMMANDS = [
+  'chromium',
+  'chromium-browser',
+  'google-chrome',
+  'google-chrome-stable',
+]
+const BROWSER_ABSOLUTE_CANDIDATES = [
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+]
+
+export function resolveBrowserExecutable(env = process.env) {
+  if (env.BENEFITS_CHROMIUM) {
+    const explicit = path.resolve(env.BENEFITS_CHROMIUM)
+    if (!isExecutableFile(explicit)) {
+      throw new Error('BENEFITS_CHROMIUM must name an executable regular file')
+    }
+    return realpathSync(explicit)
+  }
+  const executablePaths = env.PATH?.split(path.delimiter).filter(Boolean) ?? []
+  const candidates = [
+    ...BROWSER_ABSOLUTE_CANDIDATES,
+    ...BROWSER_COMMANDS.flatMap((command) =>
+      executablePaths.map((directory) => path.join(directory, command)),
+    ),
+  ]
+  const discovered = candidates.find(isExecutableFile)
+  if (!discovered) {
+    throw new Error(
+      'no supported Chromium executable found; install chromium/google-chrome or set BENEFITS_CHROMIUM to an executable path',
+    )
+  }
+  return realpathSync(discovered)
+}
+
 function defaultExecutablePreflight(plan, repoRoot, env = process.env) {
   const executablePaths = env.PATH?.split(path.delimiter).filter(Boolean) ?? []
-  const isExecutableFile = (candidate) => {
-    try {
-      if (!statSync(candidate).isFile()) return false
-      accessSync(candidate, constants.X_OK)
-      return true
-    } catch {
-      return false
-    }
-  }
   const resolved = new Map()
 
   const commands = [...plan.steps, cleanupStep()]
@@ -759,6 +833,13 @@ function defaultExecutablePreflight(plan, repoRoot, env = process.env) {
       )
     }
     resolved.set(command, realpathSync(executable))
+  }
+  if (plan.steps.some(({ name }) => name === 'test-benefits-browser')) {
+    try {
+      resolved.set('BENEFITS_CHROMIUM', resolveBrowserExecutable(env))
+    } catch (error) {
+      throw new ReleaseFailure('repository-preflight', 'preflight', error.message)
+    }
   }
   return resolved
 }
@@ -959,18 +1040,12 @@ async function publishEvidence(evidencePath, evidence, filesystem) {
 }
 
 export async function runReleaseGate(options, dependencies = {}) {
-  const plan = dependencies.plan ?? buildReleasePlan(options)
+  const scratchRoot = path.resolve(
+    dependencies.scratchRoot ?? process.env.TMPDIR ?? tmpdir(),
+  )
   const clock = dependencies.clock ?? (() => new Date())
   const filesystem = dependencies.filesystem ?? { open, readFile, writeFile, rename, rm }
   const repoRoot = dependencies.repoRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-  const usesDefaultRunner = dependencies.runner === undefined
-  const runner = dependencies.runner ?? defaultRunner(
-    repoRoot,
-    dependencies.signal,
-    dependencies.spawn,
-    dependencies.killGraceMs,
-  )
-  const executablePreflight = dependencies.executablePreflight ?? (() => defaultExecutablePreflight(plan, repoRoot))
   const revision = dependencies.revision
   if (!REVISION.test(revision ?? '')) throw new Error('runReleaseGate requires a full lowercase Git revision')
 
@@ -1005,7 +1080,24 @@ export async function runReleaseGate(options, dependencies = {}) {
     )
   }
 
+  const ownedWorkspace =
+    !dependencies.plan && (options.mode === 'local' || options.mode === 'development')
+      ? await createReleaseWorkspace(scratchRoot)
+      : undefined
+  const plan = dependencies.plan ?? buildReleasePlan(options, ownedWorkspace)
+  const usesDefaultRunner = dependencies.runner === undefined
+  const runner = dependencies.runner ?? defaultRunner(
+    repoRoot,
+    dependencies.signal,
+    dependencies.spawn,
+    dependencies.killGraceMs,
+  )
+  const executablePreflight =
+    dependencies.executablePreflight ??
+    (() => defaultExecutablePreflight(plan, repoRoot))
+
   const started = timestamp(clock)
+  const runId = randomUUID()
   const steps = []
   let artifactManifest = null
   let readinessEvidence = null
@@ -1037,14 +1129,19 @@ export async function runReleaseGate(options, dependencies = {}) {
         result = await validateProductionReadinessEvidence(options, filesystem, revision, stepStarted)
         readinessEvidence = result.readinessEvidence
       } else {
+        const resolvedStep = {
+          ...releaseStep,
+          command: resolvedExecutables?.get(releaseStep.command) ?? releaseStep.command,
+          environment: releaseStep.name === 'test-benefits-browser'
+            ? {
+                ...releaseStep.environment,
+                BENEFITS_CHROMIUM: resolvedExecutables?.get('BENEFITS_CHROMIUM'),
+              }
+            : releaseStep.environment,
+        }
         result = releaseStep.name === 'development-read-only-health'
           ? await runHostedProbes(options, dependencies)
-          : await runner(
-              resolvedExecutables?.has(releaseStep.command)
-                ? { ...releaseStep, command: resolvedExecutables.get(releaseStep.command) }
-                : releaseStep,
-              { ignoreAbort },
-            )
+          : await runner(resolvedStep, { ignoreAbort })
       }
       if (!ignoreAbort && dependencies.signal?.aborted) {
         throw new ReleaseFailure(releaseStep.name, 'signal', `release gate aborted by ${dependencies.signal.reason ?? 'signal'}`)
@@ -1053,15 +1150,22 @@ export async function runReleaseGate(options, dependencies = {}) {
       if (releaseStep.name === 'repository-preflight' && result.stdout?.trim()) {
         throw new ReleaseFailure(releaseStep.name, 'preflight', 'repository-preflight requires a clean Git working tree')
       }
-      if (releaseStep.name === 'repository-preflight' && !usesDefaultRunner) await executablePreflight(plan, repoRoot)
+      if (releaseStep.name === 'repository-preflight' && !usesDefaultRunner) {
+        const preflightResult = await executablePreflight(plan, repoRoot)
+        if (preflightResult instanceof Map) resolvedExecutables = preflightResult
+      }
       if (DATABASE_TEST_STEPS.has(releaseStep.name)) {
         const count = databaseTestCount(releaseStep.name, result)
         if (count !== undefined) databaseTestSteps.push({ name: releaseStep.name, count })
       }
       if (releaseStep.name === 'verify-site-reproducibility') {
+        const manifestRoot = plan.workspace?.manifests
+        if (!manifestRoot) {
+          throw new ReleaseFailure(releaseStep.name, 'configuration', 'release workspace manifests path is missing')
+        }
         const manifestPaths = [
-          '/tmp/breadlab-community-release-manifests/build-1.sha256',
-          '/tmp/breadlab-community-release-manifests/build-2.sha256',
+          path.join(manifestRoot, 'build-1.sha256'),
+          path.join(manifestRoot, 'build-2.sha256'),
         ]
         let first
         let second
@@ -1119,9 +1223,9 @@ export async function runReleaseGate(options, dependencies = {}) {
       } catch (error) {
         cleanupFailure = error
       }
-      for (const artifactPath of ARTIFACT_PATHS) {
+      if (ownedWorkspace) {
         try {
-          await filesystem.rm?.(artifactPath, { recursive: true, force: true })
+          await cleanupReleaseWorkspace(ownedWorkspace, scratchRoot)
         } catch (error) {
           cleanupFailure ??= new ReleaseFailure('cleanup-release-artifacts', 'cleanup', 'cleanup-release-artifacts could not be completed')
         }
@@ -1133,6 +1237,7 @@ export async function runReleaseGate(options, dependencies = {}) {
   const finished = timestamp(clock)
   const evidence = {
     schemaVersion: 2,
+    runId,
     revision,
     mode: options.mode,
     status: failure ? 'failed' : 'passed',

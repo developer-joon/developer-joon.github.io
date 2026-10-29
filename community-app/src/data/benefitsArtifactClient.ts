@@ -13,6 +13,10 @@ import {
   type CompanyIndex,
 } from '../types/benefits'
 
+const RESPONSE_LIMIT = 12_000_000
+const DETAIL_SHARD_LIMIT = 256_000
+const DETAIL_BATCH_LIMIT = 1_000_000
+
 export class BenefitsArtifactClient {
   private cache = new Map<string, Promise<unknown>>()
 
@@ -24,14 +28,23 @@ export class BenefitsArtifactClient {
     private subtle: SubtleCrypto = crypto.subtle,
   ) {}
 
-  private async raw(url: string, signal?: AbortSignal) {
+  private async raw(
+    url: string,
+    signal?: AbortSignal,
+    maxChars = RESPONSE_LIMIT,
+    maxBytes = RESPONSE_LIMIT,
+    account?: (chars: number, bytes: number) => void,
+  ) {
     signal?.throwIfAborted()
     const response = await this.request(url, signal)
     signal?.throwIfAborted()
     if (!response.ok) throw new Error('데이터 요청 실패')
     const raw = await response.text()
     signal?.throwIfAborted()
-    if (raw.length > 12_000_000) throw new Error('데이터 크기 초과')
+    const bytes = new TextEncoder().encode(raw).byteLength
+    if (raw.length > maxChars || bytes > maxBytes)
+      throw new Error('데이터 크기 초과')
+    account?.(raw.length, bytes)
     return raw
   }
 
@@ -60,12 +73,23 @@ export class BenefitsArtifactClient {
     schema: z.ZodType<T>,
     count: (data: T) => number,
     signal?: AbortSignal,
+    limits?: {
+      maxChars: number
+      maxBytes: number
+      account: (chars: number, bytes: number) => void
+    },
   ): Promise<T> {
     const descriptor = m.artifact_sha256[url]
     if (!descriptor) throw new Error('등록되지 않은 artifact')
     const key = `${m.data_version}:${url}:${descriptor.sha256}`
     const load = async () => {
-      const raw = await this.raw(url, signal)
+      const raw = await this.raw(
+        url,
+        signal,
+        limits?.maxChars,
+        limits?.maxBytes,
+        limits?.account,
+      )
       signal?.throwIfAborted()
       const digest = await this.subtle.digest(
         'SHA-256',
@@ -171,38 +195,70 @@ export class BenefitsArtifactClient {
       string,
       z.infer<typeof detailsSchema>['companies'][number]
     >()
-    await Promise.all(
-      shardUrls.map(async (shardUrl) => {
-        const data = await this.payload(
-          m,
-          shardUrl,
-          detailsSchema,
-          (payload) => payload.companies.length,
-          signal,
-        )
-        const ids = new Set(
-          data.companies.map((detail) => detail.company_id),
-        )
-        const expectedIds = Object.entries(m.detail_shards)
-          .filter(([, url]) => url === shardUrl)
-          .map(([id]) => id)
-        if (
-          ids.size !== data.companies.length ||
-          ids.size !== expectedIds.length ||
-          expectedIds.some((id) => !ids.has(id)) ||
-          data.companies.some(
-            (detail) =>
-              !companies.has(detail.company_id) ||
-              m.detail_shards[detail.company_id] !== shardUrl,
+    const batchController = new AbortController()
+    const batchSignal = signal
+      ? AbortSignal.any([signal, batchController.signal])
+      : batchController.signal
+    let totalChars = 0
+    let totalBytes = 0
+    let nextShard = 0
+    let firstFailure: unknown
+    const account = (chars: number, bytes: number) => {
+      totalChars += chars
+      totalBytes += bytes
+      if (
+        totalChars > DETAIL_BATCH_LIMIT ||
+        totalBytes > DETAIL_BATCH_LIMIT
+      )
+        throw new Error('상세 데이터 배치 크기 초과')
+    }
+    const worker = async () => {
+      while (!firstFailure && nextShard < shardUrls.length) {
+        const shardUrl = shardUrls[nextShard++]
+        try {
+          const data = await this.payload(
+            m,
+            shardUrl,
+            detailsSchema,
+            (payload) => payload.companies.length,
+            batchSignal,
+            {
+              maxChars: DETAIL_SHARD_LIMIT,
+              maxBytes: DETAIL_SHARD_LIMIT,
+              account,
+            },
           )
-        )
-          throw new Error('상세 회사/shard 참조 불일치')
-        for (const detail of data.companies) {
-          assertDetailEvidence(companies.get(detail.company_id)!, detail)
-          loaded.set(detail.company_id, detail)
+          const ids = new Set(
+            data.companies.map((detail) => detail.company_id),
+          )
+          const expectedIds = Object.entries(m.detail_shards)
+            .filter(([, url]) => url === shardUrl)
+            .map(([id]) => id)
+          if (
+            ids.size !== data.companies.length ||
+            ids.size !== expectedIds.length ||
+            expectedIds.some((id) => !ids.has(id)) ||
+            data.companies.some(
+              (detail) =>
+                !companies.has(detail.company_id) ||
+                m.detail_shards[detail.company_id] !== shardUrl,
+            )
+          )
+            throw new Error('상세 회사/shard 참조 불일치')
+          for (const detail of data.companies) {
+            assertDetailEvidence(companies.get(detail.company_id)!, detail)
+            loaded.set(detail.company_id, detail)
+          }
+        } catch (error) {
+          if (!firstFailure) firstFailure = error
+          batchController.abort(error)
         }
-      }),
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(4, shardUrls.length) }, () => worker()),
     )
+    if (firstFailure) throw firstFailure
     signal?.throwIfAborted()
     const results = requested.map((id) => loaded.get(id))
     if (results.some((detail) => !detail)) throw new Error('상세 누락')

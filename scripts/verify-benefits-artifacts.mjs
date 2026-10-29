@@ -13,6 +13,20 @@ import {
   assertRankingEvidence,
   assertDetailEvidence,
 } from '../community-app/src/types/benefits.ts'
+
+export function buildBenefitsLookupMaps(manifest, index) {
+  const companyById = new Map(
+    index.companies.map((company) => [company.company_id, company]),
+  )
+  const expectedIdsByUrl = new Map()
+  for (const [companyId, url] of Object.entries(manifest.detail_shards)) {
+    const expected = expectedIdsByUrl.get(url)
+    if (expected) expected.push(companyId)
+    else expectedIdsByUrl.set(url, [companyId])
+  }
+  return { companyById, expectedIdsByUrl }
+}
+
 export async function verifyBenefitsArtifacts(root) {
   const get = (relative) => readFile(path.join(root, relative), 'utf8')
   const manifest = manifestSchema.parse(
@@ -54,6 +68,10 @@ export async function verifyBenefitsArtifacts(root) {
     Object.keys(manifest.detail_shards).length !== ids.size
   )
     throw Error('benefits company count mismatch')
+  const { companyById, expectedIdsByUrl } = buildBenefitsLookupMaps(
+    manifest,
+    index,
+  )
   assertRankingEvidence(index, rankings)
   const keys = new Set(
     rankings.rows.map((r) => `${r.company_id}:${r.category}`),
@@ -64,17 +82,11 @@ export async function verifyBenefitsArtifacts(root) {
     rankings.rows.some((r) => !ids.has(r.company_id))
   )
     throw Error('benefits rankings references mismatch')
-  for (const id of ids) {
-    const shard = results.get(manifest.detail_shards[id])
-    if (!shard?.companies?.some((c) => c.company_id === id))
-      throw Error('benefits detail mapping missing')
-  }
+  const verifiedDetailIds = new Set()
   for (const [url, data] of results) {
     if (!url.includes('/details/')) continue
     const seen = new Set()
-    const expected = Object.entries(manifest.detail_shards)
-      .filter(([, shardUrl]) => shardUrl === url)
-      .map(([id]) => id)
+    const expected = expectedIdsByUrl.get(url) ?? []
     for (const c of data.companies) {
       if (
         !ids.has(c.company_id) ||
@@ -83,8 +95,9 @@ export async function verifyBenefitsArtifacts(root) {
       )
         throw Error('benefits detail references mismatch')
       seen.add(c.company_id)
+      verifiedDetailIds.add(c.company_id)
       assertDetailEvidence(
-        index.companies.find((i) => i.company_id === c.company_id),
+        companyById.get(c.company_id),
         c,
       )
     }
@@ -95,6 +108,11 @@ export async function verifyBenefitsArtifacts(root) {
     )
       throw Error('benefits detail shard completeness mismatch')
   }
+  if (
+    verifiedDetailIds.size !== ids.size ||
+    [...ids].some((id) => !verifiedDetailIds.has(id))
+  )
+    throw Error('benefits detail mapping missing')
   const raw = await get(manifest.index_url.slice(1))
   return `Benefits fixture: ${ids.size} companies; index ${Buffer.byteLength(raw)} bytes, gzip ${gzipSync(raw).length}, brotli ${brotliCompressSync(raw).length}.`
 }

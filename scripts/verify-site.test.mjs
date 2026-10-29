@@ -7,12 +7,37 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { buildBenefitsLookupMaps } from './verify-benefits-artifacts.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const verifier = path.join(repoRoot, 'scripts/verify-site.mjs')
 const snapshotId = '11111111-1111-4111-8111-111111111111'
 const snapshotPath = `community/content/${snapshotId}/index.html`
 const snapshotUrl = `https://www.breadlab.ai/community/content/${snapshotId}/`
+
+test('benefits verification precomputes correct lookup maps for 2,000 companies', () => {
+  const companies = Array.from({ length: 2000 }, (_, index) => ({
+    company_id: `example-${String(index + 1).padStart(3, '0')}`,
+  }))
+  const detail_shards = Object.fromEntries(
+    companies.map(({ company_id }) => [
+      company_id,
+      `/community/data/company-benefits/fixture-v1/details/${company_id}.json`,
+    ]),
+  )
+  const { companyById, expectedIdsByUrl } = buildBenefitsLookupMaps(
+    { detail_shards },
+    { companies },
+  )
+  assert.equal(companyById.size, 2000)
+  assert.equal(expectedIdsByUrl.size, 2000)
+  for (const company of companies) {
+    assert.equal(companyById.get(company.company_id), company)
+    assert.deepEqual(expectedIdsByUrl.get(detail_shards[company.company_id]), [
+      company.company_id,
+    ])
+  }
+})
 const shellTitles = new Map([
   ['community/index.html', '<title>Community · Ria &amp; Seoa PaPa</title>'],
   ['community/write/index.html', '<title>글쓰기 · Ria &amp; Seoa PaPa</title>'],
