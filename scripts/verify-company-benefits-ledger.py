@@ -5,6 +5,7 @@ import argparse
 import calendar
 import hashlib
 import json
+import os
 import re
 import stat
 import sys
@@ -40,10 +41,8 @@ PINNED_PROTOCOL_FIELDS = (
 )
 EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction"}
 OFFICIAL_SOURCE_TYPES = {"government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report"}
-PINNED_CONTRACT_SHA256 = "1d218a6600e130d2f2a1e6cafab67f257dca7a0cd588ede0b14917af93443679"
-PINNED_CONTRACT_VERSION = "1.1.0"
-# Freeze approval records the user-authorized implementation scope; independent technical review remains pending.
-APPROVED_FREEZE_ANCHORS = {"1.1.0": "5eaa88152caa615dde09cc0eb1c7e47d39d8a0b4559cb0a2cd6fd803f79061ee"}
+PINNED_CONTRACT_SHA256 = "7fac5033e27aa0882fd832653afae0be935b444d69995d9a992519eda77ac64c"
+PINNED_CONTRACT_VERSION = "2.0.0"
 MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
 HASH_SCHEMA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 EVENT_SCHEMA = {
@@ -271,7 +270,7 @@ def pinned_protocol_contract():
     path = Path(__file__).with_name("company-benefits-protocol-contract.json")
     raw = path.read_bytes()
     if sha256(raw) != PINNED_CONTRACT_SHA256:
-        raise ValueError("pinned protocol contract violates independent pin anchor")
+        raise ValueError("pinned protocol contract violates repository integrity pin")
     contract = json.loads(raw)
     if set(contract) != set(PINNED_PROTOCOL_FIELDS):
         raise ValueError("pinned protocol contract fields are incomplete")
@@ -409,6 +408,11 @@ def validate_sources(sources, errors, as_of=None, evidence_root=None):
                 if sha256(resolved.read_bytes()) != source.get("content_sha256"): raise ValueError
             except (OSError, ValueError):
                 errors.append(f"{source_id}: retained evidence is outside the approved root, unsafe, oversized, missing, or hash-mismatched")
+        elif provenance == "artifact_manifest":
+            official_ids = source.get("official_artifact_ids")
+            derived_ids = source.get("derived_artifact_ids")
+            if source.get("artifact_manifest_path") != "population/source-artifacts.jsonl" or not isinstance(official_ids, list) or not official_ids or not isinstance(derived_ids, list) or not derived_ids or set(official_ids) & set(derived_ids):
+                errors.append(f"{source_id}: artifact manifest must distinguish official acquisition artifacts from derived artifacts")
         elif provenance != "observed_response":
             errors.append(f"{source_id}: invalid hash_provenance")
         decisions = source.get("decisions", {})
@@ -462,7 +466,7 @@ def source_applies_to_company(source, company, record_id, errors):
     if not isinstance(source, dict) or not isinstance(company, dict):
         return False
     jurisdiction = company.get("jurisdiction")
-    selected_entity = company.get("selected_employer_legal_entity")
+    selected_entity = company.get("selected_reporting_legal_entity")
     applicable = source.get("applicable_legal_entities", [])
     source_jurisdiction = source.get("jurisdiction")
     aligned = source_jurisdiction == jurisdiction
@@ -474,7 +478,7 @@ def source_applies_to_company(source, company, record_id, errors):
     elif not aligned:
         errors.append(f"{record_id}: source {source.get('source_id')} jurisdiction does not match company jurisdiction")
     if selected_entity not in applicable:
-        errors.append(f"{record_id}: source {source.get('source_id')} applicability does not include selected employer legal entity")
+        errors.append(f"{record_id}: source {source.get('source_id')} applicability does not include selected reporting legal entity")
         aligned = False
     if source.get("policy_owner_legal_entity") != company.get("benefit_policy_owner"):
         errors.append(f"{record_id}: source {source.get('source_id')} does not match recorded benefit policy owner")
@@ -485,7 +489,7 @@ def source_applies_to_company(source, company, record_id, errors):
 def validate_company(protocol, company, source_map, as_of, errors):
     company_id = company.get("company_id") or "company[missing-id]"
     validate_structure(company, load_schema("company.schema.json"), company_id, errors)
-    required(company, ("company_id", "jurisdiction", "incorporation_country", "scope", "registry_id", "legal_name", "selected_employer_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "related_company_exception", "entity_status", "sector", "scale_metric", "scale_evidence", "employer_evidence", "scale_source_precedence_rank", "source_availability", "selection_hash"), "", company_id, errors, allow_null=("financial_consolidation_parent", "ultimate_parent", "related_company_exception"))
+    required(company, ("company_id", "jurisdiction", "incorporation_country", "scope", "registry_id", "legal_name", "selected_reporting_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "related_company_exception", "entity_status", "sector", "employment_evidence_scope", "employment_boundary_note", "scale_metric", "scale_evidence", "employer_evidence", "scale_source_precedence_rank", "source_availability", "selection_hash"), "", company_id, errors, allow_null=("related_company_exception",))
     scope = company.get("scope")
     jurisdiction = company.get("jurisdiction")
     incorporation = company.get("incorporation_country")
@@ -498,8 +502,18 @@ def validate_company(protocol, company, source_map, as_of, errors):
         errors.append(f"{company_id}: invalid scope")
     if company.get("entity_status") != "active":
         errors.append(f"{company_id}: invalid entity status")
-    if company.get("selected_employer_legal_entity") != company.get("legal_name"):
-        errors.append(f"{company_id}: selected employer must be the legal entity")
+    if company.get("selected_reporting_legal_entity") != company.get("legal_name"):
+        errors.append(f"{company_id}: selected reporting entity must be the legal entity")
+    for parent_field in ("financial_consolidation_parent", "ultimate_parent"):
+        parent = company.get(parent_field)
+        known = isinstance(parent, str) and bool(parent.strip())
+        unknown = isinstance(parent, dict) and parent.get("status") == "unknown" and bool(parent.get("reason"))
+        if not (known or unknown):
+            errors.append(f"{company_id}: {parent_field} requires a known entity or structured unknown reason")
+    if company.get("employment_evidence_scope") not in {"filing_entity_total", "filing_entity_total_or_stated_workforce"}:
+        errors.append(f"{company_id}: invalid employment evidence scope")
+    if "benefit scope" not in str(company.get("employment_boundary_note", "")):
+        errors.append(f"{company_id}: employment boundary note must disclaim benefit scope")
     if canonical_hash(protocol, company) != company.get("selection_hash"):
         errors.append(f"{company_id}: selection_hash mismatch")
 
@@ -564,7 +578,7 @@ def validate_company(protocol, company, source_map, as_of, errors):
             errors.append(f"{company_id}: {label} evidence registry_id does not match selected entity")
         if evidence.get("legal_name") != company.get("legal_name"):
             errors.append(f"{company_id}: {label} evidence legal_name does not match selected entity")
-        if evidence.get("fiscal_period_end") != metric.get("fiscal_year_end"):
+        if is_scale and evidence.get("fiscal_period_end") != metric.get("fiscal_year_end"):
             errors.append(f"{company_id}: {label} evidence fiscal period does not match scale period")
         if not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("content_sha256", ""))):
             errors.append(f"{company_id}: {label} evidence content hash is invalid")
@@ -576,6 +590,12 @@ def validate_company(protocol, company, source_map, as_of, errors):
             errors.append(f"{company_id}: {label} evidence URL does not match official source")
         retrieved = parse_timestamp(evidence.get("retrieved_at"), f"{label} evidence retrieved_at", company_id, errors)
         filing = parse_day(evidence.get("filing_date"), f"{label} evidence filing_date", company_id, errors)
+        accepted = parse_timestamp(evidence.get("accepted_at"), f"{label} evidence accepted_at", company_id, errors) if scope == "international" else None
+        cutoff = parse_timestamp(protocol.get("cutoff_at"), "cutoff_at", "protocol", errors)
+        if scope == "international" and accepted is None:
+            errors.append(f"{company_id}: international {label} evidence requires SEC acceptance time")
+        if accepted and cutoff and accepted > cutoff:
+            errors.append(f"{company_id}: {label} evidence SEC acceptance follows population cutoff")
         if retrieved and retrieved > as_of_end(as_of):
             errors.append(f"{company_id}: {label} evidence retrieved_at is in the future")
         if filing and filing > as_of:
@@ -621,7 +641,7 @@ def validate_company(protocol, company, source_map, as_of, errors):
             if any(source_is_eligible(source_map.get(source_id), metric.get("type", "scale field")) for source_id in checked):
                 errors.append(f"{company_id}: higher-precedence source availability references an eligible source")
     owner = company.get("benefit_policy_owner")
-    if owner and owner != company.get("selected_employer_legal_entity"):
+    if isinstance(owner, str) and owner != company.get("selected_reporting_legal_entity"):
         contract = company.get("related_company_exception")
         required_contract = ("separate_scale_source_ids", "entity_specific_benefit_source_ids", "no_inheritance")
         if not isinstance(contract, dict) or any(field not in contract for field in required_contract) or contract.get("no_inheritance") is not True:
@@ -713,8 +733,8 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
             relative = expected_paths[field][index]
             ledgers[(scope, kind)] = read_jsonl(root / relative, errors, required_file=True)
         validate_ledger_records(protocol, ledgers[(scope, "eligible")], f"{scope} eligible", source_map, as_of, errors)
-        if protocol.get("protocol_id") == "company-benefits-population-v1":
-            expected_eligible = 1350 if scope == "domestic" else 1071
+        if protocol.get("protocol_id") == "company-benefits-population-v2":
+            expected_eligible = 1350 if scope == "domestic" else 1057
             if len(ledgers[(scope, "eligible")]) != expected_eligible:
                 errors.append(f"{scope} eligible must contain exactly {expected_eligible} verified records")
         for kind in ("selected", "initial", "current"):
@@ -726,6 +746,27 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
         if selected_path.is_file() and initial_path.is_file() and selected_path.read_bytes() != initial_path.read_bytes():
             errors.append(f"{scope} initial effective ledger must be byte-identical to selected")
 
+    artifacts = read_jsonl(root / "population/source-artifacts.jsonl", errors, required_file=True)
+    artifact_map = {item.get("artifact_id"): item for item in artifacts}
+    if len(artifact_map) != len(artifacts):
+        errors.append("source-artifact manifest contains duplicate artifact IDs")
+    for artifact_id, artifact in artifact_map.items():
+        if set(artifact) not in ({"artifact_id", "kind", "url", "sha256"}, {"artifact_id", "kind", "url", "acquisition_url", "sha256"}, {"artifact_id", "kind", "locator", "sha256"}):
+            errors.append(f"{artifact_id}: source-artifact manifest schema mismatch")
+        if artifact.get("kind") not in {"official_acquisition", "derived"} or not re.fullmatch(r"[0-9a-f]{64}", str(artifact.get("sha256", ""))):
+            errors.append(f"{artifact_id}: invalid source-artifact identity")
+    manifest_digest = sha256((root / "population/source-artifacts.jsonl").read_bytes()) if (root / "population/source-artifacts.jsonl").is_file() else None
+    for source in source_map.values():
+        if source.get("hash_provenance") != "artifact_manifest":
+            continue
+        if source.get("content_sha256") != manifest_digest:
+            errors.append(f"{source.get('source_id')}: source registry artifact-manifest hash mismatch")
+        for artifact_id in source.get("official_artifact_ids", []):
+            if artifact_map.get(artifact_id, {}).get("kind") != "official_acquisition":
+                errors.append(f"{source.get('source_id')}: fabricated official artifact identity {artifact_id}")
+        for artifact_id in source.get("derived_artifact_ids", []):
+            if artifact_map.get(artifact_id, {}).get("kind") != "derived":
+                errors.append(f"{source.get('source_id')}: fabricated derived artifact identity {artifact_id}")
     bindings = read_jsonl(root / "population/source-artifact-bindings.jsonl", errors, required_file=True)
     binding_map = {(item.get("company_id"), item.get("kind")): item for item in bindings}
     expected_binding_keys = set()
@@ -739,8 +780,16 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
                             "url": evidence.get("url"), "locator": evidence.get("locator"),
                             "content_sha256": evidence.get("content_sha256"), "registry_id": evidence.get("registry_id"),
                             "legal_name": evidence.get("legal_name"), "fiscal_period_end": evidence.get("fiscal_period_end")}
-                if binding_map.get(key) != expected:
+                binding = binding_map.get(key, {})
+                if any(binding.get(field) != value for field, value in expected.items()):
                     errors.append(f"{company.get('company_id')}: {kind} evidence does not match frozen source-artifact binding")
+                official = artifact_map.get(binding.get("official_artifact_id"), {})
+                identity = artifact_map.get(binding.get("identity_artifact_id"), {})
+                derived = artifact_map.get(binding.get("derived_artifact_id"), {})
+                if official.get("kind") != "official_acquisition" or official.get("sha256") != evidence.get("content_sha256") or official.get("url") != evidence.get("url"):
+                    errors.append(f"{company.get('company_id')}: {kind} official artifact hash or locator mismatch")
+                if identity.get("kind") != "official_acquisition" or derived.get("kind") != "derived":
+                    errors.append(f"{company.get('company_id')}: {kind} artifact provenance chain is incomplete")
     if set(binding_map) != expected_binding_keys or len(bindings) != len(binding_map):
         errors.append("source-artifact bindings must cover every eligible company and evidence kind exactly once")
 
@@ -812,15 +861,15 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
     freeze_required = [
         "population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
         "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json",
-        "population/source-artifact-bindings.jsonl",
+        "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl",
     ]
     protocol_approval = parse_timestamp(protocol.get("approval", {}).get("approved_at"), "approved_at", "protocol", errors)
     freeze_manifest = validate_manifest(root / "population/freeze-manifest.json", freeze_required, root, errors, "freeze", as_of, protocol_approval)
     freeze_path = root / "population/freeze-manifest.json"
     expected_anchor = approved_freeze_anchors.get(protocol.get("version"))
     actual_anchor = sha256(freeze_path.read_bytes()) if freeze_path.is_file() else None
-    if not expected_anchor or actual_anchor != expected_anchor:
-        errors.append("approved protocol violates immutable freeze approval anchor")
+    if approved_freeze_anchors and (not expected_anchor or actual_anchor != expected_anchor):
+        errors.append("external freeze-anchor receipt digest mismatch")
     freeze_approval = parse_timestamp(freeze_manifest.get("approved_at"), "approved_at", "freeze manifest", errors) if isinstance(freeze_manifest, dict) else None
     event_boundary = max([value for value in (freeze_approval, previous_occurred_at) if value], default=None)
     effective_manifest = validate_manifest(root / "population/effective-selection-manifest.json", effective_required, root, errors, "effective", as_of, event_boundary)
@@ -926,8 +975,8 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
         for field in ("countries", "legal_entities", "roles", "employment_types", "tenure_condition"):
             if app.get(field) in (None, "", []):
                 errors.append(f"{claim_id}: missing application_scope.{field}")
-        if company and company.get("selected_employer_legal_entity") not in app.get("legal_entities", []):
-            errors.append(f"{claim_id}: application_scope must include the selected employer legal entity")
+        if company and company.get("selected_reporting_legal_entity") not in app.get("legal_entities", []):
+            errors.append(f"{claim_id}: application_scope must include the selected reporting legal entity")
         published = parse_day(claim.get("publication_date"), "publication_date", claim_id, errors)
         checked = parse_day(claim.get("checked_at"), "checked_at", claim_id, errors)
         prepub_timestamp = parse_timestamp(claim.get("prepublication_checked_at"), "prepublication_checked_at", claim_id, errors) if claim.get("prepublication_checked_at") else None
@@ -1049,12 +1098,12 @@ def validate_related_entity_exceptions(companies, claims, approved_claim_ids, so
         }
         if not declared or not declared.issubset(referenced):
             errors.append(f"{company_id}: related-company benefit sources must be eligible and referenced by an approved entity claim")
-        selected_entity = company.get("selected_employer_legal_entity")
+        selected_entity = company.get("selected_reporting_legal_entity")
         for source_id in declared:
             source = source_map.get(source_id, {})
             applicable = source.get("applicable_legal_entities", [])
             if selected_entity not in applicable or source.get("policy_owner_legal_entity") != company.get("benefit_policy_owner"):
-                errors.append(f"{company_id}: related-company source policy owner/applicability does not include selected employer legal entity")
+                errors.append(f"{company_id}: related-company source policy owner/applicability does not include selected reporting legal entity")
 
 
 def validate_corrections(corrections, claim_ids, as_of, errors):
@@ -1104,16 +1153,38 @@ def validate_coverage_gaps(root, errors):
         errors.append("international coverage-gap artifact must disclaim global representativeness and source rank")
 
 
-def verify_workspace(root, as_of=None, evidence_root=None, approved_freeze_anchors=None):
+def external_freeze_anchor(path, protocol, errors):
+    if path is None:
+        errors.append("external freeze-anchor receipt is required")
+        return {}
+    receipt = read_json(Path(path), errors)
+    required_fields = {"schema_version", "protocol_version", "freeze_manifest_sha256", "review_status", "issued_at"}
+    if not isinstance(receipt, dict) or set(receipt) != required_fields:
+        errors.append("external freeze-anchor receipt schema mismatch")
+        return {}
+    if receipt.get("schema_version") != "1" or receipt.get("protocol_version") != protocol.get("version"):
+        errors.append("external freeze-anchor receipt protocol identity mismatch")
+    if receipt.get("review_status") not in {"review_pending", "approved"}:
+        errors.append("external freeze-anchor receipt review status is invalid")
+    parse_timestamp(receipt.get("issued_at"), "issued_at", "freeze-anchor receipt", errors)
+    digest = receipt.get("freeze_manifest_sha256")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
+        errors.append("external freeze-anchor receipt digest is invalid")
+        return {}
+    return {protocol.get("version"): digest}
+
+
+def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt=None, approved_freeze_anchors=None):
     root = Path(root)
     as_of = as_of or date.today()
     errors = []
-    approved_freeze_anchors = APPROVED_FREEZE_ANCHORS if approved_freeze_anchors is None else approved_freeze_anchors
     protocol_path = find_file(root, "population-protocol.json")
     protocol = read_json(protocol_path, errors) if protocol_path.is_file() else None
     if not isinstance(protocol, dict):
         errors.append("missing population protocol")
         return errors
+    if approved_freeze_anchors is None:
+        approved_freeze_anchors = external_freeze_anchor(freeze_anchor_receipt, protocol, errors)
     status = protocol.get("status")
     if status != "approved":
         errors.append(f"protocol status is {status or 'missing'}; approved protocol required")
@@ -1164,8 +1235,9 @@ def main(argv=None):
     parser.add_argument("root", nargs="?", default="docs/research/company-benefits")
     parser.add_argument("--as-of", type=date.fromisoformat)
     parser.add_argument("--evidence-root", type=Path)
+    parser.add_argument("--freeze-anchor-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT"))
     args = parser.parse_args(argv)
-    errors = verify_workspace(Path(args.root), args.as_of, args.evidence_root)
+    errors = verify_workspace(Path(args.root), args.as_of, args.evidence_root, args.freeze_anchor_receipt)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

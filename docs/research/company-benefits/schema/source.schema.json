@@ -250,7 +250,11 @@
       "pattern": "^[0-9a-f]{64}$"
     },
     "hash_provenance": {
-      "enum": ["retained_file", "observed_response"]
+      "enum": [
+        "retained_file",
+        "observed_response",
+        "artifact_manifest"
+      ]
     },
     "retrieved_at": {
       "type": "string",
@@ -268,7 +272,10 @@
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": {"type": "string", "minLength": 1}
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "policy_owner_legal_entity": {
       "type": "string",
@@ -277,12 +284,39 @@
     "multi_jurisdiction_applicability": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": {"pattern": "^[A-Z]{2}$"},
+      "propertyNames": {
+        "pattern": "^[A-Z]{2}$"
+      },
       "additionalProperties": {
         "type": "array",
         "minItems": 1,
         "uniqueItems": true,
-        "items": {"type": "string", "minLength": 1}
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "artifact_manifest_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "official_artifact_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "derived_artifact_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
       }
     }
   }

@@ -61,7 +61,7 @@ class ContractFixture:
         self.protocol = json.loads((RESEARCH_ROOT / "population-protocol.json").read_text(encoding="utf-8"))
         self.protocol.update({
             "protocol_id": "company-benefits-population-synthetic-test",
-            "version": "1.1.0",
+            "version": "2.0.0",
             "status": "approved",
             "approval": {"approved_by": "owner", "approved_at": "2026-10-21T00:00:00Z"},
         })
@@ -96,7 +96,7 @@ class ContractFixture:
             )
             source.update(
                 locator="benefits", supporting_quote="Paid leave is offered.", publication_date="2026-01-01",
-                applicable_legal_entities=[company["selected_employer_legal_entity"]],
+                applicable_legal_entities=[company["selected_reporting_legal_entity"]],
                 policy_owner_legal_entity=company["benefit_policy_owner"],
             )
             self.sources.append(source)
@@ -114,14 +114,15 @@ class ContractFixture:
             company = {
                 "company_id": f"{scope}-{index:04d}", "jurisdiction": jurisdiction, "incorporation_country": jurisdiction,
                 "scope": scope, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name,
-                "selected_employer_legal_entity": legal_name, "registered_head_office_country": jurisdiction,
-                "financial_consolidation_parent": None, "ultimate_parent": None, "benefit_policy_owner": legal_name,
+                "selected_reporting_legal_entity": legal_name, "registered_head_office_country": jurisdiction,
+                "financial_consolidation_parent": {"status":"unknown","reason":"Not established by test population evidence."}, "ultimate_parent": {"status":"unknown","reason":"Not established by test population evidence."}, "benefit_policy_owner": legal_name,
                 "related_company_exception": None, "entity_status": "active", "sector": "non_financial",
+                "employment_evidence_scope": "filing_entity_total", "employment_boundary_note": "Test evidence does not establish payroll employer or benefit scope.",
                 "scale_source_precedence_rank": 1,
                 "source_availability": [],
                 "scale_metric": {"type": "revenue", "value": 200000000000 if scope == "domestic" else 2000000000, "currency": "KRW" if scope == "domestic" else "USD", "original_value": 200000000000 if scope == "domestic" else 2000000000, "original_currency": "KRW" if scope == "domestic" else "USD", "conversion": None, "fiscal_year_end": "2025-12-31", "financial_scope": "standalone", "source_ids": [source_id]},
-                "scale_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};metric=revenue", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "metric": "revenue", "value": 200000000000 if scope == "domestic" else 2000000000, "currency": "KRW" if scope == "domestic" else "USD"},
-                "employer_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};field=employees", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "employee_count": 10, "quote": "The registrant employed 10 people."},
+                "scale_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};metric=revenue", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00" if scope == "international" else None, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "metric": "revenue", "value": 200000000000 if scope == "domestic" else 2000000000, "currency": "KRW" if scope == "domestic" else "USD"},
+                "employer_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};field=employees", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00" if scope == "international" else None, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "employee_count": 10, "quote": "The registrant employed 10 people."},
             }
             company["selection_hash"] = selection_hash(self.seed, company)
             records.append(company)
@@ -165,7 +166,7 @@ class ContractFixture:
         path.write_bytes(jsonl_bytes(values))
 
     def refresh_manifests(self):
-        freeze_paths = ["population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl", "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json", "population/source-artifact-bindings.jsonl"]
+        freeze_paths = ["population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl", "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json", "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl"]
         freeze_entries = []
         for relative in freeze_paths:
             data = (self.root / relative).read_bytes()
@@ -189,11 +190,16 @@ class ContractFixture:
             self.write_jsonl(f"population/{scope}-initial-effective-selected.jsonl", self.selected[scope])
             self.write_jsonl(f"population/{scope}-effective-selected.jsonl", self.current[scope])
         self.write_jsonl("population/effective-selection-events.jsonl", self.events)
+        artifacts = [{"artifact_id":"derived-test-ledger","kind":"derived","locator":"synthetic fixture","sha256":"d"*64}]
+        for source in self.sources:
+            if "revenue" in source.get("supported_fields", []) or "total_assets" in source.get("supported_fields", []) or "employee_evidence" in source.get("supported_fields", []):
+                artifacts.append({"artifact_id":"official-"+source["source_id"],"kind":"official_acquisition","url":source["url"],"sha256":source["content_sha256"]})
+        self.write_jsonl("population/source-artifacts.jsonl", sorted({item["artifact_id"]:item for item in artifacts}.values(), key=lambda item:item["artifact_id"]))
         bindings = []
         for company in self.eligible["domestic"] + self.eligible["international"]:
             for kind in ("scale", "employer"):
                 evidence = company.get(f"{kind}_evidence", {})
-                bindings.append({"company_id": company["company_id"], "kind": kind, "source_id": evidence.get("source_id"), "url": evidence.get("url"), "locator": evidence.get("locator"), "content_sha256": evidence.get("content_sha256"), "registry_id": evidence.get("registry_id"), "legal_name": evidence.get("legal_name"), "fiscal_period_end": evidence.get("fiscal_period_end")})
+                bindings.append({"company_id": company["company_id"], "kind": kind, "source_id": evidence.get("source_id"), "url": evidence.get("url"), "locator": evidence.get("locator"), "content_sha256": evidence.get("content_sha256"), "registry_id": evidence.get("registry_id"), "legal_name": evidence.get("legal_name"), "fiscal_period_end": evidence.get("fiscal_period_end"), "official_artifact_id":"official-"+str(evidence.get("source_id")), "identity_artifact_id":"official-"+str(evidence.get("source_id")), "derived_artifact_id":"derived-test-ledger"})
         self.write_jsonl("population/source-artifact-bindings.jsonl", sorted(bindings, key=lambda item: (item["company_id"], item["kind"])))
         self.write_json("population/international-coverage-gaps.json", {"panel": PANEL, "selected_population": {"jurisdiction": "US", "count": 1000, "source": "SEC filers"}, "representativeness": "Protocol-bounded test population; not globally representative and not a source rank.", "coverage_gaps": [{"jurisdiction": country, "status": "not_materialized", "selected_count": 0} for country in PANEL if country != "US"]})
         self.write_jsonl("companies.jsonl", self.companies)

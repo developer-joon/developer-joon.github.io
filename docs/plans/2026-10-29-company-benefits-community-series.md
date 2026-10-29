@@ -38,7 +38,7 @@
 **Steps:**
 
 1. Encode the cutoff date, domestic official lists, fixed 18-country international panel, exact official candidate-list endpoints, source precedence, KRW/USD thresholds, financial-sector asset thresholds, 24-month fiscal-year limit, exchange-rate source, and public-sector treatment.
-2. Define domestic/international classification by employing legal entity's incorporation and registered head office.
+2. Define domestic/international classification by selected reporting legal entity's incorporation and registered head office; do not infer payroll-employer or benefit scope.
 3. Separate selected employer, financial consolidation parent, ultimate parent, and benefit-policy owner.
 4. Fix canonical SHA-256 serialization: required canonical registry ID; ISO country code; Unicode NFC; whitespace normalization; compact UTF-8 JSON array; missing-value rejection; canonical-byte tie rule; exclusion reasons; and next-hash replacement.
 5. Materialize the complete official-list unions, verify each qualifying scale metric, and freeze the eligible domestic and international ledgers.
@@ -146,7 +146,7 @@
 
 1. Search lawfully public official benefit, careers, annual, ESG, collective agreement, and government disclosure sources for each company; never retain leaked, authenticated-only, or privately supplied documents.
 2. Store one normalized claim per evidenced benefit. Require at least one A/B source for confirmed, limited, past, or name-only status and at least two conflicting A/B sources for conflict status.
-3. Record country, employing legal entity, policy owner, role, employment type, tenure condition, source title/owner, page or section locator, supporting quote, publication date, access timestamp, content hash, terms decision, and validity status.
+3. Record country, selected reporting legal entity, separately evidenced payroll employer and policy owner when known, role, employment type, tenure condition, source title/owner, page or section locator, supporting quote, publication date, access timestamp, content hash, terms decision, and validity status.
 4. When no official evidence is found, store a non-claim `확인 불가` research-result record with searched official source IDs and scope; do not require an A/B claim source and never infer absence.
 5. Apply the 24-month dated-source rule, 30-day undated-page check, and 14-day pre-publication recheck.
 6. Have a reviewer other than the original researcher record reviewed claim IDs, entailment decision, stale-document finding, overgeneralization, conflict, resolution, and approval state.

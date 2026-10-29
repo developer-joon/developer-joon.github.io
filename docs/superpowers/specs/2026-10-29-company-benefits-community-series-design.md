@@ -63,7 +63,7 @@ Fortune, JRC Scoreboard, 뉴스, 검색엔진과 상업·편집 목록은 후보
 
 ### 분류와 선정 단위
 
-- 선정 단위는 실제 고용계약의 당사자인 `selected_employer_legal_entity`다.
+- 선정 단위는 `selected_reporting_legal_entity`이며, 모집단 근거만으로 실제 급여 고용주나 복지 적용 법인을 단정하지 않는다.
 - 대한민국에 설립되고 등록 본점을 둔 법인은 국내, 그 밖의 법인은 해외로 분류한다. 외국계 한국법인은 국내이고 한국 기업의 해외법인은 해외다.
 - `financial_consolidation_parent`, `ultimate_parent`, `benefit_policy_owner`를 선정 단위와 별도 필드로 기록한다.
 - 모회사와 자회사는 각각 규모 기준을 충족하고 서로 다른 고용 법인 및 법인별 복지 근거가 있을 때만 함께 포함할 수 있다. 그룹 복지를 법인 복지로 상속하지 않는다.
@@ -158,7 +158,7 @@ company_id
 법인명
 본사 국가·지역
 국내/해외 구분
-selected_employer_legal_entity
+selected_reporting_legal_entity
 financial_consolidation_parent
 ultimate_parent
 benefit_policy_owner

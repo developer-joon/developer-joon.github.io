@@ -2,7 +2,7 @@
 
 ## Current state
 
-Population protocol 1.1.0 is frozen with 1,350 domestic and 1,071 international eligible records and exactly 1,000 selected records per scope. The domestic set is Korean; the international set currently consists only of 1,000 US SEC filers. The other 17 fixed-panel jurisdictions are structured coverage gaps. This is a user-authorized population freeze with independent technical review still pending.
+Population protocol 2.0.0 is frozen with 1,350 domestic and 1,057 international eligible records and exactly 1,000 selected records per scope. Fourteen US rows whose workforce quote explicitly attributed employees to subsidiaries were excluded. The domestic set is Korean; the international set currently consists only of 1,000 US SEC reporting entities. The other 17 fixed-panel jurisdictions are structured coverage gaps. This is a user-authorized population freeze with independent technical review still pending.
 
 Selection and writing order are deterministic editorial processing orders, not revenue rankings. The international panel is fixed but does not represent the world or all large employers. Every incomplete national source path is published as a `coverage_gap` rather than silently omitted.
 
@@ -12,7 +12,7 @@ Selection and writing order are deterministic editorial processing orders, not r
 
 A source is usable as evidence only when it supports the exact field, the intended access is lawful, every extraction/quotation/retention/snapshot/attribution decision is resolved and compatible, and `current_blocker` is null. Public visibility alone is not a bulk-use or republication licence. Unknown, restricted, fee-only or contractual sources remain ineligible until the blocker is resolved. Search results, editorial lists and commercial lists are discovery-only: they cannot establish identity, scale, inclusion or a benefit claim.
 
-Raw responses, filings and bulk archives stay out of Git. A future authorized acquisition must store them in controlled external storage with request parameters, retrieval timestamp, response metadata and SHA-256. Git retains only normalized records, short lawful quotes, locators and permitted metadata.
+Raw responses, filings and bulk archives stay out of Git. They are retained in controlled external storage. Git commits compact source-artifact manifests that separately identify official acquisition artifacts and derived ledgers, plus row bindings to the exact official archive or filing.
 
 ## Candidate and scale sources by jurisdiction
 
@@ -25,11 +25,11 @@ The links below are official owner pages recorded directly in the registry; no n
 - Ministry of Economy and Finance / ALIO [public institution API](https://www.data.go.kr/data/15125287/openapi.do) supplies institution codes and classifications through a service key.
 - Cleaneye [local public-enterprise API](https://www.data.go.kr/data/15057730/openapi.do) provides management/financial fields through a service key; legacy name-only joins need explicit treatment.
 
-The domestic official-list union cannot be acquired in this environment without user-owned keys, so it is not materialized.
+The frozen Korean population was materialized from the keyless DART company-overview workbook, OpenDART 2024 BS and PL ZIP archives, and the periodic-report employee workbook. The API-key sources above remain documented coverage paths but were not used for the frozen rows.
 
 ### Americas
 
-- **United States:** SEC [EDGAR APIs and bulk archives](https://www.sec.gov/search-filings/edgar-application-programming-interfaces) provide CIK, submissions and XBRL facts without authentication. Complete acquisition and fair-access scheduling remain undone.
+- **United States:** SEC [EDGAR APIs and bulk archives](https://www.sec.gov/search-filings/edgar-application-programming-interfaces) supplied the materialized 2025 Q1–2026 Q3 quarterly financial archives and exact retained Form 10-K filing evidence. The committed manifest binds each row to those official bytes; 2026 Q4 was unavailable at acquisition time.
 - **Canada:** CSA [SEDAR+ filing FAQ](https://systems.securities-administrators.ca/onlinehelp/faqs/general-faqs-about-filings/) confirms a Data Distribution Service. Bulk use is licensed; public provincial issuer lists are not a complete national financial bulk substitute.
 - **Mexico:** CNBV [XBRL viewer](https://xbrl.cnbv.gob.mx/visorXbrl.html?v=1.0.3) exposes official filings, but the observed bulk endpoints are undocumented and reuse/retention terms are unresolved.
 - **Brazil:** CVM [open-company registration data](https://dados.cvm.gov.br/dataset/cia_aberta-cad) and official filing archives can support CNPJ-based joins. The complete CNPJ/CVM population and scale join is not materialized.
@@ -58,20 +58,22 @@ EU electronic-reporting rules can improve issuer document comparability, but the
 
 ## Eligibility and selection
 
-1. Classify by the employing legal entity's incorporation and registered head office, not brand or ultimate parent.
+1. Classify by the selected reporting legal entity's incorporation and registered head office, not brand or ultimate parent. This does not prove the payroll employer.
 2. Join only with a canonical official registry identifier. Missing registry IDs fail; names cannot silently substitute.
 3. Apply the financial/non-financial threshold and 24-calendar-month fiscal-age limit. Future fiscal year ends fail. Public entities use the same threshold.
 4. Preserve original metric, currency, fiscal year and consolidated/standalone scope. The protocol fixes the World Bank `PA.NUS.FCR` annual conversion rule for non-USD international values.
 5. Materialize and checksum complete official-list unions outside Git, then normalize eligible records.
 6. Use the highest available source class in the pinned precedence order. A lower class requires structured checks and reasons proving every higher class unavailable.
 7. Only after completeness validation may canonical SHA-256 ordering select exactly 1,000 per scope. If fewer qualify, stop; never lower a threshold silently.
-8. Freeze protocol and ledger hashes only after explicit authorization. Version 1.1.0 has one exact `APPROVED_FREEZE_ANCHORS` entry tied to the generated freeze-manifest bytes; its metadata truthfully records user authorization and pending independent technical review. An approved protocol version is immutable; any change requires a new version and reviewed anchor. Thereafter, immutable selection changes only through append-only exclusion/replacement events and separately approved effective hashes.
+8. Freeze protocol and ledger hashes only after explicit authorization. Production verification and rendering require an external freeze-anchor receipt supplied by path or `COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT`; no repository literal authorizes its own freeze. The current external receipt is `review_pending`, not independent approval. Thereafter, immutable selection changes only through append-only exclusion/replacement events and separately approved effective hashes.
+
+Population workforce evidence is explicitly scoped as `filing_entity_total` or `filing_entity_total_or_stated_workforce`. SEC statements may cover a registrant or consolidated workforce. Parent/subsidiary relationships, payroll employer, and benefit-policy owner remain unknown unless separately established. A benefit claim cannot inherit population evidence: it must bind the actual policy owner and every applicable legal entity before publication.
 
 ## Benefit evidence
 
 Grade A is a lawfully public official policy, benefits/careers page, annual/sustainability report, handbook, plan, collective agreement or government disclosure. Grade B is a lawfully public official job posting, jurisdiction/entity guide, recruiting presentation or press release. Grade C and discovery sources cannot confirm claims.
 
-Confirmed, limited, past and name-only records require at least one directly applicable A/B source. Every benefit source must support `benefit_claim`, match the company jurisdiction, name the selected employer in `applicable_legal_entities`, and match the recorded benefit policy owner. An `INT` official policy is accepted only with an explicit ISO-country-to-legal-entity mapping; wildcards are prohibited. Conflict requires two distinct conflicting A/B sources and both explicit `supports` and `contradicts` positions. Each conflict side binds its exact source ID, position, proposition, source locator, supporting quote and content SHA-256 to the same source-registry record; quotes and hashes must be distinct. Each record carries the employing legal entity, policy owner, countries, roles, employment types, tenure condition, source locator, short supporting quote, publication/check dates and content SHA-256.
+Confirmed, limited, past and name-only records require at least one directly applicable A/B source. Every benefit source must support `benefit_claim`, match the company jurisdiction, name every applicable legal entity in `applicable_legal_entities`, and match the separately resolved benefit policy owner. An `INT` official policy is accepted only with an explicit ISO-country-to-legal-entity mapping; wildcards are prohibited. Conflict requires two distinct conflicting A/B sources and both explicit `supports` and `contradicts` positions. Each conflict side binds its exact source ID, position, proposition, source locator, supporting quote and content SHA-256 to the same source-registry record; quotes and hashes must be distinct. Each record carries the employing legal entity, policy owner, countries, roles, employment types, tenure condition, source locator, short supporting quote, publication/check dates and content SHA-256.
 
 A claim explicitly records `current`, `undated_current` or `historical` validity. A dated current claim must be within 24 calendar months and cannot have a future publication date. `undated_current` requires a null publication date and a check within 30 days. Older official evidence is allowed only for a `past` claim labeled `historical`. For every source, causal timestamps must satisfy source document publication date (when present) ≤ retrieval ≤ source check ≤ claim research ≤ independent review ≤ prepublication check ≤ validation/render `as_of`. Community publication is not the source document publication date. Every core URL must be rechecked within 14 days before publication. Rendering re-runs these rules against the render date (current UTC date unless `--as-of` is supplied), never the population cutoff. `확인 불가` is a non-claim research result listing searched official source IDs; it means public official evidence was not found, not that a benefit is absent.
 
@@ -81,7 +83,7 @@ The immutable freeze manifest hashes only the protocol, eligible ledgers and sel
 
 The original researcher cannot approve their own claim. An independent reviewer records claim ID, entailment/applicability decision, stale or overgeneralization findings, conflicts, resolution and timestamp. For every conflict-evidence side, that reviewer must record one non-duplicated entailment attestation containing the same source ID, position, exact proposition, exact quote, locator and content hash, identify themself, and set `entailment_confirmed` to true. The verifier checks exact bindings and complete one-to-one coverage; it does not pretend to infer semantic entailment. A published `conflict` claim must have an explicit human attestation that the two bound propositions oppose each other, an `unresolved` determination consistent with that status, and explicit approval of the unresolved publication wording. A resolved determination requires the claim to leave `conflict` status.
 
-The protocol cutoff is inclusively fixed at `2026-10-29T23:59:59+09:00` in the `Asia/Seoul` civil timezone. Records or evidence events after that instant are outside this protocol snapshot; changing the instant, offset, timezone interpretation, or inclusive semantics requires a new pinned protocol version and code review.
+The protocol data-eligibility cutoff is inclusively fixed at `2026-10-29T23:59:59+09:00` in the `Asia/Seoul` civil timezone. Source filings accepted after that instant are outside this population snapshot. Acquisition, protocol approval, manifest generation, and receipt issuance may truthfully occur later and are never backdated. Changing the eligibility instant, offset, timezone interpretation, or inclusive semantics requires a new pinned protocol version and code review.
 
 The renderer accepts only an explicitly approved protocol and complete 25-company batches with complete claim/source references. It emits deterministic bytes, labels output as draft, states that writing order is not rank, explains `확인 불가`, and warns against posting private/confidential or personal information.
 

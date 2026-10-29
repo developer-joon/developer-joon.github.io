@@ -52,9 +52,9 @@ class VerifierTests(unittest.TestCase):
     def test_complete_synthetic_contract_fixture_passes(self):
         self.assertEqual([], self.errors())
 
-    def test_approved_protocol_requires_immutable_literal_freeze_anchor(self):
+    def test_approved_protocol_requires_external_freeze_anchor_receipt(self):
         errors = self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29))
-        self.assertTrue(any("immutable freeze approval anchor" in error for error in errors), errors[:20])
+        self.assertTrue(any("external freeze-anchor receipt" in error for error in errors), errors[:20])
         self.assertEqual([], self.errors())
 
     def test_self_consistent_frozen_scale_drift_fails_against_old_anchor(self):
@@ -66,7 +66,7 @@ class VerifierTests(unittest.TestCase):
             target["scale_metric"]["original_value"] += 1
         self.fixture.write_all()
         errors = self.errors(anchors=old_anchor)
-        self.assertTrue(any("immutable freeze approval anchor" in error for error in errors), errors[:30])
+        self.assertTrue(any("external freeze-anchor receipt digest mismatch" in error for error in errors), errors[:30])
 
     def test_approval_without_required_freeze_artifacts_fails(self):
         (self.root / "population" / "freeze-manifest.json").unlink()
@@ -85,6 +85,26 @@ class VerifierTests(unittest.TestCase):
         errors = self.errors()
         self.assertTrue(any("hash mismatch" in error for error in errors), errors[:20])
         self.assertTrue(any("count mismatch" in error for error in errors), errors[:20])
+
+    def test_artifact_manifest_rejects_fabricated_hash_locator_and_identity(self):
+        path = self.root / "population" / "source-artifacts.jsonl"
+        artifacts = [json.loads(line) for line in path.read_text().splitlines()]
+        official = next(item for item in artifacts if item["kind"] == "official_acquisition")
+        official["sha256"] = "f" * 64
+        official["url"] = "https://evil.example/fabricated"
+        self.fixture.write_jsonl("population/source-artifacts.jsonl", artifacts)
+        self.fixture.refresh_manifests()
+        errors = self.errors()
+        self.assertTrue(any("official artifact hash or locator mismatch" in error for error in errors), errors[:30])
+
+        self.fixture = FrozenFixture(self.root)
+        self.fixture.sources[0]["official_artifact_ids"] = ["fabricated-artifact"]
+        self.fixture.sources[0]["hash_provenance"] = "artifact_manifest"
+        self.fixture.sources[0]["artifact_manifest_path"] = "population/source-artifacts.jsonl"
+        self.fixture.sources[0]["derived_artifact_ids"] = ["derived-test-ledger"]
+        self.fixture.sources[0]["content_sha256"] = sha((self.root / "population/source-artifacts.jsonl").read_bytes())
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.assert_error("fabricated official artifact identity")
 
     def test_ledgers_require_exactly_1000_unique_canonical_records(self):
         self.fixture.selected["domestic"] = self.fixture.selected["domestic"][:-1]
@@ -148,7 +168,7 @@ class VerifierTests(unittest.TestCase):
             )
         self.rewrite_company_everywhere("international", 0, mutate)
         errors = self.errors()
-        for needle in ("employer evidence URL", "employer evidence content hash", "employer evidence legal_name", "employer evidence fiscal period"):
+        for needle in ("employer evidence URL", "employer evidence content hash", "employer evidence legal_name"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
 
     def test_non_threshold_currency_requires_original_value_and_fx_proof(self):
@@ -274,7 +294,7 @@ class VerifierTests(unittest.TestCase):
         claim["application_scope"]["legal_entities"] = ["Parent Corp"]
         self.fixture.benefit_source["applicable_legal_entities"] = ["Parent Corp"]
         self.fixture.write_all()
-        self.assert_error("selected employer legal entity")
+        self.assert_error("selected reporting legal entity")
 
     def test_all_audit_timestamps_are_bounded_and_ordered(self):
         self.fixture.benefit_source["checked_at"] = "2026-11-01T00:00:00Z"
@@ -296,6 +316,14 @@ class VerifierTests(unittest.TestCase):
         errors = self.errors()
         self.assertTrue(any("event occurred_at is in the future" in error for error in errors), errors[:40])
         self.assertTrue(any("meaningful exclusion_details" in error for error in errors), errors[:40])
+
+    def test_sec_acceptance_time_is_bounded_by_exact_seoul_cutoff(self):
+        def mutate(company):
+            company["scale_evidence"]["accepted_at"] = "2026-10-29T15:00:00Z"
+            company["employer_evidence"]["accepted_at"] = "2026-10-29T15:00:00Z"
+        self.rewrite_company_everywhere("international", 0, mutate)
+        errors = self.errors()
+        self.assertTrue(any("SEC acceptance follows population cutoff" in error for error in errors), errors[:40])
 
     def test_unknown_search_ids_must_be_resolved_official_accessible_and_scoped(self):
         claim = self.fixture.claims[0]
@@ -324,7 +352,7 @@ class VerifierTests(unittest.TestCase):
         source["policy_owner_legal_entity"] = "Unrelated US Corp"
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         errors = self.errors()
-        for needle in ("jurisdiction", "selected employer", "benefit policy owner"):
+        for needle in ("jurisdiction", "selected reporting", "benefit policy owner"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
 
     def test_explicit_global_policy_mapping_has_no_wildcards(self):
@@ -338,14 +366,14 @@ class VerifierTests(unittest.TestCase):
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         self.assertEqual([], self.errors())
 
-    def test_contract_file_digest_is_an_independent_literal_anchor(self):
+    def test_contract_file_digest_is_integrity_pin_not_independent_anchor(self):
         contract_path = ROOT / "scripts" / "company-benefits-protocol-contract.json"
         original = contract_path.read_bytes()
         try:
             contract = json.loads(original)
             contract["thresholds"]["domestic_non_financial"]["minimum"] = 1
             contract_path.write_text(json.dumps(contract), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "independent pin anchor"):
+            with self.assertRaisesRegex(ValueError, "integrity pin"):
                 self.verifier.pinned_protocol_contract()
         finally:
             contract_path.write_bytes(original)
@@ -596,10 +624,11 @@ class VerifierTests(unittest.TestCase):
 
     def test_repository_real_population_is_approved_and_verifies(self):
         research = ROOT / "docs" / "research" / "company-benefits"
-        errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 29))
+        receipt = Path("/home/bread/.hermes/profiles/conan/cache/company-benefits/freeze-anchor-receipt.json")
+        errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 29), freeze_anchor_receipt=receipt)
         self.assertEqual([], errors)
         self.assertEqual("approved", json.loads((research / "population-protocol.json").read_text())["status"])
-        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1071,
+        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1057,
                     "domestic-selected.jsonl": 1000, "international-selected.jsonl": 1000,
                     "domestic-effective-selected.jsonl": 1000, "international-effective-selected.jsonl": 1000}
         for name, count in expected.items():

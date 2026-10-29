@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "population-protocol.schema.json",
   "title": "Company benefits population protocol",
-  "x-pinned-protocol-contract-sha256": "1d218a6600e130d2f2a1e6cafab67f257dca7a0cd588ede0b14917af93443679",
+  "x-pinned-protocol-contract-sha256": "7fac5033e27aa0882fd832653afae0be935b444d69995d9a992519eda77ac64c",
   "type": "object",
   "additionalProperties": false,
   "$defs": {
@@ -116,7 +116,7 @@
       ]
     },
     "cutoff_at": {
-      "const": "2026-10-29T23:59:59Z"
+      "const": "2026-10-29T23:59:59+09:00"
     },
     "purpose": {
       "type": "string",
@@ -545,7 +545,7 @@
       ],
       "properties": {
         "selection_unit": {
-          "const": "selected_employer_legal_entity"
+          "const": "selected_reporting_legal_entity"
         },
         "domestic_rule": {
           "type": "string",
@@ -557,7 +557,7 @@
         },
         "separate_roles": {
           "const": [
-            "selected_employer_legal_entity",
+            "selected_reporting_legal_entity",
             "financial_consolidation_parent",
             "ultimate_parent",
             "benefit_policy_owner"
@@ -733,7 +733,8 @@
             "population/domestic-selected.jsonl",
             "population/international-selected.jsonl",
             "population/international-coverage-gaps.json",
-            "population/source-artifact-bindings.jsonl"
+            "population/source-artifact-bindings.jsonl",
+            "population/source-artifacts.jsonl"
           ]
         },
         "effective_manifest_artifacts": {

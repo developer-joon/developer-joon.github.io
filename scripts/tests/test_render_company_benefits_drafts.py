@@ -57,7 +57,7 @@ class RendererTests(unittest.TestCase):
             self.render()
 
     def test_renderer_cannot_bypass_production_freeze_anchor(self):
-        with self.assertRaisesRegex(ValueError, "immutable freeze approval anchor"):
+        with self.assertRaisesRegex(ValueError, "external freeze-anchor receipt"):
             self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29))
 
     def test_renderer_validates_freshness_at_render_date_not_protocol_cutoff(self):

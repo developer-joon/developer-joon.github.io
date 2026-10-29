@@ -1,14 +1,14 @@
 {
   "$schema": "./schema/population-protocol.schema.json",
-  "protocol_id": "company-benefits-population-v1",
-  "version": "1.1.0",
+  "protocol_id": "company-benefits-population-v2",
+  "version": "2.0.0",
   "status": "approved",
   "approval": {
     "approved_by": "user-authorized implementation scope; technical review pending",
     "approved_at": "2026-10-29T15:36:01Z"
   },
-  "cutoff_at": "2026-10-29T23:59:59Z",
-  "purpose": "Protocol-bounded, non-ranking editorial sample of large employing legal entities with auditable official evidence.",
+  "cutoff_at": "2026-10-29T23:59:59+09:00",
+  "purpose": "Protocol-bounded, non-ranking editorial sample of large active reporting legal entities with positive official workforce evidence; it does not establish payroll employer or benefit scope.",
   "non_ranking_statement": "Selection order is a deterministic editorial processing order, not a revenue rank, complete market census, probability sample, or claim of global representativeness.",
   "scopes": {
     "domestic": {
@@ -106,16 +106,16 @@
     }
   },
   "classification": {
-    "selection_unit": "selected_employer_legal_entity",
-    "domestic_rule": "The employing legal entity is incorporated in KR and has its registered head office in KR.",
-    "international_rule": "The employing legal entity is incorporated outside KR and has its registered head office outside KR in a panel country.",
+    "selection_unit": "selected_reporting_legal_entity",
+    "domestic_rule": "The selected reporting legal entity is incorporated in KR and has its registered head office in KR.",
+    "international_rule": "The selected reporting legal entity is an active SEC registrant in the US population; workforce evidence may represent the registrant or consolidated workforce.",
     "separate_roles": [
-      "selected_employer_legal_entity",
+      "selected_reporting_legal_entity",
       "financial_consolidation_parent",
       "ultimate_parent",
       "benefit_policy_owner"
     ],
-    "related_entity_rule": "A parent and subsidiary may both qualify only with separate scale evidence and entity-specific benefit evidence; group policy is never inherited without applicability evidence."
+    "related_entity_rule": "Population inclusion does not prove payroll employer, parent/subsidiary relationship, or benefit applicability. Benefit claims require separately resolved policy-owner and applicable-legal-entity evidence."
   },
   "thresholds": {
     "domestic_non_financial": {
@@ -156,7 +156,7 @@
     "official_company_report"
   ],
   "canonical_selection": {
-    "seed": "company-benefits-population-v1",
+    "seed": "company-benefits-population-v2",
     "required_fields": [
       "jurisdiction",
       "registry_id",
@@ -217,7 +217,8 @@
       "population/domestic-selected.jsonl",
       "population/international-selected.jsonl",
       "population/international-coverage-gaps.json",
-      "population/source-artifact-bindings.jsonl"
+      "population/source-artifact-bindings.jsonl",
+      "population/source-artifacts.jsonl"
     ],
     "effective_manifest_artifacts": [
       "population/domestic-effective-selected.jsonl",
@@ -232,8 +233,8 @@
     ]
   },
   "coverage_gap": {
-    "KR": "Materialized from official keyless DART/OpenDART bulk downloads: 1,350 eligible and 1,000 canonically selected legal employers.",
-    "US": "Materialized from official SEC quarterly financial datasets and exact Form 10-K employee evidence: 1,071 eligible and 1,000 canonically selected US filers.",
+    "KR": "Materialized from official keyless DART/OpenDART acquisition artifacts: 1,350 eligible and 1,000 canonically selected reporting entities.",
+    "US": "After excluding 14 subsidiary-attributed workforce statements, 1,057 eligible SEC reporting entities remain and 1,000 are canonically selected.",
     "CA": "CA remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
     "MX": "MX remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
     "BR": "BR remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",

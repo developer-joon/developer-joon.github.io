@@ -4,6 +4,7 @@
 import argparse
 import importlib.util
 import json
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -62,7 +63,7 @@ def load_verifier():
     return module
 
 
-def render_batch(root, output_dir, scope, batch_number, as_of=None):
+def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_anchor_receipt=None):
     root = Path(root)
     output_dir = Path(output_dir)
     if scope not in {"domestic", "international"}:
@@ -74,7 +75,7 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None):
     protocol_path = root / "population-protocol.json"
     protocol = read_json(protocol_path) if protocol_path.is_file() else {}
     as_of = as_of or datetime.now(timezone.utc).date()
-    errors = verifier.verify_workspace(root, as_of=as_of)
+    errors = verifier.verify_workspace(root, as_of=as_of, freeze_anchor_receipt=freeze_anchor_receipt)
     if errors:
         raise ValueError("workspace verification failed:\n" + "\n".join(errors))
 
@@ -148,8 +149,9 @@ def main(argv=None):
     parser.add_argument("scope", choices=("domestic", "international"))
     parser.add_argument("batch_number", type=int)
     parser.add_argument("--as-of", type=date.fromisoformat, help="render/freshness date (default: current UTC date)")
+    parser.add_argument("--freeze-anchor-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT"))
     args = parser.parse_args(argv)
-    output = render_batch(Path(args.root), Path(args.output_dir), args.scope, args.batch_number, as_of=args.as_of)
+    output = render_batch(Path(args.root), Path(args.output_dir), args.scope, args.batch_number, as_of=args.as_of, freeze_anchor_receipt=args.freeze_anchor_receipt)
     print(output)
     return 0
 
