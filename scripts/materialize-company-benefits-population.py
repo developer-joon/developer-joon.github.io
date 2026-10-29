@@ -2,6 +2,7 @@
 """Deterministically materialize the frozen company-benefits population."""
 
 import argparse
+import importlib.util
 import csv
 import hashlib
 import json
@@ -9,6 +10,10 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+_spec = importlib.util.spec_from_file_location('sec_workforce_audit', Path(__file__).with_name('sec-workforce-audit.py'))
+AUDIT = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(AUDIT)
 
 SEED = "company-benefits-population-v3"
 KR_LEDGER_SHA256 = "32bd7d45b9b93c28a2f633c57ed320e6ed35caaac69e0253f2f7a56e9bf2a9d7"
@@ -114,11 +119,15 @@ def sec_accepted_at(value):
     return parsed.isoformat()
 
 
-def load_international(path, retrieved_at=APPROVED_AT):
+def load_international(path, retrieved_at=APPROVED_AT, review_map=None):
+    review_map = review_map or {}
     with Path(path).open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     records = []
     for row in rows:
+        if row["accession"] in AUDIT.REJECTED:
+            continue
+        evidence_date, date_basis = AUDIT.workforce_date(row, review_map)
         if row.get("jurisdiction") != "US" or row.get("incorporation_country") != "US" or row.get("business_address_country") != "US":
             raise ValueError(f"strict-US jurisdiction evidence mismatch for {row.get('legal_name')}")
         if row.get("jurisdiction_method") != "exact_SEC_SUB_countryinc_US_and_countryba_US":
@@ -156,7 +165,7 @@ def load_international(path, retrieved_at=APPROVED_AT):
                                   "locator": row["employee_evidence_locator"], "content_sha256": row["employee_filing_sha256"],
                                   "hash_provenance": "retained_source_artifact", "retrieved_at": retrieved_at,
                                   "filing_date": row["filed"], "accepted_at": accepted_at, "accession": accession, "registry_id": registry_id, "legal_name": legal_name,
-                                  "fiscal_period_end": period, "employee_count": int(row["employee_count"]),
+                                  "fiscal_period_end": evidence_date, "evidence_date": evidence_date, "date_basis": date_basis, "employee_count": int(row["employee_count"]),
                                   "quote": row["employee_evidence_quote"]},
             "incorporation_evidence": {**jurisdiction_common, "official_field": "countryinc/stprinc", "normalized_official_code": row["incorporation_country"], "normalized_official_value": row["incorporation_state_province"] or "<blank>"},
             "head_office_evidence": {**jurisdiction_common, "official_field": "countryba/stprba", "normalized_official_code": row["business_address_country"], "normalized_official_value": row["business_address_state_province"]},
@@ -206,8 +215,9 @@ def materialize(domestic_csv, international_csv, root, acquisition_manifest, fil
     verify_source_digest(domestic_csv, KR_LEDGER_SHA256)
     verify_source_digest(international_csv, SEC_LEDGER_SHA256)
     domestic = load_domestic(domestic_csv, retrieved_at)
-    international = load_international(international_csv, retrieved_at)
-    if len(domestic) != 1350 or len(international) != 1070:
+    review_map = AUDIT.build(root, Path(international_csv).parent)
+    international = load_international(international_csv, retrieved_at, review_map)
+    if len(domestic) != 1350 or len(international) != 1066:
         raise ValueError(f"verified source count mismatch: domestic={len(domestic)}, international={len(international)}")
     selected = {"domestic": domestic[:1000], "international": international[:1000]}
     population = root / "population"
@@ -254,7 +264,8 @@ def materialize(domestic_csv, international_csv, root, acquisition_manifest, fil
     write(population / "international-coverage-gaps.json", json_bytes(gaps))
     freeze_paths = ["population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
                     "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json",
-                    "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl"]
+                    "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl",
+                    "population/independent-sec-workforce-reviews.jsonl", "population/acquisition-audit-manifest.json"]
     freeze = {"status": "approved", "approved_by": APPROVER, "approved_at": APPROVED_AT,
               "artifacts": [manifest_entry(root, path) for path in freeze_paths]}
     write(population / "freeze-manifest.json", json_bytes(freeze))

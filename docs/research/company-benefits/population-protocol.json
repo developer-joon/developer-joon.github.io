@@ -1,7 +1,7 @@
 {
   "$schema": "./schema/population-protocol.schema.json",
   "protocol_id": "company-benefits-population-v3",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "status": "approved",
   "approval": {
     "approved_by": "user-authorized implementation scope; technical review pending",
@@ -218,7 +218,9 @@
       "population/international-selected.jsonl",
       "population/international-coverage-gaps.json",
       "population/source-artifact-bindings.jsonl",
-      "population/source-artifacts.jsonl"
+      "population/source-artifacts.jsonl",
+      "population/independent-sec-workforce-reviews.jsonl",
+      "population/acquisition-audit-manifest.json"
     ],
     "effective_manifest_artifacts": [
       "population/domestic-effective-selected.jsonl",
@@ -234,7 +236,7 @@
   },
   "coverage_gap": {
     "KR": "Materialized from official keyless DART/OpenDART acquisition artifacts: 1,350 eligible and 1,000 canonically selected reporting entities.",
-    "US": "1,070 strict-US eligible entities have SEC countryinc=US and countryba=US evidence; 1,000 are canonically selected and 70 remain as replacements. This is not all SEC filers.",
+    "US": "1,066 strict-US eligible entities have SEC countryinc=US and countryba=US evidence after independent workforce review; 1,000 are canonically selected and 66 remain as replacements. This is not all SEC filers.",
     "CA": "CA remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
     "MX": "MX remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
     "BR": "BR remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",

@@ -710,7 +710,7 @@ class VerifierTests(unittest.TestCase):
         errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 30), freeze_anchor_receipt=receipt)
         self.assertEqual([], errors)
         self.assertEqual("approved", protocol["status"])
-        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1070,
+        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1066,
                     "domestic-selected.jsonl": 1000, "international-selected.jsonl": 1000,
                     "domestic-effective-selected.jsonl": 1000, "international-effective-selected.jsonl": 1000}
         for name, count in expected.items():

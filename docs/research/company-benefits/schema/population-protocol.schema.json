@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "population-protocol.schema.json",
   "title": "Company benefits population protocol",
-  "x-pinned-protocol-contract-sha256": "9609f4760e3efbb12af6558b1cd9eea6f69b36d4017712f47029979605e9f51b",
+  "x-pinned-protocol-contract-sha256": "5d097133dd59dba3a93688c57236529924c67c6bf7c2416961db3834936a9863",
   "type": "object",
   "additionalProperties": false,
   "$defs": {
@@ -734,7 +734,9 @@
             "population/international-selected.jsonl",
             "population/international-coverage-gaps.json",
             "population/source-artifact-bindings.jsonl",
-            "population/source-artifacts.jsonl"
+            "population/source-artifacts.jsonl",
+            "population/independent-sec-workforce-reviews.jsonl",
+            "population/acquisition-audit-manifest.json"
           ]
         },
         "effective_manifest_artifacts": {

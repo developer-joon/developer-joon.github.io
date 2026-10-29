@@ -1,4 +1,4 @@
-# Company benefits population protocol — version 3.0.0 frozen population
+# Company benefits population protocol — version 3.1.0 frozen population
 
 **Status: APPROVED for the user-authorized population freeze. Independent technical review remains pending.**
 
@@ -7,7 +7,7 @@ This freeze contains 1,000 domestic and 1,000 international selected reporting l
 ## Materialized scope
 
 - **Domestic:** 1,350 eligible Korean reporting legal entities were built from official, keyless DART/OpenDART bulk downloads. The first 1,000 in canonical SHA-256 order are selected.
-- **International:** 1,070 eligible strict-US entities were built from official SEC quarterly Financial Statement Data Sets and primary Form 10-K workforce evidence. Every row requires `countryinc=US` and `countryba=US` evidence bound to the same accession, CIK and legal name as scale and workforce evidence. The first 1,000 in canonical SHA-256 order are selected; exactly 70 unused canonical records remain for replacement.
+- **International:** 1,066 eligible strict-US entities were built from official SEC quarterly Financial Statement Data Sets and primary Form 10-K workforce evidence. Every row requires `countryinc=US` and `countryba=US` evidence bound to the same accession, CIK and legal name as scale and workforce evidence. The first 1,000 in canonical SHA-256 order are selected; exactly 66 unused canonical records remain for replacement.
 - The fixed international panel remains US, CA, MX, BR, AR, GB, FR, DE, IT, TR, RU, AU, CN, IN, ID, JP, SA and ZA. The current selected international population contains only US-incorporated, US principal-business-address SEC 10-K filers. It is not globally representative and is not all SEC filers. The other 17 panel jurisdictions are explicit coverage gaps with zero selected entities; see `population/international-coverage-gaps.json`.
 
 ## Legal entity and thresholds
@@ -33,7 +33,7 @@ US scale evidence retains each actual SEC quarterly archive URL, archive hash an
 
 Canonical values are `[protocol_seed, jurisdiction, registry_id, legal_name]`, normalized and serialized exactly as defined in `population-protocol.json`. Eligible ledgers are sorted by SHA-256 plus canonical-byte collision tie-break; selected ledgers are the first 1,000 records in each scope.
 
-The freeze manifest hashes the exact bytes of the protocol, eligible ledgers, selected ledgers, structured coverage-gap artifact, compact source-artifact manifest, and row bindings. Initial-effective ledgers are byte-identical to selected ledgers. The effective manifest hashes current effective ledgers and the empty event ledger and references the freeze-manifest digest. Future exclusions require append-only events and the next unused eligible canonical record.
+The freeze manifest hashes the exact bytes of the protocol, eligible ledgers, selected ledgers, structured coverage-gap artifact, compact source-artifact manifest, row bindings, all 167 compact independent workforce reviews, and the acquisition-audit manifest that pins the external audit chain. Initial-effective ledgers are byte-identical to selected ledgers. The effective manifest hashes current effective ledgers and the empty event ledger and references the freeze-manifest digest. Future exclusions require append-only events and the next unused eligible canonical record.
 
 ## Benefits research state
 

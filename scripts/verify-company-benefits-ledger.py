@@ -2,6 +2,7 @@
 """Fail-closed validation for company-benefits research ledgers."""
 
 import argparse
+import importlib.util
 import calendar
 import hashlib
 import json
@@ -42,8 +43,8 @@ PINNED_PROTOCOL_FIELDS = (
 )
 EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction"}
 OFFICIAL_SOURCE_TYPES = {"government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report"}
-PINNED_CONTRACT_SHA256 = "9609f4760e3efbb12af6558b1cd9eea6f69b36d4017712f47029979605e9f51b"
-PINNED_CONTRACT_VERSION = "3.0.0"
+PINNED_CONTRACT_SHA256 = "8a9174d66adf5f2fae6d0e6d8144ea873d4d068f918d712573dcb0ed2b861059"
+PINNED_CONTRACT_VERSION = "3.1.0"
 MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
 HASH_SCHEMA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 EVENT_SCHEMA = {
@@ -755,7 +756,7 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
             ledgers[(scope, kind)] = read_jsonl(root / relative, errors, required_file=True)
         validate_ledger_records(protocol, ledgers[(scope, "eligible")], f"{scope} eligible", source_map, as_of, errors)
         if protocol.get("protocol_id") in {"company-benefits-population-v2", "company-benefits-population-v3"}:
-            expected_eligible = 1350 if scope == "domestic" else 1070
+            expected_eligible = 1350 if scope == "domestic" else (1066 if protocol.get("version") == "3.1.0" else 1070)
             if len(ledgers[(scope, "eligible")]) != expected_eligible:
                 errors.append(f"{scope} eligible must contain exactly {expected_eligible} verified records")
         for kind in ("selected", "initial", "current"):
@@ -884,6 +885,7 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
         "population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
         "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json",
         "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl",
+        "population/independent-sec-workforce-reviews.jsonl", "population/acquisition-audit-manifest.json",
     ]
     protocol_approval = parse_timestamp(protocol.get("approval", {}).get("approved_at"), "approved_at", "protocol", errors)
     freeze_manifest = validate_manifest(root / "population/freeze-manifest.json", freeze_required, root, errors, "freeze", as_of, protocol_approval)
@@ -1220,6 +1222,14 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
         return errors
     if approved_freeze_anchors is None:
         approved_freeze_anchors = external_freeze_anchor(freeze_anchor_receipt, protocol, errors, root)
+    if protocol.get('protocol_id') == 'company-benefits-population-v3':
+        spec = importlib.util.spec_from_file_location('sec_workforce_audit', Path(__file__).with_name('sec-workforce-audit.py'))
+        audit = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(audit)
+        try:
+            audit.validate(root)
+        except (ValueError, KeyError, OSError, TypeError) as exc:
+            errors.append(f'SEC workforce audit: {exc}')
     status = protocol.get("status")
     if status != "approved":
         errors.append(f"protocol status is {status or 'missing'}; approved protocol required")

@@ -61,7 +61,7 @@ class ContractFixture:
         self.protocol = json.loads((RESEARCH_ROOT / "population-protocol.json").read_text(encoding="utf-8"))
         self.protocol.update({
             "protocol_id": "company-benefits-population-synthetic-test",
-            "version": "3.0.0",
+            "version": "3.1.0",
             "status": "approved",
             "approval": {"approved_by": "owner", "approved_at": "2026-10-21T00:00:00Z"},
         })
@@ -127,7 +127,7 @@ class ContractFixture:
             if scope == "international":
                 common = {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"sub.txt:row={index}", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00", "accession": f"test-{index}", "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "quote": "countryinc=US | stprinc=DE | countryba=US | stprba=NY"}
                 company["scale_evidence"]["accession"] = f"test-{index}"
-                company["employer_evidence"]["accession"] = f"test-{index}"
+                company["employer_evidence"].update(accession=f"test-{index}", fiscal_period_end=None, evidence_date=None, date_basis="undated_current")
                 company["incorporation_evidence"] = {**common, "official_field": "countryinc/stprinc", "normalized_official_code": "US", "normalized_official_value": "DE"}
                 company["head_office_evidence"] = {**common, "official_field": "countryba/stprba", "normalized_official_code": "US", "normalized_official_value": "NY"}
             company["selection_hash"] = selection_hash(self.seed, company)
@@ -173,6 +173,10 @@ class ContractFixture:
 
     def refresh_manifests(self):
         freeze_paths = ["population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl", "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json", "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl"]
+        for name in ('independent-sec-workforce-reviews.jsonl', 'acquisition-audit-manifest.json'):
+            source = RESEARCH_ROOT / 'population' / name
+            (self.population / name).write_bytes(source.read_bytes())
+            freeze_paths.append('population/' + name)
         freeze_entries = []
         for relative in freeze_paths:
             data = (self.root / relative).read_bytes()

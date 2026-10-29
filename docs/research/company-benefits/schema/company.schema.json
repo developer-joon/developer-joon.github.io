@@ -390,7 +390,10 @@
           "maxLength": 500
         },
         "fiscal_period_end": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "date"
         },
         "employee_count": {
@@ -412,6 +415,19 @@
         "accession": {
           "type": "string",
           "minLength": 1
+        },
+        "evidence_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "date_basis": {
+          "enum": [
+            "explicit_quote_date",
+            "undated_current"
+          ]
         }
       }
     },
@@ -699,7 +715,15 @@
         "required": [
           "incorporation_evidence",
           "head_office_evidence"
-        ]
+        ],
+        "properties": {
+          "employer_evidence": {
+            "required": [
+              "evidence_date",
+              "date_basis"
+            ]
+          }
+        }
       }
     }
   ]
