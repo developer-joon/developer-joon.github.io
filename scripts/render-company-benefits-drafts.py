@@ -2,7 +2,9 @@
 """Render deterministic, review-only company-benefit Markdown drafts."""
 
 import argparse
+import importlib.util
 import json
+from datetime import date
 from pathlib import Path
 
 HEADER = """---
@@ -50,6 +52,16 @@ def read_jsonl(path):
     return records
 
 
+def load_verifier():
+    path = Path(__file__).with_name("verify-company-benefits-ledger.py")
+    spec = importlib.util.spec_from_file_location("company_benefits_verifier", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load verifier: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def render_batch(root, output_dir, scope, batch_number):
     root = Path(root)
     output_dir = Path(output_dir)
@@ -58,20 +70,25 @@ def render_batch(root, output_dir, scope, batch_number):
     if batch_number < 1:
         raise ValueError("batch number must be positive")
 
-    protocol = read_json(root / "population-protocol.json")
-    approval = protocol.get("approval")
-    if protocol.get("status") != "approved" or not isinstance(approval, dict):
-        raise ValueError("renderer requires an approved protocol")
+    verifier = load_verifier()
+    protocol_path = root / "population-protocol.json"
+    protocol = read_json(protocol_path) if protocol_path.is_file() else {}
+    cutoff = protocol.get("cutoff_at")
+    try:
+        as_of = date.fromisoformat(str(cutoff)[:10])
+    except ValueError:
+        as_of = date.today()
+    errors = verifier.verify_workspace(root, as_of=as_of)
+    if errors:
+        raise ValueError("workspace verification failed:\n" + "\n".join(errors))
 
     companies = read_jsonl(root / "companies.jsonl")
     claims = read_jsonl(root / "benefit-claims.jsonl")
-    sources = read_jsonl(root / "sources.jsonl")
-    scoped = sorted((c for c in companies if c.get("scope") == scope), key=lambda c: (c.get("selection_hash", ""), c.get("company_id", "")))
-    foreign = [c for c in companies if c.get("scope") not in {"domestic", "international"}]
-    if foreign:
-        raise ValueError("company has invalid scope")
-    if len(companies) == 25 and len(scoped) != 25:
-        raise ValueError("batch scope mismatch")
+    sources = read_jsonl(root / "source-registry.jsonl")
+    reviews = read_jsonl(root / "reviews.jsonl")
+    company_map = {company["company_id"]: company for company in companies}
+    effective = read_jsonl(root / "population" / f"{scope}-effective-selected.jsonl")
+    scoped = [company_map[record["company_id"]] for record in effective]
     start = (batch_number - 1) * 25
     batch = scoped[start:start + 25]
     if len(batch) != 25:
@@ -83,8 +100,12 @@ def render_batch(root, output_dir, scope, batch_number):
         raise ValueError("batch requires 25 distinct company IDs")
 
     claims_by_company = {company_id: [] for company_id in company_ids}
+    approved_claim_ids = {
+        review["claim_id"] for review in reviews
+        if review.get("decision") == "approved" and review.get("researcher_id") != review.get("reviewer_id")
+    }
     for claim in claims:
-        if claim.get("company_id") in claims_by_company:
+        if claim.get("company_id") in claims_by_company and claim.get("claim_id") in approved_claim_ids:
             claims_by_company[claim["company_id"]].append(claim)
     missing_claims = [cid for cid, values in claims_by_company.items() if not values]
     if missing_claims:

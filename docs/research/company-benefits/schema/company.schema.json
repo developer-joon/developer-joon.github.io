@@ -4,30 +4,220 @@
   "title": "Company selection record",
   "type": "object",
   "additionalProperties": false,
-  "required": ["company_id", "jurisdiction", "scope", "registry_id", "legal_name", "selected_employer_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "entity_status", "sector", "scale_metric", "selection_hash"],
+  "required": [
+    "company_id",
+    "jurisdiction",
+    "incorporation_country",
+    "scope",
+    "registry_id",
+    "legal_name",
+    "selected_employer_legal_entity",
+    "registered_head_office_country",
+    "financial_consolidation_parent",
+    "ultimate_parent",
+    "benefit_policy_owner",
+    "related_company_exception",
+    "entity_status",
+    "sector",
+    "scale_metric",
+    "selection_hash"
+  ],
   "properties": {
-    "company_id": {"type": "string", "minLength": 1},
-    "jurisdiction": {"type": "string", "pattern": "^[A-Z]{2}$"},
-    "scope": {"enum": ["domestic", "international"]},
-    "registry_id": {"type": "string", "minLength": 1},
-    "legal_name": {"type": "string", "minLength": 1},
-    "selected_employer_legal_entity": {"type": "string", "minLength": 1},
-    "registered_head_office_country": {"type": "string", "pattern": "^[A-Z]{2}$"},
-    "financial_consolidation_parent": {"type": ["string", "null"]},
-    "ultimate_parent": {"type": ["string", "null"]},
-    "benefit_policy_owner": {"type": "string", "minLength": 1},
-    "entity_status": {"const": "active"},
-    "sector": {"enum": ["financial", "non_financial"]},
+    "company_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "jurisdiction": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "scope": {
+      "enum": [
+        "domestic",
+        "international"
+      ]
+    },
+    "registry_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "legal_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "selected_employer_legal_entity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registered_head_office_country": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "financial_consolidation_parent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ultimate_parent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "benefit_policy_owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_status": {
+      "const": "active"
+    },
+    "sector": {
+      "enum": [
+        "financial",
+        "non_financial"
+      ]
+    },
     "scale_metric": {
-      "type": "object", "additionalProperties": false,
-      "required": ["type", "value", "currency", "band", "fiscal_year_end", "financial_scope", "source_ids"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "value",
+        "currency",
+        "original_value",
+        "original_currency",
+        "conversion",
+        "fiscal_year_end",
+        "financial_scope",
+        "source_ids"
+      ],
       "properties": {
-        "type": {"enum": ["revenue", "total_assets"]}, "value": {"type": "number", "exclusiveMinimum": 0},
-        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}, "band": {"type": "string", "minLength": 1},
-        "fiscal_year_end": {"type": "string", "format": "date"}, "financial_scope": {"enum": ["consolidated", "standalone"]},
-        "source_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}
+        "type": {
+          "enum": [
+            "revenue",
+            "total_assets"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "band": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fiscal_year_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "financial_scope": {
+          "enum": [
+            "consolidated",
+            "standalone"
+          ]
+        },
+        "source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "original_value": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "original_currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "conversion": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "rate",
+                "source_id",
+                "year",
+                "converted_value"
+              ],
+              "properties": {
+                "rate": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "source_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "year": {
+                  "type": "integer",
+                  "minimum": 2000
+                },
+                "converted_value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            }
+          ]
+        }
       }
     },
-    "selection_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    "selection_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "incorporation_country": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "related_company_exception": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "separate_scale_source_ids",
+            "entity_specific_benefit_source_ids",
+            "no_inheritance"
+          ],
+          "properties": {
+            "separate_scale_source_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            },
+            "entity_specific_benefit_source_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            },
+            "no_inheritance": {
+              "const": true
+            }
+          }
+        }
+      ]
+    }
   }
 }

@@ -7,37 +7,57 @@ import json
 import re
 import sys
 import unicodedata
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
+PANEL = ["US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]
 CLAIM_STATUSES = {"confirmed", "limited", "past", "name_only", "unknown", "conflict"}
-EVIDENCE_GRADES = {"A", "B", "none"}
-EVIDENCED_STATUSES = {"confirmed", "limited", "past", "name_only"}
+EVIDENCED_STATUSES = {"confirmed", "limited", "past", "name_only", "conflict"}
 SOURCE_DECISIONS = ("extract", "quote", "retention", "snapshot", "attribution")
 PROHIBITED_POPULATION_FILES = {
     "domestic-eligible.jsonl", "international-eligible.jsonl",
     "domestic-selected.jsonl", "international-selected.jsonl",
+    "domestic-initial-effective-selected.jsonl", "international-initial-effective-selected.jsonl",
     "domestic-effective-selected.jsonl", "international-effective-selected.jsonl",
-    "effective-selection-events.jsonl", "freeze-manifest.json",
-    "effective-selection-manifest.json",
+    "effective-selection-events.jsonl", "freeze-manifest.json", "effective-selection-manifest.json",
 }
 RANKING_PATTERNS = (
-    re.compile(r"세계\s*매출\s*순위"),
-    re.compile(r"매출\s*(?:상위|순위)\s*\d"),
+    re.compile(r"세계\s*매출\s*순위"), re.compile(r"매출\s*(?:상위|순위)\s*\d"),
     re.compile(r"(?:global|world|revenue)\s+(?:revenue\s+)?rank(?:ing)?", re.I),
 )
+EXPECTED_THRESHOLDS = {
+    "domestic_non_financial": ("revenue", 100_000_000_000, "KRW"),
+    "international_non_financial": ("revenue", 1_000_000_000, "USD"),
+    "domestic_financial": ("total_assets", 10_000_000_000_000, "KRW"),
+    "international_financial": ("total_assets", 10_000_000_000, "USD"),
+}
+
+
+def json_bytes(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def jsonl_bytes(values):
+    return b"".join(json_bytes(value) + b"\n" for value in values)
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
 
 
 def read_json(path, errors):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         errors.append(f"{path}: invalid JSON: {exc}")
         return None
+    return value
 
 
-def read_jsonl(path, errors):
-    if not path.exists():
+def read_jsonl(path, errors, required_file=False):
+    if not path.is_file():
+        if required_file:
+            errors.append(f"missing required ledger: {path}")
         return []
     records = []
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -63,8 +83,14 @@ def find_file(root, name):
     return matches[0] if matches else direct
 
 
+def required(record, fields, kind, record_id, errors, allow_null=()):
+    for field in fields:
+        if field not in record or (field not in allow_null and record[field] in (None, "")):
+            errors.append(f"{record_id}: missing {kind + ' ' if kind else ''}{field}")
+
+
 def parse_day(value, field, record_id, errors):
-    if not value:
+    if value in (None, ""):
         return None
     try:
         return date.fromisoformat(str(value)[:10])
@@ -73,55 +99,104 @@ def parse_day(value, field, record_id, errors):
         return None
 
 
-def required(record, fields, kind, record_id, errors):
-    for field in fields:
-        if field not in record or record[field] in (None, ""):
-            label = f"{kind} {field}" if kind else field
-            errors.append(f"{record_id}: missing {label}")
-
-
 def canonical_values(protocol, company):
     def norm(value, collapse=False):
         value = unicodedata.normalize("NFC", value).strip()
         return re.sub(r"\s+", " ", value) if collapse else value
-
     seed = protocol.get("canonical_selection", {}).get("seed")
     fields = (seed, company.get("jurisdiction"), company.get("registry_id"), company.get("legal_name"))
-    if not all(isinstance(v, str) and v.strip() for v in fields):
+    if not all(isinstance(value, str) and value.strip() for value in fields):
         return None
     return [norm(fields[0]), norm(fields[1]), norm(fields[2]), norm(fields[3], True)]
 
 
 def canonical_hash(protocol, company):
     values = canonical_values(protocol, company)
-    if values is None:
-        return None
-    payload = json.dumps(values, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return sha256(json_bytes(values)) if values else None
 
 
-def source_is_eligible(source):
-    if source.get("evidence_eligibility") not in {"A", "B"}:
+def canonical_key(protocol, company):
+    values = canonical_values(protocol, company)
+    return (canonical_hash(protocol, company) or "", json_bytes(values) if values else b"")
+
+
+def validate_protocol(protocol, source_map, errors):
+    scopes = protocol.get("scopes", {})
+    domestic = scopes.get("domestic", {})
+    international = scopes.get("international", {})
+    if domestic.get("jurisdictions") != ["KR"] or domestic.get("target_count") != 1000:
+        errors.append("protocol domestic scope must fix the KR union and target_count 1000")
+    domestic_ids = domestic.get("candidate_source_ids")
+    if not isinstance(domestic_ids, list) or not domestic_ids:
+        errors.append("protocol domestic candidate-source union must be non-empty")
+    if international.get("country_panel") != PANEL:
+        errors.append("protocol international scope must use the fixed 18-country panel")
+    if international.get("excluded_jurisdiction") != "KR" or international.get("target_count") != 1000:
+        errors.append("protocol international scope must exclude KR and target exactly 1000")
+    by_country = international.get("candidate_source_ids_by_jurisdiction")
+    if not isinstance(by_country, dict) or set(by_country) != set(PANEL) or any(not isinstance(by_country.get(country), list) or not by_country[country] for country in PANEL):
+        errors.append("protocol must register exact international candidate-source IDs by jurisdiction")
+
+    thresholds = protocol.get("thresholds", {})
+    for name, (metric, minimum, currency) in EXPECTED_THRESHOLDS.items():
+        value = thresholds.get(name, {})
+        if (value.get("metric"), value.get("minimum"), value.get("currency")) != (metric, minimum, currency):
+            errors.append(f"protocol threshold {name} must be {metric} {minimum} {currency}")
+    if thresholds.get("maximum_fiscal_age_months") != 24:
+        errors.append("protocol threshold freshness must be exactly 24 months")
+
+    registered = protocol.get("registered_sources")
+    expected_jurisdictions = {"KR", *PANEL}
+    if not isinstance(registered, dict) or set(registered) != expected_jurisdictions:
+        errors.append("protocol registered_sources must cover exact domestic union and fixed panel")
+        return
+    expected_ids = {"KR": domestic_ids or []}
+    if isinstance(by_country, dict):
+        expected_ids.update({country: by_country.get(country, []) for country in PANEL})
+    for jurisdiction, ids in expected_ids.items():
+        entries = registered.get(jurisdiction, [])
+        actual_ids = [entry.get("source_id") for entry in entries if isinstance(entry, dict)]
+        if actual_ids != ids:
+            errors.append(f"protocol registered source IDs mismatch for {jurisdiction}")
+        for entry in entries:
+            source = source_map.get(entry.get("source_id")) if isinstance(entry, dict) else None
+            if source is None or entry.get("endpoint") != source.get("url"):
+                errors.append(f"protocol registered source endpoint mismatch for {jurisdiction}")
+
+
+def source_is_eligible(source, field, grade_required=False):
+    if not isinstance(source, dict) or field not in source.get("supported_fields", []):
+        return False
+    if grade_required and source.get("evidence_eligibility") not in {"A", "B"}:
         return False
     if source.get("access_model") not in {"public_keyless", "public_api_key"}:
         return False
+    if source.get("reuse_decision") not in {"allowed", "allowed_with_attribution"}:
+        return False
     decisions = source.get("decisions", {})
-    return decisions.get("extract") == "allowed" and decisions.get("quote") == "allowed" and decisions.get("attribution") in {"allowed", "required"}
+    if decisions.get("extract") != "allowed" or decisions.get("quote") != "allowed":
+        return False
+    if decisions.get("retention") not in {"allowed", "metadata_only"}:
+        return False
+    if decisions.get("attribution") not in {"allowed", "required"}:
+        return False
+    http = source.get("http_verification", {})
+    return http.get("status") == 200 and http.get("access_wall") in {"none", "api_key"}
 
 
 def validate_sources(sources, errors):
-    seen = set()
     result = {}
-    required_fields = ("source_id", "owner", "source_type", "jurisdiction", "url", "access_model", "authentication", "terms_url", "reuse_decision", "decisions", "supported_fields", "evidence_eligibility", "checked_at", "http_verification")
+    fields = ("source_id", "title", "owner", "source_type", "jurisdiction", "url", "locator", "supporting_quote", "content_sha256", "access_model", "authentication", "terms_url", "reuse_decision", "decisions", "supported_fields", "evidence_eligibility", "checked_at", "http_verification")
     for index, source in enumerate(sources, 1):
         source_id = source.get("source_id") or f"source[{index}]"
-        required(source, required_fields, "source", source_id, errors)
+        required(source, fields, "source", source_id, errors)
         if "current_blocker" not in source:
             errors.append(f"{source_id}: missing source current_blocker")
-        if source_id in seen:
+        if source_id in result:
             errors.append(f"duplicate source_id: {source_id}")
-        seen.add(source_id)
         result[source_id] = source
+        if not re.fullmatch(r"[0-9a-f]{64}", str(source.get("content_sha256", ""))):
+            errors.append(f"{source_id}: invalid source content_sha256")
         decisions = source.get("decisions", {})
         for decision in SOURCE_DECISIONS:
             if decision not in decisions:
@@ -137,73 +212,269 @@ def validate_sources(sources, errors):
     return result
 
 
-def validate_companies(protocol, companies, source_map, errors):
-    seen = set()
-    for index, company in enumerate(companies, 1):
-        company_id = company.get("company_id") or f"company[{index}]"
-        required(company, ("company_id", "jurisdiction", "scope", "registry_id", "legal_name", "selected_employer_legal_entity", "registered_head_office_country", "benefit_policy_owner", "entity_status", "sector", "scale_metric", "selection_hash"), "", company_id, errors)
-        if company_id in seen:
-            errors.append(f"duplicate company_id: {company_id}")
-        seen.add(company_id)
-        jurisdiction = company.get("jurisdiction")
-        if not isinstance(jurisdiction, str) or not re.fullmatch(r"[A-Z]{2}", jurisdiction):
-            errors.append(f"{company_id}: invalid jurisdiction")
-        scope = company.get("scope")
-        office = company.get("registered_head_office_country")
-        if scope == "domestic" and office != "KR":
-            errors.append(f"{company_id}: domestic scope requires KR registered head office")
-        if scope == "international" and office == "KR":
-            errors.append(f"{company_id}: international scope excludes KR registered head office")
-        if scope not in {"domestic", "international"}:
-            errors.append(f"{company_id}: invalid scope")
-        if company.get("entity_status") != "active":
-            errors.append(f"{company_id}: invalid entity status")
-        metric = company.get("scale_metric", {})
-        expected_type = "total_assets" if company.get("sector") == "financial" else "revenue"
+def validate_source_use(source_map, source_ids, field, record_id, errors, grade_required=False):
+    eligible = []
+    for source_id in source_ids:
+        source = source_map.get(source_id)
+        if source is None:
+            errors.append(f"{record_id}: unknown source {source_id}")
+            continue
+        if field not in source.get("supported_fields", []):
+            errors.append(f"{record_id}: source {source_id} does not support {field}")
+        if source.get("reuse_decision") not in {"allowed", "allowed_with_attribution"}:
+            errors.append(f"{record_id}: source {source_id} reuse is unknown or prohibited")
+        if source.get("decisions", {}).get("retention") not in {"allowed", "metadata_only"}:
+            errors.append(f"{record_id}: source {source_id} retention is unknown or prohibited")
+        http = source.get("http_verification", {})
+        if http.get("status") != 200:
+            errors.append(f"{record_id}: source {source_id} HTTP status is not 200")
+        if http.get("access_wall") not in {"none", "api_key"}:
+            errors.append(f"{record_id}: source {source_id} has a prohibited access wall")
+        if source_is_eligible(source, field, grade_required):
+            eligible.append(source_id)
+    return eligible
+
+
+def validate_company(protocol, company, source_map, as_of, errors):
+    company_id = company.get("company_id") or "company[missing-id]"
+    required(company, ("company_id", "jurisdiction", "incorporation_country", "scope", "registry_id", "legal_name", "selected_employer_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "related_company_exception", "entity_status", "sector", "scale_metric", "selection_hash"), "", company_id, errors, allow_null=("financial_consolidation_parent", "ultimate_parent", "related_company_exception"))
+    scope = company.get("scope")
+    jurisdiction = company.get("jurisdiction")
+    incorporation = company.get("incorporation_country")
+    office = company.get("registered_head_office_country")
+    if scope == "domestic" and (jurisdiction != "KR" or incorporation != "KR" or office != "KR"):
+        errors.append(f"{company_id}: domestic legal entity requires KR incorporation and registered head office")
+    if scope == "international" and (jurisdiction not in PANEL or incorporation != jurisdiction or office != jurisdiction):
+        errors.append(f"{company_id}: international incorporation, head office, and fixed panel jurisdiction must match")
+    if scope not in {"domestic", "international"}:
+        errors.append(f"{company_id}: invalid scope")
+    if company.get("entity_status") != "active":
+        errors.append(f"{company_id}: invalid entity status")
+    if company.get("selected_employer_legal_entity") != company.get("legal_name"):
+        errors.append(f"{company_id}: selected employer must be the legal entity")
+    if canonical_hash(protocol, company) != company.get("selection_hash"):
+        errors.append(f"{company_id}: selection_hash mismatch")
+
+    sector = company.get("sector")
+    threshold_name = f"{scope}_{sector}" if scope in {"domestic", "international"} and sector in {"financial", "non_financial"} else None
+    expected = EXPECTED_THRESHOLDS.get(threshold_name)
+    metric = company.get("scale_metric", {})
+    required(metric, ("type", "value", "currency", "original_value", "original_currency", "conversion", "fiscal_year_end", "financial_scope", "source_ids"), "scale metric", company_id, errors, allow_null=("conversion",))
+    if expected:
+        expected_type, minimum, currency = expected
         if metric.get("type") != expected_type:
             errors.append(f"{company_id}: invalid scale metric type")
-        required(metric, ("type", "value", "currency", "band", "fiscal_year_end", "financial_scope", "source_ids"), "scale metric", company_id, errors)
-        for source_id in metric.get("source_ids", []):
-            if source_id not in source_map:
-                errors.append(f"{company_id}: unknown scale source {source_id}")
-        expected_hash = canonical_hash(protocol, company)
-        if expected_hash is None or company.get("selection_hash") != expected_hash:
-            errors.append(f"{company_id}: selection_hash mismatch")
-    return seen
+        if metric.get("currency") != currency:
+            errors.append(f"{company_id}: normalized threshold currency must be {currency}")
+        try:
+            if float(metric.get("value", 0)) < minimum:
+                errors.append(f"{company_id}: scale metric is below threshold")
+        except (TypeError, ValueError):
+            errors.append(f"{company_id}: invalid scale metric value")
+        if metric.get("original_currency") != currency:
+            conversion = metric.get("conversion")
+            needed = ("rate", "source_id", "year", "converted_value")
+            if not isinstance(conversion, dict) or any(conversion.get(field) in (None, "") for field in needed):
+                errors.append(f"{company_id}: non-threshold original currency requires FX conversion proof")
+            elif conversion.get("source_id") != protocol.get("currency_conversion", {}).get("source_id"):
+                errors.append(f"{company_id}: FX conversion source does not match protocol")
+            if isinstance(conversion, dict):
+                fiscal_year = str(metric.get("fiscal_year_end", ""))[:4]
+                if str(conversion.get("year")) != fiscal_year:
+                    errors.append(f"{company_id}: FX conversion year must match fiscal year")
+                try:
+                    converted = float(conversion.get("converted_value"))
+                    calculated = float(metric.get("original_value")) / float(conversion.get("rate"))
+                    normalized = float(metric.get("value"))
+                    tolerance = max(1e-6, abs(normalized) * 1e-9)
+                    if abs(converted - calculated) > tolerance or abs(converted - normalized) > tolerance:
+                        errors.append(f"{company_id}: FX converted value does not match original value and rate")
+                except (TypeError, ValueError, ZeroDivisionError):
+                    errors.append(f"{company_id}: invalid FX conversion values")
+                validate_source_use(source_map, [conversion.get("source_id")], "local_currency_per_USD", company_id, errors)
+    fiscal = parse_day(metric.get("fiscal_year_end"), "fiscal_year_end", company_id, errors)
+    if fiscal and (as_of - fiscal).days > 731:
+        errors.append(f"{company_id}: scale metric fiscal age exceeds 24 months")
+    source_ids = metric.get("source_ids", []) if isinstance(metric.get("source_ids"), list) else []
+    validate_source_use(source_map, source_ids, metric.get("type", "scale field"), company_id, errors)
+    precedence = protocol.get("source_precedence", [])
+    for source_id in source_ids:
+        source = source_map.get(source_id, {})
+        if source.get("source_type") not in precedence:
+            errors.append(f"{company_id}: scale source violates source precedence")
+    owner = company.get("benefit_policy_owner")
+    if owner and owner != company.get("selected_employer_legal_entity"):
+        contract = company.get("related_company_exception")
+        required_contract = ("separate_scale_source_ids", "entity_specific_benefit_source_ids", "no_inheritance")
+        if not isinstance(contract, dict) or any(field not in contract for field in required_contract) or contract.get("no_inheritance") is not True:
+            errors.append(f"{company_id}: missing related-company exception contract")
 
 
-def validate_claims(claims, companies, source_map, as_of, errors):
-    seen = set()
+def validate_ledger_records(protocol, records, label, source_map, as_of, errors, exact_count=None, enforce_order=True):
+    if exact_count is not None and len(records) != exact_count:
+        errors.append(f"{label} must contain exactly {exact_count} records")
+    ids = []
+    registry = []
+    for company in records:
+        validate_company(protocol, company, source_map, as_of, errors)
+        ids.append(company.get("company_id"))
+        registry.append((company.get("jurisdiction"), company.get("registry_id")))
+    if len(ids) != len(set(ids)):
+        errors.append(f"{label}: duplicate company_id")
+    if len(registry) != len(set(registry)):
+        errors.append(f"{label}: duplicate jurisdiction/registry_id")
+    if enforce_order and records != sorted(records, key=lambda company: canonical_key(protocol, company)):
+        errors.append(f"{label}: records are not in canonical order")
+
+
+def validate_manifest(path, required_paths, root, errors, label):
+    if not path.is_file():
+        errors.append(f"missing required {label} manifest: {path}")
+        return
+    manifest = read_json(path, errors)
+    if not isinstance(manifest, dict):
+        return
+    if manifest.get("status") != "approved" or not manifest.get("approved_by") or not manifest.get("approved_at"):
+        errors.append(f"{path}: {label} manifest is not explicitly approved")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        errors.append(f"{path}: manifest artifacts must be a list")
+        return
+    entries = {item.get("path"): item for item in artifacts if isinstance(item, dict)}
+    if set(entries) != set(required_paths):
+        errors.append(f"{path}: manifest artifact set mismatch")
+    for relative in required_paths:
+        entry = entries.get(relative, {})
+        artifact = root / relative
+        if not artifact.is_file():
+            errors.append(f"{path}: missing frozen artifact {relative}")
+            continue
+        data = artifact.read_bytes()
+        if entry.get("sha256") != sha256(data):
+            errors.append(f"{path}: frozen artifact hash mismatch for {relative}")
+        actual_count = 1 if relative.endswith(".json") else len(data.splitlines())
+        if entry.get("count") != actual_count:
+            errors.append(f"{path}: frozen artifact count mismatch for {relative}")
+
+
+def validate_population(root, protocol, source_map, as_of, errors):
+    model = protocol.get("immutable_model", {})
+    required_model = ("eligible_ledgers", "selected_ledgers", "initial_effective_ledgers", "effective_ledgers", "event_ledger", "freeze_manifest", "effective_manifest")
+    if any(not model.get(field) for field in required_model):
+        errors.append("protocol immutable model is incomplete")
+        return {}
+    expected_paths = {
+        "eligible_ledgers": ["population/domestic-eligible.jsonl", "population/international-eligible.jsonl"],
+        "selected_ledgers": ["population/domestic-selected.jsonl", "population/international-selected.jsonl"],
+        "initial_effective_ledgers": ["population/domestic-initial-effective-selected.jsonl", "population/international-initial-effective-selected.jsonl"],
+        "effective_ledgers": ["population/domestic-effective-selected.jsonl", "population/international-effective-selected.jsonl"],
+    }
+    for field, expected in expected_paths.items():
+        if model.get(field) != expected:
+            errors.append(f"protocol immutable model {field} mismatch")
+    if model.get("event_ledger") != "population/effective-selection-events.jsonl":
+        errors.append("protocol immutable model event ledger mismatch")
+    if model.get("freeze_manifest") != "population/freeze-manifest.json" or model.get("effective_manifest") != "population/effective-selection-manifest.json":
+        errors.append("protocol immutable manifest paths mismatch")
+
+    ledgers = {}
+    for scope, index in (("domestic", 0), ("international", 1)):
+        for kind, field in (("eligible", "eligible_ledgers"), ("selected", "selected_ledgers"), ("initial", "initial_effective_ledgers"), ("current", "effective_ledgers")):
+            relative = expected_paths[field][index]
+            ledgers[(scope, kind)] = read_jsonl(root / relative, errors, required_file=True)
+        validate_ledger_records(protocol, ledgers[(scope, "eligible")], f"{scope} eligible", source_map, as_of, errors)
+        for kind in ("selected", "initial", "current"):
+            validate_ledger_records(protocol, ledgers[(scope, kind)], f"{scope} {kind}", source_map, as_of, errors, exact_count=1000)
+        if ledgers[(scope, "selected")] != ledgers[(scope, "eligible")][:1000]:
+            errors.append(f"{scope} selected must be the first 1000 eligible records")
+        selected_path = root / expected_paths["selected_ledgers"][index]
+        initial_path = root / expected_paths["initial_effective_ledgers"][index]
+        if selected_path.is_file() and initial_path.is_file() and selected_path.read_bytes() != initial_path.read_bytes():
+            errors.append(f"{scope} initial effective ledger must be byte-identical to selected")
+
+    event_path = root / "population/effective-selection-events.jsonl"
+    events = read_jsonl(event_path, errors, required_file=True)
+    projected = {scope: list(ledgers[(scope, "selected")]) for scope in ("domestic", "international")}
+    ever_used = {scope: {item.get("company_id") for item in projected[scope]} for scope in projected}
+    event_ids = set()
+    for event in events:
+        event_id = event.get("event_id") or "event[missing-id]"
+        required(event, ("event_id", "scope", "excluded_company_id", "replacement_company_id", "previous_effective_sha256", "next_effective_sha256", "approved_by", "approved_at"), "event", event_id, errors)
+        if event_id in event_ids:
+            errors.append(f"duplicate event_id: {event_id}")
+        event_ids.add(event_id)
+        scope = event.get("scope")
+        if scope not in projected:
+            errors.append(f"{event_id}: invalid event scope")
+            continue
+        before = projected[scope]
+        if event.get("previous_effective_sha256") != sha256(jsonl_bytes(before)):
+            errors.append(f"{event_id}: previous_effective_sha256 mismatch")
+        excluded = event.get("excluded_company_id")
+        if excluded not in {item.get("company_id") for item in before}:
+            errors.append(f"{event_id}: excluded company is not currently effective")
+            continue
+        replacement = next((item for item in ledgers[(scope, "eligible")] if item.get("company_id") not in ever_used[scope]), None)
+        if replacement is None or event.get("replacement_company_id") != replacement.get("company_id"):
+            errors.append(f"{event_id}: replacement is not the next unused canonical candidate")
+            continue
+        after = [item for item in before if item.get("company_id") != excluded] + [replacement]
+        after.sort(key=lambda company: canonical_key(protocol, company))
+        if event.get("next_effective_sha256") != sha256(jsonl_bytes(after)):
+            errors.append(f"{event_id}: next_effective_sha256 mismatch")
+        projected[scope] = after
+        ever_used[scope].add(replacement.get("company_id"))
+    for scope in projected:
+        current_path = root / f"population/{scope}-effective-selected.jsonl"
+        if current_path.is_file() and current_path.read_bytes() != jsonl_bytes(projected[scope]):
+            errors.append(f"{scope} current effective ledger does not match event projection")
+
+    effective_required = [
+        "population/domestic-initial-effective-selected.jsonl", "population/international-initial-effective-selected.jsonl",
+        "population/domestic-effective-selected.jsonl", "population/international-effective-selected.jsonl",
+        "population/effective-selection-events.jsonl",
+    ]
+    validate_manifest(root / "population/effective-selection-manifest.json", effective_required, root, errors, "effective")
+    freeze_required = [
+        "population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
+        "population/domestic-selected.jsonl", "population/international-selected.jsonl", *effective_required,
+        "population/effective-selection-manifest.json",
+    ]
+    validate_manifest(root / "population/freeze-manifest.json", freeze_required, root, errors, "freeze")
+    return projected
+
+
+def validate_claims(claims, company_ids, source_map, as_of, errors):
     claim_ids = set()
     for index, claim in enumerate(claims, 1):
         claim_id = claim.get("claim_id") or f"claim[{index}]"
         required(claim, ("claim_id", "company_id", "benefit_name", "detail", "status", "evidence_grade", "source_ids", "application_scope", "checked_at"), "", claim_id, errors)
-        if claim_id in seen:
+        if claim_id in claim_ids:
             errors.append(f"duplicate claim_id: {claim_id}")
-        seen.add(claim_id)
         claim_ids.add(claim_id)
-        if claim.get("company_id") not in companies:
-            errors.append(f"{claim_id}: unknown company_id")
+        if claim.get("company_id") not in company_ids:
+            errors.append(f"{claim_id}: company is outside current effective selection")
         status = claim.get("status")
         if status not in CLAIM_STATUSES:
             errors.append(f"{claim_id}: invalid status")
         grade = claim.get("evidence_grade")
-        if grade not in EVIDENCE_GRADES:
-            errors.append(f"{claim_id}: invalid evidence grade")
-        eligible = [sid for sid in claim.get("source_ids", []) if sid in source_map and source_is_eligible(source_map[sid])]
+        source_ids = claim.get("source_ids", []) if isinstance(claim.get("source_ids"), list) else []
+        eligible = validate_source_use(source_map, source_ids, "benefit_claim", claim_id, errors, grade_required=True)
         required_count = 2 if status == "conflict" else (1 if status in EVIDENCED_STATUSES else 0)
         if len(set(eligible)) < required_count:
-            noun = "sources" if required_count == 2 else "source"
-            errors.append(f"{claim_id}: {status} requires at least {'two' if required_count == 2 else 'one'} eligible A/B {noun}")
+            errors.append(f"{claim_id}: {status} requires at least {required_count} eligible claim-field source(s)")
         if status == "unknown":
-            if grade != "none" or claim.get("source_ids"):
-                errors.append(f"{claim_id}: unknown must be a non-claim without evidence grade")
-            if not claim.get("searched_source_ids"):
+            if grade != "none" or source_ids:
+                errors.append(f"{claim_id}: unknown must be a non-claim without evidence")
+            searched = claim.get("searched_source_ids")
+            if not searched:
                 errors.append(f"{claim_id}: unknown requires searched_source_ids")
             if "없다는 뜻이 아니다" not in claim.get("detail", ""):
                 errors.append(f"{claim_id}: unknown wording must not imply absence")
-        else:
-            required(claim, ("publication_date", "prepublication_checked_at", "source_locator", "supporting_quote", "content_sha256"), "claim", claim_id, errors)
+        elif status in EVIDENCED_STATUSES:
+            required(claim, ("prepublication_checked_at", "source_locator", "supporting_quote", "content_sha256"), "claim", claim_id, errors)
+            if grade not in {"A", "B"}:
+                errors.append(f"{claim_id}: evidenced claim requires evidence grade A or B")
             if not re.fullmatch(r"[0-9a-f]{64}", str(claim.get("content_sha256", ""))):
                 errors.append(f"{claim_id}: invalid content_sha256")
         app = claim.get("application_scope", {})
@@ -213,34 +484,33 @@ def validate_claims(claims, companies, source_map, as_of, errors):
         published = parse_day(claim.get("publication_date"), "publication_date", claim_id, errors)
         checked = parse_day(claim.get("checked_at"), "checked_at", claim_id, errors)
         prepub = parse_day(claim.get("prepublication_checked_at"), "prepublication_checked_at", claim_id, errors)
-        if status in {"confirmed", "limited", "name_only"} and published and (as_of - published).days > 731:
+        if status in EVIDENCED_STATUSES and published and (as_of - published).days > 731:
             errors.append(f"{claim_id}: source is older than 24 months")
-        if status in EVIDENCED_STATUSES | {"conflict"} and not published and checked and (as_of - checked).days > 30:
+        if status in EVIDENCED_STATUSES and not published and (not checked or (as_of - checked).days > 30):
             errors.append(f"{claim_id}: undated source was not checked within 30 days")
-        if status in EVIDENCED_STATUSES | {"conflict"} and prepub and (as_of - prepub).days > 14:
+        if status in EVIDENCED_STATUSES and prepub and (as_of - prepub).days > 14:
             errors.append(f"{claim_id}: prepublication check is older than 14 days")
     return claim_ids
 
 
 def validate_reviews(reviews, claim_ids, errors):
-    seen = set()
-    reviewed = set()
+    approved = set()
+    review_ids = set()
     for index, review in enumerate(reviews, 1):
         review_id = review.get("review_id") or f"review[{index}]"
-        required(review, ("review_id", "claim_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "resolution"), "review", review_id, errors)
-        if "issues" not in review or not isinstance(review.get("issues"), list):
-            errors.append(f"{review_id}: missing review issues")
-        if review_id in seen:
+        required(review, ("review_id", "claim_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "issues", "resolution"), "review", review_id, errors)
+        if review_id in review_ids:
             errors.append(f"duplicate review_id: {review_id}")
-        seen.add(review_id)
-        if review.get("claim_id") not in claim_ids:
+        review_ids.add(review_id)
+        claim_id = review.get("claim_id")
+        if claim_id not in claim_ids:
             errors.append(f"{review_id}: unknown claim_id")
-        else:
-            reviewed.add(review.get("claim_id"))
         if review.get("researcher_id") == review.get("reviewer_id"):
             errors.append(f"{review_id}: review self-approval is prohibited")
-    for claim_id in claim_ids - reviewed:
-        errors.append(f"{claim_id}: missing independent review")
+        elif review.get("decision") == "approved" and claim_id in claim_ids:
+            approved.add(claim_id)
+    for claim_id in claim_ids - approved:
+        errors.append(f"{claim_id}: missing approved independent review")
 
 
 def validate_corrections(corrections, claim_ids, errors):
@@ -260,30 +530,8 @@ def validate_ranking_language(root, errors):
         if path.name in {"methodology.md", "population-protocol.md"}:
             continue
         text = path.read_text(encoding="utf-8")
-        for pattern in RANKING_PATTERNS:
-            if pattern.search(text):
-                errors.append(f"{path}: prohibited ranking language")
-                break
-
-
-def validate_manifests(root, protocol_path, errors):
-    manifest_path = find_file(root, "freeze-manifest.json")
-    if not manifest_path.exists():
-        return
-    manifest = read_json(manifest_path, errors)
-    if not isinstance(manifest, dict):
-        return
-    actual_protocol_hash = hashlib.sha256(protocol_path.read_bytes()).hexdigest()
-    if manifest.get("protocol_sha256") != actual_protocol_hash:
-        errors.append(f"{manifest_path}: protocol_sha256 mismatch")
-    for item in manifest.get("ledger_hashes", []):
-        relative = item.get("path") if isinstance(item, dict) else None
-        expected = item.get("sha256") if isinstance(item, dict) else None
-        ledger_path = root / relative if relative else None
-        if ledger_path is None or not ledger_path.is_file():
-            errors.append(f"{manifest_path}: missing frozen ledger {relative}")
-        elif not re.fullmatch(r"[0-9a-f]{64}", str(expected or "")) or hashlib.sha256(ledger_path.read_bytes()).hexdigest() != expected:
-            errors.append(f"{manifest_path}: frozen ledger hash mismatch for {relative}")
+        if any(pattern.search(text) for pattern in RANKING_PATTERNS):
+            errors.append(f"{path}: prohibited ranking language")
 
 
 def verify_workspace(root, as_of=None):
@@ -291,34 +539,42 @@ def verify_workspace(root, as_of=None):
     as_of = as_of or date.today()
     errors = []
     protocol_path = find_file(root, "population-protocol.json")
-    protocol = read_json(protocol_path, errors) if protocol_path.exists() else None
+    protocol = read_json(protocol_path, errors) if protocol_path.is_file() else None
     if not isinstance(protocol, dict):
         errors.append("missing population protocol")
         return errors
     status = protocol.get("status")
     if status != "approved":
         errors.append(f"protocol status is {status or 'missing'}; approved protocol required")
-    approval = protocol.get("approval")
-    if status == "approved" and (not isinstance(approval, dict) or not approval.get("approved_by") or not approval.get("approved_at")):
-        errors.append("approved protocol is missing explicit approval")
-    if status != "approved":
         for name in PROHIBITED_POPULATION_FILES:
             for path in root.rglob(name):
                 errors.append(f"prohibited population artifact while protocol is blocked: {path}")
+        validate_ranking_language(root, errors)
+        return errors
+    approval = protocol.get("approval")
+    if not isinstance(approval, dict) or not approval.get("approved_by") or not approval.get("approved_at"):
+        errors.append("approved protocol is missing explicit approval")
 
-    sources = read_jsonl(find_file(root, "source-registry.jsonl"), errors)
-    if not sources:
-        sources = read_jsonl(find_file(root, "sources.jsonl"), errors)
+    source_path = find_file(root, "source-registry.jsonl")
+    sources = read_jsonl(source_path, errors, required_file=True)
     source_map = validate_sources(sources, errors)
-    companies = read_jsonl(find_file(root, "companies.jsonl"), errors)
-    claims = read_jsonl(find_file(root, "benefit-claims.jsonl"), errors)
-    reviews = read_jsonl(find_file(root, "reviews.jsonl"), errors)
-    corrections = read_jsonl(find_file(root, "corrections.jsonl"), errors)
-    company_ids = validate_companies(protocol, companies, source_map, errors)
-    claim_ids = validate_claims(claims, company_ids, source_map, as_of, errors)
+    validate_protocol(protocol, source_map, errors)
+    projected = validate_population(root, protocol, source_map, as_of, errors)
+
+    companies = read_jsonl(find_file(root, "companies.jsonl"), errors, required_file=True)
+    effective = projected.get("domestic", []) + projected.get("international", [])
+    validate_ledger_records(protocol, companies, "companies", source_map, as_of, errors, exact_count=2000, enforce_order=False)
+    effective_map = {company.get("company_id"): company for company in effective}
+    company_map = {company.get("company_id"): company for company in companies}
+    if set(company_map) != set(effective_map) or any(company_map.get(company_id) != record for company_id, record in effective_map.items()):
+        errors.append("companies ledger must exactly match current effective selection")
+
+    claims = read_jsonl(find_file(root, "benefit-claims.jsonl"), errors, required_file=True)
+    reviews = read_jsonl(find_file(root, "reviews.jsonl"), errors, required_file=True)
+    corrections = read_jsonl(find_file(root, "corrections.jsonl"), errors, required_file=True)
+    claim_ids = validate_claims(claims, set(company_map), source_map, as_of, errors)
     validate_reviews(reviews, claim_ids, errors)
     validate_corrections(corrections, claim_ids, errors)
-    validate_manifests(root, protocol_path, errors)
     validate_ranking_language(root, errors)
     return errors
 
