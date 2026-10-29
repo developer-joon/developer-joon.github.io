@@ -1,7 +1,7 @@
 {
   "$schema": "./schema/population-protocol.schema.json",
   "protocol_id": "company-benefits-population-v3",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "status": "approved",
   "approval": {
     "approved_by": "user-authorized implementation scope; technical review pending",

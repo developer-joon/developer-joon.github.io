@@ -61,7 +61,7 @@ class ContractFixture:
         self.protocol = json.loads((RESEARCH_ROOT / "population-protocol.json").read_text(encoding="utf-8"))
         self.protocol.update({
             "protocol_id": "company-benefits-population-synthetic-test",
-            "version": "3.1.0",
+            "version": "3.1.1",
             "status": "approved",
             "approval": {"approved_by": "owner", "approved_at": "2026-10-21T00:00:00Z"},
         })

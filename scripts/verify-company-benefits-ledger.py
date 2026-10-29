@@ -44,7 +44,7 @@ PINNED_PROTOCOL_FIELDS = (
 EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction"}
 OFFICIAL_SOURCE_TYPES = {"government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report"}
 PINNED_CONTRACT_SHA256 = "8a9174d66adf5f2fae6d0e6d8144ea873d4d068f918d712573dcb0ed2b861059"
-PINNED_CONTRACT_VERSION = "3.1.0"
+PINNED_CONTRACT_VERSION = "3.1.1"
 MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
 HASH_SCHEMA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 EVENT_SCHEMA = {
@@ -756,7 +756,7 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
             ledgers[(scope, kind)] = read_jsonl(root / relative, errors, required_file=True)
         validate_ledger_records(protocol, ledgers[(scope, "eligible")], f"{scope} eligible", source_map, as_of, errors)
         if protocol.get("protocol_id") in {"company-benefits-population-v2", "company-benefits-population-v3"}:
-            expected_eligible = 1350 if scope == "domestic" else (1066 if protocol.get("version") == "3.1.0" else 1070)
+            expected_eligible = 1350 if scope == "domestic" else (1066 if protocol.get("version") == "3.1.1" else 1070)
             if len(ledgers[(scope, "eligible")]) != expected_eligible:
                 errors.append(f"{scope} eligible must contain exactly {expected_eligible} verified records")
         for kind in ("selected", "initial", "current"):

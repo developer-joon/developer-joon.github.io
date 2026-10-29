@@ -17,6 +17,76 @@ class WorkforceAuditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             audit.quote_date('As of January 3, 2026 and December 31, 2025 we employed 100 people.')
 
+    def test_count_date_is_bounded_to_carpenter_workforce_clause(self):
+        import csv
+        import json
+        audit = module()
+        source_rows = list(csv.DictReader((audit.EXTERNAL/'corrected_strict_us_employee_eligible_ledger.csv').read_text().splitlines()))
+        carpenter = next(row for row in source_rows if row['legal_name'] == 'CARPENTER TECHNOLOGY CORP')
+        self.assertEqual('2026-06-30', audit.count_quote_date(carpenter['employee_evidence_quote'], carpenter['employee_count']))
+        self.assertEqual('2025-12-31', audit.count_quote_date('Globally, at Dec. 31, 2025, we had approximately 48,100 full-time employees.', 48100))
+        reviews = [json.loads(line) for line in (ROOT/'docs/research/company-benefits/population/independent-sec-workforce-reviews.jsonl').read_text().splitlines()]
+        review = next(row for row in reviews if row['accession'] == carpenter['accession'])
+        self.assertEqual('2026-06-30', review['evidence_date'])
+        self.assertEqual('explicit_quote_date', review['date_basis'])
+
+    def test_independent_review_semantics_fail_closed(self):
+        import csv
+        import json
+        import tempfile
+        audit = module()
+        review_rows = [json.loads(line) for line in (ROOT/'docs/research/company-benefits/population/independent-sec-workforce-reviews.jsonl').read_text().splitlines()]
+        source_rows = {row['accession']: row for row in csv.DictReader((audit.EXTERNAL/'corrected_strict_us_employee_eligible_ledger.csv').read_text().splitlines())}
+
+        adversarial_values = [
+            ('reviewed_at', 'not-a-timestamp'),
+            ('reviewed_at', '2999-01-01T00:00:00Z'),
+            ('reviewer_id', ''),
+            ('rationale', ''),
+            ('rationale', 'Reviewed and approved based on the evidence.'),
+            ('date_basis', ''),
+            ('date_basis', 'filing_date'),
+            ('evidence_date', '1999-01-01'),
+            ('filing_sha256', '0' * 64),
+            ('CIK', '0000000000'),
+            ('entity_entailment_confirmed', False),
+            ('positive_count_confirmed', False),
+            ('rejection_reason', 'approved rows cannot carry a rejection reason'),
+        ]
+        approved_index = next(i for i, row in enumerate(review_rows) if row['decision'] == 'approved')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'reviews.jsonl'
+            for field, value in adversarial_values:
+                with self.subTest(field=field, value=value):
+                    bad = [dict(row) for row in review_rows]
+                    bad[approved_index][field] = value
+                    path.write_text(''.join(json.dumps(row)+'\n' for row in bad))
+                    with self.assertRaises(ValueError):
+                        review_map = audit.reviews(path)
+                        audit.workforce_date(source_rows[bad[approved_index]['accession']], review_map)
+
+    def test_undated_review_requires_null_date_and_undated_basis(self):
+        import csv
+        import json
+        import tempfile
+        audit = module()
+        review_rows = [json.loads(line) for line in (ROOT/'docs/research/company-benefits/population/independent-sec-workforce-reviews.jsonl').read_text().splitlines()]
+        source_rows = {row['accession']: row for row in csv.DictReader((audit.EXTERNAL/'corrected_strict_us_employee_eligible_ledger.csv').read_text().splitlines())}
+        index = next(i for i, row in enumerate(review_rows) if audit.count_quote_date(row['exact quote'], source_rows[row['accession']]['employee_count']) is None)
+        self.assertIsNone(review_rows[index]['evidence_date'])
+        self.assertEqual('undated_current', review_rows[index]['date_basis'])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'reviews.jsonl'
+            for evidence_date, date_basis in [('undated_current', 'undated_current'), ('2026-01-01', 'undated_current'), (None, 'explicit_quote_date')]:
+                with self.subTest(evidence_date=evidence_date, date_basis=date_basis):
+                    bad = [dict(row) for row in review_rows]
+                    bad[index]['evidence_date'] = evidence_date
+                    bad[index]['date_basis'] = date_basis
+                    path.write_text(''.join(json.dumps(row)+'\n' for row in bad))
+                    with self.assertRaises(ValueError):
+                        review_map = audit.reviews(path)
+                        audit.workforce_date(source_rows[bad[index]['accession']], review_map)
+
     def test_compact_audit_and_population(self):
         audit = module()
         root = ROOT / 'docs/research/company-benefits'
@@ -102,14 +172,14 @@ class WorkforceAuditTests(unittest.TestCase):
         import tempfile
         spec = importlib.util.spec_from_file_location('verifier', ROOT/'scripts/verify-company-benefits-ledger.py')
         verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
-        protocol = {'version':'3.1.0'}
+        protocol = {'version':'3.1.1'}
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'receipt.json'
-            receipt={'schema_version':'1','protocol_version':'3.1.0','freeze_manifest_sha256':'a'*64,'review_status':'review_pending','issued_at':'2026-10-30T00:00:00Z'}
+            receipt={'schema_version':'1','protocol_version':'3.1.1','freeze_manifest_sha256':'a'*64,'review_status':'review_pending','issued_at':'2026-10-30T00:00:00Z'}
             path.write_text(json.dumps(receipt)); errors=[]
             self.assertEqual({},verifier.external_freeze_anchor(path,protocol,errors))
             self.assertIn('not approved', ' '.join(errors))
-            receipt.update(review_status='approved',protocol_version='3.0.0');path.write_text(json.dumps(receipt));errors=[]
+            receipt.update(review_status='approved',protocol_version='3.1.0');path.write_text(json.dumps(receipt));errors=[]
             verifier.external_freeze_anchor(path,protocol,errors)
             self.assertIn('protocol identity mismatch',' '.join(errors))
 
@@ -141,7 +211,7 @@ class WorkforceAuditTests(unittest.TestCase):
         real_verify=verifier.verify_workspace
         root=ROOT/'docs/research/company-benefits'
         anchor=verifier.sha256((root/'population/freeze-manifest.json').read_bytes())
-        verifier.verify_workspace=lambda *args, **kwargs: real_verify(*args, **kwargs, approved_freeze_anchors={'3.1.0':anchor})
+        verifier.verify_workspace=lambda *args, **kwargs: real_verify(*args, **kwargs, approved_freeze_anchors={'3.1.1':anchor})
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(renderer,'load_verifier',return_value=verifier):
             with self.assertRaisesRegex(ValueError, 'missing claim records'):
                 renderer.render_batch(root,Path(tmp),'international',1,as_of=date(2026,10,30))
@@ -151,12 +221,12 @@ class WorkforceAuditTests(unittest.TestCase):
         import json
         import stat
         audit=module()
-        path=Path('/home/bread/.hermes/profiles/conan/cache/company-benefits/protocol-3.1.0/freeze-anchor-receipt.json')
+        path=Path('/home/bread/.hermes/profiles/conan/cache/company-benefits/protocol-3.1.1/freeze-anchor-receipt.json')
         self.assertEqual(0o600,stat.S_IMODE(path.stat().st_mode))
         self.assertEqual(0o700,stat.S_IMODE(path.parent.stat().st_mode))
         self.assertEqual(0o700,stat.S_IMODE(path.parent.parent.stat().st_mode))
         receipt=json.loads(path.read_text())
-        self.assertEqual('3.1.0',receipt['protocol_version'])
+        self.assertEqual('3.1.1',receipt['protocol_version'])
         self.assertEqual('review_pending',receipt['review_status'])
         self.assertEqual(audit.digest((ROOT/'docs/research/company-benefits/population/freeze-manifest.json').read_bytes()),receipt['freeze_manifest_sha256'])
 

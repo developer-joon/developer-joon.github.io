@@ -1,4 +1,4 @@
-# Company benefits population protocol — version 3.1.0 frozen population
+# Company benefits population protocol — version 3.1.1 frozen population
 
 **Status: APPROVED for the user-authorized population freeze. Independent technical review remains pending.**
 
