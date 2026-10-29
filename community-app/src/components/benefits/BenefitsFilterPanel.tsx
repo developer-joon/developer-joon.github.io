@@ -18,8 +18,14 @@ export function BenefitsFilterPanel({
   const [mobile, setMobile] = useState(
     () => window.matchMedia?.('(max-width: 699px)').matches ?? false,
   )
+  const [searchDraft, setSearchDraft] = useState(state.q)
   const drawer = useRef<HTMLDialogElement>(null),
     trigger = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    setSearchDraft((current) =>
+      current.trim() === state.q ? current : state.q,
+    )
+  }, [state.q])
   useEffect(() => {
     const media = window.matchMedia?.('(max-width: 699px)')
     if (!media) return
@@ -37,9 +43,13 @@ export function BenefitsFilterPanel({
         기업 검색
         <input
           type="search"
-          value={state.q}
+          value={searchDraft}
           maxLength={100}
-          onChange={(e) => update({ q: e.target.value, page: 1 })}
+          onChange={(event) => {
+            setSearchDraft(event.target.value)
+            update({ q: event.target.value, page: 1 })
+          }}
+          onBlur={() => setSearchDraft(state.q)}
         />
       </label>
       <label>
