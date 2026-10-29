@@ -105,7 +105,9 @@ it('loads verified claim applicability for fit results', async () => {
     name: /예시 별빛기업 01/,
   })
   const article = result.closest('article')!
-  expect(article).toHaveTextContent('예시 연구직')
+  expect(
+    (await within(article).findAllByText(/예시 연구직/)).length,
+  ).toBeGreaterThan(0)
   expect(article).toHaveTextContent('예시 정규직')
   expect(article).toHaveTextContent('대한민국')
   expect(benefitsClient.loadCompanyDetails).toHaveBeenCalled()

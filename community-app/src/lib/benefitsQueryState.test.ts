@@ -27,6 +27,15 @@ it('normalizes bounded allowed URL state and preserves round trips', () => {
   expect(encoded).not.toContain('evil')
   expect(parseQuery(encoded, ids).compare).toEqual(state.compare)
 })
+it('normalizes methodology queries without an index while preserving only canonical compare IDs', () => {
+  const state = parseQuery(
+    '?compare=example-001,example-000,example-2000,unknown',
+  )
+
+  expect(state.compare).toEqual(['example-001', 'example-2000'])
+  expect(state.notice).toBeTruthy()
+})
+
 it('recovers oversized and malformed query safely', () => {
   expect(parseQuery('?' + 'x'.repeat(9000), ids).notice).toBeTruthy()
   expect(parseQuery('?scope=no&page=Infinity&compare=unknown', ids).scope).toBe(

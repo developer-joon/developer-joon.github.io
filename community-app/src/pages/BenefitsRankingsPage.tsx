@@ -1,8 +1,12 @@
+import { useEffect } from 'react'
 import { categories, categoryLabels } from '../types/benefits'
 import type { Category } from '../types/benefits'
 import type { ExplorerViewProps } from './BenefitsExplorerPage'
 import { useBenefitsRankings } from '../lib/useBenefitsRankings'
-import { CategoryRankingList } from '../components/benefits/CategoryRankingList'
+import {
+  CategoryRankingList,
+  orderCategoryRankingRows,
+} from '../components/benefits/CategoryRankingList'
 export function BenefitsRankingsPage({
   manifest,
   index,
@@ -17,6 +21,19 @@ export function BenefitsRankingsPage({
     index,
     !!category,
   )
+  const companyIds = new Set(companies.map((company) => company.company_id))
+  const rows = data && category
+    ? orderCategoryRankingRows(
+        data.rows.filter(
+          (row) => row.category === category && companyIds.has(row.company_id),
+        ),
+      )
+    : []
+  const pages = Math.max(1, Math.ceil(rows.length / 50))
+  const page = Math.min(state.page, pages)
+  useEffect(() => {
+    if (data && state.page > pages) update({ page: pages })
+  }, [data, pages, state.page, update])
   return (
     <>
       <h2>공식 공개자료로 확인된 복지 분야별 강도</h2>
@@ -56,14 +73,27 @@ export function BenefitsRankingsPage({
             순서입니다.
           </p>
           <CategoryRankingList
-            rows={data.rows.filter(
-              (r) =>
-                r.category === category &&
-                companies.some((c) => c.company_id === r.company_id),
-            )}
+            rows={rows.slice((page - 1) * 50, page * 50)}
             companies={companies}
             link={(id) => link(id, category)}
           />
+          <nav aria-label="순위 페이지" className="benefits-pagination">
+            <button
+              disabled={page === 1}
+              onClick={() => update({ page: page - 1 })}
+            >
+              이전 페이지
+            </button>
+            <span>
+              {page} / {pages} · 페이지당 최대 50개
+            </span>
+            <button
+              disabled={page >= pages}
+              onClick={() => update({ page: page + 1 })}
+            >
+              다음 페이지
+            </button>
+          </nav>
         </>
       )}
     </>

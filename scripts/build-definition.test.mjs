@@ -177,6 +177,18 @@ test('exposes one non-deploying release check without hosted-write package short
   }
 })
 
+test('release node boundary includes the 2,000-company benefits browser contract', async () => {
+  const releaseGate = await readFile(
+    path.join(repoRoot, 'scripts/release-gate.mjs'),
+    'utf8',
+  )
+
+  assert.match(
+    releaseGate,
+    /'scripts\/check-benefits-browser\.test\.mjs'/,
+  )
+})
+
 test('ordinary CI and build paths remain fixture-backed and never invoke release check', async () => {
   const workflowDirectory = path.join(repoRoot, '.github/workflows')
   const workflowFiles = (await readdir(workflowDirectory)).filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'))

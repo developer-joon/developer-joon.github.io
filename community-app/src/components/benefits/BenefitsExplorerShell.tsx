@@ -46,7 +46,7 @@ export function BenefitsExplorerShell({
           ))}
           <a
             aria-current={route === 'methodology' ? 'page' : undefined}
-            href="/community/benefits/methodology/"
+            href={`/community/benefits/methodology/${query}`}
           >
             조사 기준·정정 이력
           </a>

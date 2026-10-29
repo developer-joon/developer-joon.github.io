@@ -38,7 +38,7 @@ export function BenefitsApp({
   return (
     <Suspense fallback={<BenefitsFallback />}>
       {route === 'methodology' ? (
-        <BenefitsMethodologyPage />
+        <BenefitsMethodologyPage search={search} />
       ) : (
         <BenefitsExplorerPage route={route} search={search} />
       )}

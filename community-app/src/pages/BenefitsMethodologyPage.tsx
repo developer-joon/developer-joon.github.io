@@ -1,8 +1,15 @@
 import { BenefitsExplorerShell } from '../components/benefits/BenefitsExplorerShell'
 import methodology from '../data/benefitsMethodology.json'
-export function BenefitsMethodologyPage() {
+import { parseQuery, serializeQuery } from '../lib/benefitsQueryState'
+
+export function BenefitsMethodologyPage({
+  search = window.location.search,
+}: {
+  search?: string
+}) {
+  const query = serializeQuery(parseQuery(search))
   return (
-    <BenefitsExplorerShell route="methodology" query="">
+    <BenefitsExplorerShell route="methodology" query={query}>
       <section className="benefits-evidence">
         <h2>{methodology.title}</h2>
         {methodology.paragraphs.map((p) => (

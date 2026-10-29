@@ -320,12 +320,47 @@ try {
       'utf8',
     ),
   )
+  const rankings = JSON.parse(
+    await readFile(
+      path.join(root, 'data/company-benefits/fixture-v1/rankings.json'),
+      'utf8',
+    ),
+  )
+  const details = JSON.parse(
+    await readFile(
+      path.join(
+        root,
+        'data/company-benefits/fixture-v1/details/companies.json',
+      ),
+      'utf8',
+    ),
+  )
   const companies = Array.from({ length: 2000 }, (_, i) => ({
     ...index.companies[i % index.companies.length],
     company_id: `example-${String(i + 1).padStart(3, '0')}`,
     display_name: `예시 성능기업 ${i + 1}`,
   }))
+  const rankingRows = companies.flatMap((company, i) =>
+    rankings.rows
+      .filter(
+        (row) =>
+          row.company_id ===
+          index.companies[i % index.companies.length].company_id,
+      )
+      .map((row) => ({ ...row, company_id: company.company_id })),
+  )
+  const detailCompanies = companies.map((company, i) => ({
+    ...details.companies.find(
+      (detail) =>
+        detail.company_id ===
+        index.companies[i % index.companies.length].company_id,
+    ),
+    company_id: company.company_id,
+  }))
   const indexBytes = JSON.stringify({ ...index, companies }) + '\n'
+  const rankingsBytes = JSON.stringify({ ...rankings, rows: rankingRows }) + '\n'
+  const detailsBytes =
+    JSON.stringify({ ...details, companies: detailCompanies }) + '\n'
   manifest.company_count = 2000
   manifest.detail_shards = Object.fromEntries(
     companies.map((c) => [c.company_id, manifest.detail_shards['example-001']]),
@@ -334,9 +369,20 @@ try {
     sha256: createHash('sha256').update(indexBytes).digest('hex'),
     record_count: 2000,
   }
+  manifest.artifact_sha256[manifest.rankings_url] = {
+    sha256: createHash('sha256').update(rankingsBytes).digest('hex'),
+    record_count: rankingRows.length,
+  }
+  const detailsUrl = manifest.detail_shards['example-001']
+  manifest.artifact_sha256[detailsUrl] = {
+    sha256: createHash('sha256').update(detailsBytes).digest('hex'),
+    record_count: detailCompanies.length,
+  }
   performanceFixture = {
     'data/company-benefits/manifest.json': JSON.stringify(manifest),
     'data/company-benefits/fixture-v1/company-index.json': indexBytes,
+    'data/company-benefits/fixture-v1/rankings.json': rankingsBytes,
+    'data/company-benefits/fixture-v1/details/companies.json': detailsBytes,
   }
   await call('Emulation.setDeviceMetricsOverride', {
     width: 1440,
@@ -374,6 +420,50 @@ try {
     await evaluate(
       '`2000-company browser fixture: search ${window.__searchMs.toFixed(2)} ms; page change ${window.__pageMs.toFixed(2)} ms; 50-row cap; no refetch.`',
     ),
+  )
+  requests.length = 0
+  await navigate('rankings/?categories=family')
+  await wait(`document.querySelector('[aria-label="순위 페이지"]')`)
+  assert.equal(
+    await evaluate(
+      `document.querySelectorAll('[aria-label="분야별 평가 결과"] > ol > li,[aria-label="평가 근거 부족"] > ul > li').length`,
+    ),
+    50,
+    '2000-company rankings must keep a 50-row cap',
+  )
+  const rankingFirstPage = await evaluate(
+    `document.querySelector('[aria-label="분야별 평가 결과"] li a,[aria-label="평가 근거 부족"] li a').textContent`,
+  )
+  await evaluate(
+    `[...document.querySelectorAll('[aria-label="순위 페이지"] button')].find(button=>button.textContent==='다음 페이지').click()`,
+  )
+  await wait(`new URLSearchParams(location.search).get('page')==='2'`)
+  assert.notEqual(
+    await evaluate(
+      `document.querySelector('[aria-label="분야별 평가 결과"] li a,[aria-label="평가 근거 부족"] li a').textContent`,
+    ),
+    rankingFirstPage,
+    '2000-company rankings did not preserve URL-owned page order',
+  )
+  findings.push('2000-company rankings: ordered URL pagination; 50-row cap.')
+
+  requests.length = 0
+  await navigate('fit/?preset=custom&weights=family:5')
+  await wait(
+    `document.querySelectorAll('article.benefits-result').length===50&&document.querySelector('.benefits-applicability')`,
+  )
+  assert.equal(
+    await evaluate(`document.querySelectorAll('article.benefits-result').length`),
+    50,
+    '2000-company fit must keep a 50-result cap',
+  )
+  assert.equal(
+    requests.filter((url) => url.includes('/details/')).length,
+    1,
+    '2000-company fit should load detail only for the displayed candidate set',
+  )
+  findings.push(
+    '2000-company fit: 50-result cap; displayed-candidate detail loading verified.',
   )
   assert.deepEqual(errors, [])
   console.log(findings.join('\n'))

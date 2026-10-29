@@ -1,5 +1,13 @@
 import { rankOrder } from '../../lib/benefitsScoring'
 import type { Company, Ranking } from '../../types/benefits'
+
+export function orderCategoryRankingRows(rows: Ranking[]) {
+  return [
+    ...rows.filter((row) => row.eligible).sort(rankOrder),
+    ...rows.filter((row) => !row.eligible),
+  ]
+}
+
 export function CategoryRankingList({
   rows,
   companies,
@@ -18,7 +26,6 @@ export function CategoryRankingList({
         <ol>
           {rows
             .filter((r) => r.eligible)
-            .sort(rankOrder)
             .map((r) => (
               <li className="benefits-result" key={r.company_id}>
                 <a href={link(r.company_id)}>{name(r.company_id)}</a>{' '}
@@ -45,7 +52,7 @@ export function CategoryRankingList({
             ))}
         </ol>
         {!rows.some((r) => r.eligible) && (
-          <p>현재 필터에서 평가 가능한 기업이 없습니다.</p>
+          <p>현재 페이지에 평가 가능한 기업이 없습니다.</p>
         )}
       </section>
       <section aria-label="평가 근거 부족">

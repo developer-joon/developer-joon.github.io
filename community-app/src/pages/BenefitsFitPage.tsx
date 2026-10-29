@@ -1,8 +1,12 @@
+import { useMemo } from 'react'
 import type { ExplorerViewProps } from './BenefitsExplorerPage'
 import { useBenefitsRankings } from '../lib/useBenefitsRankings'
 import { presetWeights } from '../lib/benefitsQueryState'
 import { FitPresetPicker } from '../components/benefits/FitPresetPicker'
-import { FitResultList } from '../components/benefits/FitResultList'
+import {
+  buildFitResults,
+  FitResultList,
+} from '../components/benefits/FitResultList'
 import { useBenefitsDetails } from '../lib/useBenefitsDetails'
 export function BenefitsFitPage({
   manifest,
@@ -13,13 +17,17 @@ export function BenefitsFitPage({
   link,
 }: ExplorerViewProps) {
   const { data, error, retry } = useBenefitsRankings(manifest, index)
+  const weights =
+    state.preset === 'custom' ? state.weights : presetWeights(state.preset)
+  const candidates = useMemo(
+    () => (data ? buildFitResults(companies, data, weights).slice(0, 50) : []),
+    [companies, data, weights],
+  )
   const applicability = useBenefitsDetails(
     manifest,
     index,
-    companies.map((company) => company.company_id),
+    candidates.map(({ company }) => company.company_id),
   )
-  const weights =
-    state.preset === 'custom' ? state.weights : presetWeights(state.preset)
   return (
     <>
       <h2>조건 일치 기업</h2>
@@ -32,28 +40,29 @@ export function BenefitsFitPage({
         절반 미만이면 자료 부족을 표시합니다.
       </p>
       <FitPresetPicker state={state} update={update} />
-      {error || applicability.error ? (
+      {error ? (
         <div role="alert">
-          순위 또는 적용 범위 무결성 오류 · 일치도 계산을 중단했습니다.
-          <button
-            onClick={() => {
-              retry()
-              applicability.retry()
-            }}
-          >
-            근거 다시 시도
-          </button>
+          순위 무결성 오류 · 일치도 계산을 중단했습니다.
+          <button onClick={retry}>순위 다시 시도</button>
         </div>
-      ) : !data || !applicability.data ? (
+      ) : !data ? (
         <p role="status">근거를 불러오고 있습니다.</p>
       ) : (
-        <FitResultList
-          companies={companies}
-          rankings={data}
-          details={applicability.data}
-          weights={weights}
-          link={link}
-        />
+        <>
+          {applicability.error && (
+            <div role="alert">
+              적용 범위 근거를 표시할 수 없습니다.
+              <button onClick={applicability.retry}>적용 범위 다시 시도</button>
+            </div>
+          )}
+          <FitResultList
+            results={candidates}
+            details={applicability.data}
+            weights={weights}
+            link={link}
+            totalResults={companies.length}
+          />
+        </>
       )}
     </>
   )

@@ -34,7 +34,10 @@ export type QueryState = {
   scale: string
   notice: boolean
 }
-export function parseQuery(raw: string, ids: string[]): QueryState {
+const companyIdPattern =
+  /^example-(?:00[1-9]|0[1-9]\d|[1-9]\d{2}|1\d{3}|2000)$/
+
+export function parseQuery(raw: string, ids?: string[]): QueryState {
   const defaults: QueryState = {
     scope: 'all',
     q: '',
@@ -76,6 +79,11 @@ export function parseQuery(raw: string, ids: string[]): QueryState {
     else notice = true
   }
   const page = Number(p.get('page') ?? 1)
+  const queryCompanyIds =
+    p
+      .get('compare')
+      ?.split(',')
+      .filter((value) => companyIdPattern.test(value)) ?? []
   const state: QueryState = {
     ...defaults,
     scope: ['all', 'domestic', 'international'].includes(scope)
@@ -87,7 +95,7 @@ export function parseQuery(raw: string, ids: string[]): QueryState {
     q,
     categories: list('categories', categories),
     statuses: list('statuses', statuses),
-    compare: list('compare', ids, 4),
+    compare: list('compare', ids ?? queryCompanyIds, 4),
     page: Number.isSafeInteger(page) && page > 0 ? Math.min(page, 10000) : 1,
     weights,
     industry: (p.get('industry') ?? '').slice(0, 100),

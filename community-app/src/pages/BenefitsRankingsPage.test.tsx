@@ -3,6 +3,9 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { BenefitsExplorerPage } from './BenefitsExplorerPage'
 import { benefitsClient } from '../data/benefitsArtifactClient'
 import { manifest, index, rankings, details } from '../test/benefitsFixture'
+
+const companyId = (position: number) =>
+  `example-${String(position).padStart(position < 1000 ? 3 : 4, '0')}`
 vi.mock('../data/benefitsArtifactClient', () => ({
   benefitsClient: {
     loadManifest: vi.fn(),
@@ -57,4 +60,56 @@ it('blocks only rankings on integrity error, offers retry', async () => {
   expect(
     await screen.findByRole('region', { name: '분야별 평가 결과' }),
   ).toBeVisible()
+})
+
+it('paginates 2,000 ranked and insufficient companies with at most 50 company rows total', async () => {
+  const companies = Array.from({ length: 2000 }, (_, indexPosition) => ({
+    ...index.companies[indexPosition % index.companies.length],
+    company_id: companyId(indexPosition + 1),
+    display_name: `순위 경계기업 ${indexPosition + 1}`,
+  }))
+  vi.mocked(benefitsClient.loadCompanyIndex).mockResolvedValue({
+    ...index,
+    companies,
+  })
+  vi.mocked(benefitsClient.loadRankings).mockResolvedValue({
+    ...rankings,
+    rows: companies.map((company, indexPosition) => ({
+      company_id: company.company_id,
+      category: 'family' as const,
+      eligible: indexPosition < 1500,
+      reason: indexPosition < 1500 ? '' : '공개 근거 부족',
+      components: {
+        breadth: indexPosition < 1500 ? 35 : 0,
+        applicability: indexPosition < 1500 ? 30 : 0,
+        specificity: indexPosition < 1500 ? 20 : 0,
+        freshness: indexPosition < 1500 ? 15 : 0,
+      },
+      score: indexPosition < 1500 ? 100 : 0,
+    })),
+  })
+
+  render(
+    <BenefitsExplorerPage route="rankings" search="?categories=family" />,
+  )
+
+  const ranked = await screen.findByRole('region', {
+    name: '분야별 평가 결과',
+  })
+  const insufficient = screen.getByRole('region', { name: '평가 근거 부족' })
+  expect(
+    within(ranked).getAllByRole('listitem').length +
+      within(insufficient).queryAllByRole('listitem').length,
+  ).toBe(50)
+  expect(ranked).toHaveTextContent('순위 경계기업 1')
+  expect(ranked).not.toHaveTextContent('순위 경계기업 51')
+
+  fireEvent.click(screen.getByRole('button', { name: '다음 페이지' }))
+
+  expect(await screen.findByText('순위 경계기업 51')).toBeVisible()
+  expect(new URLSearchParams(window.location.search).get('page')).toBe('2')
+  expect(
+    within(ranked).getAllByRole('listitem').length +
+      within(insufficient).queryAllByRole('listitem').length,
+  ).toBe(50)
 })
