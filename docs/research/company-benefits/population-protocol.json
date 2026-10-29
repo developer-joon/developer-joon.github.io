@@ -1,0 +1,106 @@
+{
+  "$schema": "./schema/population-protocol.schema.json",
+  "protocol_id": "company-benefits-population-v1-draft",
+  "version": "1.0.0-draft",
+  "status": "blocked",
+  "approval": null,
+  "cutoff_at": "2026-10-29T23:59:59+09:00",
+  "purpose": "Protocol-bounded, non-ranking editorial sample of large employing legal entities with auditable official evidence.",
+  "non_ranking_statement": "Selection order is a deterministic editorial processing order, not a revenue rank, complete market census, probability sample, or claim of global representativeness.",
+  "scopes": {
+    "domestic": {
+      "jurisdiction": "KR",
+      "target_count": 1000,
+      "candidate_source_ids": ["kr-opendart-corporations", "kr-ftc-affiliates", "kr-alio-institutions", "kr-cleaneye-enterprises"]
+    },
+    "international": {
+      "excluded_jurisdiction": "KR",
+      "target_count": 1000,
+      "country_panel": ["US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]
+    }
+  },
+  "classification": {
+    "selection_unit": "selected_employer_legal_entity",
+    "domestic_rule": "The employing legal entity is incorporated in KR and has its registered head office in KR.",
+    "international_rule": "The employing legal entity is incorporated outside KR and has its registered head office outside KR in a panel country.",
+    "separate_roles": ["selected_employer_legal_entity", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner"],
+    "related_entity_rule": "A parent and subsidiary may both qualify only with separate scale evidence and entity-specific benefit evidence; group policy is never inherited without applicability evidence."
+  },
+  "thresholds": {
+    "domestic_non_financial": {"metric": "revenue", "minimum": 100000000000, "currency": "KRW"},
+    "international_non_financial": {"metric": "revenue", "minimum": 1000000000, "currency": "USD"},
+    "domestic_financial": {"metric": "total_assets", "minimum": 10000000000000, "currency": "KRW"},
+    "international_financial": {"metric": "total_assets", "minimum": 10000000000, "currency": "USD"},
+    "public_sector_rule": "Public ownership or institution type does not auto-qualify an entity; the same sector threshold applies.",
+    "maximum_fiscal_age_months": 24
+  },
+  "currency_conversion": {
+    "source_owner": "World Bank",
+    "indicator": "PA.NUS.FCR",
+    "url": "https://api.worldbank.org/v2/country/all/indicator/PA.NUS.FCR?format=json",
+    "rule": "For non-USD international statements, use the official annual local-currency-per-USD factor for the fiscal year, preserve the reported value and currency, and reject a record if the required country-year factor is unavailable."
+  },
+  "source_precedence": [
+    "government_or_regulator_financial_filing",
+    "government_or_public_enterprise_disclosure",
+    "publicly_accessible_audited_company_statement"
+  ],
+  "canonical_selection": {
+    "seed": "company-benefits-population-v1",
+    "required_fields": ["jurisdiction", "registry_id", "legal_name"],
+    "jurisdiction_format": "ISO 3166-1 alpha-2 uppercase",
+    "normalization": "Unicode NFC; trim every string; collapse internal legal_name whitespace to one ASCII space",
+    "serialization": "Compact UTF-8 JSON array [protocol_seed,jurisdiction,registry_id,legal_name] with ensure_ascii=false, separators=(',', ':'), allow_nan=false",
+    "hash": "SHA-256 lowercase hex",
+    "missing_value_rule": "Reject; never substitute an empty string.",
+    "order": "Ascending hash; on collision ascending canonical JSON bytes.",
+    "exclusion_rule": "Append an exclusion/replacement event; do not mutate immutable selected records.",
+    "replacement_rule": "Use the next unused eligible canonical-hash record in the same scope.",
+    "next_hash_rule": "Each event records previous_effective_sha256 and next_effective_sha256; research cannot resume until the next hash is explicitly approved."
+  },
+  "immutable_model": {
+    "eligible_ledgers": ["population/domestic-eligible.jsonl", "population/international-eligible.jsonl"],
+    "selected_ledgers": ["population/domestic-selected.jsonl", "population/international-selected.jsonl"],
+    "effective_ledgers": ["population/domestic-effective-selected.jsonl", "population/international-effective-selected.jsonl"],
+    "event_ledger": "population/effective-selection-events.jsonl",
+    "freeze_manifest": "population/freeze-manifest.json",
+    "effective_manifest": "population/effective-selection-manifest.json",
+    "state_rule": "These files are prohibited while status is blocked. After lawful acquisition and validation, selected ledgers are immutable; effective ledgers are deterministic projections of selected ledgers plus append-only events."
+  },
+  "coverage_gap": {
+    "KR": "OpenDART, FTC and Cleaneye API acquisition requires user-owned service keys; no complete eligible union has been acquired.",
+    "US": "Official bulk sources are public, but the complete candidate/financial union and reuse snapshot have not been acquired and validated.",
+    "CA": "SEDAR+ bulk distribution is licensed; public provincial lists do not provide a complete national bulk financial population.",
+    "MX": "Official CNBV interfaces are public but bulk endpoints are undocumented and reuse terms are unresolved.",
+    "BR": "Official CVM/CNPJ open data is available, but the complete joined population has not been acquired and validated.",
+    "AR": "Official CNV interfaces are public but undocumented for bulk use and reuse terms are unresolved.",
+    "GB": "Companies House bulk products are available, but the complete eligible population has not been acquired and validated.",
+    "FR": "INPI RNE bulk/API access requires an account and complete acquisition has not occurred.",
+    "DE": "Entity-level official financial bulk access is constrained by register access, per-document retrieval and reuse conditions.",
+    "IT": "Official entity financial access is contractual or paid; no lawful complete bulk acquisition is approved.",
+    "TR": "KAP bulk/commercial reuse terms require review or contract; public pages are not an approved bulk feed.",
+    "RU": "Official bulk accounting data is subscription/contractual and reuse terms are unresolved.",
+    "AU": "ASIC identity bulk data is open, but official entity-level financial evidence at required scale has not been acquired.",
+    "CN": "Exchange and regulator sources restrict or do not document bulk/commercial reuse; complete lawful acquisition is unresolved.",
+    "IN": "Official issuer and public-enterprise sources are available, but terms and complete joined acquisition are unresolved.",
+    "ID": "IDX filing access is official, but bulk reuse and complete acquisition are unresolved.",
+    "JP": "EDINET API requires a user subscription key; no complete acquisition has occurred.",
+    "SA": "Saudi Exchange official access and reuse controls do not establish an approved bulk acquisition path.",
+    "ZA": "CIPC disclosure is fee-based and JSE structured financial feeds are commercial licensed products."
+  },
+  "blockers": [
+    {"gate": "ACQ-KR-KEYS", "requirement": "Provide user-owned OpenDART and data.go.kr service keys and authorize lawful acquisition.", "jurisdictions": ["KR"]},
+    {"gate": "ACQ-LICENSED-BULK", "requirement": "Obtain and review required bulk licences/contracts/fees before acquisition.", "jurisdictions": ["CA", "IT", "TR", "RU", "ZA"]},
+    {"gate": "ACQ-ENTITY-FINANCE", "requirement": "Approve lawful, reproducible entity-level financial acquisition paths and reuse decisions.", "jurisdictions": ["DE", "MX", "AR", "AU", "CN", "IN", "ID", "SA"]},
+    {"gate": "ACQ-API-KEYS", "requirement": "Provide user-owned API/subscription keys where official APIs require them.", "jurisdictions": ["FR", "JP"]},
+    {"gate": "ACQ-MATERIALIZE", "requirement": "Acquire, checksum and validate every official list union and qualifying scale metric for all scopes.", "jurisdictions": ["KR", "US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]},
+    {"gate": "FREEZE-APPROVAL", "requirement": "After materialization, explicitly approve protocol, eligible-ledger hashes, immutable selected-ledger hashes, and initial effective-ledger hashes.", "jurisdictions": ["KR", "US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]}
+  ],
+  "forbidden_while_blocked": [
+    "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
+    "population/domestic-selected.jsonl", "population/international-selected.jsonl",
+    "population/freeze-manifest.json", "population/domestic-effective-selected.jsonl",
+    "population/international-effective-selected.jsonl", "population/effective-selection-events.jsonl",
+    "population/effective-selection-manifest.json"
+  ]
+}

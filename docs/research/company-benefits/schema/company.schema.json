@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company.schema.json",
+  "title": "Company selection record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["company_id", "jurisdiction", "scope", "registry_id", "legal_name", "selected_employer_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "entity_status", "sector", "scale_metric", "selection_hash"],
+  "properties": {
+    "company_id": {"type": "string", "minLength": 1},
+    "jurisdiction": {"type": "string", "pattern": "^[A-Z]{2}$"},
+    "scope": {"enum": ["domestic", "international"]},
+    "registry_id": {"type": "string", "minLength": 1},
+    "legal_name": {"type": "string", "minLength": 1},
+    "selected_employer_legal_entity": {"type": "string", "minLength": 1},
+    "registered_head_office_country": {"type": "string", "pattern": "^[A-Z]{2}$"},
+    "financial_consolidation_parent": {"type": ["string", "null"]},
+    "ultimate_parent": {"type": ["string", "null"]},
+    "benefit_policy_owner": {"type": "string", "minLength": 1},
+    "entity_status": {"const": "active"},
+    "sector": {"enum": ["financial", "non_financial"]},
+    "scale_metric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "value", "currency", "band", "fiscal_year_end", "financial_scope", "source_ids"],
+      "properties": {
+        "type": {"enum": ["revenue", "total_assets"]}, "value": {"type": "number", "exclusiveMinimum": 0},
+        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}, "band": {"type": "string", "minLength": 1},
+        "fiscal_year_end": {"type": "string", "format": "date"}, "financial_scope": {"enum": ["consolidated", "standalone"]},
+        "source_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "selection_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

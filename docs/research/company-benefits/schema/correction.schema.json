@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "correction.schema.json",
+  "title": "Append-only correction event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["correction_id", "claim_id", "status", "received_at", "official_source_ids", "decision", "decided_by", "decided_at"],
+  "properties": {
+    "correction_id": {"type": "string", "minLength": 1}, "claim_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["received", "pending_verification", "accepted", "rejected"]}, "received_at": {"type": "string", "format": "date-time"},
+    "official_source_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "decision": {"type": "string", "minLength": 1}, "decided_by": {"type": "string", "minLength": 1}, "decided_at": {"type": "string", "format": "date-time"}
+  }
+}
