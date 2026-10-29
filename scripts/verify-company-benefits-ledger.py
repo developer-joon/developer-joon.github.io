@@ -843,12 +843,21 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
                 if not isinstance(conflict, list) or {item.get("position") for item in conflict if isinstance(item, dict)} != {"supports", "contradicts"}:
                     errors.append(f"{claim_id}: conflict evidence must record supports and contradicts positions")
                 else:
-                    conflict_ids = [item.get("source_id") for item in conflict]
-                    propositions = [item.get("proposition") for item in conflict]
+                    entries = [item for item in conflict if isinstance(item, dict)]
+                    conflict_ids = [item.get("source_id") for item in entries]
+                    propositions = [item.get("proposition") for item in entries]
                     if len(conflict) != 2 or len(set(conflict_ids)) != 2 or set(conflict_ids) != set(source_ids) or len(set(propositions)) != 2:
                         errors.append(f"{claim_id}: conflict evidence must use two distinct sources and propositions")
-                    quotes = {source_map.get(source_id, {}).get("supporting_quote") for source_id in conflict_ids}
-                    hashes = {source_map.get(source_id, {}).get("content_sha256") for source_id in conflict_ids}
+                    for item in entries:
+                        source = source_map.get(item.get("source_id"), {})
+                        if not (
+                            item.get("source_locator") == source.get("locator")
+                            and item.get("supporting_quote") == source.get("supporting_quote")
+                            and item.get("content_sha256") == source.get("content_sha256")
+                        ):
+                            errors.append(f"{claim_id}: conflict evidence locator, quote, and hash must exactly match its bound source record")
+                    quotes = {item.get("supporting_quote") for item in entries}
+                    hashes = {item.get("content_sha256") for item in entries}
                     if len(quotes) != len(conflict_ids) or len(hashes) != len(conflict_ids):
                         errors.append(f"{claim_id}: duplicate conflict evidence aliases are prohibited")
         app = claim.get("application_scope", {})
@@ -921,10 +930,33 @@ def validate_reviews(reviews, claims, source_map, as_of, errors):
                 errors.append(f"{review_id}: prepublication check must follow independent review")
             if claim.get("status") == "conflict":
                 determination = review.get("conflict_determination")
-                if determination not in {"resolved_supports", "resolved_contradicts", "unresolved"}:
-                    errors.append(f"{review_id}: conflict determination is required")
-                if determination == "unresolved" and review.get("unresolved_conflict_wording_approved") is not True:
+                if determination != "unresolved":
+                    errors.append(f"{review_id}: conflict status requires an explicit unresolved conflict determination")
+                if review.get("conflict_opposition_confirmed") is not True:
+                    errors.append(f"{review_id}: reviewer must explicitly attest that the bound conflict propositions oppose each other")
+                side_reviews = review.get("conflict_side_entailments")
+                expected = {
+                    (
+                        item.get("source_id"), item.get("position"), item.get("proposition"),
+                        item.get("source_locator"), item.get("supporting_quote"), item.get("content_sha256"),
+                    )
+                    for item in claim.get("conflict_evidence", []) if isinstance(item, dict)
+                }
+                reviewed_entries = [item for item in side_reviews if isinstance(item, dict)] if isinstance(side_reviews, list) else []
+                actual = {
+                    (
+                        item.get("source_id"), item.get("position"), item.get("reviewed_proposition"),
+                        item.get("source_locator"), item.get("reviewed_quote"), item.get("content_sha256"),
+                    )
+                    for item in reviewed_entries
+                    if item.get("entailment_confirmed") is True and item.get("reviewer_id") == review.get("reviewer_id")
+                }
+                if len(reviewed_entries) != len(expected) or len(actual) != len(reviewed_entries) or actual != expected:
+                    errors.append(f"{review_id}: independent review requires complete one-to-one conflict-side entailment coverage with no duplicates")
+                if review.get("unresolved_conflict_wording_approved") is not True:
                     errors.append(f"{review_id}: unresolved conflict wording requires explicit approval")
+            elif review.get("conflict_determination") == "unresolved":
+                errors.append(f"{review_id}: unresolved conflict determination requires conflict claim status")
         if reviewed and boundaries and reviewed < max(boundaries):
             errors.append(f"{review_id}: review must follow source checked_at and claim research timestamp")
         if review.get("researcher_id") == review.get("reviewer_id"):

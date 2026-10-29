@@ -390,22 +390,50 @@ class VerifierTests(unittest.TestCase):
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         self.assert_error("publication_date must not follow retrieved_at")
 
-    def test_conflict_requires_opposing_distinct_evidence_and_reviewer_determination(self):
+    def configure_conflict(self, contradicting_quote="Paid leave is not offered.", include_side_review=True):
         claim = self.fixture.claims[0]
         duplicate = copy.deepcopy(self.fixture.benefit_source)
         duplicate["source_id"] = "benefit-source-alias"
+        duplicate["content_sha256"] = "b" * 64
+        duplicate["supporting_quote"] = contradicting_quote
         self.fixture.sources.append(duplicate)
         claim.update(status="conflict", source_ids=[claim["source_ids"][0], duplicate["source_id"]], conflict_evidence=[
-            {"source_id": claim["source_ids"][0], "position": "supports", "proposition": "Paid leave is offered."},
-            {"source_id": duplicate["source_id"], "position": "contradicts", "proposition": "Paid leave is not offered."},
+            {"source_id": claim["source_ids"][0], "position": "supports", "proposition": "Paid leave is offered.", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64},
+            {"source_id": duplicate["source_id"], "position": "contradicts", "proposition": "Paid leave is not offered.", "source_locator": "benefits", "supporting_quote": contradicting_quote, "content_sha256": "b" * 64},
         ])
         review = self.fixture.reviews[0]
-        review.update(conflict_determination="unresolved", unresolved_conflict_wording_approved=True)
+        review.update(
+            conflict_determination="unresolved",
+            conflict_opposition_confirmed=True,
+            unresolved_conflict_wording_approved=True,
+        )
+        if include_side_review:
+            review["conflict_side_entailments"] = [
+                {"source_id": item["source_id"], "position": item["position"], "reviewed_proposition": item["proposition"], "source_locator": item["source_locator"], "reviewed_quote": item["supporting_quote"], "content_sha256": item["content_sha256"], "entailment_confirmed": True, "reviewer_id": review["reviewer_id"]}
+                for item in claim["conflict_evidence"]
+            ]
+        self.fixture.write_all()
+        return claim, duplicate, review
+
+    def test_conflict_rejects_fabricated_contradiction_without_truthful_side_review(self):
+        self.configure_conflict(contradicting_quote="Paid leave remains offered.", include_side_review=False)
+        self.assert_error("complete one-to-one conflict-side entailment coverage")
+
+    def test_complete_synthetic_conflict_contract_with_independent_side_attestations_passes(self):
+        self.configure_conflict()
+        self.assertEqual([], self.errors())
+
+    def test_conflict_requires_opposing_distinct_evidence_and_reviewer_determination(self):
+        claim, duplicate, review = self.configure_conflict()
+        duplicate["content_sha256"] = "a" * 64
+        duplicate["supporting_quote"] = "Paid leave is offered."
+        claim["conflict_evidence"][1].update(content_sha256="a" * 64, supporting_quote="Paid leave is offered.")
+        review["conflict_side_entailments"][1].update(content_sha256="a" * 64, reviewed_quote="Paid leave is offered.")
         self.fixture.write_all()
         self.assert_error("duplicate conflict evidence")
 
-        duplicate["content_sha256"] = "b" * 64
-        duplicate["supporting_quote"] = "Paid leave is not offered."
+        self.fixture = FrozenFixture(self.root)
+        claim, duplicate, review = self.configure_conflict()
         review.pop("conflict_determination")
         review.pop("unresolved_conflict_wording_approved")
         self.fixture.write_all()
