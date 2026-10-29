@@ -265,6 +265,117 @@ test('release workspace cleanup revalidates the quarantined inode after a rename
   }
 })
 
+test('release workspace creation errors use descriptor-bound cleanup', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-create-error-'))
+  const victim = path.join(root, 'victim')
+  let workspaceRoot
+  try {
+    mkdirSync(victim)
+    writeFileSync(path.join(victim, 'sentinel'), 'keep')
+    await assert.rejects(
+      createReleaseWorkspace(root, randomUUID(), {
+        afterMarkerCreated(createdRoot) {
+          workspaceRoot = createdRoot
+          mkdirSync(path.join(createdRoot, 'nested'))
+          writeFileSync(path.join(createdRoot, 'nested', 'owned'), 'delete')
+          symlinkSync(victim, path.join(createdRoot, 'linked-victim'))
+          throw new Error('injected creation failure')
+        },
+      }),
+      /injected creation failure/i,
+    )
+    assert.throws(() => lstatSync(workspaceRoot), /ENOENT/)
+    assert.equal(readFileSync(path.join(victim, 'sentinel'), 'utf8'), 'keep')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release workspace cleanup preserves a nonempty late quarantine replacement', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-late-race-'))
+  try {
+    const workspace = await createReleaseWorkspace(root)
+    writeFileSync(path.join(workspace.root, 'owned'), 'delete')
+    let quarantine
+    let displaced
+    await assert.rejects(
+      cleanupReleaseWorkspace(workspace, root, {
+        afterWorkspaceValidation(validatedQuarantine) {
+          quarantine = validatedQuarantine
+          displaced = `${quarantine}.owned`
+          renameSync(quarantine, displaced)
+          mkdirSync(quarantine, { mode: 0o700 })
+          writeFileSync(path.join(quarantine, 'sentinel'), 'keep')
+        },
+      }),
+      /identity|inode|changed/i,
+    )
+    assert.equal(readFileSync(path.join(quarantine, 'sentinel'), 'utf8'), 'keep')
+    assert.throws(() => lstatSync(path.join(displaced, 'owned')), /ENOENT/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release workspace cleanup never follows a symlink child', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-child-symlink-'))
+  try {
+    const workspace = await createReleaseWorkspace(root)
+    const victim = path.join(root, 'victim')
+    mkdirSync(victim)
+    writeFileSync(path.join(victim, 'sentinel'), 'keep')
+    symlinkSync(victim, path.join(workspace.root, 'linked-victim'))
+    await cleanupReleaseWorkspace(workspace, root)
+    assert.equal(readFileSync(path.join(victim, 'sentinel'), 'utf8'), 'keep')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release workspace cleanup preserves a replaced child tree', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-child-race-'))
+  try {
+    const workspace = await createReleaseWorkspace(root)
+    const childRoot = path.join(workspace.root, 'child')
+    mkdirSync(childRoot)
+    writeFileSync(path.join(childRoot, 'owned'), 'delete')
+    let child
+    let displaced
+    await assert.rejects(
+      cleanupReleaseWorkspace(workspace, root, {
+        afterDirectoryValidation(entry) {
+          if (entry.name !== 'child') return
+          child = entry.path
+          displaced = `${entry.path}.owned`
+          renameSync(entry.path, displaced)
+          mkdirSync(entry.path)
+          writeFileSync(path.join(entry.path, 'sentinel'), 'keep')
+        },
+      }),
+      /identity|inode|changed/i,
+    )
+    assert.equal(readFileSync(path.join(child, 'sentinel'), 'utf8'), 'keep')
+    assert.throws(() => lstatSync(path.join(displaced, 'owned')), /ENOENT/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release workspace cleanup fails closed without a safe descriptor namespace', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-workspace-unsupported-'))
+  try {
+    const workspace = await createReleaseWorkspace(root)
+    writeFileSync(path.join(workspace.root, 'sentinel'), 'keep')
+    await assert.rejects(
+      cleanupReleaseWorkspace(workspace, root, { platform: 'darwin' }),
+      /Linux|descriptor namespace|unsupported/i,
+    )
+    assert.equal(readFileSync(path.join(workspace.root, 'sentinel'), 'utf8'), 'keep')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('release execution passes the preflight-resolved browser path explicitly', async () => {
   const state = executionFixture()
   try {

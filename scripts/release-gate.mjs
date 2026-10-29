@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs'
-import { chmod, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, open, readFile, readdir, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -315,8 +315,11 @@ async function validateWorkspaceMarker(marker, runId) {
   try {
     const openedStat = await handle.stat()
     if (
+      !openedStat.isFile() ||
       openedStat.dev !== markerStat.dev ||
       openedStat.ino !== markerStat.ino ||
+      openedStat.uid !== process.getuid() ||
+      (openedStat.mode & 0o777) !== 0o600 ||
       openedStat.size > 128
     ) {
       throw new Error('refusing to clean a release workspace whose marker identity changed')
@@ -338,9 +341,108 @@ async function validateWorkspaceMarker(marker, runId) {
   }
 }
 
+function descriptorPath(descriptor) {
+  return `/proc/self/fd/${descriptor}`
+}
+
+function requireDescriptorNamespace(directory, identity, platform = process.platform) {
+  if (platform !== 'linux') {
+    throw new Error('release workspace cleanup requires the Linux descriptor namespace')
+  }
+  let descriptorStat
+  try {
+    descriptorStat = statSync(descriptorPath(directory.fd))
+  } catch {
+    throw new Error('release workspace cleanup descriptor namespace is unavailable')
+  }
+  if (!sameWorkspaceIdentity(descriptorStat, identity)) {
+    throw new Error('release workspace cleanup descriptor namespace identity changed')
+  }
+}
+
+async function removeDirectoryContents(directory, displayPath, hooks) {
+  const namespace = descriptorPath(directory.fd)
+  for (const name of await readdir(namespace)) {
+    const entryPath = path.join(namespace, name)
+    const entryStat = lstatSync(entryPath)
+    if (!entryStat.isDirectory() || entryStat.isSymbolicLink()) {
+      await unlink(entryPath)
+      continue
+    }
+
+    const child = await open(
+      entryPath,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+    )
+    try {
+      const openedStat = await child.stat()
+      if (openedStat.dev !== entryStat.dev || openedStat.ino !== entryStat.ino) {
+        throw new Error('refusing to clean a release workspace whose child identity changed')
+      }
+      await hooks.afterDirectoryValidation?.({
+        name,
+        path: path.join(displayPath, name),
+      })
+      await removeDirectoryContents(child, path.join(displayPath, name), hooks)
+      const finalOpenedStat = await child.stat()
+      const finalEntryStat = lstatSync(entryPath)
+      if (
+        finalOpenedStat.dev !== openedStat.dev ||
+        finalOpenedStat.ino !== openedStat.ino ||
+        finalEntryStat.isSymbolicLink() ||
+        !finalEntryStat.isDirectory() ||
+        finalEntryStat.dev !== openedStat.dev ||
+        finalEntryStat.ino !== openedStat.ino
+      ) throw new Error('refusing to clean a release workspace whose child identity changed')
+      await rmdir(entryPath)
+    } finally {
+      await child.close()
+    }
+  }
+}
+
+async function removeOpenedWorkspace(directory, pathname, identity, hooks = {}) {
+  const openedStat = await directory.stat()
+  if (!sameWorkspaceIdentity(openedStat, identity)) {
+    throw new Error('refusing to clean a release workspace whose opened inode changed')
+  }
+  requireDescriptorNamespace(directory, identity, hooks.platform)
+  if (hooks.runId) {
+    await validateWorkspaceMarker(
+      path.join(descriptorPath(directory.fd), RELEASE_OWNER_MARKER),
+      hooks.runId,
+    )
+  }
+  await hooks.afterWorkspaceValidation?.(pathname)
+  await removeDirectoryContents(directory, pathname, hooks)
+
+  const finalOpenedStat = await directory.stat()
+  const finalPathStat = lstatSync(pathname)
+  if (
+    !sameWorkspaceIdentity(finalOpenedStat, identity) ||
+    finalPathStat.isSymbolicLink() ||
+    !finalPathStat.isDirectory() ||
+    !sameWorkspaceIdentity(finalPathStat, identity)
+  ) throw new Error('refusing to remove a release workspace whose final identity changed')
+  await rmdir(pathname)
+}
+
+async function removeOwnedWorkspace(pathname, identity, hooks = {}) {
+  const directory = await open(
+    pathname,
+    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+  )
+  try {
+    await removeOpenedWorkspace(directory, pathname, identity, hooks)
+  } finally {
+    await directory.close()
+  }
+}
+
 export async function createReleaseWorkspace(
   scratchRoot = process.env.TMPDIR || tmpdir(),
   runId = randomUUID(),
+  hooks = {},
 ) {
   if (!WORKSPACE_UUID.test(runId)) throw new Error('release workspace run ID must be a UUID')
   const parent = realpathSync(path.resolve(scratchRoot))
@@ -363,6 +465,7 @@ export async function createReleaseWorkspace(
       flag: 'wx',
     })
     await chmod(marker, 0o600)
+    await hooks.afterMarkerCreated?.(root)
     return deepFreeze(workspacePaths(root, {
       runId,
       marker,
@@ -371,12 +474,9 @@ export async function createReleaseWorkspace(
     }))
   } catch (error) {
     try {
-      const current = lstatSync(root)
-      if (identity && sameWorkspaceIdentity(current, identity) && !current.isSymbolicLink()) {
-        await rm(root, { recursive: true, force: true })
-      }
+      if (identity) await removeOwnedWorkspace(root, identity, { platform: hooks.platform })
     } catch {
-      // Preserve the creation failure and never delete an identity we did not capture.
+      // Preserve the creation failure and retain anything that cannot be safely removed.
     }
     throw error
   }
@@ -422,6 +522,7 @@ export async function cleanupReleaseWorkspace(
     if (!sameWorkspaceIdentity(openedStat, identity)) {
       throw new Error('refusing to clean a release workspace whose opened inode changed')
     }
+    requireDescriptorNamespace(directory, identity, hooks.platform)
     await rename(root, quarantine)
     await hooks.afterQuarantine?.(quarantine)
     const quarantinedStat = lstatSync(quarantine)
@@ -432,8 +533,7 @@ export async function cleanupReleaseWorkspace(
       !sameWorkspaceIdentity(quarantinedStat, identity) ||
       !sameWorkspaceIdentity(stillOpenedStat, identity)
     ) throw new Error('refusing to clean a release workspace whose quarantined identity changed')
-    await validateWorkspaceMarker(path.join(quarantine, RELEASE_OWNER_MARKER), runId)
-    await rm(quarantine, { recursive: true, force: false })
+    await removeOpenedWorkspace(directory, quarantine, identity, { ...hooks, runId })
   } finally {
     await directory.close()
   }
