@@ -168,10 +168,11 @@ it('replaces malformed initial URL with canonical filters and bounded page', asy
   window.history.replaceState({}, '', '/community/benefits/' + search)
   render(<BenefitsExplorerPage route="heatmap" search={search} />)
   await screen.findByRole('table', { name: '기업 복지 공개 상태' })
-  expect(new URLSearchParams(window.location.search).get('page')).toBe('2')
+  await waitFor(() => {
+    const normalized = new URLSearchParams(window.location.search)
+    expect(normalized.get('page')).toBe('2')
+    expect(normalized.get('compare')).toBe('example-001')
+  })
   expect(window.location.search).not.toContain('evil')
   expect(window.location.search).not.toContain('q=')
-  expect(new URLSearchParams(window.location.search).get('compare')).toBe(
-    'example-001',
-  )
 })
