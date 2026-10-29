@@ -42,8 +42,8 @@ PINNED_PROTOCOL_FIELDS = (
 )
 EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction"}
 OFFICIAL_SOURCE_TYPES = {"government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report"}
-PINNED_CONTRACT_SHA256 = "7fac5033e27aa0882fd832653afae0be935b444d69995d9a992519eda77ac64c"
-PINNED_CONTRACT_VERSION = "2.0.0"
+PINNED_CONTRACT_SHA256 = "9609f4760e3efbb12af6558b1cd9eea6f69b36d4017712f47029979605e9f51b"
+PINNED_CONTRACT_VERSION = "3.0.0"
 MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
 HASH_SCHEMA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 EVENT_SCHEMA = {
@@ -499,6 +499,10 @@ def validate_company(protocol, company, source_map, as_of, errors):
         errors.append(f"{company_id}: domestic legal entity requires KR incorporation and registered head office")
     if scope == "international" and (jurisdiction not in PANEL or incorporation != jurisdiction or office != jurisdiction):
         errors.append(f"{company_id}: international incorporation, head office, and fixed panel jurisdiction must match")
+    if scope == "international" and (jurisdiction != "US" or incorporation != "US" or office != "US"):
+        errors.append(f"{company_id}: international cohort requires strict US incorporation and principal business address")
+    if scope == "international" and company.get("legal_name") in {"NCL CORP LTD.", "TRINSEO PLC", "MOBILEYE GLOBAL INC."}:
+        errors.append(f"{company_id}: known foreign or ambiguous entity is excluded from strict-US cohort")
     if scope not in {"domestic", "international"}:
         errors.append(f"{company_id}: invalid scope")
     if company.get("entity_status") != "active":
@@ -607,6 +611,22 @@ def validate_company(protocol, company, source_map, as_of, errors):
                     errors.append(f"{company_id}: scale evidence {field} does not match scale metric")
         elif not isinstance(evidence.get("employee_count"), int) or evidence.get("employee_count") < 1:
             errors.append(f"{company_id}: employer evidence must show a positive employee count")
+    if scope == "international":
+        accessions = {company.get("scale_evidence", {}).get("accession"), company.get("employer_evidence", {}).get("accession")}
+        for field, label, official_field in (("incorporation_evidence", "incorporation", "countryinc/stprinc"), ("head_office_evidence", "head office", "countryba/stprba")):
+            evidence = company.get(field)
+            if not isinstance(evidence, dict):
+                errors.append(f"{company_id}: missing {field}")
+                continue
+            required(evidence, ("source_id", "url", "locator", "content_sha256", "retrieved_at", "filing_date", "accepted_at", "accession", "registry_id", "legal_name", "quote", "official_field", "normalized_official_code", "normalized_official_value"), f"{label} evidence", company_id, errors)
+            if evidence.get("normalized_official_code") != "US": errors.append(f"{company_id}: {label} evidence normalized official code must be US")
+            if evidence.get("official_field") != official_field: errors.append(f"{company_id}: {label} evidence must use SEC {official_field}, not filing venue")
+            if evidence.get("registry_id") != company.get("registry_id") or evidence.get("legal_name") != company.get("legal_name"): errors.append(f"{company_id}: {label} evidence identity mismatch")
+            if evidence.get("accession") not in accessions or len(accessions) != 1: errors.append(f"{company_id}: {label} evidence accession must bind scale and employee evidence")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("content_sha256", ""))): errors.append(f"{company_id}: {label} evidence content hash is invalid")
+            source = source_map.get(evidence.get("source_id"), {})
+            if evidence.get("content_sha256") != company.get("scale_evidence", {}).get("content_sha256"): errors.append(f"{company_id}: {label} evidence content hash does not match SEC SUB archive")
+            if evidence.get("url") != company.get("scale_evidence", {}).get("url") or source.get("source_id") != "us-sec-quarterly-financials": errors.append(f"{company_id}: {label} evidence source is not the bound SEC quarterly archive")
     registered = protocol.get("registered_sources", {}).get(jurisdiction, [])
     pinned_ids = {entry.get("source_id") for entry in registered if isinstance(entry, dict)}
     for source_id in source_ids:
@@ -734,8 +754,8 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
             relative = expected_paths[field][index]
             ledgers[(scope, kind)] = read_jsonl(root / relative, errors, required_file=True)
         validate_ledger_records(protocol, ledgers[(scope, "eligible")], f"{scope} eligible", source_map, as_of, errors)
-        if protocol.get("protocol_id") == "company-benefits-population-v2":
-            expected_eligible = 1350 if scope == "domestic" else 1057
+        if protocol.get("protocol_id") in {"company-benefits-population-v2", "company-benefits-population-v3"}:
+            expected_eligible = 1350 if scope == "domestic" else 1070
             if len(ledgers[(scope, "eligible")]) != expected_eligible:
                 errors.append(f"{scope} eligible must contain exactly {expected_eligible} verified records")
         for kind in ("selected", "initial", "current"):
@@ -773,7 +793,8 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
     expected_binding_keys = set()
     for scope in ("domestic", "international"):
         for company in ledgers[(scope, "eligible")]:
-            for kind in ("scale", "employer"):
+            kinds = ("scale", "employer") if scope == "domestic" else ("scale", "employer", "incorporation", "head_office")
+            for kind in kinds:
                 key = (company.get("company_id"), kind)
                 expected_binding_keys.add(key)
                 evidence = company.get(f"{kind}_evidence", {})
@@ -1141,7 +1162,7 @@ def validate_coverage_gaps(root, errors):
         errors.append("missing structured international coverage-gap artifact")
         return
     selected = value.get("selected_population", {})
-    if value.get("panel") != PANEL or selected != {"jurisdiction": "US", "count": 1000, "source": "SEC filers"}:
+    if value.get("panel") != PANEL or selected != {"jurisdiction": "US", "count": 1000, "source": "strict US-incorporated and US principal-business-address SEC 10-K filers"}:
         errors.append("international coverage-gap artifact must identify the fixed panel and US-only selected population")
     gaps = value.get("coverage_gaps")
     expected = [country for country in PANEL if country != "US"]
@@ -1150,7 +1171,7 @@ def validate_coverage_gaps(root, errors):
     elif any(item != {"jurisdiction": country, "status": "not_materialized", "selected_count": 0} for item, country in zip(gaps, expected)):
         errors.append("international coverage-gap artifact contains an invalid gap record")
     statement = str(value.get("representativeness", "")).casefold()
-    if "not globally representative" not in statement or "not a source rank" not in statement:
+    if "not globally representative" not in statement or "not all sec filers" not in statement or "not a source rank" not in statement:
         errors.append("international coverage-gap artifact must disclaim global representativeness and source rank")
 
 

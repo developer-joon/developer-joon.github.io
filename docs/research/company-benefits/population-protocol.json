@@ -1,7 +1,7 @@
 {
   "$schema": "./schema/population-protocol.schema.json",
-  "protocol_id": "company-benefits-population-v2",
-  "version": "2.0.0",
+  "protocol_id": "company-benefits-population-v3",
+  "version": "3.0.0",
   "status": "approved",
   "approval": {
     "approved_by": "user-authorized implementation scope; technical review pending",
@@ -108,7 +108,7 @@
   "classification": {
     "selection_unit": "selected_reporting_legal_entity",
     "domestic_rule": "The selected reporting legal entity is incorporated in KR and has its registered head office in KR.",
-    "international_rule": "The selected reporting legal entity is an active SEC registrant in the US population; workforce evidence may represent the registrant or consolidated workforce.",
+    "international_rule": "The selected reporting legal entity is a strict-US SEC 10-K filer with SEC countryinc=US and countryba=US evidence bound to the same accession, CIK, and legal name as scale and workforce evidence.",
     "separate_roles": [
       "selected_reporting_legal_entity",
       "financial_consolidation_parent",
@@ -156,7 +156,7 @@
     "official_company_report"
   ],
   "canonical_selection": {
-    "seed": "company-benefits-population-v2",
+    "seed": "company-benefits-population-v3",
     "required_fields": [
       "jurisdiction",
       "registry_id",
@@ -234,7 +234,7 @@
   },
   "coverage_gap": {
     "KR": "Materialized from official keyless DART/OpenDART acquisition artifacts: 1,350 eligible and 1,000 canonically selected reporting entities.",
-    "US": "After excluding 14 subsidiary-attributed workforce statements, 1,057 eligible SEC reporting entities remain and 1,000 are canonically selected.",
+    "US": "1,070 strict-US eligible entities have SEC countryinc=US and countryba=US evidence; 1,000 are canonically selected and 70 remain as replacements. This is not all SEC filers.",
     "CA": "CA remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
     "MX": "MX remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
     "BR": "BR remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",

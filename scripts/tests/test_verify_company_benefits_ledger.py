@@ -150,7 +150,9 @@ class VerifierTests(unittest.TestCase):
     def test_artifact_manifest_rejects_fabricated_hash_locator_and_identity(self):
         path = self.root / "population" / "source-artifacts.jsonl"
         artifacts = [json.loads(line) for line in path.read_text().splitlines()]
-        official = next(item for item in artifacts if item["kind"] == "official_acquisition")
+        bindings = [json.loads(line) for line in (self.root / "population" / "source-artifact-bindings.jsonl").read_text().splitlines()]
+        bound_id = bindings[0]["official_artifact_id"]
+        official = next(item for item in artifacts if item["artifact_id"] == bound_id)
         official["sha256"] = "f" * 64
         official["url"] = "https://evil.example/fabricated"
         self.fixture.write_jsonl("population/source-artifacts.jsonl", artifacts)
@@ -220,6 +222,16 @@ class VerifierTests(unittest.TestCase):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
 
     def test_evidence_source_url_hash_period_and_legal_entity_must_match(self):
+        def jurisdiction_mutate(company):
+            company.pop("incorporation_evidence", None)
+            company["head_office_evidence"]["normalized_official_code"] = "BM"
+            company["head_office_evidence"]["content_sha256"] = "f" * 64
+        self.rewrite_company_everywhere("international", 0, jurisdiction_mutate)
+        errors = self.errors()
+        for needle in ("incorporation_evidence", "head office evidence normalized official code", "head office evidence content hash"):
+            self.assertTrue(any(needle in error for error in errors), (needle, errors[:60]))
+
+        self.fixture = FrozenFixture(self.root)
         def mutate(company):
             company["employer_evidence"].update(
                 url="https://evil.example/evidence",
@@ -698,7 +710,7 @@ class VerifierTests(unittest.TestCase):
         errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 30), freeze_anchor_receipt=receipt)
         self.assertEqual([], errors)
         self.assertEqual("approved", protocol["status"])
-        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1057,
+        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1070,
                     "domestic-selected.jsonl": 1000, "international-selected.jsonl": 1000,
                     "domestic-effective-selected.jsonl": 1000, "international-effective-selected.jsonl": 1000}
         for name, count in expected.items():

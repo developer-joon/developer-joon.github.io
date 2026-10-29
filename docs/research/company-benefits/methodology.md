@@ -2,9 +2,9 @@
 
 ## Current state
 
-Population protocol 2.0.0 is frozen with 1,350 domestic and 1,057 international eligible records and exactly 1,000 selected records per scope. Fourteen US rows whose workforce quote explicitly attributed employees to subsidiaries were excluded. The domestic set is Korean; the international set currently consists only of 1,000 US SEC reporting entities. The other 17 fixed-panel jurisdictions are structured coverage gaps. This is a user-authorized population freeze with independent technical review still pending.
+Population protocol 3.0.0 is frozen with 1,350 domestic and 1,070 international eligible records and exactly 1,000 selected records per scope. The international eligible set requires SEC `countryinc=US` and `countryba=US` evidence bound to the same accession, CIK, and legal name as scale and workforce evidence; 70 unused canonical records remain for replacement. The domestic set is Korean; the selected international set consists only of strict US-incorporated and US principal-business-address SEC 10-K filers, not all SEC filers. The other 17 fixed-panel jurisdictions are structured coverage gaps. This is a user-authorized population freeze with independent technical review still pending.
 
-Selection and writing order are deterministic editorial processing orders, not revenue rankings. The international panel is fixed but does not represent the world or all large employers. Every incomplete national source path is published as a `coverage_gap` rather than silently omitted.
+Selection and writing order are deterministic editorial processing orders, not revenue rankings. The international panel is fixed, but the selected US-only cohort is not globally representative and does not represent all SEC filers or all large employers. Every incomplete national source path is published as a `coverage_gap` rather than silently omitted.
 
 ## Source registry contract
 

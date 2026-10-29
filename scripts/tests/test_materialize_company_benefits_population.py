@@ -18,6 +18,13 @@ def load_module():
 
 
 class MaterializerTests(unittest.TestCase):
+    def test_repository_strict_us_population_excludes_known_foreign_and_ambiguous_entities(self):
+        population = ROOT / "docs" / "research" / "company-benefits" / "population"
+        prohibited = {"NCL CORP LTD.", "TRINSEO PLC", "MOBILEYE GLOBAL INC."}
+        for ledger in ("international-eligible.jsonl", "international-selected.jsonl", "international-effective-selected.jsonl"):
+            names = {json.loads(line)["legal_name"] for line in (population / ledger).read_text().splitlines()}
+            self.assertTrue(prohibited.isdisjoint(names), ledger)
+
     def test_repository_preserves_all_eleven_non_december_korean_evidence_dates(self):
         path = ROOT / "docs" / "research" / "company-benefits" / "population" / "domestic-eligible.jsonl"
         records = {item["company_id"]: item for item in (json.loads(line) for line in path.read_text().splitlines())}
@@ -42,10 +49,10 @@ class MaterializerTests(unittest.TestCase):
         self.assertEqual("2024-06-30", record["employer_evidence"]["fiscal_period_end"])
         self.assertEqual("2024-06-30", record["employer_evidence"]["filing_date"])
 
-    def test_international_excludes_subsidiary_attribution_and_preserves_scope(self):
+    def test_international_preserves_workforce_scope_and_strict_us_evidence(self):
         materializer = load_module()
-        base = {"jurisdiction":"US","legal_id":"CIK1","legal_name":"Registrant","financial_class":"false","fiscal_period_end":"2025-12-31","filed":"2026-02-01","accepted":"2026-02-01 12:00:00.0","revenue_usd":"2000000000","assets_usd":"1","financial_dataset_url":"https://www.sec.gov/q.zip","financial_dataset_sha256":"a"*64,"financial_fact_locator":"num.txt:x","employee_count":"10","employee_scope":"filing_entity_total","employee_evidence_quote":"Registrant employed 10 people.","employee_evidence_locator":"chars:1-2","employee_filing_url":"https://www.sec.gov/f.htm","employee_filing_sha256":"b"*64,"accession":"1"}
-        rows = [base, dict(base, legal_id="CIK2", employee_evidence_quote="Our subsidiary employed 10 people.")]
+        base = {"jurisdiction":"US","legal_id":"CIK1","legal_name":"Registrant","financial_class":"false","fiscal_period_end":"2025-12-31","filed":"2026-02-01","accepted":"2026-02-01 12:00:00.0","revenue_usd":"2000000000","assets_usd":"1","financial_dataset_url":"https://www.sec.gov/q.zip","financial_dataset_sha256":"a"*64,"financial_fact_locator":"num.txt:x","employee_count":"10","employee_scope":"filing_entity_total","employee_evidence_quote":"Registrant employed 10 people.","employee_evidence_locator":"chars:1-2","employee_filing_url":"https://www.sec.gov/f.htm","employee_filing_sha256":"b"*64,"accession":"1","incorporation_country":"US","incorporation_state_province":"DE","business_address_country":"US","business_address_state_province":"NY","business_address_city":"NEW YORK","jurisdiction_method":"exact_SEC_SUB_countryinc_US_and_countryba_US","jurisdiction_dataset_url":"https://www.sec.gov/q.zip","jurisdiction_dataset_sha256":"a"*64,"jurisdiction_evidence_locator":"sub.txt:x","jurisdiction_evidence_quote":"countryinc=US | countryba=US"}
+        rows = [base]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "us.csv"
             with path.open("w", newline="", encoding="utf-8") as handle:
@@ -55,6 +62,24 @@ class MaterializerTests(unittest.TestCase):
         self.assertEqual("filing_entity_total", records[0]["employment_evidence_scope"])
         self.assertIn("payroll employer", records[0]["employment_boundary_note"])
         self.assertEqual("Registrant", records[0]["selected_reporting_legal_entity"])
+
+    def test_strict_us_requires_individually_bound_jurisdiction_evidence(self):
+        materializer = load_module()
+        base = {"jurisdiction":"US","legal_id":"CIK0000000001","cik":"0000000001","legal_name":"Registrant","financial_class":"false","fiscal_period_end":"2025-12-31","filed":"2026-02-01","accepted":"2026-02-01 12:00:00.0","revenue_usd":"2000000000","assets_usd":"1","financial_dataset_url":"https://www.sec.gov/q.zip","financial_dataset_sha256":"a"*64,"financial_fact_locator":"num.txt:x","employee_count":"10","employee_scope":"filing_entity_total","employee_evidence_quote":"Registrant employed 10 people.","employee_evidence_locator":"chars:1-2","employee_filing_url":"https://www.sec.gov/f.htm","employee_filing_sha256":"b"*64,"accession":"0000000001-26-000001","incorporation_country":"US","incorporation_state_province":"DE","business_address_country":"US","business_address_state_province":"NY","business_address_city":"NEW YORK","jurisdiction_method":"exact_SEC_SUB_countryinc_US_and_countryba_US","jurisdiction_dataset_url":"https://www.sec.gov/q.zip","jurisdiction_dataset_sha256":"a"*64,"jurisdiction_evidence_locator":"sub.txt:adsh=0000000001-26-000001;countryinc=US;stprinc=DE;countryba=US;stprba=NY;cityba=NEW YORK","jurisdiction_evidence_quote":"countryinc=US | stprinc=DE | countryba=US | stprba=NY"}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "us.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=base); writer.writeheader(); writer.writerow(base)
+            record = materializer.load_international(path)[0]
+            self.assertEqual("US", record["incorporation_evidence"]["normalized_official_code"])
+            self.assertEqual("US", record["head_office_evidence"]["normalized_official_code"])
+            self.assertEqual(record["scale_evidence"]["accession"], record["incorporation_evidence"]["accession"])
+            self.assertEqual(record["employer_evidence"]["accession"], record["head_office_evidence"]["accession"])
+            bad = dict(base, incorporation_country="BM")
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=bad); writer.writeheader(); writer.writerow(bad)
+            with self.assertRaisesRegex(ValueError, "strict-US jurisdiction"):
+                materializer.load_international(path)
     def test_verified_source_digest_is_fail_closed(self):
         materializer = load_module()
         with tempfile.TemporaryDirectory() as tmp:

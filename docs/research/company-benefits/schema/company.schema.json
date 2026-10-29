@@ -321,6 +321,10 @@
             "null"
           ],
           "format": "date-time"
+        },
+        "accession": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -404,6 +408,10 @@
             "null"
           ],
           "format": "date-time"
+        },
+        "accession": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -506,6 +514,193 @@
     "employment_boundary_note": {
       "type": "string",
       "minLength": 20
+    },
+    "incorporation_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "url",
+        "locator",
+        "content_sha256",
+        "hash_provenance",
+        "retrieved_at",
+        "filing_date",
+        "accepted_at",
+        "accession",
+        "registry_id",
+        "legal_name",
+        "quote",
+        "official_field",
+        "normalized_official_code",
+        "normalized_official_value"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hash_provenance": {
+          "enum": [
+            "observed_response",
+            "retained_source_artifact"
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "filing_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "accepted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "accession": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registry_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "legal_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "official_field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "normalized_official_code": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "normalized_official_value": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "head_office_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "url",
+        "locator",
+        "content_sha256",
+        "hash_provenance",
+        "retrieved_at",
+        "filing_date",
+        "accepted_at",
+        "accession",
+        "registry_id",
+        "legal_name",
+        "quote",
+        "official_field",
+        "normalized_official_code",
+        "normalized_official_value"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hash_provenance": {
+          "enum": [
+            "observed_response",
+            "retained_source_artifact"
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "filing_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "accepted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "accession": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registry_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "legal_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "official_field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "normalized_official_code": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "normalized_official_value": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "const": "international"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "incorporation_evidence",
+          "head_office_evidence"
+        ]
+      }
+    }
+  ]
 }

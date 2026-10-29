@@ -1,4 +1,4 @@
-# Company benefits population protocol — version 2.0.0 frozen population
+# Company benefits population protocol — version 3.0.0 frozen population
 
 **Status: APPROVED for the user-authorized population freeze. Independent technical review remains pending.**
 
@@ -7,8 +7,8 @@ This freeze contains 1,000 domestic and 1,000 international selected reporting l
 ## Materialized scope
 
 - **Domestic:** 1,350 eligible Korean reporting legal entities were built from official, keyless DART/OpenDART bulk downloads. The first 1,000 in canonical SHA-256 order are selected.
-- **International:** 1,057 eligible US SEC reporting entities were built from official SEC quarterly Financial Statement Data Sets and primary Form 10-K workforce evidence. Fourteen subsidiary-attributed quotes were excluded before canonical selection. The first 1,000 in canonical SHA-256 order are selected.
-- The fixed international panel remains US, CA, MX, BR, AR, GB, FR, DE, IT, TR, RU, AU, CN, IN, ID, JP, SA and ZA. The current selected international population contains **US entities only**. The other 17 panel jurisdictions are explicit coverage gaps with zero selected entities; see `population/international-coverage-gaps.json`.
+- **International:** 1,070 eligible strict-US entities were built from official SEC quarterly Financial Statement Data Sets and primary Form 10-K workforce evidence. Every row requires `countryinc=US` and `countryba=US` evidence bound to the same accession, CIK and legal name as scale and workforce evidence. The first 1,000 in canonical SHA-256 order are selected; exactly 70 unused canonical records remain for replacement.
+- The fixed international panel remains US, CA, MX, BR, AR, GB, FR, DE, IT, TR, RU, AU, CN, IN, ID, JP, SA and ZA. The current selected international population contains only US-incorporated, US principal-business-address SEC 10-K filers. It is not globally representative and is not all SEC filers. The other 17 panel jurisdictions are explicit coverage gaps with zero selected entities; see `population/international-coverage-gaps.json`.
 
 ## Legal entity and thresholds
 
@@ -27,7 +27,7 @@ Every row retains structured scale and employer evidence: official source ID and
 
 Korean identity uses the DART company-overview bulk Excel family at `https://dart.fss.or.kr/dsae001/downloadExcel.do`. Korean scale and employee evidence use the official OpenDART financial and periodic-report Excel download families. They do not use the API-key corporation-code guide.
 
-US scale evidence retains each actual SEC quarterly archive URL, archive hash and `num.txt` locator. Employer evidence retains each primary EDGAR filing URL, filing hash, bounded quote and exact normalized-text or Inline XBRL locator.
+US scale evidence retains each actual SEC quarterly archive URL, archive hash and `num.txt` locator. Incorporation and principal-business-address assertions separately retain SEC `sub.txt` `countryinc/stprinc` and `countryba/stprba` fields; filing venue is never treated as jurisdiction evidence. Employer evidence retains each primary EDGAR filing URL, filing hash, bounded quote and exact normalized-text or Inline XBRL locator.
 
 ## Canonical selection and immutable state
 

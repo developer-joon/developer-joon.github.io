@@ -61,7 +61,7 @@ class ContractFixture:
         self.protocol = json.loads((RESEARCH_ROOT / "population-protocol.json").read_text(encoding="utf-8"))
         self.protocol.update({
             "protocol_id": "company-benefits-population-synthetic-test",
-            "version": "2.0.0",
+            "version": "3.0.0",
             "status": "approved",
             "approval": {"approved_by": "owner", "approved_at": "2026-10-21T00:00:00Z"},
         })
@@ -108,7 +108,7 @@ class ContractFixture:
     def _companies(self, scope, count):
         records = []
         for index in range(count):
-            jurisdiction = "KR" if scope == "domestic" else PANEL[index % len(PANEL)]
+            jurisdiction = "KR" if scope == "domestic" else "US"
             legal_name = f"{scope.title()} Employer {index:04d}"
             source_id = self.source_for_jurisdiction[jurisdiction]
             company = {
@@ -124,6 +124,12 @@ class ContractFixture:
                 "scale_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};metric=revenue", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00" if scope == "international" else None, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "metric": "revenue", "value": 200000000000 if scope == "domestic" else 2000000000, "currency": "KRW" if scope == "domestic" else "USD"},
                 "employer_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};field=employees", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00" if scope == "international" else None, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "employee_count": 10, "quote": "The registrant employed 10 people."},
             }
+            if scope == "international":
+                common = {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"sub.txt:row={index}", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00", "accession": f"test-{index}", "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "quote": "countryinc=US | stprinc=DE | countryba=US | stprba=NY"}
+                company["scale_evidence"]["accession"] = f"test-{index}"
+                company["employer_evidence"]["accession"] = f"test-{index}"
+                company["incorporation_evidence"] = {**common, "official_field": "countryinc/stprinc", "normalized_official_code": "US", "normalized_official_value": "DE"}
+                company["head_office_evidence"] = {**common, "official_field": "countryba/stprba", "normalized_official_code": "US", "normalized_official_value": "NY"}
             company["selection_hash"] = selection_hash(self.seed, company)
             records.append(company)
         return sorted(records, key=lambda item: (item["selection_hash"], json_bytes([self.seed, item["jurisdiction"], item["registry_id"], item["legal_name"]])))
@@ -197,11 +203,12 @@ class ContractFixture:
         self.write_jsonl("population/source-artifacts.jsonl", sorted({item["artifact_id"]:item for item in artifacts}.values(), key=lambda item:item["artifact_id"]))
         bindings = []
         for company in self.eligible["domestic"] + self.eligible["international"]:
-            for kind in ("scale", "employer"):
+            kinds = ("scale", "employer") if company["scope"] == "domestic" else ("scale", "employer", "incorporation", "head_office")
+            for kind in kinds:
                 evidence = company.get(f"{kind}_evidence", {})
                 bindings.append({"company_id": company["company_id"], "kind": kind, "source_id": evidence.get("source_id"), "url": evidence.get("url"), "locator": evidence.get("locator"), "content_sha256": evidence.get("content_sha256"), "registry_id": evidence.get("registry_id"), "legal_name": evidence.get("legal_name"), "fiscal_period_end": evidence.get("fiscal_period_end"), "official_artifact_id":"official-"+str(evidence.get("source_id")), "identity_artifact_id":"official-"+str(evidence.get("source_id")), "derived_artifact_id":"derived-test-ledger"})
         self.write_jsonl("population/source-artifact-bindings.jsonl", sorted(bindings, key=lambda item: (item["company_id"], item["kind"])))
-        self.write_json("population/international-coverage-gaps.json", {"panel": PANEL, "selected_population": {"jurisdiction": "US", "count": 1000, "source": "SEC filers"}, "representativeness": "Protocol-bounded test population; not globally representative and not a source rank.", "coverage_gaps": [{"jurisdiction": country, "status": "not_materialized", "selected_count": 0} for country in PANEL if country != "US"]})
+        self.write_json("population/international-coverage-gaps.json", {"panel": PANEL, "selected_population": {"jurisdiction": "US", "count": 1000, "source": "strict US-incorporated and US principal-business-address SEC 10-K filers"}, "representativeness": "Protocol-bounded test population; not globally representative, not all SEC filers, and not a source rank.", "coverage_gaps": [{"jurisdiction": country, "status": "not_materialized", "selected_count": 0} for country in PANEL if country != "US"]})
         self.write_jsonl("companies.jsonl", self.companies)
         self.write_jsonl("benefit-claims.jsonl", self.claims)
         self.write_jsonl("reviews.jsonl", self.reviews)
