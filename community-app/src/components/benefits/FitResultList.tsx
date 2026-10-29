@@ -4,16 +4,20 @@ import {
   type Company,
   type Rankings,
   type Category,
+  type Detail,
 } from '../../types/benefits'
 import { fitScore } from '../../lib/benefitsScoring'
+import { ClaimApplicability } from './ClaimApplicability'
 export function FitResultList({
   companies,
   rankings,
+  details,
   weights,
   link,
 }: {
   companies: Company[]
   rankings: Rankings
+  details: Detail[]
   weights: Partial<Record<Category, number>>
   link: (id: string) => string
 }) {
@@ -49,19 +53,24 @@ export function FitResultList({
             비교 가능한 분야 {fit.comparable}/{fit.requested} · 근거 coverage{' '}
             {Math.round(company.source_coverage * 100)}%
           </p>
-          <p>
-            적용 국가·법인: {company.headquarters_country} ·{' '}
-            {company.legal_name} · 직군·고용형태는 상세 근거 확인
-          </p>
           <ul>
-            {wanted.map((c) => (
-              <li key={c}>
-                {categoryLabels[c]} ·{' '}
-                {rows.some((r) => r.category === c)
-                  ? `일치한 우선순위 · 확인된 복지 claim ${company.category_summaries[c].confirmed_count}건`
-                  : '판단 자료 부족 · 확인되지 않거나 평가에서 제외된 조건'}
-              </li>
-            ))}
+            {wanted.map((category) => {
+              const claims =
+                details
+                  .find(
+                    (detail) => detail.company_id === company.company_id,
+                  )
+                  ?.claims.filter((claim) => claim.category === category) ?? []
+              return (
+                <li key={category}>
+                  {categoryLabels[category]} ·{' '}
+                  {rows.some((row) => row.category === category)
+                    ? `일치한 우선순위 · 확인된 복지 claim ${company.category_summaries[category].confirmed_count}건`
+                    : '판단 자료 부족 · 확인되지 않거나 평가에서 제외된 조건'}
+                  <ClaimApplicability claims={claims} />
+                </li>
+              )
+            })}
           </ul>
         </article>
       ))}

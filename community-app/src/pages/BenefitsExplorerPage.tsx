@@ -18,6 +18,7 @@ import { BenefitsFilterPanel } from '../components/benefits/BenefitsFilterPanel'
 import { BenefitsHeatmapTable } from '../components/benefits/BenefitsHeatmapTable'
 import { CategoryRankingSummary } from '../components/benefits/CategoryRankingSummary'
 import { CompanyCompareTray } from '../components/benefits/CompanyCompareTray'
+import { useBenefitsDetails } from '../lib/useBenefitsDetails'
 const RankingsPage = lazy(() =>
   import('./BenefitsRankingsPage').then((m) => ({
     default: m.BenefitsRankingsPage,
@@ -79,6 +80,16 @@ export function BenefitsExplorerPage({
   const companies = data
     ? filterBenefitsCompanies(data.index.companies, state)
     : []
+  const comparedCompanies = data
+    ? data.index.companies.filter((company) =>
+        state.compare.includes(company.company_id),
+      )
+    : []
+  const comparison = useBenefitsDetails(
+    data?.manifest,
+    data?.index,
+    comparedCompanies.map((company) => company.company_id),
+  )
   const pages = Math.max(1, Math.ceil(companies.length / 50))
   if (data && route === 'heatmap' && state.page > pages) {
     state.page = pages
@@ -158,7 +169,10 @@ export function BenefitsExplorerPage({
                   복지 히트맵 <small>{companies.length}개 기업</small>
                 </h2>
                 {!companies.length ? (
-                  <p>검색 결과가 없습니다</p>
+                  <div>
+                    <p>검색 결과가 없습니다</p>
+                    <p>{activeFilterSummary(state)}</p>
+                  </div>
                 ) : (
                   <BenefitsHeatmapTable
                     companies={companies.slice((page - 1) * 50, page * 50)}
@@ -204,9 +218,10 @@ export function BenefitsExplorerPage({
               />
             )}
             <CompanyCompareTray
-              companies={data.index.companies.filter((c) =>
-                state.compare.includes(c.company_id),
-              )}
+              companies={comparedCompanies}
+              details={comparison.data}
+              error={comparison.error}
+              retry={comparison.retry}
               remove={(id) =>
                 update({ compare: state.compare.filter((v) => v !== id) })
               }
@@ -241,6 +256,22 @@ export function BenefitsExplorerPage({
     </BenefitsExplorerShell>
   )
 }
+
+function activeFilterSummary(state: QueryState) {
+  const filters = [
+    state.q && `검색어 “${state.q}”`,
+    state.scope !== 'all' &&
+      `범위 ${state.scope === 'domestic' ? '국내' : '해외'}`,
+    state.industry && `업종 ${state.industry}`,
+    state.country && `국가 ${state.country}`,
+    state.scale && `규모 ${state.scale}`,
+    state.categories.length &&
+      `분야 ${state.categories.map((category) => categoryLabels[category]).join(', ')}`,
+    state.statuses.length && `상태 ${state.statuses.join(', ')}`,
+  ].filter(Boolean)
+  return `적용 중인 필터: ${filters.join(' · ') || '없음'}`
+}
+
 function RouteView({
   route,
   id,

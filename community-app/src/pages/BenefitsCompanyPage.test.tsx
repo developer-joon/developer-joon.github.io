@@ -8,6 +8,7 @@ vi.mock('../data/benefitsArtifactClient', () => ({
     loadManifest: vi.fn(),
     loadCompanyIndex: vi.fn(),
     loadCompanyDetail: vi.fn(),
+    loadCompanyDetails: vi.fn(),
   },
 }))
 beforeEach(() => {
@@ -15,6 +16,10 @@ beforeEach(() => {
   vi.mocked(benefitsClient.loadCompanyIndex).mockResolvedValue(index)
   vi.mocked(benefitsClient.loadCompanyDetail).mockResolvedValue(
     details.companies[0],
+  )
+  vi.mocked(benefitsClient.loadCompanyDetails).mockImplementation(
+    async (_manifest, _index, ids) =>
+      details.companies.filter((detail) => ids.includes(detail.company_id)),
   )
 })
 it.each(['', '?id=unknown', '?id=example-999'])(
@@ -32,7 +37,7 @@ it('shows entity, applicability, claim, source evidence and preserved return URL
       search="?id=example-001&scope=domestic&compare=example-002"
     />,
   )
-  expect(await screen.findByText('예시 leave 지원')).toBeVisible()
+  expect((await screen.findAllByText('예시 leave 지원'))[0]).toBeVisible()
   expect(screen.getByText('예시 데이터')).toBeVisible()
   expect(screen.getByText('정확한 전체 매출순위가 아님')).toBeVisible()
   expect(

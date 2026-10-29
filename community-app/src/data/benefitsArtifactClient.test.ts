@@ -23,6 +23,11 @@ describe('strict immutable benefits artifacts', () => {
     expect(
       (await c.loadCompanyDetail(m, index, 'example-001')).company_id,
     ).toBe('example-001')
+    expect(
+      (await c.loadCompanyDetails(m, index, ['example-001', 'example-002'])).map(
+        (detail) => detail.company_id,
+      ),
+    ).toEqual(['example-001', 'example-002'])
   })
   it.each([
     'company_count',

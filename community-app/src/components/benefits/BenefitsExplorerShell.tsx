@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { AppHeader } from '../AppHeader'
 import { AppFooter } from '../AppFooter'
-import { CommunityActions } from '../CommunityActions'
+
 import type { Manifest } from '../../types/benefits'
 export function BenefitsExplorerShell({
   route,
@@ -17,7 +17,7 @@ export function BenefitsExplorerShell({
   return (
     <div className="community-page benefits-page">
       <AppHeader />
-      <CommunityActions />
+
       <main className="benefits-workspace">
         <div className="benefits-heading">
           <div>
@@ -54,7 +54,7 @@ export function BenefitsExplorerShell({
         {manifest && (
           <p className="benefits-version">
             데이터 {manifest.data_version} · {manifest.company_count}개 가상
-            기업 · 검증일 {manifest.generated_at.slice(0, 10)}
+            기업 · 생성일 {manifest.generated_at.slice(0, 10)}
           </p>
         )}
         {children}

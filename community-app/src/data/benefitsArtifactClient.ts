@@ -110,36 +110,47 @@ export class BenefitsArtifactClient {
     return data
   }
   async loadCompanyDetail(m: Manifest, index: CompanyIndex, id: string) {
-    if (
-      !index.companies.some((c) => c.company_id === id) ||
-      !m.detail_shards[id]
-    )
-      throw new Error('기업을 찾을 수 없습니다')
-    const data = await this.payload(
-      m,
-      m.detail_shards[id],
-      detailsSchema,
-      (d) => d.companies.length,
-    )
-    const ids = new Set(data.companies.map((c) => c.company_id))
-    if (
-      ids.size !== data.companies.length ||
-      data.companies.some(
-        (c) => !index.companies.some((i) => i.company_id === c.company_id),
-      )
-    )
-      throw new Error('상세 회사 참조 불일치')
-    for (const detail of data.companies) {
-      if (m.detail_shards[detail.company_id] !== m.detail_shards[id])
-        throw new Error('상세 shard 참조 불일치')
-      assertDetailEvidence(
-        index.companies.find((c) => c.company_id === detail.company_id)!,
-        detail,
-      )
-    }
-    const result = data.companies.find((c) => c.company_id === id)
-    if (!result) throw new Error('상세 누락')
+    const [result] = await this.loadCompanyDetails(m, index, [id])
     return result
+  }
+  async loadCompanyDetails(
+    m: Manifest,
+    index: CompanyIndex,
+    requestedIds: string[],
+  ) {
+    const requested = [...new Set(requestedIds)]
+    const companies = new Map(
+      index.companies.map((company) => [company.company_id, company]),
+    )
+    if (requested.some((id) => !companies.has(id) || !m.detail_shards[id]))
+      throw new Error('기업을 찾을 수 없습니다')
+    const shardUrls = [...new Set(requested.map((id) => m.detail_shards[id]))]
+    const loaded = new Map<string, z.infer<typeof detailsSchema>['companies'][number]>()
+    for (const shardUrl of shardUrls) {
+      const data = await this.payload(
+        m,
+        shardUrl,
+        detailsSchema,
+        (payload) => payload.companies.length,
+      )
+      const ids = new Set(data.companies.map((detail) => detail.company_id))
+      if (
+        ids.size !== data.companies.length ||
+        data.companies.some(
+          (detail) =>
+            !companies.has(detail.company_id) ||
+            m.detail_shards[detail.company_id] !== shardUrl,
+        )
+      )
+        throw new Error('상세 회사/shard 참조 불일치')
+      for (const detail of data.companies) {
+        assertDetailEvidence(companies.get(detail.company_id)!, detail)
+        loaded.set(detail.company_id, detail)
+      }
+    }
+    const results = requested.map((id) => loaded.get(id))
+    if (results.some((detail) => !detail)) throw new Error('상세 누락')
+    return results as z.infer<typeof detailsSchema>['companies']
   }
   loadMethodology(m: Manifest) {
     return this.payload(

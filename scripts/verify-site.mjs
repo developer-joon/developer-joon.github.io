@@ -494,7 +494,7 @@ async function main() {
     assertIncludes(privacy, '처리 완료 후 최대 3년', privacyPath, 'report retention disclosure')
   }
 
-  for (const [part,title] of [['','복지 히트맵'],['rankings/','분야별 순위'],['fit/','내게 맞는 복지'],['company/','기업 근거 상세']]) {
+  for (const [part,title] of [['','복지 히트맵'],['rankings/','분야별 순위'],['fit/','내게 맞는 복지'],['company/','기업 근거 상세'],['methodology/','조사 기준·정정 이력']]) {
     const relativePath=`community/benefits/${part}index.html`
     const html=await readText(relativePath)
     assertIncludes(html,`<title>${title} · 기업 복지 탐색기</title>`,relativePath,'expected title')

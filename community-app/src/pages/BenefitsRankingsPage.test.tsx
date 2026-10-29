@@ -2,18 +2,23 @@ import { render, screen, fireEvent, within } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { BenefitsExplorerPage } from './BenefitsExplorerPage'
 import { benefitsClient } from '../data/benefitsArtifactClient'
-import { manifest, index, rankings } from '../test/benefitsFixture'
+import { manifest, index, rankings, details } from '../test/benefitsFixture'
 vi.mock('../data/benefitsArtifactClient', () => ({
   benefitsClient: {
     loadManifest: vi.fn(),
     loadCompanyIndex: vi.fn(),
     loadRankings: vi.fn(),
+    loadCompanyDetails: vi.fn(),
   },
 }))
 beforeEach(() => {
   vi.mocked(benefitsClient.loadManifest).mockResolvedValue(manifest)
   vi.mocked(benefitsClient.loadCompanyIndex).mockResolvedValue(index)
   vi.mocked(benefitsClient.loadRankings).mockResolvedValue(rankings)
+  vi.mocked(benefitsClient.loadCompanyDetails).mockImplementation(
+    async (_manifest, _index, ids) =>
+      details.companies.filter((detail) => ids.includes(detail.company_id)),
+  )
 })
 it('requires one category, displays four components and separates insufficient evidence', async () => {
   render(

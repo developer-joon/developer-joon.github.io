@@ -7,13 +7,14 @@ import {
 } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { BenefitsExplorerPage } from './BenefitsExplorerPage'
-import { manifest, index, rankings, method } from '../test/benefitsFixture'
+import { manifest, index, rankings, details, method } from '../test/benefitsFixture'
 import { benefitsClient } from '../data/benefitsArtifactClient'
 vi.mock('../data/benefitsArtifactClient', () => ({
   benefitsClient: {
     loadManifest: vi.fn(),
     loadCompanyIndex: vi.fn(),
     loadRankings: vi.fn(),
+    loadCompanyDetails: vi.fn(),
     loadMethodology: vi.fn(),
   },
 }))
@@ -22,6 +23,10 @@ beforeEach(() => {
   vi.mocked(benefitsClient.loadManifest).mockResolvedValue(manifest)
   vi.mocked(benefitsClient.loadCompanyIndex).mockResolvedValue(index)
   vi.mocked(benefitsClient.loadRankings).mockResolvedValue(rankings)
+  vi.mocked(benefitsClient.loadCompanyDetails).mockImplementation(
+    async (_manifest, _index, ids) =>
+      details.companies.filter((detail) => ids.includes(detail.company_id)),
+  )
   vi.mocked(benefitsClient.loadMethodology).mockResolvedValue(method)
 })
 describe('benefits heatmap workspace', () => {
@@ -53,6 +58,7 @@ describe('benefits heatmap workspace', () => {
       target: { value: '없는회사' },
     })
     expect(screen.getByText('검색 결과가 없습니다')).toBeVisible()
+    expect(screen.getByText('적용 중인 필터: 검색어 “없는회사”')).toBeVisible()
     expect(window.location.search).toContain('q=')
     fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }))
     fireEvent.change(screen.getByLabelText('기업 범위'), {
@@ -68,15 +74,16 @@ describe('benefits heatmap workspace', () => {
       expect.stringContaining('categories=family'),
     )
   })
-  it('limits comparison to four and exposes applicability in tray', async () => {
+  it('limits comparison to four and exposes claim applicability in tray', async () => {
     render(<BenefitsExplorerPage route="heatmap" search="" />)
     await screen.findByRole('table')
     const checks = screen.getAllByRole('checkbox', { name: /비교 예시/ })
     checks.slice(0, 4).forEach((c) => fireEvent.click(c))
     expect(checks[4]).toBeDisabled()
-    expect(
-      screen.getByRole('region', { name: '선택 기업 비교' }),
-    ).toHaveTextContent('적용 범위')
+    const tray = screen.getByRole('region', { name: '선택 기업 비교' })
+    expect(await within(tray).findAllByText(/예시 연구직/)).not.toHaveLength(0)
+    expect(tray).toHaveTextContent('예시 정규직')
+    expect(tray).toHaveTextContent('대한민국')
   })
   it('has loading and fail closed retry with methodology link', async () => {
     vi.mocked(benefitsClient.loadManifest).mockRejectedValueOnce(
@@ -92,6 +99,24 @@ describe('benefits heatmap workspace', () => {
     await waitFor(() => expect(screen.getByRole('table')).toBeVisible())
   })
 })
+it('loads verified claim applicability for fit results', async () => {
+  render(<BenefitsExplorerPage route="fit" search="" />)
+  const result = await screen.findByRole('heading', {
+    name: /예시 별빛기업 01/,
+  })
+  const article = result.closest('article')!
+  expect(article).toHaveTextContent('예시 연구직')
+  expect(article).toHaveTextContent('예시 정규직')
+  expect(article).toHaveTextContent('대한민국')
+  expect(benefitsClient.loadCompanyDetails).toHaveBeenCalled()
+})
+
+it('labels manifest generated_at as generation time', async () => {
+  render(<BenefitsExplorerPage route="heatmap" search="" />)
+  expect(await screen.findByText(/생성일 2026-10-29/)).toBeVisible()
+  expect(screen.queryByText(/검증일 2026-10-29/)).not.toBeInTheDocument()
+})
+
 it('summarizes the selected category using verified ranking components', async () => {
   render(<BenefitsExplorerPage route="heatmap" search="?categories=family" />)
   const summary = await screen.findByRole('region', {
