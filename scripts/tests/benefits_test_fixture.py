@@ -36,6 +36,8 @@ def audited_source(source_id, supported_fields, url=None, source_type="regulator
         "locator": "section 1",
         "supporting_quote": "Official evidence",
         "content_sha256": "a" * 64,
+        "hash_provenance": "observed_response",
+        "retrieved_at": "2026-10-20T00:00:00Z",
         "access_model": "public_keyless",
         "authentication": {"api_key": False, "login": False, "fee": False},
         "terms_url": "https://example.gov/terms",
@@ -78,6 +80,7 @@ class ContractFixture:
         fx = self.protocol["currency_conversion"]
         self.sources.append(audited_source(fx["source_id"], ["local_currency_per_USD"], url=fx["url"]))
         self.sources.append(audited_source("benefit-source", ["benefit_claim"], source_type="official_company_report"))
+        self.sources[-1].update(locator="benefits", supporting_quote="Paid leave is offered.")
         self.source_for_jurisdiction = {
             jurisdiction: entries[0]["source_id"]
             for jurisdiction, entries in self.protocol["registered_sources"].items()
@@ -89,7 +92,7 @@ class ContractFixture:
         self.companies = self.current["domestic"] + self.current["international"]
         # Claims cover only the first render batch; the fixture does not imply complete benefit coverage.
         self.claims = [self._claim(company) for company in self.current["domestic"][:25]]
-        self.reviews = [{"review_id": f"review-{i:04d}", "claim_id": claim["claim_id"], "researcher_id": "alice", "reviewer_id": "bob", "decision": "approved", "reviewed_at": "2026-10-21T00:00:00Z", "issues": [], "resolution": "accepted"} for i, claim in enumerate(self.claims)]
+        self.reviews = [{"review_id": f"review-{i:04d}", "claim_id": claim["claim_id"], "researcher_id": "alice", "reviewer_id": "bob", "decision": "approved", "reviewed_at": "2026-10-21T00:00:00Z", "issues": [], "resolution": "accepted", "quote_entailment_confirmed": True} for i, claim in enumerate(self.claims)]
         self.write_all()
 
     def _companies(self, scope, count):
@@ -113,7 +116,7 @@ class ContractFixture:
         return sorted(records, key=lambda item: (item["selection_hash"], json_bytes([self.seed, item["jurisdiction"], item["registry_id"], item["legal_name"]])))
 
     def _claim(self, company):
-        return {"claim_id": "claim-" + company["company_id"], "company_id": company["company_id"], "benefit_name": "Leave", "detail": "Paid leave is offered.", "status": "confirmed", "current_validity": "current", "evidence_grade": "A", "source_ids": ["benefit-source"], "application_scope": {"countries": ["KR"], "legal_entities": [company["legal_name"]], "roles": ["all"], "employment_types": ["full_time"], "tenure_condition": "none"}, "publication_date": "2026-01-01", "checked_at": "2026-10-20", "prepublication_checked_at": "2026-10-20", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "b" * 64}
+        return {"claim_id": "claim-" + company["company_id"], "company_id": company["company_id"], "benefit_name": "Leave", "detail": "Paid leave is offered.", "status": "confirmed", "current_validity": "current", "evidence_grade": "A", "source_ids": ["benefit-source"], "application_scope": {"countries": ["KR"], "legal_entities": [company["legal_name"]], "roles": ["all"], "employment_types": ["full_time"], "tenure_condition": "none"}, "publication_date": "2026-01-01", "checked_at": "2026-10-20", "prepublication_checked_at": "2026-10-20", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64}
 
     def replacement_event(self, scope="domestic", excluded_index=-1):
         old = self.current[scope]
@@ -154,7 +157,7 @@ class ContractFixture:
         for relative in effective_paths:
             data = (self.root / relative).read_bytes()
             effective_entries.append({"path": relative, "sha256": sha(data), "count": len(data.splitlines())})
-        effective = {"status": "approved", "approved_by": "owner", "approved_at": "2026-10-21T00:00:00Z", "freeze_manifest_sha256": freeze_hash, "artifacts": effective_entries}
+        effective = {"status": "approved", "approved_by": "owner", "approved_at": "2026-10-23T00:00:00Z", "freeze_manifest_sha256": freeze_hash, "artifacts": effective_entries}
         self.write_json("population/effective-selection-manifest.json", effective)
 
     def write_all(self):

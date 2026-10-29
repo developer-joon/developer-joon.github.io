@@ -4,11 +4,12 @@
   "title": "Independent claim review",
   "type": "object",
   "additionalProperties": false,
-  "required": ["review_id", "claim_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "issues", "resolution"],
+  "required": ["review_id", "claim_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "issues", "resolution", "quote_entailment_confirmed"],
   "properties": {
     "review_id": {"type": "string", "minLength": 1}, "claim_id": {"type": "string", "minLength": 1},
     "researcher_id": {"type": "string", "minLength": 1}, "reviewer_id": {"type": "string", "minLength": 1},
     "decision": {"enum": ["approved", "changes_required", "rejected"]}, "reviewed_at": {"type": "string", "format": "date-time"},
-    "issues": {"type": "array", "items": {"type": "string"}}, "resolution": {"type": "string", "minLength": 1}
+    "issues": {"type": "array", "items": {"type": "string"}}, "resolution": {"type": "string", "minLength": 1},
+    "quote_entailment_confirmed": {"type": "boolean"}
   }
 }

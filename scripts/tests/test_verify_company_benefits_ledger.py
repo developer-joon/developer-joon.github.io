@@ -163,6 +163,121 @@ class VerifierTests(unittest.TestCase):
         for needle in ("missing source title", "missing source locator", "HTTP status", "access wall", "reuse", "retention", "does not support benefit_claim"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:30]))
 
+    def test_schema_invalid_self_asserted_social_source_cannot_prove_historical_claim(self):
+        source = self.fixture.sources[-1]
+        source.update({"source_type": "social_media", "owner": "", "url": "http://social.example/post", "evidence_eligibility": "A", "checked_at": "2026-12-01T00:00:00Z"})
+        source["http_verification"]["final_url"] = source["url"]
+        self.fixture.claims[0].update(status="past", current_validity="historical", publication_date="2020-01-01")
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        errors = self.errors()
+        for needle in ("source_type", "owner", "HTTPS", "future", "official"):
+            self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
+
+    def test_evidence_hash_provenance_is_verified_or_independently_reviewed(self):
+        source = self.fixture.sources[-1]
+        source["hash_provenance"] = "retained_file"
+        source["evidence_path"] = "outside.bin"
+        source["content_sha256"] = "0" * 64
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.assert_error("retained evidence")
+
+        self.fixture = FrozenFixture(self.root)
+        evidence_root = self.root / "lawful-evidence"
+        evidence_root.mkdir()
+        payload = b"lawfully retained official evidence"
+        (evidence_root / "benefit.bin").write_bytes(payload)
+        source = self.fixture.sources[-1]
+        source.update(hash_provenance="retained_file", evidence_path="benefit.bin", content_sha256=sha(payload))
+        source["decisions"].update(retention="allowed", snapshot="allowed")
+        for claim in self.fixture.claims:
+            claim["content_sha256"] = sha(payload)
+        self.fixture.write_all()
+        self.assertEqual([], self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29), evidence_root=evidence_root))
+
+        self.fixture = FrozenFixture(self.root)
+        self.fixture.reviews[0]["quote_entailment_confirmed"] = False
+        self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
+        self.assert_error("quote entailment")
+
+    def test_schema_additional_properties_are_rejected(self):
+        self.fixture.sources[-1]["self_asserted_grade"] = "A"
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.assert_error("schema additional property self_asserted_grade")
+
+    def test_scale_source_must_be_pinned_for_company_jurisdiction_and_actually_used(self):
+        us_source = self.fixture.source_for_jurisdiction["US"]
+        self.rewrite_company_everywhere("domestic", 0, lambda company: company["scale_metric"].update(source_ids=[us_source]))
+        self.assert_error("pinned scale source for jurisdiction KR")
+
+        self.fixture = FrozenFixture(self.root)
+        company_id = self.fixture.selected["domestic"][0]["company_id"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            target = next(item for item in collection if item["company_id"] == company_id)
+            target["benefit_policy_owner"] = "Parent Corp"
+            target["related_company_exception"] = {"separate_scale_source_ids": [self.fixture.source_for_jurisdiction["US"]], "entity_specific_benefit_source_ids": ["benefit-source"], "no_inheritance": True}
+        self.fixture.sources[-1]["applicable_legal_entities"] = [self.fixture.selected["domestic"][0]["legal_name"]]
+        self.fixture.write_all()
+        self.assert_error("actual scale source_ids")
+
+    def test_related_parent_only_claim_does_not_apply_to_selected_employer(self):
+        company = self.fixture.selected["domestic"][0]
+        company_id = company["company_id"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            target = next(item for item in collection if item["company_id"] == company_id)
+            target["benefit_policy_owner"] = "Parent Corp"
+            target["related_company_exception"] = {"separate_scale_source_ids": list(target["scale_metric"]["source_ids"]), "entity_specific_benefit_source_ids": ["benefit-source"], "no_inheritance": True}
+        claim = next(item for item in self.fixture.claims if item["company_id"] == company_id)
+        claim["application_scope"]["legal_entities"] = ["Parent Corp"]
+        self.fixture.sources[-1]["applicable_legal_entities"] = ["Parent Corp"]
+        self.fixture.write_all()
+        self.assert_error("selected employer legal entity")
+
+    def test_all_audit_timestamps_are_bounded_and_ordered(self):
+        self.fixture.sources[-1]["checked_at"] = "2026-11-01T00:00:00Z"
+        self.fixture.sources[-1]["retrieved_at"] = "2026-11-01T00:00:00Z"
+        self.fixture.reviews[0]["reviewed_at"] = "2026-10-19T00:00:00Z"
+        self.fixture.write_all()
+        errors = self.errors()
+        self.assertTrue(any("source checked_at is in the future" in error for error in errors), errors[:40])
+        self.assertTrue(any("review must follow" in error for error in errors), errors[:40])
+
+        self.fixture = FrozenFixture(self.root)
+        event, new = self.fixture.replacement_event()
+        event["occurred_at"] = "2026-11-01T00:00:00Z"
+        event["exclusion_details"] = "x"
+        self.fixture.current["domestic"] = new
+        self.fixture.companies = new + self.fixture.current["international"]
+        self.fixture.events = [event]
+        self.fixture.write_all()
+        errors = self.errors()
+        self.assertTrue(any("event occurred_at is in the future" in error for error in errors), errors[:40])
+        self.assertTrue(any("meaningful exclusion_details" in error for error in errors), errors[:40])
+
+    def test_unknown_search_ids_must_be_resolved_official_accessible_and_scoped(self):
+        claim = self.fixture.claims[0]
+        claim.update({"status": "unknown", "evidence_grade": "none", "source_ids": [], "current_validity": "undated_current", "publication_date": None, "detail": "조사에서 확인되지 않았으며, 혜택이 없다는 뜻이 아니다.", "searched_source_ids": ["missing-source"], "searched_at": "2026-10-20T00:00:00Z", "search_scope": "benefit_nonclaim"})
+        for field in ("prepublication_checked_at", "source_locator", "supporting_quote", "content_sha256"):
+            claim.pop(field, None)
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        self.assert_error("unknown searched source missing-source")
+
+        claim["searched_source_ids"] = [self.fixture.source_for_jurisdiction["US"]]
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        self.assert_error("not official, accessible, or jurisdiction-applicable")
+
+    def test_contract_file_digest_is_an_independent_literal_anchor(self):
+        contract_path = ROOT / "scripts" / "company-benefits-protocol-contract.json"
+        original = contract_path.read_bytes()
+        try:
+            contract = json.loads(original)
+            contract["thresholds"]["domestic_non_financial"]["minimum"] = 1
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "independent pin anchor"):
+                self.verifier.pinned_protocol_contract()
+        finally:
+            contract_path.write_bytes(original)
+
     def test_nonempty_current_blocker_makes_source_ineligible(self):
         self.fixture.sources[-1]["current_blocker"] = "terms unresolved; do not use"
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
@@ -278,6 +393,16 @@ class VerifierTests(unittest.TestCase):
             target["source_availability"] = []
         self.fixture.write_all()
         self.assert_error("higher-precedence source availability")
+
+        arbitrary = self.fixture.source_for_jurisdiction["US"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            target = next(item for item in collection if item["company_id"] == company_id)
+            target["source_availability"] = [
+                {"precedence_rank": rank, "status": "unavailable", "reason": "Official endpoint unavailable during audit", "checked_source_ids": [arbitrary]}
+                for rank in range(1, 5)
+            ]
+        self.fixture.write_all()
+        self.assert_error("every pinned source for the same jurisdiction")
 
     def test_protocol_requires_exact_panel_domestic_union_thresholds_and_registered_endpoints(self):
         self.fixture.protocol["scopes"]["international"]["country_panel"] = PANEL[:-1]

@@ -6,10 +6,12 @@ import calendar
 import hashlib
 import json
 import re
+import stat
 import sys
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, time, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 PANEL = ["US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]
 CLAIM_STATUSES = {"confirmed", "limited", "past", "name_only", "unknown", "conflict"}
@@ -37,6 +39,32 @@ PINNED_PROTOCOL_FIELDS = (
     "currency_conversion", "source_precedence", "canonical_selection", "immutable_model",
 )
 EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction"}
+OFFICIAL_SOURCE_TYPES = {"government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report"}
+PINNED_CONTRACT_SHA256 = "50287ebb7fe06b2a034a21e46843a573d32f064e2b0a23bba2a5e50d37f271b5"
+PINNED_CONTRACT_VERSION = "1.0.0"
+MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
+HASH_SCHEMA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+EVENT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["event_id", "protocol_version", "scope", "exclusion_reason", "exclusion_details", "excluded_company_id", "excluded_selection_hash", "excluded_hash_position", "replacement_company_id", "replacement_selection_hash", "previous_effective_sha256", "next_effective_sha256", "occurred_at", "approved_by"],
+    "properties": {
+        "event_id": {"type": "string", "minLength": 1}, "protocol_version": {"type": "string", "minLength": 1},
+        "scope": {"enum": ["domestic", "international"]}, "exclusion_reason": {"enum": sorted(EXCLUSION_REASONS)},
+        "exclusion_details": {"type": "string", "minLength": 20}, "excluded_company_id": {"type": "string", "minLength": 1},
+        "excluded_selection_hash": HASH_SCHEMA, "excluded_hash_position": {"type": "integer", "minimum": 0},
+        "replacement_company_id": {"type": "string", "minLength": 1}, "replacement_selection_hash": HASH_SCHEMA,
+        "previous_effective_sha256": HASH_SCHEMA, "next_effective_sha256": HASH_SCHEMA,
+        "occurred_at": {"type": "string", "format": "date-time"}, "approved_by": {"type": "string", "minLength": 1},
+    },
+}
+MANIFEST_SCHEMA = {
+    "type": "object", "required": ["status", "approved_by", "approved_at", "artifacts"],
+    "properties": {
+        "status": {"const": "approved"}, "approved_by": {"type": "string", "minLength": 1},
+        "approved_at": {"type": "string", "format": "date-time"}, "freeze_manifest_sha256": HASH_SCHEMA,
+        "artifacts": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["path", "sha256", "count"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": HASH_SCHEMA, "count": {"type": "integer", "minimum": 0}}}},
+    },
+}
 
 
 def json_bytes(value):
@@ -105,6 +133,102 @@ def parse_day(value, field, record_id, errors):
         return None
 
 
+def parse_timestamp(value, field, record_id, errors):
+    if not isinstance(value, str):
+        errors.append(f"{record_id}: invalid {field} timestamp")
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timezone required")
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        errors.append(f"{record_id}: invalid {field} timestamp")
+        return None
+
+
+def as_of_end(as_of):
+    return datetime.combine(as_of, time.max, timezone.utc)
+
+
+def _schema_type_matches(value, expected):
+    checks = {
+        "object": lambda v: isinstance(v, dict), "array": lambda v: isinstance(v, list),
+        "string": lambda v: isinstance(v, str), "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        "boolean": lambda v: isinstance(v, bool), "null": lambda v: v is None,
+    }
+    return expected in checks and checks[expected](value)
+
+
+def validate_structure(value, schema, label, errors, root_schema=None):
+    """Validate every JSON Schema keyword used by the checked-in schemas."""
+    root_schema = root_schema or schema
+    if "$ref" in schema:
+        ref = schema["$ref"]
+        if not ref.startswith("#/"):
+            errors.append(f"{label}: unsupported schema reference {ref}")
+            return
+        target = root_schema
+        for part in ref[2:].split("/"):
+            target = target[part.replace("~1", "/").replace("~0", "~")]
+        validate_structure(value, target, label, errors, root_schema)
+        return
+    expected = schema.get("type")
+    if expected is not None:
+        types = expected if isinstance(expected, list) else [expected]
+        if not any(_schema_type_matches(value, item) for item in types):
+            errors.append(f"{label}: schema type must be {'/'.join(types)}")
+            return
+    if "enum" in schema and value not in schema["enum"]: errors.append(f"{label}: schema enum violation")
+    if "const" in schema and value != schema["const"]: errors.append(f"{label}: schema const violation")
+    if isinstance(value, str):
+        if len(value) < schema.get("minLength", 0): errors.append(f"{label}: schema string is too short")
+        if "pattern" in schema and not re.search(schema["pattern"], value): errors.append(f"{label}: schema pattern violation")
+        fmt = schema.get("format")
+        if fmt == "date":
+            try: date.fromisoformat(value)
+            except ValueError: errors.append(f"{label}: schema invalid date")
+        elif fmt == "date-time": parse_timestamp(value, "schema date-time", label, errors)
+        elif fmt == "uri":
+            parsed = urlparse(value)
+            if not parsed.scheme or not parsed.netloc: errors.append(f"{label}: schema invalid URI")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]: errors.append(f"{label}: schema minimum violation")
+        if "maximum" in schema and value > schema["maximum"]: errors.append(f"{label}: schema maximum violation")
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]: errors.append(f"{label}: schema exclusiveMinimum violation")
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0): errors.append(f"{label}: schema minItems violation")
+        if "maxItems" in schema and len(value) > schema["maxItems"]: errors.append(f"{label}: schema maxItems violation")
+        if schema.get("uniqueItems") and len({json.dumps(item, sort_keys=True) for item in value}) != len(value): errors.append(f"{label}: schema uniqueItems violation")
+        for index, item in enumerate(value): validate_structure(item, schema.get("items", {}), f"{label}[{index}]", errors, root_schema)
+    if isinstance(value, dict):
+        for field in schema.get("required", []):
+            if field not in value: errors.append(f"{label}: schema missing required {field}")
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is False:
+            for field in value.keys() - properties.keys(): errors.append(f"{label}: schema additional property {field}")
+        for field, item in value.items():
+            if field in properties: validate_structure(item, properties[field], f"{label}.{field}", errors, root_schema)
+    if "oneOf" in schema:
+        matches = 0
+        for choice in schema["oneOf"]:
+            trial = []
+            validate_structure(value, choice, label, trial, root_schema)
+            matches += int(not trial)
+        if matches != 1: errors.append(f"{label}: schema oneOf violation")
+    for condition in schema.get("allOf", []):
+        predicate_errors = []
+        validate_structure(value, condition.get("if", {}), label, predicate_errors, root_schema)
+        branch = condition.get("then") if not predicate_errors else condition.get("else")
+        if branch: validate_structure(value, branch, label, errors, root_schema)
+
+
+def load_schema(name):
+    path = Path(__file__).resolve().parents[1] / "docs" / "research" / "company-benefits" / "schema" / name
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def older_than_months(value, as_of, months):
     year = as_of.year - (months // 12)
     month = as_of.month - (months % 12)
@@ -139,7 +263,10 @@ def canonical_key(protocol, company):
 
 def pinned_protocol_contract():
     path = Path(__file__).with_name("company-benefits-protocol-contract.json")
-    contract = json.loads(path.read_text(encoding="utf-8"))
+    raw = path.read_bytes()
+    if sha256(raw) != PINNED_CONTRACT_SHA256:
+        raise ValueError("pinned protocol contract violates independent pin anchor")
+    contract = json.loads(raw)
     if set(contract) != set(PINNED_PROTOCOL_FIELDS):
         raise ValueError("pinned protocol contract fields are incomplete")
     return contract
@@ -147,6 +274,9 @@ def pinned_protocol_contract():
 
 def validate_protocol(protocol, source_map, errors):
     contract = pinned_protocol_contract()
+    validate_structure(protocol, load_schema("population-protocol.schema.json"), "protocol", errors)
+    if protocol.get("version") != PINNED_CONTRACT_VERSION:
+        errors.append("protocol version violates independent pinned contract version")
     for field, expected in contract.items():
         if protocol.get(field) != expected:
             errors.append(f"protocol {field} violates pinned protocol contract")
@@ -202,6 +332,8 @@ def source_is_eligible(source, field, grade_required=False):
         return False
     if grade_required and source.get("evidence_eligibility") not in {"A", "B"}:
         return False
+    if grade_required and source.get("source_type") not in OFFICIAL_SOURCE_TYPES:
+        return False
     if source.get("access_model") not in {"public_keyless", "public_api_key"}:
         return False
     authentication = source.get("authentication", {})
@@ -225,19 +357,52 @@ def source_is_eligible(source, field, grade_required=False):
     return http.get("status") == 200 and http.get("access_wall") in {"none", "api_key"}
 
 
-def validate_sources(sources, errors):
+def validate_sources(sources, errors, as_of=None, evidence_root=None):
     result = {}
-    fields = ("source_id", "title", "owner", "source_type", "jurisdiction", "url", "locator", "supporting_quote", "content_sha256", "access_model", "authentication", "terms_url", "reuse_decision", "decisions", "supported_fields", "evidence_eligibility", "checked_at", "http_verification")
+    schema = load_schema("source.schema.json")
+    fields = ("source_id", "title", "owner", "source_type", "jurisdiction", "url", "locator", "supporting_quote", "content_sha256", "hash_provenance", "retrieved_at", "access_model", "authentication", "terms_url", "reuse_decision", "decisions", "supported_fields", "evidence_eligibility", "checked_at", "http_verification")
     for index, source in enumerate(sources, 1):
         source_id = source.get("source_id") or f"source[{index}]"
+        validate_structure(source, schema, source_id, errors)
         required(source, fields, "source", source_id, errors)
         if "current_blocker" not in source:
             errors.append(f"{source_id}: missing source current_blocker")
         if source_id in result:
             errors.append(f"duplicate source_id: {source_id}")
         result[source_id] = source
+        source_type = source.get("source_type")
+        grade = source.get("evidence_eligibility")
+        if str(source.get("owner", "")).strip().casefold() in {"", "anonymous", "unknown", "n/a"}:
+            errors.append(f"{source_id}: source owner must be nonanonymous")
+        if grade in {"A", "B"} and source_type not in OFFICIAL_SOURCE_TYPES:
+            errors.append(f"{source_id}: evidence grade requires an official source_type")
+        for field in ("url", "terms_url"):
+            if urlparse(str(source.get(field, ""))).scheme != "https":
+                errors.append(f"{source_id}: {field} must use HTTPS")
+        checked = parse_timestamp(source.get("checked_at"), "source checked_at", source_id, errors)
+        retrieved = parse_timestamp(source.get("retrieved_at"), "retrieved_at", source_id, errors)
+        if as_of and checked and checked > as_of_end(as_of): errors.append(f"{source_id}: source checked_at is in the future")
+        if as_of and retrieved and retrieved > as_of_end(as_of): errors.append(f"{source_id}: source retrieved_at is in the future")
+        if checked and retrieved and retrieved > checked: errors.append(f"{source_id}: retrieved_at must not follow checked_at")
         if not re.fullmatch(r"[0-9a-f]{64}", str(source.get("content_sha256", ""))):
             errors.append(f"{source_id}: invalid source content_sha256")
+        provenance = source.get("hash_provenance")
+        if provenance == "retained_file":
+            if source.get("decisions", {}).get("retention") != "allowed" or source.get("decisions", {}).get("snapshot") != "allowed":
+                errors.append(f"{source_id}: retained evidence requires allowed retention and snapshot decisions")
+            relative = source.get("evidence_path")
+            try:
+                if evidence_root is None or not isinstance(relative, str): raise ValueError
+                root = Path(evidence_root).resolve(strict=True)
+                candidate = root / relative
+                metadata = candidate.lstat()
+                resolved = candidate.resolve(strict=True)
+                if root not in resolved.parents or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_EVIDENCE_BYTES: raise ValueError
+                if sha256(resolved.read_bytes()) != source.get("content_sha256"): raise ValueError
+            except (OSError, ValueError):
+                errors.append(f"{source_id}: retained evidence is outside the approved root, unsafe, oversized, missing, or hash-mismatched")
+        elif provenance != "observed_response":
+            errors.append(f"{source_id}: invalid hash_provenance")
         decisions = source.get("decisions", {})
         for decision in SOURCE_DECISIONS:
             if decision not in decisions:
@@ -250,6 +415,7 @@ def validate_sources(sources, errors):
         for field in ("status", "redirect_chain", "content_type", "final_url", "final_owner_domain", "access_wall", "expected_marker"):
             if field not in http:
                 errors.append(f"{source_id}: missing http_verification {field}")
+        if urlparse(str(http.get("final_url", ""))).scheme != "https": errors.append(f"{source_id}: final URL must use HTTPS")
     return result
 
 
@@ -286,6 +452,7 @@ def validate_source_use(source_map, source_ids, field, record_id, errors, grade_
 
 def validate_company(protocol, company, source_map, as_of, errors):
     company_id = company.get("company_id") or "company[missing-id]"
+    validate_structure(company, load_schema("company.schema.json"), company_id, errors)
     required(company, ("company_id", "jurisdiction", "incorporation_country", "scope", "registry_id", "legal_name", "selected_employer_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "related_company_exception", "entity_status", "sector", "scale_metric", "scale_source_precedence_rank", "source_availability", "selection_hash"), "", company_id, errors, allow_null=("financial_consolidation_parent", "ultimate_parent", "related_company_exception"))
     scope = company.get("scope")
     jurisdiction = company.get("jurisdiction")
@@ -348,6 +515,12 @@ def validate_company(protocol, company, source_map, as_of, errors):
         errors.append(f"{company_id}: scale metric fiscal age exceeds 24 months")
     source_ids = metric.get("source_ids", []) if isinstance(metric.get("source_ids"), list) else []
     validate_source_use(source_map, source_ids, metric.get("type", "scale field"), company_id, errors)
+    registered = protocol.get("registered_sources", {}).get(jurisdiction, [])
+    pinned_ids = {entry.get("source_id") for entry in registered if isinstance(entry, dict)}
+    for source_id in source_ids:
+        source = source_map.get(source_id, {})
+        if source_id not in pinned_ids or source.get("jurisdiction") != jurisdiction:
+            errors.append(f"{company_id}: source {source_id} is not a pinned scale source for jurisdiction {jurisdiction}")
     precedence = protocol.get("source_precedence", [])
     ranks = []
     for source_id in source_ids:
@@ -361,26 +534,21 @@ def validate_company(protocol, company, source_map, as_of, errors):
         errors.append(f"{company_id}: scale_source_precedence_rank does not match selected source type")
     if isinstance(declared_rank, int) and declared_rank > 1:
         availability = company.get("source_availability")
-        unavailable = {
-            item.get("precedence_rank")
-            for item in availability if isinstance(item, dict)
-            and item.get("status") == "unavailable" and item.get("reason")
-            and isinstance(item.get("checked_source_ids"), list) and item.get("checked_source_ids")
-        } if isinstance(availability, list) else set()
-        if unavailable != set(range(1, declared_rank)):
+        by_rank = {item.get("precedence_rank"): item for item in availability if isinstance(item, dict)} if isinstance(availability, list) else {}
+        if set(by_rank) != set(range(1, declared_rank)):
             errors.append(f"{company_id}: lower-priority scale source requires higher-precedence source availability proof")
-        else:
-            for item in availability:
-                rank = item.get("precedence_rank")
-                checked = item.get("checked_source_ids", [])
-                if any(
-                    source_id not in source_map
-                    or source_map[source_id].get("source_type") not in precedence
-                    or precedence.index(source_map[source_id].get("source_type")) + 1 != rank
-                    or source_is_eligible(source_map[source_id], metric.get("type", "scale field"))
-                    for source_id in checked
-                ):
-                    errors.append(f"{company_id}: higher-precedence source availability references invalid or eligible source IDs")
+        for rank in range(1, declared_rank):
+            item = by_rank.get(rank, {})
+            checked = set(item.get("checked_source_ids", [])) if isinstance(item.get("checked_source_ids"), list) else set()
+            expected_checked = {
+                source_id for source_id in pinned_ids
+                if source_map.get(source_id, {}).get("source_type") in precedence
+                and precedence.index(source_map[source_id]["source_type"]) + 1 == rank
+            }
+            if item.get("status") != "unavailable" or len(" ".join(str(item.get("reason", "")).split())) < 10 or not expected_checked or checked != expected_checked:
+                errors.append(f"{company_id}: higher-precedence proof must name every pinned source for the same jurisdiction and rank")
+            if any(source_is_eligible(source_map.get(source_id), metric.get("type", "scale field")) for source_id in checked):
+                errors.append(f"{company_id}: higher-precedence source availability references an eligible source")
     owner = company.get("benefit_policy_owner")
     if owner and owner != company.get("selected_employer_legal_entity"):
         contract = company.get("related_company_exception")
@@ -389,6 +557,8 @@ def validate_company(protocol, company, source_map, as_of, errors):
             errors.append(f"{company_id}: missing related-company exception contract")
         elif not validate_source_use(source_map, contract.get("separate_scale_source_ids", []), metric.get("type", "scale field"), company_id, errors):
             errors.append(f"{company_id}: related-company scale source is not eligible for the metric")
+        elif not set(contract.get("separate_scale_source_ids", [])).issubset(set(source_ids)):
+            errors.append(f"{company_id}: related-company separate scale sources must be present in actual scale source_ids")
 
 
 def validate_ledger_records(protocol, records, label, source_map, as_of, errors, exact_count=None, enforce_order=True):
@@ -408,15 +578,21 @@ def validate_ledger_records(protocol, records, label, source_map, as_of, errors,
         errors.append(f"{label}: records are not in canonical order")
 
 
-def validate_manifest(path, required_paths, root, errors, label):
+def validate_manifest(path, required_paths, root, errors, label, as_of, not_before=None):
     if not path.is_file():
         errors.append(f"missing required {label} manifest: {path}")
         return None
     manifest = read_json(path, errors)
     if not isinstance(manifest, dict):
         return None
+    validate_structure(manifest, MANIFEST_SCHEMA, str(path), errors)
+    allowed = {"status", "approved_by", "approved_at", "artifacts"} | ({"freeze_manifest_sha256"} if label == "effective" else set())
+    for field in set(manifest) - allowed: errors.append(f"{path}: schema additional property {field}")
     if manifest.get("status") != "approved" or not manifest.get("approved_by") or not manifest.get("approved_at"):
         errors.append(f"{path}: {label} manifest is not explicitly approved")
+    approved_at = parse_timestamp(manifest.get("approved_at"), "approved_at", str(path), errors)
+    if approved_at and approved_at > as_of_end(as_of): errors.append(f"{path}: manifest approved_at is in the future")
+    if approved_at and not_before and approved_at < not_before: errors.append(f"{path}: manifest approval predates relevant freeze or event")
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
         errors.append(f"{path}: manifest artifacts must be a list")
@@ -426,6 +602,7 @@ def validate_manifest(path, required_paths, root, errors, label):
         errors.append(f"{path}: manifest artifact set mismatch")
     for relative in required_paths:
         entry = entries.get(relative, {})
+        if set(entry) != {"path", "sha256", "count"}: errors.append(f"{path}: manifest artifact schema mismatch for {relative}")
         artifact = root / relative
         if not artifact.is_file():
             errors.append(f"{path}: missing frozen artifact {relative}")
@@ -479,9 +656,13 @@ def validate_population(root, protocol, source_map, as_of, errors):
     projected = {scope: list(ledgers[(scope, "selected")]) for scope in ("domestic", "international")}
     ever_used = {scope: {item.get("company_id") for item in projected[scope]} for scope in projected}
     event_ids = set()
+    previous_occurred_at = None
     for event in events:
         event_id = event.get("event_id") or "event[missing-id]"
+        validate_structure(event, EVENT_SCHEMA, event_id, errors)
         required(event, ("event_id", "protocol_version", "scope", "exclusion_reason", "exclusion_details", "excluded_company_id", "excluded_selection_hash", "excluded_hash_position", "replacement_company_id", "replacement_selection_hash", "previous_effective_sha256", "next_effective_sha256", "occurred_at", "approved_by"), "event", event_id, errors)
+        event_fields = {"event_id", "protocol_version", "scope", "exclusion_reason", "exclusion_details", "excluded_company_id", "excluded_selection_hash", "excluded_hash_position", "replacement_company_id", "replacement_selection_hash", "previous_effective_sha256", "next_effective_sha256", "occurred_at", "approved_by"}
+        for field in set(event) - event_fields: errors.append(f"{event_id}: schema additional property {field}")
         if event_id in event_ids:
             errors.append(f"duplicate event_id: {event_id}")
         event_ids.add(event_id)
@@ -490,12 +671,12 @@ def validate_population(root, protocol, source_map, as_of, errors):
             errors.append(f"{event_id}: invalid event scope")
             continue
         before = projected[scope]
-        try:
-            occurred_at = datetime.fromisoformat(str(event.get("occurred_at", "")).replace("Z", "+00:00"))
-            if occurred_at.tzinfo is None:
-                raise ValueError("timezone required")
-        except ValueError:
-            errors.append(f"{event_id}: invalid occurred_at timestamp")
+        occurred_at = parse_timestamp(event.get("occurred_at"), "occurred_at", event_id, errors)
+        if occurred_at and occurred_at > as_of_end(as_of): errors.append(f"{event_id}: event occurred_at is in the future")
+        if occurred_at and previous_occurred_at and occurred_at <= previous_occurred_at: errors.append(f"{event_id}: events are not strictly ordered")
+        if occurred_at: previous_occurred_at = occurred_at
+        if len(" ".join(str(event.get("exclusion_details", "")).split())) < 20:
+            errors.append(f"{event_id}: meaningful exclusion_details must contain at least 20 normalized characters")
         for hash_field in ("excluded_selection_hash", "replacement_selection_hash", "previous_effective_sha256", "next_effective_sha256"):
             if not re.fullmatch(r"[0-9a-f]{64}", str(event.get(hash_field, ""))):
                 errors.append(f"{event_id}: invalid {hash_field}")
@@ -535,27 +716,33 @@ def validate_population(root, protocol, source_map, as_of, errors):
             errors.append(f"{scope} current effective ledger does not match event projection")
 
     effective_required = ["population/domestic-effective-selected.jsonl", "population/international-effective-selected.jsonl", "population/effective-selection-events.jsonl"]
-    effective_manifest = validate_manifest(root / "population/effective-selection-manifest.json", effective_required, root, errors, "effective")
     freeze_required = [
         "population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
         "population/domestic-selected.jsonl", "population/international-selected.jsonl",
     ]
-    validate_manifest(root / "population/freeze-manifest.json", freeze_required, root, errors, "freeze")
+    protocol_approval = parse_timestamp(protocol.get("approval", {}).get("approved_at"), "approved_at", "protocol", errors)
+    freeze_manifest = validate_manifest(root / "population/freeze-manifest.json", freeze_required, root, errors, "freeze", as_of, protocol_approval)
+    freeze_approval = parse_timestamp(freeze_manifest.get("approved_at"), "approved_at", "freeze manifest", errors) if isinstance(freeze_manifest, dict) else None
+    event_boundary = max([value for value in (freeze_approval, previous_occurred_at) if value], default=None)
+    effective_manifest = validate_manifest(root / "population/effective-selection-manifest.json", effective_required, root, errors, "effective", as_of, event_boundary)
     freeze_path = root / "population/freeze-manifest.json"
     if isinstance(effective_manifest, dict) and freeze_path.is_file() and effective_manifest.get("freeze_manifest_sha256") != sha256(freeze_path.read_bytes()):
         errors.append("effective manifest freeze_manifest_sha256 mismatch")
     return projected
 
 
-def validate_claims(claims, company_ids, source_map, as_of, errors):
+def validate_claims(claims, company_map, source_map, as_of, errors):
     claim_ids = set()
+    schema = load_schema("benefit-claim.schema.json")
     for index, claim in enumerate(claims, 1):
         claim_id = claim.get("claim_id") or f"claim[{index}]"
+        validate_structure(claim, schema, claim_id, errors)
         required(claim, ("claim_id", "company_id", "benefit_name", "detail", "status", "current_validity", "evidence_grade", "source_ids", "application_scope", "checked_at"), "", claim_id, errors)
         if claim_id in claim_ids:
             errors.append(f"duplicate claim_id: {claim_id}")
         claim_ids.add(claim_id)
-        if claim.get("company_id") not in company_ids:
+        company = company_map.get(claim.get("company_id"))
+        if company is None:
             errors.append(f"{claim_id}: company is outside current effective selection")
         status = claim.get("status")
         if status not in CLAIM_STATUSES:
@@ -574,16 +761,38 @@ def validate_claims(claims, company_ids, source_map, as_of, errors):
                 errors.append(f"{claim_id}: unknown requires searched_source_ids")
             if "없다는 뜻이 아니다" not in claim.get("detail", ""):
                 errors.append(f"{claim_id}: unknown wording must not imply absence")
+            if claim.get("search_scope") != "benefit_nonclaim":
+                errors.append(f"{claim_id}: unknown search_scope must be benefit_nonclaim")
+            searched_at = parse_timestamp(claim.get("searched_at"), "searched_at", claim_id, errors)
+            if searched_at and searched_at > as_of_end(as_of): errors.append(f"{claim_id}: searched_at is in the future")
+            for source_id in searched or []:
+                source = source_map.get(source_id)
+                if source is None:
+                    errors.append(f"{claim_id}: unknown searched source {source_id} does not resolve")
+                elif source.get("source_type") not in OFFICIAL_SOURCE_TYPES or source.get("jurisdiction") not in {"INT", company.get("jurisdiction") if company else None} or not source_is_eligible(source, next(iter(source.get("supported_fields", [])), "")):
+                    errors.append(f"{claim_id}: unknown searched source {source_id} is not official, accessible, or jurisdiction-applicable")
         elif status in EVIDENCED_STATUSES:
             required(claim, ("prepublication_checked_at", "source_locator", "supporting_quote", "content_sha256"), "claim", claim_id, errors)
             if grade not in {"A", "B"}:
                 errors.append(f"{claim_id}: evidenced claim requires evidence grade A or B")
             if not re.fullmatch(r"[0-9a-f]{64}", str(claim.get("content_sha256", ""))):
                 errors.append(f"{claim_id}: invalid content_sha256")
+            source_hashes = {source_map.get(source_id, {}).get("content_sha256") for source_id in source_ids}
+            if claim.get("content_sha256") not in source_hashes:
+                errors.append(f"{claim_id}: claim content_sha256 does not match referenced evidence")
+            if not any(
+                source_map.get(source_id, {}).get("locator") == claim.get("source_locator")
+                and source_map.get(source_id, {}).get("supporting_quote") == claim.get("supporting_quote")
+                and source_map.get(source_id, {}).get("content_sha256") == claim.get("content_sha256")
+                for source_id in source_ids
+            ):
+                errors.append(f"{claim_id}: claim locator, quote, and hash do not resolve to one referenced source")
         app = claim.get("application_scope", {})
         for field in ("countries", "legal_entities", "roles", "employment_types", "tenure_condition"):
             if app.get(field) in (None, "", []):
                 errors.append(f"{claim_id}: missing application_scope.{field}")
+        if company and company.get("selected_employer_legal_entity") not in app.get("legal_entities", []):
+            errors.append(f"{claim_id}: application_scope must include the selected employer legal entity")
         published = parse_day(claim.get("publication_date"), "publication_date", claim_id, errors)
         checked = parse_day(claim.get("checked_at"), "checked_at", claim_id, errors)
         prepub = parse_day(claim.get("prepublication_checked_at"), "prepublication_checked_at", claim_id, errors)
@@ -613,18 +822,37 @@ def validate_claims(claims, company_ids, source_map, as_of, errors):
     return claim_ids
 
 
-def validate_reviews(reviews, claim_ids, errors):
+def validate_reviews(reviews, claims, source_map, as_of, errors):
+    claim_map = {claim.get("claim_id"): claim for claim in claims}
+    claim_ids = set(claim_map)
     approved = set()
     review_ids = set()
+    schema = load_schema("review.schema.json")
     for index, review in enumerate(reviews, 1):
         review_id = review.get("review_id") or f"review[{index}]"
-        required(review, ("review_id", "claim_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "issues", "resolution"), "review", review_id, errors)
+        validate_structure(review, schema, review_id, errors)
+        required(review, ("review_id", "claim_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "issues", "resolution", "quote_entailment_confirmed"), "review", review_id, errors)
         if review_id in review_ids:
             errors.append(f"duplicate review_id: {review_id}")
         review_ids.add(review_id)
         claim_id = review.get("claim_id")
-        if claim_id not in claim_ids:
+        claim = claim_map.get(claim_id)
+        if claim is None:
             errors.append(f"{review_id}: unknown claim_id")
+        reviewed = parse_timestamp(review.get("reviewed_at"), "reviewed_at", review_id, errors)
+        if reviewed and reviewed > as_of_end(as_of): errors.append(f"{review_id}: reviewed_at is in the future")
+        boundaries = []
+        if claim:
+            checked = parse_day(claim.get("checked_at"), "checked_at", claim_id, errors)
+            if checked: boundaries.append(datetime.combine(checked, time.min, timezone.utc))
+            for source_id in claim.get("source_ids", []):
+                source_checked = parse_timestamp(source_map.get(source_id, {}).get("checked_at"), "source checked_at", source_id, errors)
+                if source_checked: boundaries.append(source_checked)
+            observed = any(source_map.get(source_id, {}).get("hash_provenance") == "observed_response" for source_id in claim.get("source_ids", []))
+            if observed and review.get("quote_entailment_confirmed") is not True:
+                errors.append(f"{review_id}: independent review must confirm quote entailment for observed-response evidence")
+        if reviewed and boundaries and reviewed < max(boundaries):
+            errors.append(f"{review_id}: review must follow source checked_at and claim research timestamp")
         if review.get("researcher_id") == review.get("reviewer_id"):
             errors.append(f"{review_id}: review self-approval is prohibited")
         elif review.get("decision") == "approved" and claim_id in claim_ids:
@@ -653,18 +881,30 @@ def validate_related_entity_exceptions(companies, claims, approved_claim_ids, so
         }
         if not declared or not declared.issubset(referenced):
             errors.append(f"{company_id}: related-company benefit sources must be eligible and referenced by an approved entity claim")
+        selected_entity = company.get("selected_employer_legal_entity")
+        for source_id in declared:
+            source = source_map.get(source_id, {})
+            applicable = source.get("applicable_legal_entities", [])
+            if selected_entity not in applicable or source.get("policy_owner_legal_entity") != company.get("benefit_policy_owner"):
+                errors.append(f"{company_id}: related-company source policy owner/applicability does not include selected employer legal entity")
 
 
-def validate_corrections(corrections, claim_ids, errors):
+def validate_corrections(corrections, claim_ids, as_of, errors):
     seen = set()
+    schema = load_schema("correction.schema.json")
     for index, correction in enumerate(corrections, 1):
         correction_id = correction.get("correction_id") or f"correction[{index}]"
+        validate_structure(correction, schema, correction_id, errors)
         required(correction, ("correction_id", "claim_id", "status", "received_at", "official_source_ids", "decision", "decided_by", "decided_at"), "correction", correction_id, errors)
         if correction_id in seen:
             errors.append(f"duplicate correction_id: {correction_id}")
         seen.add(correction_id)
         if correction.get("claim_id") not in claim_ids:
             errors.append(f"{correction_id}: unknown claim_id")
+        received = parse_timestamp(correction.get("received_at"), "received_at", correction_id, errors)
+        decided = parse_timestamp(correction.get("decided_at"), "decided_at", correction_id, errors)
+        if received and received > as_of_end(as_of) or decided and decided > as_of_end(as_of): errors.append(f"{correction_id}: correction timestamp is in the future")
+        if received and decided and decided < received: errors.append(f"{correction_id}: decided_at precedes received_at")
 
 
 def validate_ranking_language(root, errors):
@@ -676,7 +916,7 @@ def validate_ranking_language(root, errors):
             errors.append(f"{path}: prohibited ranking language")
 
 
-def verify_workspace(root, as_of=None):
+def verify_workspace(root, as_of=None, evidence_root=None):
     root = Path(root)
     as_of = as_of or date.today()
     errors = []
@@ -696,11 +936,18 @@ def verify_workspace(root, as_of=None):
     approval = protocol.get("approval")
     if not isinstance(approval, dict) or not approval.get("approved_by") or not approval.get("approved_at"):
         errors.append("approved protocol is missing explicit approval")
+    else:
+        approved_at = parse_timestamp(approval.get("approved_at"), "approved_at", "protocol", errors)
+        if approved_at and approved_at > as_of_end(as_of): errors.append("protocol approved_at is in the future")
 
     source_path = find_file(root, "source-registry.jsonl")
     sources = read_jsonl(source_path, errors, required_file=True)
-    source_map = validate_sources(sources, errors)
-    validate_protocol(protocol, source_map, errors)
+    source_map = validate_sources(sources, errors, as_of, evidence_root)
+    try:
+        validate_protocol(protocol, source_map, errors)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors
     projected = validate_population(root, protocol, source_map, as_of, errors)
 
     companies = read_jsonl(find_file(root, "companies.jsonl"), errors, required_file=True)
@@ -714,10 +961,10 @@ def verify_workspace(root, as_of=None):
     claims = read_jsonl(find_file(root, "benefit-claims.jsonl"), errors, required_file=True)
     reviews = read_jsonl(find_file(root, "reviews.jsonl"), errors, required_file=True)
     corrections = read_jsonl(find_file(root, "corrections.jsonl"), errors, required_file=True)
-    claim_ids = validate_claims(claims, set(company_map), source_map, as_of, errors)
-    approved_claim_ids = validate_reviews(reviews, claim_ids, errors)
+    claim_ids = validate_claims(claims, company_map, source_map, as_of, errors)
+    approved_claim_ids = validate_reviews(reviews, claims, source_map, as_of, errors)
     validate_related_entity_exceptions(companies, claims, approved_claim_ids, source_map, errors)
-    validate_corrections(corrections, claim_ids, errors)
+    validate_corrections(corrections, claim_ids, as_of, errors)
     validate_ranking_language(root, errors)
     return errors
 
@@ -726,8 +973,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", nargs="?", default="docs/research/company-benefits")
     parser.add_argument("--as-of", type=date.fromisoformat)
+    parser.add_argument("--evidence-root", type=Path)
     args = parser.parse_args(argv)
-    errors = verify_workspace(Path(args.root), args.as_of)
+    errors = verify_workspace(Path(args.root), args.as_of, args.evidence_root)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

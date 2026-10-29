@@ -71,6 +71,13 @@
         "type": "string"
       }
     },
+    "searched_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "search_scope": {
+      "const": "benefit_nonclaim"
+    },
     "application_scope": {
       "type": "object",
       "additionalProperties": false,
@@ -206,7 +213,9 @@
       },
       "then": {
         "required": [
-          "searched_source_ids"
+          "searched_source_ids",
+          "searched_at",
+          "search_scope"
         ],
         "properties": {
           "evidence_grade": {
