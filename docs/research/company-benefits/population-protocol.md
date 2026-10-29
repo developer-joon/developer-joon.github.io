@@ -33,7 +33,7 @@ Commercial, editorial and search-result sources are discovery-only. They cannot 
 
 Required values are `[protocol_seed, jurisdiction, registry_id, legal_name]`. Jurisdiction is uppercase ISO alpha-2. Strings use Unicode NFC and trimmed whitespace; internal legal-name whitespace collapses to one ASCII space. Serialize compact UTF-8 JSON with `ensure_ascii=false`, separators `(',', ':')` and `allow_nan=false`, then sort by lowercase SHA-256. Missing values fail. Hash collisions use canonical JSON bytes as the tie-break.
 
-After a lawful freeze, immutable selected ledgers cannot change. Exclusions and replacements are append-only events, and effective-selected ledgers are deterministic projections. Each event records the previous and next effective hashes. Research stops until the next hash is approved.
+After a lawful freeze, immutable selected ledgers cannot change. The freeze manifest hashes only the protocol, eligible ledgers and immutable selected ledgers. Exclusions and replacements are append-only events, and effective-selected ledgers are deterministic projections. A separate effective manifest hashes the event ledger and current effective projections and references the immutable freeze-manifest hash. Each event records the protocol version, exclusion reason and details, excluded company ID/hash/hash position, replacement ID/hash, previous and next effective hashes, timestamp and approver. Research stops until the next hash is approved.
 
 ## Why the protocol is blocked
 

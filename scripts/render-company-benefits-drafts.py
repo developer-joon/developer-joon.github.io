@@ -4,7 +4,7 @@
 import argparse
 import importlib.util
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 HEADER = """---
@@ -62,7 +62,7 @@ def load_verifier():
     return module
 
 
-def render_batch(root, output_dir, scope, batch_number):
+def render_batch(root, output_dir, scope, batch_number, as_of=None):
     root = Path(root)
     output_dir = Path(output_dir)
     if scope not in {"domestic", "international"}:
@@ -73,11 +73,7 @@ def render_batch(root, output_dir, scope, batch_number):
     verifier = load_verifier()
     protocol_path = root / "population-protocol.json"
     protocol = read_json(protocol_path) if protocol_path.is_file() else {}
-    cutoff = protocol.get("cutoff_at")
-    try:
-        as_of = date.fromisoformat(str(cutoff)[:10])
-    except ValueError:
-        as_of = date.today()
+    as_of = as_of or datetime.now(timezone.utc).date()
     errors = verifier.verify_workspace(root, as_of=as_of)
     if errors:
         raise ValueError("workspace verification failed:\n" + "\n".join(errors))
@@ -151,8 +147,9 @@ def main(argv=None):
     parser.add_argument("output_dir")
     parser.add_argument("scope", choices=("domestic", "international"))
     parser.add_argument("batch_number", type=int)
+    parser.add_argument("--as-of", type=date.fromisoformat, help="render/freshness date (default: current UTC date)")
     args = parser.parse_args(argv)
-    output = render_batch(Path(args.root), Path(args.output_dir), args.scope, args.batch_number)
+    output = render_batch(Path(args.root), Path(args.output_dir), args.scope, args.batch_number, as_of=args.as_of)
     print(output)
     return 0
 

@@ -10,6 +10,7 @@
     "benefit_name",
     "detail",
     "status",
+    "current_validity",
     "evidence_grade",
     "source_ids",
     "application_scope",
@@ -40,6 +41,13 @@
         "name_only",
         "unknown",
         "conflict"
+      ]
+    },
+    "current_validity": {
+      "enum": [
+        "current",
+        "undated_current",
+        "historical"
       ]
     },
     "evidence_grade": {

@@ -6,7 +6,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from scripts.tests.benefits_test_fixture import FrozenFixture, PANEL, jsonl_bytes, sha
+from scripts.tests.benefits_test_fixture import FrozenFixture, PANEL, sha
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "scripts" / "verify-company-benefits-ledger.py"
@@ -47,7 +47,7 @@ class VerifierTests(unittest.TestCase):
                     mutate(record)
         self.fixture.write_all()
 
-    def test_realistic_fully_frozen_approved_fixture_passes(self):
+    def test_complete_synthetic_contract_fixture_passes(self):
         self.assertEqual([], self.errors())
 
     def test_approval_without_required_freeze_artifacts_fails(self):
@@ -134,8 +134,23 @@ class VerifierTests(unittest.TestCase):
         self.rewrite_company_everywhere("international", 0, mutate)
         self.assert_error("related-company exception contract")
 
+    def test_related_entity_exception_resolves_eligible_entity_specific_sources(self):
+        company_id = self.fixture.selected["domestic"][0]["company_id"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            target = next(item for item in collection if item["company_id"] == company_id)
+            target["benefit_policy_owner"] = "Parent Corp"
+            target["related_company_exception"] = {
+                "separate_scale_source_ids": ["nonexistent-scale"],
+                "entity_specific_benefit_source_ids": ["nonexistent-benefit"],
+                "no_inheritance": True,
+            }
+        self.fixture.write_all()
+        errors = self.errors()
+        self.assertTrue(any("related-company scale source" in error for error in errors), errors[:30])
+        self.assertTrue(any("approved entity claim" in error for error in errors), errors[:30])
+
     def test_source_required_audit_fields_and_claim_specific_eligibility_fail(self):
-        source = self.fixture.sources[1]
+        source = self.fixture.sources[-1]
         source.pop("title")
         source.pop("locator")
         source["http_verification"]["status"] = 403
@@ -148,17 +163,50 @@ class VerifierTests(unittest.TestCase):
         for needle in ("missing source title", "missing source locator", "HTTP status", "access wall", "reuse", "retention", "does not support benefit_claim"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:30]))
 
-    def test_undated_current_accepts_null_or_omitted_date_only_with_recent_check(self):
+    def test_nonempty_current_blocker_makes_source_ineligible(self):
+        self.fixture.sources[-1]["current_blocker"] = "terms unresolved; do not use"
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.assert_error("current blocker")
+
+    def test_exact_field_legal_decisions_are_all_required(self):
+        self.fixture.sources[-1]["decisions"]["snapshot"] = "unknown"
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.assert_error("snapshot")
+
+    def test_undated_current_requires_explicit_validity_and_recent_check(self):
         claim = self.fixture.claims[0]
         claim["publication_date"] = None
+        claim["current_validity"] = "undated_current"
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         self.assertEqual([], self.errors())
+        claim["current_validity"] = "current"
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        self.assert_error("undated_current")
+        claim["current_validity"] = "undated_current"
         claim.pop("publication_date")
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
-        self.assertEqual([], self.errors())
+        self.assert_error("explicit null")
+        claim["publication_date"] = None
         claim["checked_at"] = "2026-08-01"
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         self.assert_error("undated source was not checked within 30 days")
+
+    def test_future_fiscal_and_current_evidence_dates_fail(self):
+        self.rewrite_company_everywhere("domestic", 0, lambda company: company["scale_metric"].update(fiscal_year_end="2026-11-01"))
+        self.assert_error("future fiscal")
+        self.fixture = FrozenFixture(self.root)
+        self.fixture.claims[0]["publication_date"] = "2026-11-01"
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        self.assert_error("future publication")
+
+    def test_historical_claim_accepts_old_official_evidence_but_current_does_not(self):
+        claim = self.fixture.claims[0]
+        claim.update(status="past", current_validity="historical", publication_date="2020-01-01")
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        self.assertEqual([], self.errors())
+        claim["current_validity"] = "current"
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        self.assert_error("current source is older than 24 months")
 
     def test_only_approved_independent_reviews_unlock_claims(self):
         self.fixture.reviews[0]["decision"] = "changes_required"
@@ -176,24 +224,29 @@ class VerifierTests(unittest.TestCase):
         replacement = self.fixture.eligible["domestic"][1000]
         new = old[:-1] + [replacement]
         new = sorted(new, key=lambda item: item["selection_hash"])
-        previous_bytes = jsonl_bytes(old)
-        next_bytes = jsonl_bytes(new)
+        event, _ = self.fixture.replacement_event()
+        event["next_effective_sha256"] = "0" * 64
         self.fixture.current["domestic"] = new
         self.fixture.companies = new + self.fixture.current["international"]
-        self.fixture.events = [{"event_id": "event-1", "scope": "domestic", "excluded_company_id": old[-1]["company_id"], "replacement_company_id": replacement["company_id"], "previous_effective_sha256": sha(previous_bytes), "next_effective_sha256": "0" * 64, "approved_by": "owner", "approved_at": "2026-10-22T00:00:00Z"}]
+        self.fixture.events = [event]
         self.fixture.write_all()
         self.assert_error("next_effective_sha256 mismatch")
 
     def test_replacement_must_use_next_unused_canonical_candidate(self):
-        old = self.fixture.current["domestic"]
-        replacement = self.fixture.eligible["domestic"][1000]
-        new = sorted(old[:-1] + [replacement], key=lambda item: item["selection_hash"])
-        event = {"event_id": "event-1", "scope": "domestic", "excluded_company_id": old[-1]["company_id"], "replacement_company_id": replacement["company_id"], "previous_effective_sha256": sha(jsonl_bytes(old)), "next_effective_sha256": sha(jsonl_bytes(new)), "approved_by": "owner", "approved_at": "2026-10-22T00:00:00Z"}
+        event, new = self.fixture.replacement_event()
         self.fixture.current["domestic"] = new
         self.fixture.companies = new + self.fixture.current["international"]
         self.fixture.events = [event]
         self.fixture.write_all()
         self.assertEqual([], self.errors())
+
+        freeze_path = self.root / "population" / "freeze-manifest.json"
+        frozen_bytes = freeze_path.read_bytes()
+        frozen_hash = sha(frozen_bytes)
+        self.fixture.refresh_manifests()
+        self.assertEqual(frozen_bytes, freeze_path.read_bytes())
+        effective = json.loads((self.root / "population" / "effective-selection-manifest.json").read_text())
+        self.assertEqual(frozen_hash, effective["freeze_manifest_sha256"])
 
         self.fixture = FrozenFixture(self.root)
         wrong = self.fixture.eligible["domestic"][999]
@@ -201,6 +254,30 @@ class VerifierTests(unittest.TestCase):
         self.fixture.events = [event]
         self.fixture.write_all()
         self.assert_error("next unused canonical candidate")
+
+    def test_replacement_event_requires_full_audit_context(self):
+        event, new = self.fixture.replacement_event()
+        event.pop("exclusion_reason")
+        event.pop("excluded_hash_position")
+        self.fixture.current["domestic"] = new
+        self.fixture.companies = new + self.fixture.current["international"]
+        self.fixture.events = [event]
+        self.fixture.write_all()
+        errors = self.errors()
+        self.assertTrue(any("exclusion_reason" in error for error in errors), errors[:30])
+        self.assertTrue(any("excluded_hash_position" in error for error in errors), errors[:30])
+
+    def test_lower_precedence_source_requires_structured_unavailability_proof(self):
+        source_id = self.fixture.source_for_jurisdiction["KR"]
+        source = next(item for item in self.fixture.sources if item["source_id"] == source_id)
+        source["source_type"] = "official_company_report"
+        company_id = self.fixture.selected["domestic"][0]["company_id"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            target = next(item for item in collection if item["company_id"] == company_id)
+            target["scale_source_precedence_rank"] = 5
+            target["source_availability"] = []
+        self.fixture.write_all()
+        self.assert_error("higher-precedence source availability")
 
     def test_protocol_requires_exact_panel_domestic_union_thresholds_and_registered_endpoints(self):
         self.fixture.protocol["scopes"]["international"]["country_panel"] = PANEL[:-1]
@@ -211,6 +288,28 @@ class VerifierTests(unittest.TestCase):
         errors = self.errors()
         for needle in ("fixed 18-country panel", "domestic candidate-source union", "threshold", "registered source endpoint"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:30]))
+
+    def test_every_pinned_protocol_section_rejects_mutation(self):
+        mutations = [
+            lambda p: p["scopes"]["international"]["country_panel"].pop(),
+            lambda p: p["scopes"]["domestic"]["candidate_source_ids"].append("fabricated"),
+            lambda p: p["scopes"]["international"]["candidate_source_ids_by_jurisdiction"]["US"].append("fabricated"),
+            lambda p: p["registered_sources"]["US"][0].update(endpoint="https://evil.example"),
+            lambda p: p["classification"].update(selection_unit="brand"),
+            lambda p: p["currency_conversion"].update(source_owner="Other authority"),
+            lambda p: p["thresholds"]["international_financial"].update(minimum=1),
+            lambda p: p["thresholds"].update(public_sector_rule="Public entities auto-qualify"),
+            lambda p: p["source_precedence"].reverse(),
+            lambda p: p["canonical_selection"].update(serialization="implementation-defined"),
+            lambda p: p["canonical_selection"].update(replacement_rule="pick any replacement"),
+            lambda p: p["immutable_model"]["freeze_manifest_artifacts"].append("population/effective-selection-events.jsonl"),
+        ]
+        for number, mutate in enumerate(mutations):
+            with self.subTest(number=number):
+                fixture = FrozenFixture(self.root)
+                mutate(fixture.protocol)
+                fixture.write_all()
+                self.assertTrue(any("pinned protocol contract" in error for error in self.errors()))
 
     def test_repository_protocol_and_schema_pin_exact_registered_source_endpoints(self):
         research = ROOT / "docs" / "research" / "company-benefits"
@@ -231,6 +330,9 @@ class VerifierTests(unittest.TestCase):
                 self.assertTrue(source.get(field), (source["source_id"], field))
         schema = json.loads((research / "schema" / "population-protocol.schema.json").read_text())
         self.assertEqual(PANEL, schema["$defs"]["country_panel"]["const"])
+        contract = json.loads((ROOT / "scripts" / "company-benefits-protocol-contract.json").read_text())
+        self.assertEqual(contract, {field: protocol[field] for field in self.verifier.PINNED_PROTOCOL_FIELDS})
+        self.assertEqual(self.verifier.sha256(self.verifier.json_bytes(contract)), schema["x-pinned-protocol-contract-sha256"])
 
     def test_repository_protocol_remains_blocked_and_cli_contract_fails(self):
         research = ROOT / "docs" / "research" / "company-benefits"

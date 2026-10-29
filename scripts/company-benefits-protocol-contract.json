@@ -1,0 +1,353 @@
+{
+  "scopes": {
+    "domestic": {
+      "target_count": 1000,
+      "candidate_source_ids": [
+        "kr-opendart-corporations",
+        "kr-ftc-affiliates",
+        "kr-alio-institutions",
+        "kr-cleaneye-enterprises"
+      ],
+      "jurisdictions": [
+        "KR"
+      ]
+    },
+    "international": {
+      "excluded_jurisdiction": "KR",
+      "target_count": 1000,
+      "country_panel": [
+        "US",
+        "CA",
+        "MX",
+        "BR",
+        "AR",
+        "GB",
+        "FR",
+        "DE",
+        "IT",
+        "TR",
+        "RU",
+        "AU",
+        "CN",
+        "IN",
+        "ID",
+        "JP",
+        "SA",
+        "ZA"
+      ],
+      "candidate_source_ids_by_jurisdiction": {
+        "US": [
+          "us-sec-edgar-api"
+        ],
+        "CA": [
+          "ca-sedar-data-distribution"
+        ],
+        "MX": [
+          "mx-cnbv-xbrl"
+        ],
+        "BR": [
+          "br-cvm-open-company"
+        ],
+        "AR": [
+          "ar-cnv-companies"
+        ],
+        "GB": [
+          "gb-companies-house-products"
+        ],
+        "FR": [
+          "fr-inpi-rne-api"
+        ],
+        "DE": [
+          "de-unternehmensregister"
+        ],
+        "IT": [
+          "it-consob-listed"
+        ],
+        "TR": [
+          "tr-kap-companies"
+        ],
+        "RU": [
+          "ru-fns-bfo"
+        ],
+        "AU": [
+          "au-asic-companies"
+        ],
+        "CN": [
+          "cn-sse-xbrl"
+        ],
+        "IN": [
+          "in-company-master-data"
+        ],
+        "ID": [
+          "id-idx-financial-reports"
+        ],
+        "JP": [
+          "jp-edinet-api"
+        ],
+        "SA": [
+          "sa-saudi-exchange-issuers"
+        ],
+        "ZA": [
+          "za-cipc-disclosures",
+          "za-jse-financials"
+        ]
+      }
+    }
+  },
+  "registered_sources": {
+    "KR": [
+      {
+        "source_id": "kr-opendart-corporations",
+        "endpoint": "https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019018"
+      },
+      {
+        "source_id": "kr-ftc-affiliates",
+        "endpoint": "https://www.data.go.kr/data/15091891/openapi.do"
+      },
+      {
+        "source_id": "kr-alio-institutions",
+        "endpoint": "https://www.data.go.kr/data/15125287/openapi.do"
+      },
+      {
+        "source_id": "kr-cleaneye-enterprises",
+        "endpoint": "https://www.data.go.kr/data/15057730/openapi.do"
+      }
+    ],
+    "US": [
+      {
+        "source_id": "us-sec-edgar-api",
+        "endpoint": "https://www.sec.gov/search-filings/edgar-application-programming-interfaces"
+      }
+    ],
+    "CA": [
+      {
+        "source_id": "ca-sedar-data-distribution",
+        "endpoint": "https://systems.securities-administrators.ca/onlinehelp/faqs/general-faqs-about-filings/"
+      }
+    ],
+    "MX": [
+      {
+        "source_id": "mx-cnbv-xbrl",
+        "endpoint": "https://xbrl.cnbv.gob.mx/visorXbrl.html?v=1.0.3"
+      }
+    ],
+    "BR": [
+      {
+        "source_id": "br-cvm-open-company",
+        "endpoint": "https://dados.cvm.gov.br/dataset/cia_aberta-cad"
+      }
+    ],
+    "AR": [
+      {
+        "source_id": "ar-cnv-companies",
+        "endpoint": "https://www.cnv.gov.ar/SitioWeb/Empresas"
+      }
+    ],
+    "GB": [
+      {
+        "source_id": "gb-companies-house-products",
+        "endpoint": "https://www.gov.uk/guidance/companies-house-data-products"
+      }
+    ],
+    "FR": [
+      {
+        "source_id": "fr-inpi-rne-api",
+        "endpoint": "https://data.inpi.fr/content/editorial/Acces_API_Entreprises"
+      }
+    ],
+    "DE": [
+      {
+        "source_id": "de-unternehmensregister",
+        "endpoint": "https://www.unternehmensregister.de/de/howto/search"
+      }
+    ],
+    "IT": [
+      {
+        "source_id": "it-consob-listed",
+        "endpoint": "https://www.consob.it/web/area-pubblica/quotate"
+      }
+    ],
+    "TR": [
+      {
+        "source_id": "tr-kap-companies",
+        "endpoint": "https://www.kap.org.tr/en/sirketler/ALL"
+      }
+    ],
+    "RU": [
+      {
+        "source_id": "ru-fns-bfo",
+        "endpoint": "https://bo.nalog.gov.ru/about"
+      }
+    ],
+    "AU": [
+      {
+        "source_id": "au-asic-companies",
+        "endpoint": "https://data.gov.au/data/dataset/asic-companies"
+      }
+    ],
+    "CN": [
+      {
+        "source_id": "cn-sse-xbrl",
+        "endpoint": "https://english.sse.com.cn/markets/dataservice/xbrl/companyinfo/"
+      }
+    ],
+    "IN": [
+      {
+        "source_id": "in-company-master-data",
+        "endpoint": "https://www.data.gov.in/catalog/company-master-data"
+      }
+    ],
+    "ID": [
+      {
+        "source_id": "id-idx-financial-reports",
+        "endpoint": "https://idx.co.id/en/listed-companies/financial-statements-and-annual-report"
+      }
+    ],
+    "JP": [
+      {
+        "source_id": "jp-edinet-api",
+        "endpoint": "https://disclosure2dl.edinet-fsa.go.jp/guide/static/disclosure/download/ESE140206.pdf"
+      }
+    ],
+    "SA": [
+      {
+        "source_id": "sa-saudi-exchange-issuers",
+        "endpoint": "https://saudiexchange.sa/wps/portal/tadawul/market-participants/issuers/issuers-directory?locale=en"
+      }
+    ],
+    "ZA": [
+      {
+        "source_id": "za-cipc-disclosures",
+        "endpoint": "https://www.cipc.co.za/?page_id=6125"
+      },
+      {
+        "source_id": "za-jse-financials",
+        "endpoint": "https://marketdataconnect.jse.co.za/pages/Data-Shop"
+      }
+    ]
+  },
+  "classification": {
+    "selection_unit": "selected_employer_legal_entity",
+    "domestic_rule": "The employing legal entity is incorporated in KR and has its registered head office in KR.",
+    "international_rule": "The employing legal entity is incorporated outside KR and has its registered head office outside KR in a panel country.",
+    "separate_roles": [
+      "selected_employer_legal_entity",
+      "financial_consolidation_parent",
+      "ultimate_parent",
+      "benefit_policy_owner"
+    ],
+    "related_entity_rule": "A parent and subsidiary may both qualify only with separate scale evidence and entity-specific benefit evidence; group policy is never inherited without applicability evidence."
+  },
+  "thresholds": {
+    "domestic_non_financial": {
+      "metric": "revenue",
+      "minimum": 100000000000,
+      "currency": "KRW"
+    },
+    "international_non_financial": {
+      "metric": "revenue",
+      "minimum": 1000000000,
+      "currency": "USD"
+    },
+    "domestic_financial": {
+      "metric": "total_assets",
+      "minimum": 10000000000000,
+      "currency": "KRW"
+    },
+    "international_financial": {
+      "metric": "total_assets",
+      "minimum": 10000000000,
+      "currency": "USD"
+    },
+    "public_sector_rule": "Public ownership or institution type does not auto-qualify an entity; the same sector threshold applies.",
+    "maximum_fiscal_age_months": 24
+  },
+  "currency_conversion": {
+    "source_owner": "World Bank",
+    "indicator": "PA.NUS.FCR",
+    "url": "https://api.worldbank.org/v2/country/all/indicator/PA.NUS.FCR?format=json",
+    "rule": "For non-USD international statements, use the official annual local-currency-per-USD factor for the fiscal year, preserve the reported value and currency, and reject a record if the required country-year factor is unavailable.",
+    "source_id": "int-world-bank-fx"
+  },
+  "source_precedence": [
+    "regulator_filing",
+    "government_register",
+    "public_enterprise_disclosure",
+    "exchange_filing",
+    "official_company_report"
+  ],
+  "canonical_selection": {
+    "seed": "company-benefits-population-v1",
+    "required_fields": [
+      "jurisdiction",
+      "registry_id",
+      "legal_name"
+    ],
+    "jurisdiction_format": "ISO 3166-1 alpha-2 uppercase",
+    "normalization": "Unicode NFC; trim every string; collapse internal legal_name whitespace to one ASCII space",
+    "serialization": "Compact UTF-8 JSON array [protocol_seed,jurisdiction,registry_id,legal_name] with ensure_ascii=false, separators=(',', ':'), allow_nan=false",
+    "hash": "SHA-256 lowercase hex",
+    "missing_value_rule": "Reject; never substitute an empty string.",
+    "order": "Ascending hash; on collision ascending canonical JSON bytes.",
+    "exclusion_rule": "Append an exclusion/replacement event; do not mutate immutable selected records.",
+    "replacement_rule": "Use the next unused eligible canonical-hash record in the same scope.",
+    "next_hash_rule": "Each event records previous_effective_sha256 and next_effective_sha256; research cannot resume until the next hash is explicitly approved.",
+    "replacement_event_required_fields": [
+      "event_id",
+      "protocol_version",
+      "scope",
+      "exclusion_reason",
+      "exclusion_details",
+      "excluded_company_id",
+      "excluded_selection_hash",
+      "excluded_hash_position",
+      "replacement_company_id",
+      "replacement_selection_hash",
+      "previous_effective_sha256",
+      "next_effective_sha256",
+      "occurred_at",
+      "approved_by"
+    ],
+    "exclusion_reason_enum": [
+      "entity_ineligible",
+      "duplicate_entity",
+      "evidence_invalidated",
+      "scope_correction"
+    ]
+  },
+  "immutable_model": {
+    "eligible_ledgers": [
+      "population/domestic-eligible.jsonl",
+      "population/international-eligible.jsonl"
+    ],
+    "selected_ledgers": [
+      "population/domestic-selected.jsonl",
+      "population/international-selected.jsonl"
+    ],
+    "effective_ledgers": [
+      "population/domestic-effective-selected.jsonl",
+      "population/international-effective-selected.jsonl"
+    ],
+    "event_ledger": "population/effective-selection-events.jsonl",
+    "freeze_manifest": "population/freeze-manifest.json",
+    "effective_manifest": "population/effective-selection-manifest.json",
+    "freeze_manifest_artifacts": [
+      "population-protocol.json",
+      "population/domestic-eligible.jsonl",
+      "population/international-eligible.jsonl",
+      "population/domestic-selected.jsonl",
+      "population/international-selected.jsonl"
+    ],
+    "effective_manifest_artifacts": [
+      "population/domestic-effective-selected.jsonl",
+      "population/international-effective-selected.jsonl",
+      "population/effective-selection-events.jsonl"
+    ],
+    "effective_manifest_freeze_reference": "freeze_manifest_sha256",
+    "state_rule": "These files are prohibited while status is blocked. After lawful acquisition and validation, selected ledgers are immutable; effective ledgers are deterministic projections of selected ledgers plus append-only events.",
+    "initial_effective_ledgers": [
+      "population/domestic-initial-effective-selected.jsonl",
+      "population/international-initial-effective-selected.jsonl"
+    ]
+  }
+}

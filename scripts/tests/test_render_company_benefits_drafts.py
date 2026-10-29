@@ -1,6 +1,7 @@
 import importlib.util
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from scripts.tests.benefits_test_fixture import FrozenFixture
@@ -31,7 +32,7 @@ class RendererTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def render(self):
-        return self.renderer.render_batch(self.root, self.out, "domestic", 1)
+        return self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29))
 
     def test_renders_validated_effective_batch_deterministically(self):
         first = self.render().read_bytes()
@@ -47,6 +48,12 @@ class RendererTests(unittest.TestCase):
         (self.root / "population" / "freeze-manifest.json").unlink()
         with self.assertRaisesRegex(ValueError, "freeze manifest"):
             self.render()
+
+    def test_renderer_validates_freshness_at_render_date_not_protocol_cutoff(self):
+        self.fixture.claims[0]["publication_date"] = "2026-01-01"
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        with self.assertRaisesRegex(ValueError, "older than 24 months"):
+            self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2029, 1, 2))
 
     def test_minimal_fake_approved_fixture_cannot_render(self):
         for path in self.root.rglob("*"):
@@ -64,7 +71,7 @@ class RendererTests(unittest.TestCase):
             self.render()
 
     def test_renderer_requires_claim_sources_and_approved_independent_reviews(self):
-        self.fixture.sources[1]["supported_fields"] = ["revenue"]
+        self.fixture.sources[-1]["supported_fields"] = ["revenue"]
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         with self.assertRaisesRegex(ValueError, "benefit_claim"):
             self.render()

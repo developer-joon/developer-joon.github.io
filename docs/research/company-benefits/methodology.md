@@ -10,7 +10,7 @@ Selection and writing order are deterministic editorial processing orders, not r
 
 `source-registry.jsonl` is the machine-readable authority for source access decisions. Every record names the official owner, source type, jurisdiction, exact URL, key/login/fee model, terms location, extraction/quotation/retention/snapshot/attribution decisions, supported fields, evidence eligibility, check timestamp, HTTP observation and current blocker.
 
-A source is usable as evidence only when the intended access is lawful and all required decisions are known and compatible. Public visibility alone is not a bulk-use or republication licence. Unknown, restricted, fee-only or contractual sources remain ineligible until the blocker is resolved. Search results, editorial lists and commercial lists are discovery-only: they cannot establish identity, scale, inclusion or a benefit claim.
+A source is usable as evidence only when it supports the exact field, the intended access is lawful, every extraction/quotation/retention/snapshot/attribution decision is resolved and compatible, and `current_blocker` is null. Public visibility alone is not a bulk-use or republication licence. Unknown, restricted, fee-only or contractual sources remain ineligible until the blocker is resolved. Search results, editorial lists and commercial lists are discovery-only: they cannot establish identity, scale, inclusion or a benefit claim.
 
 Raw responses, filings and bulk archives stay out of Git. A future authorized acquisition must store them in controlled external storage with request parameters, retrieval timestamp, response metadata and SHA-256. Git retains only normalized records, short lawful quotes, locators and permitted metadata.
 
@@ -60,11 +60,12 @@ EU electronic-reporting rules can improve issuer document comparability, but the
 
 1. Classify by the employing legal entity's incorporation and registered head office, not brand or ultimate parent.
 2. Join only with a canonical official registry identifier. Missing registry IDs fail; names cannot silently substitute.
-3. Apply the financial/non-financial threshold and 24-month fiscal-age limit. Public entities use the same threshold.
+3. Apply the financial/non-financial threshold and 24-calendar-month fiscal-age limit. Future fiscal year ends fail. Public entities use the same threshold.
 4. Preserve original metric, currency, fiscal year and consolidated/standalone scope. The protocol fixes the World Bank `PA.NUS.FCR` annual conversion rule for non-USD international values.
 5. Materialize and checksum complete official-list unions outside Git, then normalize eligible records.
-6. Only after completeness validation may canonical SHA-256 ordering select exactly 1,000 per scope. If fewer qualify, stop; never lower a threshold silently.
-7. Freeze protocol and ledger hashes only after explicit approval. Thereafter, immutable selection changes only through append-only exclusion/replacement events and approved effective hashes.
+6. Use the highest available source class in the pinned precedence order. A lower class requires structured checks and reasons proving every higher class unavailable.
+7. Only after completeness validation may canonical SHA-256 ordering select exactly 1,000 per scope. If fewer qualify, stop; never lower a threshold silently.
+8. Freeze protocol and ledger hashes only after explicit approval. Thereafter, immutable selection changes only through append-only exclusion/replacement events and approved effective hashes.
 
 ## Benefit evidence
 
@@ -72,7 +73,9 @@ Grade A is a lawfully public official policy, benefits/careers page, annual/sust
 
 Confirmed, limited, past and name-only records require at least one directly applicable A/B source. Conflict requires two distinct conflicting A/B sources. Each record carries the employing legal entity, policy owner, countries, roles, employment types, tenure condition, source locator, short supporting quote, publication/check dates and content SHA-256.
 
-A dated current claim must be within 24 months. An undated page must be checked within 30 days, and every core URL must be rechecked within 14 days before publication. `확인 불가` is a non-claim research result listing searched official source IDs; it means public official evidence was not found, not that a benefit is absent.
+A claim explicitly records `current`, `undated_current` or `historical` validity. A dated current claim must be within 24 calendar months and cannot have a future publication date. `undated_current` requires a null publication date and a check within 30 days. Older official evidence is allowed only for a `past` claim labeled `historical`. Every core URL must be rechecked within 14 days before publication. Rendering re-runs these rules against the render date (current UTC date unless `--as-of` is supplied), never the population cutoff. `확인 불가` is a non-claim research result listing searched official source IDs; it means public official evidence was not found, not that a benefit is absent.
+
+The immutable freeze manifest hashes only the protocol, eligible ledgers and selected ledgers. The effective manifest separately hashes the append-only replacement events and current effective projections and references the freeze-manifest SHA-256. Replacement replay must never rewrite the freeze manifest.
 
 ## Review, rendering and corrections
 

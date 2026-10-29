@@ -167,7 +167,29 @@
     "order": "Ascending hash; on collision ascending canonical JSON bytes.",
     "exclusion_rule": "Append an exclusion/replacement event; do not mutate immutable selected records.",
     "replacement_rule": "Use the next unused eligible canonical-hash record in the same scope.",
-    "next_hash_rule": "Each event records previous_effective_sha256 and next_effective_sha256; research cannot resume until the next hash is explicitly approved."
+    "next_hash_rule": "Each event records previous_effective_sha256 and next_effective_sha256; research cannot resume until the next hash is explicitly approved.",
+    "replacement_event_required_fields": [
+      "event_id",
+      "protocol_version",
+      "scope",
+      "exclusion_reason",
+      "exclusion_details",
+      "excluded_company_id",
+      "excluded_selection_hash",
+      "excluded_hash_position",
+      "replacement_company_id",
+      "replacement_selection_hash",
+      "previous_effective_sha256",
+      "next_effective_sha256",
+      "occurred_at",
+      "approved_by"
+    ],
+    "exclusion_reason_enum": [
+      "entity_ineligible",
+      "duplicate_entity",
+      "evidence_invalidated",
+      "scope_correction"
+    ]
   },
   "immutable_model": {
     "eligible_ledgers": [
@@ -185,6 +207,19 @@
     "event_ledger": "population/effective-selection-events.jsonl",
     "freeze_manifest": "population/freeze-manifest.json",
     "effective_manifest": "population/effective-selection-manifest.json",
+    "freeze_manifest_artifacts": [
+      "population-protocol.json",
+      "population/domestic-eligible.jsonl",
+      "population/international-eligible.jsonl",
+      "population/domestic-selected.jsonl",
+      "population/international-selected.jsonl"
+    ],
+    "effective_manifest_artifacts": [
+      "population/domestic-effective-selected.jsonl",
+      "population/international-effective-selected.jsonl",
+      "population/effective-selection-events.jsonl"
+    ],
+    "effective_manifest_freeze_reference": "freeze_manifest_sha256",
     "state_rule": "These files are prohibited while status is blocked. After lawful acquisition and validation, selected ledgers are immutable; effective ledgers are deterministic projections of selected ledgers plus append-only events.",
     "initial_effective_ledgers": [
       "population/domestic-initial-effective-selected.jsonl",
