@@ -14,7 +14,8 @@
     "evidence_grade",
     "source_ids",
     "application_scope",
-    "checked_at"
+    "checked_at",
+    "researched_at"
   ],
   "properties": {
     "claim_id": {
@@ -137,7 +138,11 @@
     },
     "prepublication_checked_at": {
       "type": "string",
-      "format": "date"
+      "format": "date-time"
+    },
+    "researched_at": {
+      "type": "string",
+      "format": "date-time"
     },
     "source_locator": {
       "type": "string",
@@ -150,6 +155,21 @@
     "content_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "conflict_evidence": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "position", "proposition"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "position": {"enum": ["supports", "contradicts"]},
+          "proposition": {"type": "string", "minLength": 1}
+        }
+      }
     }
   },
   "allOf": [
@@ -196,6 +216,7 @@
         }
       },
       "then": {
+        "required": ["conflict_evidence"],
         "properties": {
           "source_ids": {
             "minItems": 2

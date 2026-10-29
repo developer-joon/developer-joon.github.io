@@ -1,4 +1,5 @@
 {
+  "cutoff_at": "2026-10-29T23:59:59+09:00",
   "scopes": {
     "domestic": {
       "target_count": 1000,

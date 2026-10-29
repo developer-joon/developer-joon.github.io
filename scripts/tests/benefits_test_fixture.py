@@ -45,7 +45,7 @@ def audited_source(source_id, supported_fields, url=None, source_type="regulator
         "decisions": {"extract": "allowed", "quote": "allowed", "retention": "metadata_only", "snapshot": "prohibited", "attribution": "required"},
         "supported_fields": supported_fields,
         "evidence_eligibility": "A",
-        "checked_at": "2026-10-20T00:00:00Z",
+        "checked_at": "2026-10-20T01:00:00Z",
         "http_verification": {"status": 200, "redirect_chain": [], "content_type": "text/html", "final_url": url, "final_owner_domain": url.split("/")[2], "access_wall": "none", "expected_marker": "Official"},
         "current_blocker": None,
     }
@@ -79,8 +79,7 @@ class ContractFixture:
                 ))
         fx = self.protocol["currency_conversion"]
         self.sources.append(audited_source(fx["source_id"], ["local_currency_per_USD"], url=fx["url"]))
-        self.sources.append(audited_source("benefit-source", ["benefit_claim"], source_type="official_company_report"))
-        self.sources[-1].update(locator="benefits", supporting_quote="Paid leave is offered.")
+
         self.source_for_jurisdiction = {
             jurisdiction: entries[0]["source_id"]
             for jurisdiction, entries in self.protocol["registered_sources"].items()
@@ -90,9 +89,20 @@ class ContractFixture:
         self.events = []
         self.current = {scope: list(records) for scope, records in self.selected.items()}
         self.companies = self.current["domestic"] + self.current["international"]
+        for company in self.current["domestic"][:25]:
+            source = audited_source(
+                "benefit-source-" + company["company_id"], ["benefit_claim"],
+                source_type="official_company_report", jurisdiction=company["jurisdiction"],
+            )
+            source.update(
+                locator="benefits", supporting_quote="Paid leave is offered.", publication_date="2026-01-01",
+                applicable_legal_entities=[company["selected_employer_legal_entity"]],
+                policy_owner_legal_entity=company["benefit_policy_owner"],
+            )
+            self.sources.append(source)
         # Claims cover only the first render batch; the fixture does not imply complete benefit coverage.
         self.claims = [self._claim(company) for company in self.current["domestic"][:25]]
-        self.reviews = [{"review_id": f"review-{i:04d}", "claim_id": claim["claim_id"], "researcher_id": "alice", "reviewer_id": "bob", "decision": "approved", "reviewed_at": "2026-10-21T00:00:00Z", "issues": [], "resolution": "accepted", "quote_entailment_confirmed": True} for i, claim in enumerate(self.claims)]
+        self.reviews = [{"review_id": f"review-{i:04d}", "claim_id": claim["claim_id"], "researcher_id": "alice", "reviewer_id": "bob", "decision": "approved", "reviewed_at": "2026-10-20T03:00:00Z", "issues": [], "resolution": "accepted", "quote_entailment_confirmed": True} for i, claim in enumerate(self.claims)]
         self.write_all()
 
     def _companies(self, scope, count):
@@ -116,7 +126,15 @@ class ContractFixture:
         return sorted(records, key=lambda item: (item["selection_hash"], json_bytes([self.seed, item["jurisdiction"], item["registry_id"], item["legal_name"]])))
 
     def _claim(self, company):
-        return {"claim_id": "claim-" + company["company_id"], "company_id": company["company_id"], "benefit_name": "Leave", "detail": "Paid leave is offered.", "status": "confirmed", "current_validity": "current", "evidence_grade": "A", "source_ids": ["benefit-source"], "application_scope": {"countries": ["KR"], "legal_entities": [company["legal_name"]], "roles": ["all"], "employment_types": ["full_time"], "tenure_condition": "none"}, "publication_date": "2026-01-01", "checked_at": "2026-10-20", "prepublication_checked_at": "2026-10-20", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64}
+        source_id = "benefit-source-" + company["company_id"]
+        return {"claim_id": "claim-" + company["company_id"], "company_id": company["company_id"], "benefit_name": "Leave", "detail": "Paid leave is offered.", "status": "confirmed", "current_validity": "current", "evidence_grade": "A", "source_ids": [source_id], "application_scope": {"countries": [company["jurisdiction"]], "legal_entities": [company["legal_name"]], "roles": ["all"], "employment_types": ["full_time"], "tenure_condition": "none"}, "publication_date": "2026-01-01", "checked_at": "2026-10-20", "researched_at": "2026-10-20T02:00:00Z", "prepublication_checked_at": "2026-10-20T04:00:00Z", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64}
+
+    @property
+    def benefit_source(self):
+        return next(source for source in self.sources if source["source_id"] == self.claims[0]["source_ids"][0])
+
+    def approved_freeze_anchors(self):
+        return {self.protocol["version"]: sha((self.population / "freeze-manifest.json").read_bytes())}
 
     def replacement_event(self, scope="domestic", excluded_index=-1):
         old = self.current[scope]

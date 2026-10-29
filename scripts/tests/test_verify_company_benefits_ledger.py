@@ -28,12 +28,14 @@ class VerifierTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.fixture = FrozenFixture(self.root)
+        self.approved_freeze_anchors = self.fixture.approved_freeze_anchors()
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def errors(self):
-        return self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29))
+    def errors(self, anchors=None):
+        anchors = self.approved_freeze_anchors if anchors is None else anchors
+        return self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29), approved_freeze_anchors=anchors)
 
     def assert_error(self, needle):
         errors = self.errors()
@@ -49,6 +51,22 @@ class VerifierTests(unittest.TestCase):
 
     def test_complete_synthetic_contract_fixture_passes(self):
         self.assertEqual([], self.errors())
+
+    def test_approved_protocol_requires_immutable_literal_freeze_anchor(self):
+        errors = self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29))
+        self.assertTrue(any("immutable freeze approval anchor" in error for error in errors), errors[:20])
+        self.assertEqual([], self.errors())
+
+    def test_self_consistent_frozen_scale_drift_fails_against_old_anchor(self):
+        old_anchor = self.fixture.approved_freeze_anchors()
+        company_id = self.fixture.selected["domestic"][0]["company_id"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            target = next(item for item in collection if item["company_id"] == company_id)
+            target["scale_metric"]["value"] += 1
+            target["scale_metric"]["original_value"] += 1
+        self.fixture.write_all()
+        errors = self.errors(anchors=old_anchor)
+        self.assertTrue(any("immutable freeze approval anchor" in error for error in errors), errors[:30])
 
     def test_approval_without_required_freeze_artifacts_fails(self):
         (self.root / "population" / "freeze-manifest.json").unlink()
@@ -104,7 +122,7 @@ class VerifierTests(unittest.TestCase):
             company["scale_metric"]["value"] = 1
             company["scale_metric"]["original_value"] = 1
             company["scale_metric"]["fiscal_year_end"] = "2020-01-01"
-            company["scale_metric"]["source_ids"] = ["benefit-source"]
+            company["scale_metric"]["source_ids"] = [self.fixture.benefit_source["source_id"]]
         self.rewrite_company_everywhere("international", 0, mutate)
         errors = self.errors()
         for needle in ("incorporation", "below threshold", "fiscal age", "does not support revenue"):
@@ -120,7 +138,7 @@ class VerifierTests(unittest.TestCase):
     def test_fx_conversion_value_year_and_supported_proof_are_enforced(self):
         def mutate(company):
             metric = company["scale_metric"]
-            metric.update({"original_currency": "EUR", "original_value": 1800000000, "conversion": {"rate": 2, "source_id": "benefit-source", "year": 2024, "converted_value": 123}})
+            metric.update({"original_currency": "EUR", "original_value": 1800000000, "conversion": {"rate": 2, "source_id": self.fixture.benefit_source["source_id"], "year": 2024, "converted_value": 123}})
         self.rewrite_company_everywhere("international", 0, mutate)
         errors = self.errors()
         for needle in ("FX conversion source", "FX conversion year", "FX converted value", "does not support local_currency_per_USD"):
@@ -150,7 +168,7 @@ class VerifierTests(unittest.TestCase):
         self.assertTrue(any("approved entity claim" in error for error in errors), errors[:30])
 
     def test_source_required_audit_fields_and_claim_specific_eligibility_fail(self):
-        source = self.fixture.sources[-1]
+        source = self.fixture.benefit_source
         source.pop("title")
         source.pop("locator")
         source["http_verification"]["status"] = 403
@@ -164,7 +182,7 @@ class VerifierTests(unittest.TestCase):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:30]))
 
     def test_schema_invalid_self_asserted_social_source_cannot_prove_historical_claim(self):
-        source = self.fixture.sources[-1]
+        source = self.fixture.benefit_source
         source.update({"source_type": "social_media", "owner": "", "url": "http://social.example/post", "evidence_eligibility": "A", "checked_at": "2026-12-01T00:00:00Z"})
         source["http_verification"]["final_url"] = source["url"]
         self.fixture.claims[0].update(status="past", current_validity="historical", publication_date="2020-01-01")
@@ -175,7 +193,7 @@ class VerifierTests(unittest.TestCase):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
 
     def test_evidence_hash_provenance_is_verified_or_independently_reviewed(self):
-        source = self.fixture.sources[-1]
+        source = self.fixture.benefit_source
         source["hash_provenance"] = "retained_file"
         source["evidence_path"] = "outside.bin"
         source["content_sha256"] = "0" * 64
@@ -187,13 +205,15 @@ class VerifierTests(unittest.TestCase):
         evidence_root.mkdir()
         payload = b"lawfully retained official evidence"
         (evidence_root / "benefit.bin").write_bytes(payload)
-        source = self.fixture.sources[-1]
-        source.update(hash_provenance="retained_file", evidence_path="benefit.bin", content_sha256=sha(payload))
-        source["decisions"].update(retention="allowed", snapshot="allowed")
+        for source in self.fixture.sources:
+            if "benefit_claim" not in source["supported_fields"]:
+                continue
+            source.update(hash_provenance="retained_file", evidence_path="benefit.bin", content_sha256=sha(payload))
+            source["decisions"].update(retention="allowed", snapshot="allowed")
         for claim in self.fixture.claims:
             claim["content_sha256"] = sha(payload)
         self.fixture.write_all()
-        self.assertEqual([], self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29), evidence_root=evidence_root))
+        self.assertEqual([], self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29), evidence_root=evidence_root, approved_freeze_anchors=self.approved_freeze_anchors))
 
         self.fixture = FrozenFixture(self.root)
         self.fixture.reviews[0]["quote_entailment_confirmed"] = False
@@ -201,7 +221,7 @@ class VerifierTests(unittest.TestCase):
         self.assert_error("quote entailment")
 
     def test_schema_additional_properties_are_rejected(self):
-        self.fixture.sources[-1]["self_asserted_grade"] = "A"
+        self.fixture.benefit_source["self_asserted_grade"] = "A"
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         self.assert_error("schema additional property self_asserted_grade")
 
@@ -215,8 +235,8 @@ class VerifierTests(unittest.TestCase):
         for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
             target = next(item for item in collection if item["company_id"] == company_id)
             target["benefit_policy_owner"] = "Parent Corp"
-            target["related_company_exception"] = {"separate_scale_source_ids": [self.fixture.source_for_jurisdiction["US"]], "entity_specific_benefit_source_ids": ["benefit-source"], "no_inheritance": True}
-        self.fixture.sources[-1]["applicable_legal_entities"] = [self.fixture.selected["domestic"][0]["legal_name"]]
+            target["related_company_exception"] = {"separate_scale_source_ids": [self.fixture.source_for_jurisdiction["US"]], "entity_specific_benefit_source_ids": [self.fixture.benefit_source["source_id"]], "no_inheritance": True}
+        self.fixture.benefit_source["applicable_legal_entities"] = [self.fixture.selected["domestic"][0]["legal_name"]]
         self.fixture.write_all()
         self.assert_error("actual scale source_ids")
 
@@ -226,16 +246,16 @@ class VerifierTests(unittest.TestCase):
         for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
             target = next(item for item in collection if item["company_id"] == company_id)
             target["benefit_policy_owner"] = "Parent Corp"
-            target["related_company_exception"] = {"separate_scale_source_ids": list(target["scale_metric"]["source_ids"]), "entity_specific_benefit_source_ids": ["benefit-source"], "no_inheritance": True}
+            target["related_company_exception"] = {"separate_scale_source_ids": list(target["scale_metric"]["source_ids"]), "entity_specific_benefit_source_ids": [self.fixture.benefit_source["source_id"]], "no_inheritance": True}
         claim = next(item for item in self.fixture.claims if item["company_id"] == company_id)
         claim["application_scope"]["legal_entities"] = ["Parent Corp"]
-        self.fixture.sources[-1]["applicable_legal_entities"] = ["Parent Corp"]
+        self.fixture.benefit_source["applicable_legal_entities"] = ["Parent Corp"]
         self.fixture.write_all()
         self.assert_error("selected employer legal entity")
 
     def test_all_audit_timestamps_are_bounded_and_ordered(self):
-        self.fixture.sources[-1]["checked_at"] = "2026-11-01T00:00:00Z"
-        self.fixture.sources[-1]["retrieved_at"] = "2026-11-01T00:00:00Z"
+        self.fixture.benefit_source["checked_at"] = "2026-11-01T00:00:00Z"
+        self.fixture.benefit_source["retrieved_at"] = "2026-11-01T00:00:00Z"
         self.fixture.reviews[0]["reviewed_at"] = "2026-10-19T00:00:00Z"
         self.fixture.write_all()
         errors = self.errors()
@@ -264,7 +284,36 @@ class VerifierTests(unittest.TestCase):
 
         claim["searched_source_ids"] = [self.fixture.source_for_jurisdiction["US"]]
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
-        self.assert_error("not official, accessible, or jurisdiction-applicable")
+        self.assert_error("does not support benefit_claim")
+
+    def test_unknown_search_rejects_same_jurisdiction_scale_only_source(self):
+        claim = self.fixture.claims[0]
+        claim.update({"status": "unknown", "evidence_grade": "none", "source_ids": [], "current_validity": "undated_current", "publication_date": None, "detail": "조사에서 확인되지 않았으며, 혜택이 없다는 뜻이 아니다.", "searched_source_ids": [self.fixture.source_for_jurisdiction["KR"]], "searched_at": "2026-10-20T02:00:00Z", "search_scope": "benefit_nonclaim"})
+        for field in ("prepublication_checked_at", "source_locator", "supporting_quote", "content_sha256"):
+            claim.pop(field, None)
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        self.assert_error("does not support benefit_claim")
+
+    def test_benefit_source_must_match_jurisdiction_employer_and_policy_owner(self):
+        source = self.fixture.benefit_source
+        source["jurisdiction"] = "US"
+        source["applicable_legal_entities"] = ["Unrelated US Corp"]
+        source["policy_owner_legal_entity"] = "Unrelated US Corp"
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        errors = self.errors()
+        for needle in ("jurisdiction", "selected employer", "benefit policy owner"):
+            self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
+
+    def test_explicit_global_policy_mapping_has_no_wildcards(self):
+        company = self.fixture.selected["domestic"][0]
+        source = self.fixture.benefit_source
+        source["jurisdiction"] = "INT"
+        source["multi_jurisdiction_applicability"] = {"*": [company["legal_name"]]}
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.assert_error("explicit multi-jurisdiction applicability")
+        source["multi_jurisdiction_applicability"] = {"KR": [company["legal_name"]]}
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.assertEqual([], self.errors())
 
     def test_contract_file_digest_is_an_independent_literal_anchor(self):
         contract_path = ROOT / "scripts" / "company-benefits-protocol-contract.json"
@@ -279,12 +328,12 @@ class VerifierTests(unittest.TestCase):
             contract_path.write_bytes(original)
 
     def test_nonempty_current_blocker_makes_source_ineligible(self):
-        self.fixture.sources[-1]["current_blocker"] = "terms unresolved; do not use"
+        self.fixture.benefit_source["current_blocker"] = "terms unresolved; do not use"
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         self.assert_error("current blocker")
 
     def test_exact_field_legal_decisions_are_all_required(self):
-        self.fixture.sources[-1]["decisions"]["snapshot"] = "unknown"
+        self.fixture.benefit_source["decisions"]["snapshot"] = "unknown"
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         self.assert_error("snapshot")
 
@@ -327,6 +376,40 @@ class VerifierTests(unittest.TestCase):
         self.fixture.reviews[0]["decision"] = "changes_required"
         self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
         self.assert_error("missing approved independent review")
+
+    def test_causal_evidence_review_and_prepublication_order_is_enforced(self):
+        self.fixture.claims[0]["researched_at"] = "2026-10-19T00:00:00Z"
+        self.fixture.claims[0]["prepublication_checked_at"] = "2026-10-20T02:30:00Z"
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        errors = self.errors()
+        self.assertTrue(any("research must follow source checked_at" in error for error in errors), errors[:40])
+        self.assertTrue(any("prepublication check must follow independent review" in error for error in errors), errors[:40])
+
+    def test_source_publication_must_precede_retrieval(self):
+        self.fixture.benefit_source["publication_date"] = "2026-10-21"
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.assert_error("publication_date must not follow retrieved_at")
+
+    def test_conflict_requires_opposing_distinct_evidence_and_reviewer_determination(self):
+        claim = self.fixture.claims[0]
+        duplicate = copy.deepcopy(self.fixture.benefit_source)
+        duplicate["source_id"] = "benefit-source-alias"
+        self.fixture.sources.append(duplicate)
+        claim.update(status="conflict", source_ids=[claim["source_ids"][0], duplicate["source_id"]], conflict_evidence=[
+            {"source_id": claim["source_ids"][0], "position": "supports", "proposition": "Paid leave is offered."},
+            {"source_id": duplicate["source_id"], "position": "contradicts", "proposition": "Paid leave is not offered."},
+        ])
+        review = self.fixture.reviews[0]
+        review.update(conflict_determination="unresolved", unresolved_conflict_wording_approved=True)
+        self.fixture.write_all()
+        self.assert_error("duplicate conflict evidence")
+
+        duplicate["content_sha256"] = "b" * 64
+        duplicate["supporting_quote"] = "Paid leave is not offered."
+        review.pop("conflict_determination")
+        review.pop("unresolved_conflict_wording_approved")
+        self.fixture.write_all()
+        self.assert_error("conflict determination")
 
     def test_initial_projection_is_byte_identical_and_event_chain_is_verified(self):
         initial = self.root / "population" / "domestic-initial-effective-selected.jsonl"
@@ -428,6 +511,7 @@ class VerifierTests(unittest.TestCase):
             lambda p: p["canonical_selection"].update(serialization="implementation-defined"),
             lambda p: p["canonical_selection"].update(replacement_rule="pick any replacement"),
             lambda p: p["immutable_model"]["freeze_manifest_artifacts"].append("population/effective-selection-events.jsonl"),
+            lambda p: p.update(cutoff_at="2026-10-30T23:59:59+09:00"),
         ]
         for number, mutate in enumerate(mutations):
             with self.subTest(number=number):

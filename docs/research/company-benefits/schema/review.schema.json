@@ -10,6 +10,8 @@
     "researcher_id": {"type": "string", "minLength": 1}, "reviewer_id": {"type": "string", "minLength": 1},
     "decision": {"enum": ["approved", "changes_required", "rejected"]}, "reviewed_at": {"type": "string", "format": "date-time"},
     "issues": {"type": "array", "items": {"type": "string"}}, "resolution": {"type": "string", "minLength": 1},
-    "quote_entailment_confirmed": {"type": "boolean"}
+    "quote_entailment_confirmed": {"type": "boolean"},
+    "conflict_determination": {"enum": ["resolved_supports", "resolved_contradicts", "unresolved"]},
+    "unresolved_conflict_wording_approved": {"type": "boolean"}
   }
 }

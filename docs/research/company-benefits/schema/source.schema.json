@@ -256,6 +256,10 @@
       "type": "string",
       "format": "date-time"
     },
+    "publication_date": {
+      "type": "string",
+      "format": "date"
+    },
     "evidence_path": {
       "type": "string",
       "minLength": 1
@@ -269,6 +273,17 @@
     "policy_owner_legal_entity": {
       "type": "string",
       "minLength": 1
+    },
+    "multi_jurisdiction_applicability": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[A-Z]{2}$"},
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {"type": "string", "minLength": 1}
+      }
     }
   }
 }

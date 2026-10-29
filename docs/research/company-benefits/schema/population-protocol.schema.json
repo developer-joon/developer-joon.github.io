@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "population-protocol.schema.json",
   "title": "Company benefits population protocol",
-  "x-pinned-protocol-contract-sha256": "c0843afc84fcbec6bdeb800398ac03cb2061af1d680c62085a2bf6319e8f5da4",
+  "x-pinned-protocol-contract-sha256": "a880ab94777b25113c58d1cc30e5f0a0b21f69313cd909cf511bcb4267c1e8f8",
   "type": "object",
   "additionalProperties": false,
   "$defs": {
@@ -116,8 +116,7 @@
       ]
     },
     "cutoff_at": {
-      "type": "string",
-      "format": "date-time"
+      "const": "2026-10-29T23:59:59+09:00"
     },
     "purpose": {
       "type": "string",

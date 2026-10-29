@@ -1,6 +1,7 @@
 import importlib.util
 import tempfile
 import unittest
+from unittest import mock
 from datetime import date
 from pathlib import Path
 
@@ -27,12 +28,18 @@ class RendererTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.out = self.root / "out"
         self.fixture = FrozenFixture(self.root)
+        self.approved_freeze_anchors = self.fixture.approved_freeze_anchors()
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def render(self):
-        return self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29))
+        verifier = self.renderer.load_verifier()
+        verify_workspace = verifier.verify_workspace
+        anchors = self.approved_freeze_anchors
+        verifier.verify_workspace = lambda *args, **kwargs: verify_workspace(*args, **kwargs, approved_freeze_anchors=anchors)
+        with mock.patch.object(self.renderer, "load_verifier", return_value=verifier):
+            return self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29))
 
     def test_renders_validated_effective_batch_deterministically(self):
         first = self.render().read_bytes()
@@ -48,6 +55,10 @@ class RendererTests(unittest.TestCase):
         (self.root / "population" / "freeze-manifest.json").unlink()
         with self.assertRaisesRegex(ValueError, "freeze manifest"):
             self.render()
+
+    def test_renderer_cannot_bypass_production_freeze_anchor(self):
+        with self.assertRaisesRegex(ValueError, "immutable freeze approval anchor"):
+            self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29))
 
     def test_renderer_validates_freshness_at_render_date_not_protocol_cutoff(self):
         self.fixture.claims[0]["publication_date"] = "2026-01-01"
@@ -71,7 +82,7 @@ class RendererTests(unittest.TestCase):
             self.render()
 
     def test_renderer_requires_claim_sources_and_approved_independent_reviews(self):
-        self.fixture.sources[-1]["supported_fields"] = ["revenue"]
+        self.fixture.benefit_source["supported_fields"] = ["revenue"]
         self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         with self.assertRaisesRegex(ValueError, "benefit_claim"):
             self.render()
