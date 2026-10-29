@@ -5,6 +5,7 @@ import { parseEnv } from './config/env'
 import { AuthProvider } from './auth/AuthProvider'
 import './styles/global.css'
 import './styles/community.css'
+import './styles/benefits.css'
 
 const rootElement = document.getElementById('app')
 
@@ -15,7 +16,7 @@ if (!rootElement) {
 let application
 
 try {
-  parseEnv(import.meta.env)
+  if (!window.location.pathname.startsWith('/community/benefits/')) parseEnv(import.meta.env)
   application = <AuthProvider><App /></AuthProvider>
 } catch {
   application = <ConfigurationErrorScreen />
