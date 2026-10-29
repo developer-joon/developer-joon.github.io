@@ -18,8 +18,9 @@ export function BenefitsCompanyPage({
   useEffect(() => {
     if (!company) return
     let active = true
+    const controller = new AbortController()
     benefitsClient
-      .loadCompanyDetail(manifest, index, id)
+      .loadCompanyDetail(manifest, index, id, controller.signal)
       .then((d) => {
         if (active) {
           setData(d)
@@ -30,6 +31,7 @@ export function BenefitsCompanyPage({
       })
     return () => {
       active = false
+      controller.abort()
     }
   }, [company, manifest, index, id, attempt])
   useEffect(() => {

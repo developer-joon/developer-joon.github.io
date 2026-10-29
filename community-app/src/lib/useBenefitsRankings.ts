@@ -12,8 +12,9 @@ export function useBenefitsRankings(
   useEffect(() => {
     if (!enabled) return
     let active = true
+    const controller = new AbortController()
     benefitsClient
-      .loadRankings(manifest, index)
+      .loadRankings(manifest, index, controller.signal)
       .then((d) => {
         if (active) setData(d)
       })
@@ -22,6 +23,7 @@ export function useBenefitsRankings(
       })
     return () => {
       active = false
+      controller.abort()
     }
   }, [manifest, index, enabled, attempt])
   return {

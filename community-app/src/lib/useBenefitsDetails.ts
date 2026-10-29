@@ -15,8 +15,9 @@ export function useBenefitsDetails(
   useEffect(() => {
     if (!manifest || !index || !key) return
     let active = true
+    const controller = new AbortController()
     benefitsClient
-      .loadCompanyDetails(manifest, index, key.split(','))
+      .loadCompanyDetails(manifest, index, key.split(','), controller.signal)
       .then((data) => {
         if (active) setResult({ key, data, error: false })
       })
@@ -25,6 +26,7 @@ export function useBenefitsDetails(
       })
     return () => {
       active = false
+      controller.abort()
     }
   }, [manifest, index, key, attempt])
   const current = result.key === key ? result : { key, error: false }

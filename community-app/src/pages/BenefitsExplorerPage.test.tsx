@@ -57,7 +57,7 @@ describe('benefits heatmap workspace', () => {
     fireEvent.change(screen.getByLabelText('기업 검색'), {
       target: { value: '없는회사' },
     })
-    expect(screen.getByText('검색 결과가 없습니다')).toBeVisible()
+    expect(await screen.findByText('검색 결과가 없습니다')).toBeVisible()
     expect(screen.getByText('적용 중인 필터: 검색어 “없는회사”')).toBeVisible()
     expect(window.location.search).toContain('q=')
     fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }))
@@ -73,6 +73,41 @@ describe('benefits heatmap workspace', () => {
       'href',
       expect.stringContaining('categories=family'),
     )
+  })
+  it('debounces search into one history entry and Back restores committed filters', async () => {
+    render(<BenefitsExplorerPage route="heatmap" search="" />)
+    await screen.findByRole('table')
+    fireEvent.change(screen.getByLabelText('기업 범위'), {
+      target: { value: 'domestic' },
+    })
+    fireEvent.change(screen.getByLabelText('기업 검색'), {
+      target: { value: '없' },
+    })
+    fireEvent.change(screen.getByLabelText('기업 검색'), {
+      target: { value: '없는' },
+    })
+    fireEvent.change(screen.getByLabelText('기업 검색'), {
+      target: { value: '없는회사' },
+    })
+    await waitFor(() => expect(window.location.search).toContain('q='))
+    window.history.back()
+    await waitFor(() => expect(window.location.search).not.toContain('q='))
+    await waitFor(() =>
+      expect(screen.getByLabelText('기업 범위')).toHaveValue('domestic'),
+    )
+    expect(screen.getByLabelText('기업 검색')).toHaveValue('')
+  })
+  it('aborts stale index loading when the explorer unmounts', async () => {
+    let signal: AbortSignal | undefined
+    vi.mocked(benefitsClient.loadManifest).mockImplementation(
+      async (candidateSignal?: AbortSignal) => {
+        signal = candidateSignal
+        return new Promise(() => undefined)
+      },
+    )
+    const view = render(<BenefitsExplorerPage route="heatmap" search="" />)
+    view.unmount()
+    expect(signal?.aborted).toBe(true)
   })
   it('limits comparison to four and exposes claim applicability in tray', async () => {
     render(<BenefitsExplorerPage route="heatmap" search="" />)

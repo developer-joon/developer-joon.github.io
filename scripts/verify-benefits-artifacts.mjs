@@ -72,6 +72,9 @@ export async function verifyBenefitsArtifacts(root) {
   for (const [url, data] of results) {
     if (!url.includes('/details/')) continue
     const seen = new Set()
+    const expected = Object.entries(manifest.detail_shards)
+      .filter(([, shardUrl]) => shardUrl === url)
+      .map(([id]) => id)
     for (const c of data.companies) {
       if (
         !ids.has(c.company_id) ||
@@ -85,6 +88,12 @@ export async function verifyBenefitsArtifacts(root) {
         c,
       )
     }
+    if (
+      expected.length === 0 ||
+      seen.size !== expected.length ||
+      expected.some((companyId) => !seen.has(companyId))
+    )
+      throw Error('benefits detail shard completeness mismatch')
   }
   const raw = await get(manifest.index_url.slice(1))
   return `Benefits fixture: ${ids.size} companies; index ${Buffer.byteLength(raw)} bytes, gzip ${gzipSync(raw).length}, brotli ${brotliCompressSync(raw).length}.`

@@ -13,6 +13,8 @@ function client(change?: (url: string, raw: string) => string) {
     webcrypto.subtle as SubtleCrypto,
   )
 }
+const fixtureManifest = () => JSON.parse(fixture(manifest))
+const detailUrl = (id = 'example-001') => fixtureManifest().detail_shards[id]
 describe('strict immutable benefits artifacts', () => {
   it('loads exact index, rankings and delayed detail counts', async () => {
     const c = client()
@@ -108,7 +110,7 @@ it('rejects a re-signed ranking of an unknown category as eligible', async () =>
 })
 it('rejects duplicate claims even with correct shard hash', async () => {
   const c = await signedMutation(
-    '/community/data/company-benefits/fixture-v1/details/companies.json',
+    detailUrl(),
     (data) => {
       const companies = data.companies as { claims: unknown[] }[]
       companies[0].claims.push(companies[0].claims[0])
@@ -120,7 +122,7 @@ it('rejects duplicate claims even with correct shard hash', async () => {
 })
 it('rejects contradictory summary counts in a correctly hashed detail shard', async () => {
   const c = await signedMutation(
-    '/community/data/company-benefits/fixture-v1/details/companies.json',
+    detailUrl(),
     (data) => {
       const companies = data.companies as { claims: { status: string }[] }[]
       companies[0].claims[0].status = '상충'
@@ -130,6 +132,20 @@ it('rejects contradictory summary counts in a correctly hashed detail shard', as
   const i = await c.loadCompanyIndex(m)
   await expect(c.loadCompanyDetail(m, i, 'example-001')).rejects.toThrow()
 })
+it('rejects a re-signed detail whose claim status contradicts its category summary', async () => {
+  const c = await signedMutation(detailUrl(), (data) => {
+    const companies = data.companies as {
+      claims: { category: string; status: string }[]
+    }[]
+    companies[0].claims.find((claim) => claim.category === 'health')!.status =
+      '확인 불가'
+  })
+  const m = await c.loadManifest()
+  const i = await c.loadCompanyIndex(m)
+  await expect(c.loadCompanyDetail(m, i, 'example-001')).rejects.toThrow(
+    '상세와 요약 근거 불일치',
+  )
+})
 
 it.each([
   'http://example.org/benefits',
@@ -138,7 +154,7 @@ it.each([
   'javascript:alert(1)',
 ])('rejects unsafe original source %s even with valid bytes', async (url) => {
   const c = await signedMutation(
-    '/community/data/company-benefits/fixture-v1/details/companies.json',
+    detailUrl(),
     (data) => {
       const companies = data.companies as {
         claims: { source: { url: string } }[]
@@ -184,4 +200,59 @@ it('does not poison immutable caches after a failed read', async () => {
   await expect(c.loadRankings(m, i)).rejects.toThrow('무결성')
   fail = false
   expect((await c.loadRankings(m, i)).rows).toHaveLength(560)
+})
+it('requests only the independently bounded shards needed by displayed companies', async () => {
+  const requests: { url: string; bytes: number }[] = []
+  const c = new BenefitsArtifactClient(async (url) => {
+    const raw = fixture(url)
+    requests.push({ url, bytes: new TextEncoder().encode(raw).byteLength })
+    return new Response(raw)
+  }, webcrypto.subtle as SubtleCrypto)
+  const m = await c.loadManifest()
+  const i = await c.loadCompanyIndex(m)
+  requests.length = 0
+  await c.loadCompanyDetails(m, i, ['example-001', 'example-002'])
+  expect(requests.map(({ url }) => url).sort()).toEqual(
+    [m.detail_shards['example-001'], m.detail_shards['example-002']].sort(),
+  )
+  expect(new Set(requests.map(({ url }) => url))).toHaveLength(2)
+  expect(requests.reduce((sum, request) => sum + request.bytes, 0)).toBeLessThan(
+    100_000,
+  )
+})
+it('propagates abort through fetch and stops before artifact CPU validation', async () => {
+  const controller = new AbortController()
+  let receivedSignal: AbortSignal | undefined
+  const c = new BenefitsArtifactClient(
+    async (url, signal) => {
+      receivedSignal = signal
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      signal?.throwIfAborted()
+      return new Response(fixture(url))
+    },
+    webcrypto.subtle as SubtleCrypto,
+  )
+  const pending = c.loadManifest(controller.signal)
+  controller.abort()
+  await expect(pending).rejects.toHaveProperty('name', 'AbortError')
+  expect(receivedSignal).toBe(controller.signal)
+
+  const m = fixtureManifest()
+  const cpuController = new AbortController()
+  let digestCalls = 0
+  const abortingSubtle = {
+    async digest(...args: Parameters<SubtleCrypto['digest']>) {
+      digestCalls++
+      cpuController.abort()
+      return webcrypto.subtle.digest(...args)
+    },
+  } as SubtleCrypto
+  const cpuClient = new BenefitsArtifactClient(
+    async (url) => new Response(fixture(url)),
+    abortingSubtle,
+  )
+  await expect(
+    cpuClient.loadCompanyIndex(m, cpuController.signal),
+  ).rejects.toHaveProperty('name', 'AbortError')
+  expect(digestCalls).toBe(1)
 })

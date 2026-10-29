@@ -37,6 +37,7 @@ const LOCAL_STEP_NAMES = [
   'verify-site-a',
   'verify-site-b',
   'verify-site-reproducibility',
+  'test-benefits-browser',
   'local-e2e',
 ]
 
@@ -108,6 +109,21 @@ test('defaults to local mode and builds the exact ordered local plan', () => {
   const options = parse()
   assert.equal(options.mode, 'local')
   assert.deepEqual(buildReleasePlan(options).steps.map(({ name }) => name), LOCAL_STEP_NAMES)
+})
+
+test('local release plan executes real benefits browser acceptance against the built site', () => {
+  const step = buildReleasePlan(parse()).steps.find(
+    ({ name }) => name === 'test-benefits-browser',
+  )
+  assert.deepEqual(step, {
+    name: 'test-benefits-browser',
+    command: 'node',
+    args: [
+      'scripts/check-benefits-browser.mjs',
+      '/tmp/breadlab-community-release-site-a/community',
+    ],
+    environment: {},
+  })
 })
 
 test('development plan runs the exhaustive local core before hosted probes and its Task 16 sentinel', () => {

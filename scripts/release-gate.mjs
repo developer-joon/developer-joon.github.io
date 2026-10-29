@@ -293,6 +293,10 @@ function localCoreSteps() {
     step('verify-site-a', 'node', ['scripts/verify-site.mjs', siteA]),
     step('verify-site-b', 'node', ['scripts/verify-site.mjs', siteB]),
     step('verify-site-reproducibility', './scripts/verify-site-reproducibility.sh', [siteA, siteB, manifest]),
+    step('test-benefits-browser', 'node', [
+      'scripts/check-benefits-browser.mjs',
+      `${siteA}/community`,
+    ]),
   ]
 }
 

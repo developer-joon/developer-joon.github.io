@@ -52,11 +52,12 @@ export function BenefitsExplorerPage({
   const [raw, setRaw] = useState(search)
   useEffect(() => {
     let active = true
+    const controller = new AbortController()
     benefitsClient
-      .loadManifest()
+      .loadManifest(controller.signal)
       .then(async (manifest) => ({
         manifest,
-        index: await benefitsClient.loadCompanyIndex(manifest),
+        index: await benefitsClient.loadCompanyIndex(manifest, controller.signal),
       }))
       .then((d) => {
         if (active) setData(d)
@@ -66,6 +67,7 @@ export function BenefitsExplorerPage({
       })
     return () => {
       active = false
+      controller.abort()
     }
   }, [attempt])
   useEffect(() => {

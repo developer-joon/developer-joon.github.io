@@ -27,6 +27,14 @@ export function BenefitsFilterPanel({
     )
   }, [state.q])
   useEffect(() => {
+    if (searchDraft.trim() === state.q) return
+    const timeout = window.setTimeout(
+      () => update({ q: searchDraft, page: 1 }),
+      250,
+    )
+    return () => window.clearTimeout(timeout)
+  }, [searchDraft, state.q, update])
+  useEffect(() => {
     const media = window.matchMedia?.('(max-width: 699px)')
     if (!media) return
     const change = (event: MediaQueryListEvent) => setMobile(event.matches)
@@ -47,9 +55,11 @@ export function BenefitsFilterPanel({
           maxLength={100}
           onChange={(event) => {
             setSearchDraft(event.target.value)
-            update({ q: event.target.value, page: 1 })
           }}
-          onBlur={() => setSearchDraft(state.q)}
+          onBlur={() => {
+            if (searchDraft.trim() !== state.q)
+              update({ q: searchDraft, page: 1 })
+          }}
         />
       </label>
       <label>

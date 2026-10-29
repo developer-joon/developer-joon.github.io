@@ -4,12 +4,15 @@ import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 const root = path.resolve(process.argv[2] ?? 'community-app/dist')
 const chrome = process.env.BENEFITS_CHROMIUM
 if (!chrome) throw Error('Set BENEFITS_CHROMIUM to a local Chromium executable')
+const WebSocketClient =
+  globalThis.WebSocket ?? createRequire(import.meta.url)('ws').WebSocket
 const profile = await mkdtemp(path.join(tmpdir(), 'benefits-browser-'))
 let performanceFixture
 const server = createServer(async (req, res) => {
@@ -55,6 +58,10 @@ const browser = spawn(
   ],
   { stdio: 'ignore' },
 )
+const browserClosed = new Promise((resolve) => {
+  browser.once('exit', resolve)
+  browser.once('error', resolve)
+})
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 let socket
 try {
@@ -73,7 +80,7 @@ try {
   const { webSocketDebuggerUrl } = await (
     await fetch(`http://127.0.0.1:${port}/json/version`)
   ).json()
-  socket = new WebSocket(webSocketDebuggerUrl)
+  socket = new WebSocketClient(webSocketDebuggerUrl)
   await new Promise((resolve, reject) => {
     socket.onopen = resolve
     socket.onerror = reject
@@ -81,6 +88,8 @@ try {
   let sequence = 0
   const pending = new Map(),
     requests = [],
+    requestUrls = new Map(),
+    responseSizes = [],
     errors = []
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data)
@@ -89,9 +98,15 @@ try {
       pending.delete(message.id)
       if (message.error) callbacks.reject(Error(message.error.message))
       else callbacks.resolve(message.result)
-    } else if (message.method === 'Network.requestWillBeSent')
+    } else if (message.method === 'Network.requestWillBeSent') {
       requests.push(message.params.request.url)
-    else if (message.method === 'Runtime.exceptionThrown')
+      requestUrls.set(message.params.requestId, message.params.request.url)
+    } else if (message.method === 'Network.loadingFinished') {
+      const url = requestUrls.get(message.params.requestId)
+      if (url)
+        responseSizes.push({ url, bytes: message.params.encodedDataLength })
+      requestUrls.delete(message.params.requestId)
+    } else if (message.method === 'Runtime.exceptionThrown')
       errors.push(
         message.params.exceptionDetails.exception?.description ??
           message.params.exceptionDetails.text,
@@ -326,13 +341,14 @@ try {
       'utf8',
     ),
   )
-  const details = JSON.parse(
-    await readFile(
-      path.join(
-        root,
-        'data/company-benefits/fixture-v1/details/companies.json',
-      ),
-      'utf8',
+  const detailTemplates = new Map(
+    await Promise.all(
+      Object.entries(manifest.detail_shards).map(async ([id, url]) => {
+        const payload = JSON.parse(
+          await readFile(path.join(root, url.slice('/community/'.length)), 'utf8'),
+        )
+        return [id, payload.companies[0]]
+      }),
     ),
   )
   const companies = Array.from({ length: 2000 }, (_, i) => ({
@@ -350,20 +366,28 @@ try {
       .map((row) => ({ ...row, company_id: company.company_id })),
   )
   const detailCompanies = companies.map((company, i) => ({
-    ...details.companies.find(
-      (detail) =>
-        detail.company_id ===
-        index.companies[i % index.companies.length].company_id,
+    ...detailTemplates.get(
+      index.companies[i % index.companies.length].company_id,
     ),
     company_id: company.company_id,
   }))
   const indexBytes = JSON.stringify({ ...index, companies }) + '\n'
   const rankingsBytes = JSON.stringify({ ...rankings, rows: rankingRows }) + '\n'
-  const detailsBytes =
-    JSON.stringify({ ...details, companies: detailCompanies }) + '\n'
   manifest.company_count = 2000
+  for (const url of Object.keys(manifest.artifact_sha256))
+    if (url.includes('/details/')) delete manifest.artifact_sha256[url]
+  const detailFixtures = {}
   manifest.detail_shards = Object.fromEntries(
-    companies.map((c) => [c.company_id, manifest.detail_shards['example-001']]),
+    detailCompanies.map((detail) => {
+      const url = `/community/data/company-benefits/fixture-v1/details/${detail.company_id}.json`
+      const raw = JSON.stringify({ data_version: manifest.data_version, companies: [detail] }) + '\n'
+      detailFixtures[url.slice('/community/'.length)] = raw
+      manifest.artifact_sha256[url] = {
+        sha256: createHash('sha256').update(raw).digest('hex'),
+        record_count: 1,
+      }
+      return [detail.company_id, url]
+    }),
   )
   manifest.artifact_sha256[manifest.index_url] = {
     sha256: createHash('sha256').update(indexBytes).digest('hex'),
@@ -373,16 +397,11 @@ try {
     sha256: createHash('sha256').update(rankingsBytes).digest('hex'),
     record_count: rankingRows.length,
   }
-  const detailsUrl = manifest.detail_shards['example-001']
-  manifest.artifact_sha256[detailsUrl] = {
-    sha256: createHash('sha256').update(detailsBytes).digest('hex'),
-    record_count: detailCompanies.length,
-  }
   performanceFixture = {
     'data/company-benefits/manifest.json': JSON.stringify(manifest),
     'data/company-benefits/fixture-v1/company-index.json': indexBytes,
     'data/company-benefits/fixture-v1/rankings.json': rankingsBytes,
-    'data/company-benefits/fixture-v1/details/companies.json': detailsBytes,
+    ...detailFixtures,
   }
   await call('Emulation.setDeviceMetricsOverride', {
     width: 1440,
@@ -448,22 +467,42 @@ try {
   findings.push('2000-company rankings: ordered URL pagination; 50-row cap.')
 
   requests.length = 0
+  responseSizes.length = 0
+  const detailLoadStartedAt = performance.now()
   await navigate('fit/?preset=custom&weights=family:5')
   await wait(
     `document.querySelectorAll('article.benefits-result').length===50&&document.querySelector('.benefits-applicability')`,
   )
+  const detailLoadMs = performance.now() - detailLoadStartedAt
   assert.equal(
     await evaluate(`document.querySelectorAll('article.benefits-result').length`),
     50,
     '2000-company fit must keep a 50-result cap',
   )
+  const detailRequests = requests.filter((url) => url.includes('/details/'))
+  const detailRequestCount = detailRequests.length
+  const detailResponseBytes = responseSizes
+    .filter(({ url }) => url.includes('/details/'))
+    .reduce((sum, { bytes }) => sum + bytes, 0)
+  assert.ok(
+    detailRequestCount > 0 && detailRequestCount <= 50,
+    `2000-company fit detail request count exceeded bound: ${detailRequestCount}`,
+  )
   assert.equal(
-    requests.filter((url) => url.includes('/details/')).length,
-    1,
-    '2000-company fit should load detail only for the displayed candidate set',
+    new Set(detailRequests).size,
+    detailRequestCount,
+    '2000-company fit requested a detail shard more than once',
+  )
+  assert.ok(
+    detailResponseBytes > 0 && detailResponseBytes < 1_000_000,
+    `2000-company fit detail bytes exceeded bound: ${detailResponseBytes}`,
+  )
+  assert.ok(
+    detailLoadMs < 5_000,
+    `2000-company fit detail latency exceeded bound: ${detailLoadMs.toFixed(2)} ms`,
   )
   findings.push(
-    '2000-company fit: 50-result cap; displayed-candidate detail loading verified.',
+    `2000-company fit: 50-result cap; bounded detail shards ${detailRequestCount} requests, ${detailResponseBytes} bytes, ${detailLoadMs.toFixed(2)} ms.`,
   )
   assert.deepEqual(errors, [])
   console.log(findings.join('\n'))
@@ -475,10 +514,10 @@ try {
   browser.kill('SIGTERM')
   server.closeAllConnections()
   await new Promise((resolve) => server.close(resolve))
-  await new Promise((resolve) =>
-    browser.exitCode !== null || browser.signalCode !== null
-      ? resolve()
-      : browser.once('exit', resolve),
-  )
+  await Promise.race([browserClosed, sleep(2_000)])
+  if (browser.exitCode === null && browser.signalCode === null) {
+    browser.kill('SIGKILL')
+    await browserClosed
+  }
   await rm(profile, { recursive: true, force: true })
 }

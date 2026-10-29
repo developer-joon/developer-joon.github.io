@@ -59,7 +59,7 @@ const url = z
 const artifactUrl = z
   .string()
   .regex(
-    /^\/community\/data\/company-benefits\/fixture-v1\/(?:company-index|rankings|methodology|details\/companies)\.json$/,
+    /^\/community\/data\/company-benefits\/fixture-v1\/(?:company-index|rankings|methodology|details\/example-(?:\d{3}|1\d{3}|2000))\.json$/,
   )
 const summary = z.strictObject({
   status: z.enum(statuses),
@@ -146,30 +146,46 @@ export const methodologySchema = z.strictObject({
   title: text,
   paragraphs: z.array(text),
 })
-export const manifestSchema = z.strictObject({
-  schema_version: z.literal(1),
-  data_version: version,
-  fixture: z.literal(true),
-  generated_at: z.iso.datetime(),
-  protocol_hash: z.string().regex(/^[a-f0-9]{64}$/),
-  effective_selection_hashes: z
-    .array(z.string().regex(/^[a-f0-9]{64}$/))
-    .length(1),
-  company_count: z.number().int().min(1).max(2000),
-  category_taxonomy: z.array(z.enum(categories)).length(10),
-  status_taxonomy: z.array(z.enum(statuses)).length(7),
-  index_url: artifactUrl,
-  rankings_url: artifactUrl,
-  methodology_url: artifactUrl,
-  detail_shards: z.record(id, artifactUrl),
-  artifact_sha256: z.record(
-    artifactUrl,
-    z.strictObject({
-      sha256: z.string().regex(/^[a-f0-9]{64}$/),
-      record_count: z.number().int().nonnegative(),
-    }),
-  ),
-})
+export const manifestSchema = z
+  .strictObject({
+    schema_version: z.literal(1),
+    data_version: version,
+    fixture: z.literal(true),
+    generated_at: z.iso.datetime(),
+    protocol_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    effective_selection_hashes: z
+      .array(z.string().regex(/^[a-f0-9]{64}$/))
+      .length(1),
+    company_count: z.number().int().min(1).max(2000),
+    category_taxonomy: z.array(z.enum(categories)).length(10),
+    status_taxonomy: z.array(z.enum(statuses)).length(7),
+    index_url: artifactUrl,
+    rankings_url: artifactUrl,
+    methodology_url: artifactUrl,
+    detail_shards: z.record(id, artifactUrl),
+    artifact_sha256: z.record(
+      artifactUrl,
+      z.strictObject({
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        record_count: z.number().int().nonnegative(),
+      }),
+    ),
+  })
+  .superRefine((manifest, context) => {
+    const entries = Object.entries(manifest.detail_shards)
+    if (
+      new Set(entries.map(([, url]) => url)).size !== entries.length ||
+      entries.some(
+        ([companyId, url]) =>
+          !url.endsWith(`/details/${companyId}.json`) ||
+          manifest.artifact_sha256[url]?.record_count !== 1,
+      )
+    )
+      context.addIssue({
+        code: 'custom',
+        message: '상세 shard는 회사별 단일 레코드여야 합니다',
+      })
+  })
 export type Manifest = z.infer<typeof manifestSchema>
 export type Company = z.infer<typeof companySchema>
 export type CompanyIndex = z.infer<typeof indexSchema>
@@ -177,6 +193,23 @@ export type Rankings = z.infer<typeof rankingsSchema>
 export type Ranking = z.infer<typeof rankingSchema>
 export type Detail = z.infer<typeof detailSchema>
 export type Claim = z.infer<typeof claimSchema>
+
+const summaryStatusPriority = [
+  '상충',
+  '확인됨',
+  '범위 제한 확인',
+  '과거 확인',
+  '명칭만 확인',
+  '확인 불가',
+  '해당 없음',
+] as const
+
+export function deriveCategorySummaryStatus(claims: Claim[]) {
+  if (!claims.length) return '확인 불가'
+  return summaryStatusPriority.find((status) =>
+    claims.some((claim) => claim.status === status),
+  )!
+}
 
 // Shared browser/release invariants. Hash validity alone is not evidence validity.
 export function assertRankingEvidence(index: CompanyIndex, rankings: Rankings) {
@@ -214,7 +247,7 @@ export function assertDetailEvidence(company: Company, detail: Detail) {
     )
     if (
       confirmed.length !== summary.confirmed_count ||
-      (claims.some((c) => c.status === '상충') && summary.status !== '상충') ||
+      deriveCategorySummaryStatus(claims) !== summary.status ||
       claims.some((c) => c.status === '범위 제한 확인') !== summary.limited
     )
       throw new Error('상세와 요약 근거 불일치')

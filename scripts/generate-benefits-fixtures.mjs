@@ -1,5 +1,5 @@
 // Fictional UI fixtures only. Never accepts research or Community records.
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 const categories = [
   'leave',
@@ -113,16 +113,20 @@ const methodology = {
     '정정은 Community 댓글·신고 정책을 따릅니다. 비공개 문서와 개인정보를 게시하지 마세요. 정정 이력: 2026-10-29 예시 데이터 최초 생성.',
   ],
 }
+const detailPayloads = Object.fromEntries(
+  details.map((detail) => [
+    `details/${detail.company_id}.json`,
+    [{ data_version, companies: [detail] }, 1],
+  ]),
+)
 const payloads = {
   'company-index.json': [{ data_version, companies }, companies.length],
   'rankings.json': [{ data_version, rows }, rows.length],
-  'details/companies.json': [
-    { data_version, companies: details },
-    details.length,
-  ],
+  ...detailPayloads,
   'methodology.json': [methodology, methodology.paragraphs.length],
 }
 const artifact_sha256 = {}
+await rm(new URL('fixture-v1/details/', dir), { recursive: true, force: true })
 for (const [name, [data, record_count]] of Object.entries(payloads)) {
   const raw = JSON.stringify(data) + '\n'
   const target = new URL('fixture-v1/' + name, dir)
@@ -146,7 +150,10 @@ const manifest = {
   rankings_url: base + 'rankings.json',
   methodology_url: base + 'methodology.json',
   detail_shards: Object.fromEntries(
-    companies.map((c) => [c.company_id, base + 'details/companies.json']),
+    companies.map((c) => [
+      c.company_id,
+      base + `details/${c.company_id}.json`,
+    ]),
   ),
   artifact_sha256,
 }

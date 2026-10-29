@@ -37,6 +37,12 @@ test('fixture generator emits fictional-only version/count/hash-consistent artif
     )
     assert.equal(manifest.fixture, true)
     assert.equal(manifest.company_count, 56)
+    assert.equal(new Set(Object.values(manifest.detail_shards)).size, 56)
+    assert.ok(
+      Object.entries(manifest.detail_shards).every(
+        ([id, url]) => url.endsWith(`/details/${id}.json`),
+      ),
+    )
     for (const [url, descriptor] of Object.entries(manifest.artifact_sha256)) {
       const raw = await readFile(
         path.join(base, url.replace('/community/', '')),
@@ -64,15 +70,20 @@ test('fixture generator emits fictional-only version/count/hash-consistent artif
           c.display_name.startsWith('예시 '),
       ),
     )
-    const details = JSON.parse(
-      await readFile(
-        path.join(
-          base,
-          'data/company-benefits/fixture-v1/details/companies.json',
-        ),
-        'utf8',
-      ),
-    )
+    const details = {
+      companies: (
+        await Promise.all(
+          Object.values(manifest.detail_shards).map(async (url) =>
+            JSON.parse(
+              await readFile(path.join(base, url.replace('/community/', '')), 'utf8'),
+            ),
+          ),
+        )
+      ).flatMap((shard) => {
+        assert.equal(shard.companies.length, 1)
+        return shard.companies
+      }),
+    }
     assert.ok(
       details.companies.every(
         (c) =>

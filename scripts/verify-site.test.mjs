@@ -529,7 +529,7 @@ for (const extension of ['ts', 'tsx', 'jsx', 'vue', 'svelte', 'scss', 'sass', 'l
   })
 }
 
-for (const relative of ['benefits/index.html','benefits/rankings/index.html','benefits/fit/index.html','benefits/company/index.html','data/company-benefits/manifest.json','data/company-benefits/fixture-v1/company-index.json','data/company-benefits/fixture-v1/rankings.json','data/company-benefits/fixture-v1/details/companies.json']) {
+for (const relative of ['benefits/index.html','benefits/rankings/index.html','benefits/fit/index.html','benefits/company/index.html','data/company-benefits/manifest.json','data/company-benefits/fixture-v1/company-index.json','data/company-benefits/fixture-v1/rankings.json','data/company-benefits/fixture-v1/details/example-001.json']) {
  test(`rejects missing benefits artifact ${relative}`,async()=>withArtifact(async root=>{
   await rm(path.join(root,'community',relative));const result=verify(root);assert.notEqual(result.status,0);assert.match(result.stderr,/benefits|company-benefits/)
  }))
