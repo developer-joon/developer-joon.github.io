@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { benefitsClient } from '../data/benefitsArtifactClient'
 import type { Category, Company, CompanyIndex, Manifest } from '../types/benefits'
 import { categories, categoryLabels } from '../types/benefits'
@@ -7,6 +7,8 @@ import { BenefitsExplorerShell } from '../components/benefits/BenefitsExplorerSh
 import { BenefitsFilterPanel } from '../components/benefits/BenefitsFilterPanel'
 import { BenefitsHeatmapTable } from '../components/benefits/BenefitsHeatmapTable'
 import { CompanyCompareTray } from '../components/benefits/CompanyCompareTray'
+const RankingsPage=lazy(()=>import('./BenefitsRankingsPage').then(m=>({default:m.BenefitsRankingsPage})))
+const FitPage=lazy(()=>import('./BenefitsFitPage').then(m=>({default:m.BenefitsFitPage})))
 export type ExplorerData = {manifest:Manifest;index:CompanyIndex}
 export type ExplorerViewProps = ExplorerData & {state:QueryState;update:(patch:Partial<QueryState>)=>void;companies:Company[];link:(id:string,category?:Category)=>string}
 export function BenefitsExplorerPage({route,search}:{route:string;search:string}) {
@@ -29,4 +31,4 @@ export function BenefitsExplorerPage({route,search}:{route:string;search:string}
  }
  return <BenefitsExplorerShell route={route} query={query} manifest={data?.manifest}>{body}</BenefitsExplorerShell>
 }
-function RouteView({route}:{route:string}) { return <p>{route} 화면을 준비하고 있습니다.</p> }
+function RouteView({route,...props}:ExplorerViewProps & {route:string}) { return <Suspense fallback={<p role="status">화면을 준비하고 있습니다.</p>}>{route==='rankings'?<RankingsPage {...props}/>:route==='fit'?<FitPage {...props}/>:<p>기업 근거를 준비하고 있습니다.</p>}</Suspense> }
