@@ -1153,19 +1153,28 @@ def validate_coverage_gaps(root, errors):
         errors.append("international coverage-gap artifact must disclaim global representativeness and source rank")
 
 
-def external_freeze_anchor(path, protocol, errors):
+def external_freeze_anchor(path, protocol, errors, workspace_root=None):
     if path is None:
         errors.append("external freeze-anchor receipt is required")
         return {}
-    receipt = read_json(Path(path), errors)
+    receipt_path = Path(path)
+    if workspace_root is not None:
+        workspace = Path(workspace_root).resolve()
+        lexical_path = Path(os.path.abspath(receipt_path))
+        resolved_path = receipt_path.resolve()
+        if lexical_path.is_relative_to(workspace) or resolved_path.is_relative_to(workspace):
+            errors.append("external freeze-anchor receipt must be outside the verified workspace")
+            return {}
+    receipt = read_json(receipt_path, errors)
     required_fields = {"schema_version", "protocol_version", "freeze_manifest_sha256", "review_status", "issued_at"}
     if not isinstance(receipt, dict) or set(receipt) != required_fields:
         errors.append("external freeze-anchor receipt schema mismatch")
         return {}
     if receipt.get("schema_version") != "1" or receipt.get("protocol_version") != protocol.get("version"):
         errors.append("external freeze-anchor receipt protocol identity mismatch")
-    if receipt.get("review_status") not in {"review_pending", "approved"}:
-        errors.append("external freeze-anchor receipt review status is invalid")
+    if receipt.get("review_status") != "approved":
+        errors.append("external freeze-anchor receipt is not approved")
+        return {}
     parse_timestamp(receipt.get("issued_at"), "issued_at", "freeze-anchor receipt", errors)
     digest = receipt.get("freeze_manifest_sha256")
     if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
@@ -1184,7 +1193,7 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
         errors.append("missing population protocol")
         return errors
     if approved_freeze_anchors is None:
-        approved_freeze_anchors = external_freeze_anchor(freeze_anchor_receipt, protocol, errors)
+        approved_freeze_anchors = external_freeze_anchor(freeze_anchor_receipt, protocol, errors, root)
     status = protocol.get("status")
     if status != "approved":
         errors.append(f"protocol status is {status or 'missing'}; approved protocol required")

@@ -57,6 +57,46 @@ class VerifierTests(unittest.TestCase):
         self.assertTrue(any("external freeze-anchor receipt" in error for error in errors), errors[:20])
         self.assertEqual([], self.errors())
 
+    def test_review_pending_external_receipt_does_not_authorize_freeze(self):
+        receipt_path = self.root / "freeze-anchor-receipt.json"
+        self.fixture.write_json("freeze-anchor-receipt.json", {
+            "schema_version": "1",
+            "protocol_version": self.fixture.protocol["version"],
+            "freeze_manifest_sha256": next(iter(self.approved_freeze_anchors.values())),
+            "review_status": "review_pending",
+            "issued_at": "2026-10-21T00:00:00Z",
+        })
+        errors = []
+        anchors = self.verifier.external_freeze_anchor(receipt_path, self.fixture.protocol, errors)
+        self.assertEqual({}, anchors)
+        self.assertTrue(any("not approved" in error for error in errors), errors)
+
+    def test_repository_local_external_receipt_does_not_authorize_freeze(self):
+        receipt_path = self.root / "freeze-anchor-receipt.json"
+        self.fixture.write_json("freeze-anchor-receipt.json", {
+            "schema_version": "1",
+            "protocol_version": self.fixture.protocol["version"],
+            "freeze_manifest_sha256": next(iter(self.approved_freeze_anchors.values())),
+            "review_status": "approved",
+            "issued_at": "2026-10-21T00:00:00Z",
+        })
+        errors = self.verifier.verify_workspace(
+            self.root,
+            as_of=date(2026, 10, 29),
+            freeze_anchor_receipt=receipt_path,
+        )
+        self.assertTrue(any("must be outside" in error for error in errors), errors[:20])
+
+        with tempfile.TemporaryDirectory(dir=self.root.parent) as external_dir:
+            outside_alias = Path(external_dir) / "receipt-alias.json"
+            outside_alias.symlink_to(receipt_path)
+            errors = self.verifier.verify_workspace(
+                self.root,
+                as_of=date(2026, 10, 29),
+                freeze_anchor_receipt=outside_alias,
+            )
+        self.assertTrue(any("must be outside" in error for error in errors), errors[:20])
+
     def test_self_consistent_frozen_scale_drift_fails_against_old_anchor(self):
         old_anchor = self.fixture.approved_freeze_anchors()
         company_id = self.fixture.selected["domestic"][0]["company_id"]
@@ -622,12 +662,21 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(contract, {field: protocol[field] for field in self.verifier.PINNED_PROTOCOL_FIELDS})
         self.assertEqual(self.verifier.sha256(self.verifier.json_bytes(contract)), schema["x-pinned-protocol-contract-sha256"])
 
-    def test_repository_real_population_is_approved_and_verifies(self):
+    def test_repository_real_population_requires_approved_external_receipt_and_verifies(self):
         research = ROOT / "docs" / "research" / "company-benefits"
-        receipt = Path("/home/bread/.hermes/profiles/conan/cache/company-benefits/freeze-anchor-receipt.json")
-        errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 29), freeze_anchor_receipt=receipt)
+        protocol = json.loads((research / "population-protocol.json").read_text())
+        freeze_digest = self.verifier.sha256((research / "population" / "freeze-manifest.json").read_bytes())
+        receipt = self.root / "repository-freeze-anchor-receipt.json"
+        self.fixture.write_json(receipt.name, {
+            "schema_version": "1",
+            "protocol_version": protocol["version"],
+            "freeze_manifest_sha256": freeze_digest,
+            "review_status": "approved",
+            "issued_at": "2026-10-30T00:00:00Z",
+        })
+        errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 30), freeze_anchor_receipt=receipt)
         self.assertEqual([], errors)
-        self.assertEqual("approved", json.loads((research / "population-protocol.json").read_text())["status"])
+        self.assertEqual("approved", protocol["status"])
         expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1057,
                     "domestic-selected.jsonl": 1000, "international-selected.jsonl": 1000,
                     "domestic-effective-selected.jsonl": 1000, "international-effective-selected.jsonl": 1000}
