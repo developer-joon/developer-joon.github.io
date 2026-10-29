@@ -2,7 +2,7 @@
 
 ## Current state
 
-The population protocol is **DRAFT / BLOCKED**, not frozen or approved. No eligible, selected, effective-selected or manifest file exists. The numbers 1,000 domestic and 1,000 international are targets only; an empty ledger must never be presented as a completed selection.
+Population protocol 1.1.0 is frozen with 1,350 domestic and 1,071 international eligible records and exactly 1,000 selected records per scope. The domestic set is Korean; the international set currently consists only of 1,000 US SEC filers. The other 17 fixed-panel jurisdictions are structured coverage gaps. This is a user-authorized population freeze with independent technical review still pending.
 
 Selection and writing order are deterministic editorial processing orders, not revenue rankings. The international panel is fixed but does not represent the world or all large employers. Every incomplete national source path is published as a `coverage_gap` rather than silently omitted.
 
@@ -65,7 +65,7 @@ EU electronic-reporting rules can improve issuer document comparability, but the
 5. Materialize and checksum complete official-list unions outside Git, then normalize eligible records.
 6. Use the highest available source class in the pinned precedence order. A lower class requires structured checks and reasons proving every higher class unavailable.
 7. Only after completeness validation may canonical SHA-256 ordering select exactly 1,000 per scope. If fewer qualify, stop; never lower a threshold silently.
-8. Freeze protocol and ledger hashes only after explicit approval. Approval requires a reviewed code commit adding exactly one `APPROVED_FREEZE_ANCHORS` entry from the immutable protocol version to the reviewed freeze-manifest SHA-256. The production map is intentionally empty while this protocol is blocked. An approved protocol version is immutable forever; any change requires a new version and a new reviewed anchor. Thereafter, immutable selection changes only through append-only exclusion/replacement events and approved effective hashes.
+8. Freeze protocol and ledger hashes only after explicit authorization. Version 1.1.0 has one exact `APPROVED_FREEZE_ANCHORS` entry tied to the generated freeze-manifest bytes; its metadata truthfully records user authorization and pending independent technical review. An approved protocol version is immutable; any change requires a new version and reviewed anchor. Thereafter, immutable selection changes only through append-only exclusion/replacement events and separately approved effective hashes.
 
 ## Benefit evidence
 

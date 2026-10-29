@@ -1,20 +1,22 @@
 {
   "$schema": "./schema/population-protocol.schema.json",
-  "protocol_id": "company-benefits-population-v1-draft",
-  "version": "1.0.0-draft",
-  "status": "blocked",
-  "approval": null,
-  "cutoff_at": "2026-10-29T23:59:59+09:00",
+  "protocol_id": "company-benefits-population-v1",
+  "version": "1.1.0",
+  "status": "approved",
+  "approval": {
+    "approved_by": "user-authorized implementation scope; technical review pending",
+    "approved_at": "2026-10-29T15:36:01Z"
+  },
+  "cutoff_at": "2026-10-29T23:59:59Z",
   "purpose": "Protocol-bounded, non-ranking editorial sample of large employing legal entities with auditable official evidence.",
   "non_ranking_statement": "Selection order is a deterministic editorial processing order, not a revenue rank, complete market census, probability sample, or claim of global representativeness.",
   "scopes": {
     "domestic": {
       "target_count": 1000,
       "candidate_source_ids": [
-        "kr-opendart-corporations",
-        "kr-ftc-affiliates",
-        "kr-alio-institutions",
-        "kr-cleaneye-enterprises"
+        "kr-dart-corporation-registry",
+        "kr-opendart-financial-bulk",
+        "kr-opendart-employee-bulk"
       ],
       "jurisdictions": [
         "KR"
@@ -45,7 +47,8 @@
       ],
       "candidate_source_ids_by_jurisdiction": {
         "US": [
-          "us-sec-edgar-api"
+          "us-sec-quarterly-financials",
+          "us-sec-filing-employee"
         ],
         "CA": [
           "ca-sedar-data-distribution"
@@ -212,7 +215,9 @@
       "population/domestic-eligible.jsonl",
       "population/international-eligible.jsonl",
       "population/domestic-selected.jsonl",
-      "population/international-selected.jsonl"
+      "population/international-selected.jsonl",
+      "population/international-coverage-gaps.json",
+      "population/source-artifact-bindings.jsonl"
     ],
     "effective_manifest_artifacts": [
       "population/domestic-effective-selected.jsonl",
@@ -227,98 +232,31 @@
     ]
   },
   "coverage_gap": {
-    "KR": "OpenDART, FTC and Cleaneye API acquisition requires user-owned service keys; no complete eligible union has been acquired.",
-    "US": "Official bulk sources are public, but the complete candidate/financial union and reuse snapshot have not been acquired and validated.",
-    "CA": "SEDAR+ bulk distribution is licensed; public provincial lists do not provide a complete national bulk financial population.",
-    "MX": "Official CNBV interfaces are public but bulk endpoints are undocumented and reuse terms are unresolved.",
-    "BR": "Official CVM/CNPJ open data is available, but the complete joined population has not been acquired and validated.",
-    "AR": "Official CNV interfaces are public but undocumented for bulk use and reuse terms are unresolved.",
-    "GB": "Companies House bulk products are available, but the complete eligible population has not been acquired and validated.",
-    "FR": "INPI RNE bulk/API access requires an account and complete acquisition has not occurred.",
-    "DE": "Entity-level official financial bulk access is constrained by register access, per-document retrieval and reuse conditions.",
-    "IT": "Official entity financial access is contractual or paid; no lawful complete bulk acquisition is approved.",
-    "TR": "KAP bulk/commercial reuse terms require review or contract; public pages are not an approved bulk feed.",
-    "RU": "Official bulk accounting data is subscription/contractual and reuse terms are unresolved.",
-    "AU": "ASIC identity bulk data is open, but official entity-level financial evidence at required scale has not been acquired.",
-    "CN": "Exchange and regulator sources restrict or do not document bulk/commercial reuse; complete lawful acquisition is unresolved.",
-    "IN": "Official issuer and public-enterprise sources are available, but terms and complete joined acquisition are unresolved.",
-    "ID": "IDX filing access is official, but bulk reuse and complete acquisition are unresolved.",
-    "JP": "EDINET API requires a user subscription key; no complete acquisition has occurred.",
-    "SA": "Saudi Exchange official access and reuse controls do not establish an approved bulk acquisition path.",
-    "ZA": "CIPC disclosure is fee-based and JSE structured financial feeds are commercial licensed products."
+    "KR": "Materialized from official keyless DART/OpenDART bulk downloads: 1,350 eligible and 1,000 canonically selected legal employers.",
+    "US": "Materialized from official SEC quarterly financial datasets and exact Form 10-K employee evidence: 1,071 eligible and 1,000 canonically selected US filers.",
+    "CA": "CA remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "MX": "MX remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "BR": "BR remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "AR": "AR remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "GB": "GB remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "FR": "FR remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "DE": "DE remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "IT": "IT remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "TR": "TR remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "RU": "RU remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "AU": "AU remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "CN": "CN remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "IN": "IN remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "ID": "ID remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "JP": "JP remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "SA": "SA remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population.",
+    "ZA": "ZA remains a coverage gap; zero entities from this panel jurisdiction are in the current international selected population."
   },
   "blockers": [
     {
-      "gate": "ACQ-KR-KEYS",
-      "requirement": "Provide user-owned OpenDART and data.go.kr service keys and authorize lawful acquisition.",
+      "gate": "INTERNATIONAL-COVERAGE-GAPS",
+      "requirement": "Acquire and validate official legal-employer populations before adding any entity from the 17 uncovered panel jurisdictions.",
       "jurisdictions": [
-        "KR"
-      ]
-    },
-    {
-      "gate": "ACQ-LICENSED-BULK",
-      "requirement": "Obtain and review required bulk licences/contracts/fees before acquisition.",
-      "jurisdictions": [
-        "CA",
-        "IT",
-        "TR",
-        "RU",
-        "ZA"
-      ]
-    },
-    {
-      "gate": "ACQ-ENTITY-FINANCE",
-      "requirement": "Approve lawful, reproducible entity-level financial acquisition paths and reuse decisions.",
-      "jurisdictions": [
-        "DE",
-        "MX",
-        "AR",
-        "AU",
-        "CN",
-        "IN",
-        "ID",
-        "SA"
-      ]
-    },
-    {
-      "gate": "ACQ-API-KEYS",
-      "requirement": "Provide user-owned API/subscription keys where official APIs require them.",
-      "jurisdictions": [
-        "FR",
-        "JP"
-      ]
-    },
-    {
-      "gate": "ACQ-MATERIALIZE",
-      "requirement": "Acquire, checksum and validate every official list union and qualifying scale metric for all scopes.",
-      "jurisdictions": [
-        "KR",
-        "US",
-        "CA",
-        "MX",
-        "BR",
-        "AR",
-        "GB",
-        "FR",
-        "DE",
-        "IT",
-        "TR",
-        "RU",
-        "AU",
-        "CN",
-        "IN",
-        "ID",
-        "JP",
-        "SA",
-        "ZA"
-      ]
-    },
-    {
-      "gate": "FREEZE-APPROVAL",
-      "requirement": "After materialization, explicitly approve protocol, eligible-ledger hashes, immutable selected-ledger hashes, and initial effective-ledger hashes.",
-      "jurisdictions": [
-        "KR",
-        "US",
         "CA",
         "MX",
         "BR",
@@ -355,26 +293,26 @@
   "registered_sources": {
     "KR": [
       {
-        "source_id": "kr-opendart-corporations",
-        "endpoint": "https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS001&apiId=2019018"
+        "source_id": "kr-dart-corporation-registry",
+        "endpoint": "https://dart.fss.or.kr/dsae001/downloadExcel.do"
       },
       {
-        "source_id": "kr-ftc-affiliates",
-        "endpoint": "https://www.data.go.kr/data/15091891/openapi.do"
+        "source_id": "kr-opendart-financial-bulk",
+        "endpoint": "https://opendart.fss.or.kr/disclosureinfo/fnltt/dwld/main.do"
       },
       {
-        "source_id": "kr-alio-institutions",
-        "endpoint": "https://www.data.go.kr/data/15125287/openapi.do"
-      },
-      {
-        "source_id": "kr-cleaneye-enterprises",
-        "endpoint": "https://www.data.go.kr/data/15057730/openapi.do"
+        "source_id": "kr-opendart-employee-bulk",
+        "endpoint": "https://opendart.fss.or.kr/disclosureinfo/biz/ExcelDownload.do"
       }
     ],
     "US": [
       {
-        "source_id": "us-sec-edgar-api",
-        "endpoint": "https://www.sec.gov/search-filings/edgar-application-programming-interfaces"
+        "source_id": "us-sec-quarterly-financials",
+        "endpoint": "https://www.sec.gov/files/dera/data/financial-statement-data-sets.html"
+      },
+      {
+        "source_id": "us-sec-filing-employee",
+        "endpoint": "https://www.sec.gov/Archives/edgar/data/"
       }
     ],
     "CA": [

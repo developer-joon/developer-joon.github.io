@@ -60,8 +60,8 @@ class ContractFixture:
         self.population.mkdir(parents=True, exist_ok=True)
         self.protocol = json.loads((RESEARCH_ROOT / "population-protocol.json").read_text(encoding="utf-8"))
         self.protocol.update({
-            "protocol_id": "company-benefits-population-v1",
-            "version": "1.0.0",
+            "protocol_id": "company-benefits-population-synthetic-test",
+            "version": "1.1.0",
             "status": "approved",
             "approval": {"approved_by": "owner", "approved_at": "2026-10-21T00:00:00Z"},
         })
@@ -73,7 +73,7 @@ class ContractFixture:
                 source_jurisdiction[entry["source_id"]] = jurisdiction
                 self.sources.append(audited_source(
                     entry["source_id"],
-                    ["revenue", "total_assets", "legal_entity", "fiscal_year_end"],
+                    ["revenue", "total_assets", "legal_entity", "fiscal_year_end", "employee_evidence"],
                     url=entry["endpoint"],
                     jurisdiction=jurisdiction,
                 ))
@@ -120,6 +120,8 @@ class ContractFixture:
                 "scale_source_precedence_rank": 1,
                 "source_availability": [],
                 "scale_metric": {"type": "revenue", "value": 200000000000 if scope == "domestic" else 2000000000, "currency": "KRW" if scope == "domestic" else "USD", "original_value": 200000000000 if scope == "domestic" else 2000000000, "original_currency": "KRW" if scope == "domestic" else "USD", "conversion": None, "fiscal_year_end": "2025-12-31", "financial_scope": "standalone", "source_ids": [source_id]},
+                "scale_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};metric=revenue", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "metric": "revenue", "value": 200000000000 if scope == "domestic" else 2000000000, "currency": "KRW" if scope == "domestic" else "USD"},
+                "employer_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};field=employees", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "employee_count": 10, "quote": "The registrant employed 10 people."},
             }
             company["selection_hash"] = selection_hash(self.seed, company)
             records.append(company)
@@ -163,7 +165,7 @@ class ContractFixture:
         path.write_bytes(jsonl_bytes(values))
 
     def refresh_manifests(self):
-        freeze_paths = ["population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl", "population/domestic-selected.jsonl", "population/international-selected.jsonl"]
+        freeze_paths = ["population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl", "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json", "population/source-artifact-bindings.jsonl"]
         freeze_entries = []
         for relative in freeze_paths:
             data = (self.root / relative).read_bytes()
@@ -187,6 +189,13 @@ class ContractFixture:
             self.write_jsonl(f"population/{scope}-initial-effective-selected.jsonl", self.selected[scope])
             self.write_jsonl(f"population/{scope}-effective-selected.jsonl", self.current[scope])
         self.write_jsonl("population/effective-selection-events.jsonl", self.events)
+        bindings = []
+        for company in self.eligible["domestic"] + self.eligible["international"]:
+            for kind in ("scale", "employer"):
+                evidence = company.get(f"{kind}_evidence", {})
+                bindings.append({"company_id": company["company_id"], "kind": kind, "source_id": evidence.get("source_id"), "url": evidence.get("url"), "locator": evidence.get("locator"), "content_sha256": evidence.get("content_sha256"), "registry_id": evidence.get("registry_id"), "legal_name": evidence.get("legal_name"), "fiscal_period_end": evidence.get("fiscal_period_end")})
+        self.write_jsonl("population/source-artifact-bindings.jsonl", sorted(bindings, key=lambda item: (item["company_id"], item["kind"])))
+        self.write_json("population/international-coverage-gaps.json", {"panel": PANEL, "selected_population": {"jurisdiction": "US", "count": 1000, "source": "SEC filers"}, "representativeness": "Protocol-bounded test population; not globally representative and not a source rank.", "coverage_gaps": [{"jurisdiction": country, "status": "not_materialized", "selected_count": 0} for country in PANEL if country != "US"]})
         self.write_jsonl("companies.jsonl", self.companies)
         self.write_jsonl("benefit-claims.jsonl", self.claims)
         self.write_jsonl("reviews.jsonl", self.reviews)

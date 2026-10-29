@@ -20,6 +20,8 @@
     "entity_status",
     "sector",
     "scale_metric",
+    "scale_evidence",
+    "employer_evidence",
     "scale_source_precedence_rank",
     "source_availability",
     "selection_hash"
@@ -174,6 +176,45 @@
             }
           ]
         }
+      }
+    },
+    "scale_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "url", "locator", "content_sha256", "hash_provenance", "retrieved_at", "filing_date", "registry_id", "legal_name", "fiscal_period_end", "metric", "value", "currency"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "url": {"type": "string", "format": "uri", "maxLength": 1000},
+        "locator": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "hash_provenance": {"enum": ["observed_response", "retained_source_artifact"]},
+        "retrieved_at": {"type": "string", "format": "date-time"},
+        "filing_date": {"type": "string", "format": "date"},
+        "registry_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "legal_name": {"type": "string", "minLength": 1, "maxLength": 500},
+        "fiscal_period_end": {"type": "string", "format": "date"},
+        "metric": {"enum": ["revenue", "total_assets"]},
+        "value": {"type": "number", "exclusiveMinimum": 0},
+        "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
+      }
+    },
+    "employer_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "url", "locator", "content_sha256", "hash_provenance", "retrieved_at", "filing_date", "registry_id", "legal_name", "fiscal_period_end", "employee_count", "quote"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "url": {"type": "string", "format": "uri", "maxLength": 1000},
+        "locator": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "hash_provenance": {"enum": ["observed_response", "retained_source_artifact"]},
+        "retrieved_at": {"type": "string", "format": "date-time"},
+        "filing_date": {"type": "string", "format": "date"},
+        "registry_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "legal_name": {"type": "string", "minLength": 1, "maxLength": 500},
+        "fiscal_period_end": {"type": "string", "format": "date"},
+        "employee_count": {"type": "integer", "minimum": 1},
+        "quote": {"type": "string", "minLength": 1, "maxLength": 1000}
       }
     },
     "scale_source_precedence_rank": {

@@ -1,53 +1,44 @@
-# Company benefits population protocol — DRAFT / BLOCKED
+# Company benefits population protocol — version 1.1.0 frozen population
 
-**Status: BLOCKED. This protocol is not frozen or approved. No eligible, selected, effective-selected ledger or freeze manifest exists.**
+**Status: APPROVED for the user-authorized population freeze. Independent technical review remains pending.**
 
-The target is a protocol-bounded editorial sample of 1,000 domestic and 1,000 international employing legal entities. A target is not an achieved count. Writing order and canonical hash order are not rankings, and the eventual international set would not be a census or representative global sample.
+This freeze contains 1,000 domestic and 1,000 international employing legal entities. Canonical hash order is an editorial processing order, not a revenue rank, source rank, complete market census, probability sample, or claim of global representativeness.
 
-## Scope and legal entity rule
+## Materialized scope
 
-Domestic entities must be incorporated in Korea and have their registered head office in Korea. International entities must be incorporated and headquartered outside Korea in the fixed panel: US, Canada, Mexico, Brazil, Argentina, United Kingdom, France, Germany, Italy, Turkey, Russia, Australia, China, India, Indonesia, Japan, Saudi Arabia and South Africa.
+- **Domestic:** 1,350 eligible Korean legal employers were built from official, keyless DART/OpenDART bulk downloads. The first 1,000 in canonical SHA-256 order are selected.
+- **International:** 1,071 eligible US SEC registrant legal employers were built from official SEC quarterly Financial Statement Data Sets and primary Form 10-K employee evidence. The first 1,000 in canonical SHA-256 order are selected.
+- The fixed international panel remains US, CA, MX, BR, AR, GB, FR, DE, IT, TR, RU, AU, CN, IN, ID, JP, SA and ZA. The current selected international population contains **US entities only**. The other 17 panel jurisdictions are explicit coverage gaps with zero selected entities; see `population/international-coverage-gaps.json`.
 
-The selected unit is the employing legal entity. The financial consolidation parent, ultimate parent and benefit-policy owner remain separate. A parent and subsidiary may both appear only if each independently meets the scale threshold and has entity-specific benefit applicability evidence.
+## Legal entity and thresholds
 
-## Scale rules
+The selected unit is the employing legal entity. Financial consolidation parent, ultimate parent and benefit-policy owner remain separate roles.
 
 - Domestic non-financial: annual revenue at least KRW 100 billion.
-- International non-financial: annual revenue at least USD 1 billion or the fixed official equivalent.
 - Domestic financial: year-end total assets at least KRW 10 trillion.
-- International financial: year-end total assets at least USD 10 billion or the fixed official equivalent.
-- Public ownership never creates automatic eligibility.
-- The fiscal year end must be no more than 24 months before cutoff.
+- International non-financial: annual revenue at least USD 1 billion.
+- International financial: year-end total assets at least USD 10 billion.
+- Fiscal period end must be no more than 24 months before cutoff.
+- Positive official employer evidence is required for the same registry ID, legal name and fiscal period.
 
-Non-USD values retain their original value and currency. Conversion uses World Bank indicator `PA.NUS.FCR` for the statement fiscal year. Missing country-year conversion data is a rejection, not an invitation to improvise.
+Every row retains structured scale and employer evidence: official source ID and URL, exact locator, observed or retained artifact SHA-256, retrieval and filing dates, registry ID, legal name, fiscal period, metric/value/currency or employee count/quote as applicable. Missing or mismatched row evidence fails verification.
 
-## Source precedence
+## Sources actually exercised
 
-1. Government/regulator financial filing.
-2. Government or public-enterprise disclosure.
-3. Publicly accessible audited company statement.
+Korean identity uses the DART company-overview bulk Excel family at `https://dart.fss.or.kr/dsae001/downloadExcel.do`. Korean scale and employee evidence use the official OpenDART financial and periodic-report Excel download families. They do not use the API-key corporation-code guide.
 
-Commercial, editorial and search-result sources are discovery-only. They cannot prove identity, scale, selection or benefits.
+US scale evidence retains each actual SEC quarterly archive URL, archive hash and `num.txt` locator. Employer evidence retains each primary EDGAR filing URL, filing hash, bounded quote and exact normalized-text or Inline XBRL locator.
 
-## Canonical selection
+## Canonical selection and immutable state
 
-Required values are `[protocol_seed, jurisdiction, registry_id, legal_name]`. Jurisdiction is uppercase ISO alpha-2. Strings use Unicode NFC and trimmed whitespace; internal legal-name whitespace collapses to one ASCII space. Serialize compact UTF-8 JSON with `ensure_ascii=false`, separators `(',', ':')` and `allow_nan=false`, then sort by lowercase SHA-256. Missing values fail. Hash collisions use canonical JSON bytes as the tie-break.
+Canonical values are `[protocol_seed, jurisdiction, registry_id, legal_name]`, normalized and serialized exactly as defined in `population-protocol.json`. Eligible ledgers are sorted by SHA-256 plus canonical-byte collision tie-break; selected ledgers are the first 1,000 records in each scope.
 
-After a lawful freeze, immutable selected ledgers cannot change. The freeze manifest hashes only the protocol, eligible ledgers and immutable selected ledgers. Exclusions and replacements are append-only events, and effective-selected ledgers are deterministic projections. A separate effective manifest hashes the event ledger and current effective projections and references the immutable freeze-manifest hash. Each event records the protocol version, exclusion reason and details, excluded company ID/hash/hash position, replacement ID/hash, previous and next effective hashes, timestamp and approver. Research stops until the next hash is approved.
+The freeze manifest hashes the exact bytes of the protocol, eligible ledgers, selected ledgers and structured coverage-gap artifact. Initial-effective ledgers are byte-identical to selected ledgers. The effective manifest hashes current effective ledgers and the empty event ledger and references the freeze-manifest digest. Future exclusions require append-only events and the next unused eligible canonical record.
 
-## Why the protocol is blocked
+## Benefits research state
 
-Official-source research found unmet acquisition gates:
+This commit freezes the population only. `benefit-claims.jsonl`, `reviews.jsonl` and `corrections.jsonl` are empty. No benefit claim or 25-company editorial draft is complete. Draft rendering fails closed until every company in the requested batch has reviewed claims.
 
-- Korea OpenDART, FTC and Cleaneye acquisition requires user-owned API/service keys.
-- SEDAR+ bulk is licensed; Germany and Italy lack an approved open national entity-financial bulk path.
-- Turkey, Russia and South Africa require paid, subscription or contractual data paths for scalable structured coverage.
-- Several exchange interfaces do not grant or clearly document bulk/commercial reuse.
-- France and Japan require user-owned account/API keys.
-- Every official-list union still needs lawful acquisition, checksums, field validation and complete scale verification.
+## Approval basis
 
-The exact jurisdiction-level gaps and gates are machine-readable in `population-protocol.json`. Until every acquisition gate is met, no file listed under `forbidden_while_blocked` may be created. Empty ledgers would be misleading and are therefore also prohibited.
-
-## Approval gate
-
-Only after lawful complete acquisition may a new protocol version materialize eligible ledgers, select exactly 1,000 per scope when available, initialize effective projections, calculate manifests and request explicit approval. Approval must identify the protocol and every eligible, selected and effective hash. This draft does not claim that approval.
+The user authorized full implementation and scope. The protocol, freeze manifest and effective manifest record that basis as `user-authorized implementation scope; technical review pending`; they do not invent a named human review event. Any technical approval or publication decision requires subsequent independent review.

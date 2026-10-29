@@ -128,6 +128,29 @@ class VerifierTests(unittest.TestCase):
         for needle in ("incorporation", "below threshold", "fiscal age", "does not support revenue"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:30]))
 
+    def test_company_requires_row_bound_scale_and_employer_evidence(self):
+        def mutate(company):
+            company.pop("employer_evidence", None)
+            company["scale_evidence"]["registry_id"] = "wrong-registry"
+            company["scale_evidence"]["value"] = company["scale_metric"]["value"] + 1
+        self.rewrite_company_everywhere("domestic", 0, mutate)
+        errors = self.errors()
+        for needle in ("employer_evidence", "scale evidence registry_id", "scale evidence value"):
+            self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
+
+    def test_evidence_source_url_hash_period_and_legal_entity_must_match(self):
+        def mutate(company):
+            company["employer_evidence"].update(
+                url="https://evil.example/evidence",
+                content_sha256="b" * 64,
+                legal_name="Different Legal Entity",
+                fiscal_period_end="2024-12-31",
+            )
+        self.rewrite_company_everywhere("international", 0, mutate)
+        errors = self.errors()
+        for needle in ("employer evidence URL", "employer evidence content hash", "employer evidence legal_name", "employer evidence fiscal period"):
+            self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
+
     def test_non_threshold_currency_requires_original_value_and_fx_proof(self):
         def mutate(company):
             metric = company["scale_metric"]
@@ -571,12 +594,19 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(contract, {field: protocol[field] for field in self.verifier.PINNED_PROTOCOL_FIELDS})
         self.assertEqual(self.verifier.sha256(self.verifier.json_bytes(contract)), schema["x-pinned-protocol-contract-sha256"])
 
-    def test_repository_protocol_remains_blocked_and_cli_contract_fails(self):
+    def test_repository_real_population_is_approved_and_verifies(self):
         research = ROOT / "docs" / "research" / "company-benefits"
         errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 29))
-        self.assertTrue(any("protocol status is blocked" in error for error in errors), errors[:20])
-        for name in self.verifier.PROHIBITED_POPULATION_FILES:
-            self.assertFalse(any(research.rglob(name)), name)
+        self.assertEqual([], errors)
+        self.assertEqual("approved", json.loads((research / "population-protocol.json").read_text())["status"])
+        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1071,
+                    "domestic-selected.jsonl": 1000, "international-selected.jsonl": 1000,
+                    "domestic-effective-selected.jsonl": 1000, "international-effective-selected.jsonl": 1000}
+        for name, count in expected.items():
+            self.assertEqual(count, len((research / "population" / name).read_bytes().splitlines()), name)
+        self.assertEqual(2000, len((research / "companies.jsonl").read_bytes().splitlines()))
+        self.assertEqual(0, len((research / "benefit-claims.jsonl").read_bytes().splitlines()))
+        self.assertEqual(0, len((research / "reviews.jsonl").read_bytes().splitlines()))
 
 
 if __name__ == "__main__":

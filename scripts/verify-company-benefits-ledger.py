@@ -40,10 +40,10 @@ PINNED_PROTOCOL_FIELDS = (
 )
 EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction"}
 OFFICIAL_SOURCE_TYPES = {"government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report"}
-PINNED_CONTRACT_SHA256 = "9ebc31d2267606bcd972ea7646f81b6403e566a48fcd30a96b0fc25f7efd98c7"
-PINNED_CONTRACT_VERSION = "1.0.0"
-# Real approval requires a reviewed code change adding one version/digest pair.
-APPROVED_FREEZE_ANCHORS = {}
+PINNED_CONTRACT_SHA256 = "1d218a6600e130d2f2a1e6cafab67f257dca7a0cd588ede0b14917af93443679"
+PINNED_CONTRACT_VERSION = "1.1.0"
+# Freeze approval records the user-authorized implementation scope; independent technical review remains pending.
+APPROVED_FREEZE_ANCHORS = {"1.1.0": "5eaa88152caa615dde09cc0eb1c7e47d39d8a0b4559cb0a2cd6fd803f79061ee"}
 MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
 HASH_SCHEMA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 EVENT_SCHEMA = {
@@ -485,7 +485,7 @@ def source_applies_to_company(source, company, record_id, errors):
 def validate_company(protocol, company, source_map, as_of, errors):
     company_id = company.get("company_id") or "company[missing-id]"
     validate_structure(company, load_schema("company.schema.json"), company_id, errors)
-    required(company, ("company_id", "jurisdiction", "incorporation_country", "scope", "registry_id", "legal_name", "selected_employer_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "related_company_exception", "entity_status", "sector", "scale_metric", "scale_source_precedence_rank", "source_availability", "selection_hash"), "", company_id, errors, allow_null=("financial_consolidation_parent", "ultimate_parent", "related_company_exception"))
+    required(company, ("company_id", "jurisdiction", "incorporation_country", "scope", "registry_id", "legal_name", "selected_employer_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "related_company_exception", "entity_status", "sector", "scale_metric", "scale_evidence", "employer_evidence", "scale_source_precedence_rank", "source_availability", "selection_hash"), "", company_id, errors, allow_null=("financial_consolidation_parent", "ultimate_parent", "related_company_exception"))
     scope = company.get("scope")
     jurisdiction = company.get("jurisdiction")
     incorporation = company.get("incorporation_country")
@@ -547,6 +547,45 @@ def validate_company(protocol, company, source_map, as_of, errors):
         errors.append(f"{company_id}: scale metric fiscal age exceeds 24 months")
     source_ids = metric.get("source_ids", []) if isinstance(metric.get("source_ids"), list) else []
     validate_source_use(source_map, source_ids, metric.get("type", "scale field"), company_id, errors)
+    evidence_specs = (
+        ("scale", company.get("scale_evidence"), metric.get("type"), True),
+        ("employer", company.get("employer_evidence"), "employee_evidence", False),
+    )
+    for label, evidence, supported_field, is_scale in evidence_specs:
+        if not isinstance(evidence, dict):
+            errors.append(f"{company_id}: missing {label}_evidence")
+            continue
+        source_id = evidence.get("source_id")
+        source = source_map.get(source_id)
+        validate_source_use(source_map, [source_id], supported_field, company_id, errors)
+        if is_scale and source_id not in source_ids:
+            errors.append(f"{company_id}: scale evidence source_id is not in scale_metric source_ids")
+        if evidence.get("registry_id") != company.get("registry_id"):
+            errors.append(f"{company_id}: {label} evidence registry_id does not match selected entity")
+        if evidence.get("legal_name") != company.get("legal_name"):
+            errors.append(f"{company_id}: {label} evidence legal_name does not match selected entity")
+        if evidence.get("fiscal_period_end") != metric.get("fiscal_year_end"):
+            errors.append(f"{company_id}: {label} evidence fiscal period does not match scale period")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("content_sha256", ""))):
+            errors.append(f"{company_id}: {label} evidence content hash is invalid")
+        elif evidence.get("hash_provenance") == "observed_response" and isinstance(source, dict) and evidence.get("content_sha256") != source.get("content_sha256"):
+            errors.append(f"{company_id}: {label} evidence content hash does not match observed source")
+        parsed = urlparse(str(evidence.get("url", "")))
+        source_host = urlparse(str(source.get("url", ""))).hostname if isinstance(source, dict) else None
+        if parsed.scheme != "https" or not parsed.hostname or not source_host or not (parsed.hostname == source_host or parsed.hostname.endswith("." + source_host) or source_host.endswith("." + parsed.hostname)):
+            errors.append(f"{company_id}: {label} evidence URL does not match official source")
+        retrieved = parse_timestamp(evidence.get("retrieved_at"), f"{label} evidence retrieved_at", company_id, errors)
+        filing = parse_day(evidence.get("filing_date"), f"{label} evidence filing_date", company_id, errors)
+        if retrieved and retrieved > as_of_end(as_of):
+            errors.append(f"{company_id}: {label} evidence retrieved_at is in the future")
+        if filing and filing > as_of:
+            errors.append(f"{company_id}: {label} evidence filing_date is in the future")
+        if is_scale:
+            for field, expected_value in (("metric", metric.get("type")), ("value", metric.get("value")), ("currency", metric.get("currency"))):
+                if evidence.get(field) != expected_value:
+                    errors.append(f"{company_id}: scale evidence {field} does not match scale metric")
+        elif not isinstance(evidence.get("employee_count"), int) or evidence.get("employee_count") < 1:
+            errors.append(f"{company_id}: employer evidence must show a positive employee count")
     registered = protocol.get("registered_sources", {}).get(jurisdiction, [])
     pinned_ids = {entry.get("source_id") for entry in registered if isinstance(entry, dict)}
     for source_id in source_ids:
@@ -674,6 +713,10 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
             relative = expected_paths[field][index]
             ledgers[(scope, kind)] = read_jsonl(root / relative, errors, required_file=True)
         validate_ledger_records(protocol, ledgers[(scope, "eligible")], f"{scope} eligible", source_map, as_of, errors)
+        if protocol.get("protocol_id") == "company-benefits-population-v1":
+            expected_eligible = 1350 if scope == "domestic" else 1071
+            if len(ledgers[(scope, "eligible")]) != expected_eligible:
+                errors.append(f"{scope} eligible must contain exactly {expected_eligible} verified records")
         for kind in ("selected", "initial", "current"):
             validate_ledger_records(protocol, ledgers[(scope, kind)], f"{scope} {kind}", source_map, as_of, errors, exact_count=1000)
         if ledgers[(scope, "selected")] != ledgers[(scope, "eligible")][:1000]:
@@ -682,6 +725,24 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
         initial_path = root / expected_paths["initial_effective_ledgers"][index]
         if selected_path.is_file() and initial_path.is_file() and selected_path.read_bytes() != initial_path.read_bytes():
             errors.append(f"{scope} initial effective ledger must be byte-identical to selected")
+
+    bindings = read_jsonl(root / "population/source-artifact-bindings.jsonl", errors, required_file=True)
+    binding_map = {(item.get("company_id"), item.get("kind")): item for item in bindings}
+    expected_binding_keys = set()
+    for scope in ("domestic", "international"):
+        for company in ledgers[(scope, "eligible")]:
+            for kind in ("scale", "employer"):
+                key = (company.get("company_id"), kind)
+                expected_binding_keys.add(key)
+                evidence = company.get(f"{kind}_evidence", {})
+                expected = {"company_id": company.get("company_id"), "kind": kind, "source_id": evidence.get("source_id"),
+                            "url": evidence.get("url"), "locator": evidence.get("locator"),
+                            "content_sha256": evidence.get("content_sha256"), "registry_id": evidence.get("registry_id"),
+                            "legal_name": evidence.get("legal_name"), "fiscal_period_end": evidence.get("fiscal_period_end")}
+                if binding_map.get(key) != expected:
+                    errors.append(f"{company.get('company_id')}: {kind} evidence does not match frozen source-artifact binding")
+    if set(binding_map) != expected_binding_keys or len(bindings) != len(binding_map):
+        errors.append("source-artifact bindings must cover every eligible company and evidence kind exactly once")
 
     event_path = root / "population/effective-selection-events.jsonl"
     events = read_jsonl(event_path, errors, required_file=True)
@@ -750,7 +811,8 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
     effective_required = ["population/domestic-effective-selected.jsonl", "population/international-effective-selected.jsonl", "population/effective-selection-events.jsonl"]
     freeze_required = [
         "population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
-        "population/domestic-selected.jsonl", "population/international-selected.jsonl",
+        "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json",
+        "population/source-artifact-bindings.jsonl",
     ]
     protocol_approval = parse_timestamp(protocol.get("approval", {}).get("approved_at"), "approved_at", "protocol", errors)
     freeze_manifest = validate_manifest(root / "population/freeze-manifest.json", freeze_required, root, errors, "freeze", as_of, protocol_approval)
@@ -1022,6 +1084,26 @@ def validate_ranking_language(root, errors):
             errors.append(f"{path}: prohibited ranking language")
 
 
+def validate_coverage_gaps(root, errors):
+    path = root / "population" / "international-coverage-gaps.json"
+    value = read_json(path, errors) if path.is_file() else None
+    if not isinstance(value, dict):
+        errors.append("missing structured international coverage-gap artifact")
+        return
+    selected = value.get("selected_population", {})
+    if value.get("panel") != PANEL or selected != {"jurisdiction": "US", "count": 1000, "source": "SEC filers"}:
+        errors.append("international coverage-gap artifact must identify the fixed panel and US-only selected population")
+    gaps = value.get("coverage_gaps")
+    expected = [country for country in PANEL if country != "US"]
+    if not isinstance(gaps, list) or [item.get("jurisdiction") for item in gaps if isinstance(item, dict)] != expected:
+        errors.append("international coverage-gap artifact must enumerate all 17 uncovered jurisdictions in panel order")
+    elif any(item != {"jurisdiction": country, "status": "not_materialized", "selected_count": 0} for item, country in zip(gaps, expected)):
+        errors.append("international coverage-gap artifact contains an invalid gap record")
+    statement = str(value.get("representativeness", "")).casefold()
+    if "not globally representative" not in statement or "not a source rank" not in statement:
+        errors.append("international coverage-gap artifact must disclaim global representativeness and source rank")
+
+
 def verify_workspace(root, as_of=None, evidence_root=None, approved_freeze_anchors=None):
     root = Path(root)
     as_of = as_of or date.today()
@@ -1056,6 +1138,7 @@ def verify_workspace(root, as_of=None, evidence_root=None, approved_freeze_ancho
         errors.append(str(exc))
         return errors
     projected = validate_population(root, protocol, source_map, as_of, errors, approved_freeze_anchors)
+    validate_coverage_gaps(root, errors)
 
     companies = read_jsonl(find_file(root, "companies.jsonl"), errors, required_file=True)
     effective = projected.get("domestic", []) + projected.get("international", [])
