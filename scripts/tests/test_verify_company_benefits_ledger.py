@@ -72,30 +72,51 @@ class VerifierTests(unittest.TestCase):
         self.assertTrue(any("not approved" in error for error in errors), errors)
 
     def test_repository_local_external_receipt_does_not_authorize_freeze(self):
-        receipt_path = self.root / "freeze-anchor-receipt.json"
-        self.fixture.write_json("freeze-anchor-receipt.json", {
+        receipt_fields = {
             "schema_version": "1",
             "protocol_version": self.fixture.protocol["version"],
             "freeze_manifest_sha256": next(iter(self.approved_freeze_anchors.values())),
             "review_status": "approved",
             "issued_at": "2026-10-21T00:00:00Z",
-        })
+        }
+        workspace_receipt = self.root / "freeze-anchor-receipt.json"
+        self.fixture.write_json("freeze-anchor-receipt.json", receipt_fields)
         errors = self.verifier.verify_workspace(
             self.root,
             as_of=date(2026, 10, 29),
-            freeze_anchor_receipt=receipt_path,
+            freeze_anchor_receipt=workspace_receipt,
         )
         self.assertTrue(any("must be outside" in error for error in errors), errors[:20])
 
         with tempfile.TemporaryDirectory(dir=self.root.parent) as external_dir:
             outside_alias = Path(external_dir) / "receipt-alias.json"
-            outside_alias.symlink_to(receipt_path)
+            outside_alias.symlink_to(workspace_receipt)
             errors = self.verifier.verify_workspace(
                 self.root,
                 as_of=date(2026, 10, 29),
                 freeze_anchor_receipt=outside_alias,
             )
         self.assertTrue(any("must be outside" in error for error in errors), errors[:20])
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as repository_dir:
+            repository_receipt = Path(repository_dir) / "receipt.json"
+            repository_receipt.write_text(json.dumps(receipt_fields), encoding="utf-8")
+            errors = self.verifier.verify_workspace(
+                self.root,
+                as_of=date(2026, 10, 29),
+                freeze_anchor_receipt=repository_receipt,
+            )
+            self.assertTrue(any("repository" in error for error in errors), errors[:20])
+
+            with tempfile.TemporaryDirectory(dir=self.root.parent) as external_dir:
+                outside_alias = Path(external_dir) / "repository-receipt-alias.json"
+                outside_alias.symlink_to(repository_receipt)
+                errors = self.verifier.verify_workspace(
+                    self.root,
+                    as_of=date(2026, 10, 29),
+                    freeze_anchor_receipt=outside_alias,
+                )
+            self.assertTrue(any("repository" in error for error in errors), errors[:20])
 
     def test_self_consistent_frozen_scale_drift_fails_against_old_anchor(self):
         old_anchor = self.fixture.approved_freeze_anchors()

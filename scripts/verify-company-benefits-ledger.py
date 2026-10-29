@@ -14,6 +14,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PANEL = ["US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]
 CLAIM_STATUSES = {"confirmed", "limited", "past", "name_only", "unknown", "conflict"}
 EVIDENCED_STATUSES = {"confirmed", "limited", "past", "name_only", "conflict"}
@@ -1160,10 +1161,14 @@ def external_freeze_anchor(path, protocol, errors, workspace_root=None):
     receipt_path = Path(path)
     if workspace_root is not None:
         workspace = Path(workspace_root).resolve()
+        repository = REPOSITORY_ROOT.resolve()
         lexical_path = Path(os.path.abspath(receipt_path))
         resolved_path = receipt_path.resolve()
         if lexical_path.is_relative_to(workspace) or resolved_path.is_relative_to(workspace):
             errors.append("external freeze-anchor receipt must be outside the verified workspace")
+            return {}
+        if lexical_path.is_relative_to(repository) or resolved_path.is_relative_to(repository):
+            errors.append("external freeze-anchor receipt must be outside the repository")
             return {}
     receipt = read_json(receipt_path, errors)
     required_fields = {"schema_version", "protocol_version", "freeze_manifest_sha256", "review_status", "issued_at"}
