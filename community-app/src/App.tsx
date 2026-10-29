@@ -10,6 +10,7 @@ import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
 import { CommunityActions } from './components/CommunityActions'
 
+const BenefitsMethodologyPage = lazy(() => import('./pages/BenefitsMethodologyPage').then(m => ({ default: m.BenefitsMethodologyPage })))
 const BenefitsExplorerPage = lazy(() => import('./pages/BenefitsExplorerPage').then(m => ({ default: m.BenefitsExplorerPage })))
 
 const PostDetailPage = lazy(async () => {
@@ -54,6 +55,7 @@ function LazyRouteFallback({ children }: { children: React.ReactNode }) {
 export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, authClient, onAuthCallbackNavigate }: AppProps) {
   const auth = useAuth()
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
+  if (benefitsRoute(pathname) === 'methodology') return <Suspense fallback={<LazyRouteFallback>조사 기준을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsMethodologyPage /></Suspense>
   if (benefitsRoute(pathname)) return <Suspense fallback={<LazyRouteFallback>복지 탐색기를 준비하고 있습니다.</LazyRouteFallback>}><BenefitsExplorerPage route={benefitsRoute(pathname)!} search={search} /></Suspense>
   if (auth.loading) return <LazyRouteFallback>로그인 상태를 확인하고 있습니다.</LazyRouteFallback>
   if (normalizedPathname === '/community') {
