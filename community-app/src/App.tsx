@@ -1,3 +1,4 @@
+import { benefitsRoute } from './benefitsRoutes'
 import { lazy, Suspense } from 'react'
 import { resolveCommunityRoute } from './routes'
 import { getCommunityRepository, type CommunityRepository } from './data/communityRepository'
@@ -8,6 +9,9 @@ import { getUploadRepository, type UploadRepository } from './data/uploadReposit
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
 import { CommunityActions } from './components/CommunityActions'
+
+const BenefitsMethodologyPage = lazy(() => import('./pages/BenefitsMethodologyPage').then(m => ({ default: m.BenefitsMethodologyPage })))
+const BenefitsExplorerPage = lazy(() => import('./pages/BenefitsExplorerPage').then(m => ({ default: m.BenefitsExplorerPage })))
 
 const PostDetailPage = lazy(async () => {
   const module = await import('./pages/PostDetailPage')
@@ -51,6 +55,8 @@ function LazyRouteFallback({ children }: { children: React.ReactNode }) {
 export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, authClient, onAuthCallbackNavigate }: AppProps) {
   const auth = useAuth()
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
+  if (benefitsRoute(pathname) === 'methodology') return <Suspense fallback={<LazyRouteFallback>조사 기준을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsMethodologyPage search={search} /></Suspense>
+  if (benefitsRoute(pathname)) return <Suspense fallback={<LazyRouteFallback>복지 탐색기를 준비하고 있습니다.</LazyRouteFallback>}><BenefitsExplorerPage route={benefitsRoute(pathname)!} search={search} /></Suspense>
   if (auth.loading) return <LazyRouteFallback>로그인 상태를 확인하고 있습니다.</LazyRouteFallback>
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
@@ -99,21 +105,4 @@ export function App({ pathname = window.location.pathname, search = window.locat
   )
 }
 
-export function ConfigurationErrorScreen() {
-  return (
-    <div className="community-page error">
-      <AppHeader />
-      <main>
-        <section className="community-hero" role="alert" aria-labelledby="configuration-error-title">
-          <div>
-            <p className="community-kicker">COMMUNITY · CONFIGURATION</p>
-            <h1 id="configuration-error-title">커뮤니티 설정을 확인해 주세요</h1>
-          </div>
-          <p>현재 커뮤니티 연결 정보를 불러올 수 없습니다. 운영자에게 알려 주세요.</p>
-        </section>
-        <a className="footer-link" href="/">기존 블로그로 돌아가기</a>
-      </main>
-      <AppFooter />
-    </div>
-  )
-}
+export { ConfigurationErrorScreen } from './ConfigurationErrorScreen'

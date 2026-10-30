@@ -1,0 +1,98 @@
+import {
+  categories,
+  categoryLabels,
+  statuses,
+  type Company,
+  type Category,
+} from '../../types/benefits'
+export function BenefitsHeatmapTable({
+  companies,
+  selectedCategories,
+  compare,
+  toggle,
+  link,
+}: {
+  companies: Company[]
+  selectedCategories: Category[]
+  compare: string[]
+  toggle: (id: string) => void
+  link: (id: string, category?: Category) => string
+}) {
+  const visible = selectedCategories.length ? selectedCategories : categories
+  return (
+    <>
+      <p id="heatmap-scroll-hint">
+        가로로 스크롤하여 모든 분야를 확인하세요. 셀을 선택하면 적용 범위와
+        근거를 엽니다.
+      </p>
+      <div
+        className="benefits-table-scroll"
+        role="region"
+        aria-label="복지 히트맵 가로 스크롤"
+        tabIndex={0}
+        aria-describedby="heatmap-scroll-hint"
+      >
+        <table className="benefits-heatmap">
+          <caption>기업 복지 공개 상태</caption>
+          <thead>
+            <tr>
+              <th scope="col">기업 / 비교 (최대 4개)</th>
+              {visible.map((c) => (
+                <th scope="col" key={c}>
+                  {categoryLabels[c]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {companies.map((company) => (
+              <tr key={company.company_id}>
+                <th scope="row">
+                  <a href={link(company.company_id)}>{company.display_name}</a>
+                  <small>
+                    {company.headquarters_country} · {company.industry}
+                  </small>
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label={`비교 ${company.display_name}`}
+                      checked={compare.includes(company.company_id)}
+                      disabled={
+                        !compare.includes(company.company_id) &&
+                        compare.length >= 4
+                      }
+                      onChange={() => toggle(company.company_id)}
+                    />
+                    비교
+                  </label>
+                </th>
+                {visible.map((c) => {
+                  const s = company.category_summaries[c]
+                  return (
+                    <td key={c}>
+                      <a
+                        className={`benefits-status status-${statuses.indexOf(s.status)}`}
+                        href={link(company.company_id, c)}
+                        aria-label={`${company.display_name} ${categoryLabels[c]} ${s.status}, 확인 ${s.confirmed_count}건, ${s.limited ? '범위 제한' : '적용 범위 상세 확인'}, 검증 ${s.last_verified_at}, 근거 coverage ${Math.round(s.coverage * 100)}%`}
+                      >
+                        <strong>{s.status}</strong>
+                        <span>
+                          확인 {s.confirmed_count}건 · 근거{' '}
+                          {Math.round(s.coverage * 100)}%
+                        </span>
+                        <small>
+                          {s.limited ? '범위 제한 · ' : ''}
+                          {s.last_verified_at}
+                        </small>
+                      </a>
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}

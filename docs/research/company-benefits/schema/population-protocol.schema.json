@@ -1,0 +1,975 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "population-protocol.schema.json",
+  "title": "Company benefits population protocol",
+  "x-pinned-protocol-contract-sha256": "5d097133dd59dba3a93688c57236529924c67c6bf7c2416961db3834936a9863",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "country_panel": {
+      "const": [
+        "US",
+        "CA",
+        "MX",
+        "BR",
+        "AR",
+        "GB",
+        "FR",
+        "DE",
+        "IT",
+        "TR",
+        "RU",
+        "AU",
+        "CN",
+        "IN",
+        "ID",
+        "JP",
+        "SA",
+        "ZA"
+      ]
+    },
+    "source_registration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "endpoint"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approved_by",
+        "approved_at"
+      ],
+      "properties": {
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  },
+  "required": [
+    "protocol_id",
+    "version",
+    "status",
+    "approval",
+    "cutoff_at",
+    "purpose",
+    "non_ranking_statement",
+    "scopes",
+    "registered_sources",
+    "classification",
+    "thresholds",
+    "currency_conversion",
+    "source_precedence",
+    "canonical_selection",
+    "immutable_model",
+    "coverage_gap",
+    "blockers",
+    "forbidden_while_blocked"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "protocol_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "blocked",
+        "approved",
+        "superseded"
+      ]
+    },
+    "approval": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/approval"
+        }
+      ]
+    },
+    "cutoff_at": {
+      "const": "2026-10-29T23:59:59+09:00"
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1
+    },
+    "non_ranking_statement": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scopes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domestic",
+        "international"
+      ],
+      "properties": {
+        "domestic": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "jurisdictions",
+            "target_count",
+            "candidate_source_ids"
+          ],
+          "properties": {
+            "jurisdictions": {
+              "const": [
+                "KR"
+              ]
+            },
+            "target_count": {
+              "const": 1000
+            },
+            "candidate_source_ids": {
+              "const": [
+                "kr-dart-corporation-registry",
+                "kr-opendart-financial-bulk",
+                "kr-opendart-employee-bulk"
+              ]
+            }
+          }
+        },
+        "international": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "excluded_jurisdiction",
+            "target_count",
+            "country_panel",
+            "candidate_source_ids_by_jurisdiction"
+          ],
+          "properties": {
+            "excluded_jurisdiction": {
+              "const": "KR"
+            },
+            "target_count": {
+              "const": 1000
+            },
+            "country_panel": {
+              "$ref": "#/$defs/country_panel"
+            },
+            "candidate_source_ids_by_jurisdiction": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "US",
+                "CA",
+                "MX",
+                "BR",
+                "AR",
+                "GB",
+                "FR",
+                "DE",
+                "IT",
+                "TR",
+                "RU",
+                "AU",
+                "CN",
+                "IN",
+                "ID",
+                "JP",
+                "SA",
+                "ZA"
+              ],
+              "properties": {
+                "US": {
+                  "type": "array",
+                  "const": [
+                    "us-sec-quarterly-financials",
+                    "us-sec-filing-employee"
+                  ]
+                },
+                "CA": {
+                  "type": "array",
+                  "const": [
+                    "ca-sedar-data-distribution"
+                  ]
+                },
+                "MX": {
+                  "type": "array",
+                  "const": [
+                    "mx-cnbv-xbrl"
+                  ]
+                },
+                "BR": {
+                  "type": "array",
+                  "const": [
+                    "br-cvm-open-company"
+                  ]
+                },
+                "AR": {
+                  "type": "array",
+                  "const": [
+                    "ar-cnv-companies"
+                  ]
+                },
+                "GB": {
+                  "type": "array",
+                  "const": [
+                    "gb-companies-house-products"
+                  ]
+                },
+                "FR": {
+                  "type": "array",
+                  "const": [
+                    "fr-inpi-rne-api"
+                  ]
+                },
+                "DE": {
+                  "type": "array",
+                  "const": [
+                    "de-unternehmensregister"
+                  ]
+                },
+                "IT": {
+                  "type": "array",
+                  "const": [
+                    "it-consob-listed"
+                  ]
+                },
+                "TR": {
+                  "type": "array",
+                  "const": [
+                    "tr-kap-companies"
+                  ]
+                },
+                "RU": {
+                  "type": "array",
+                  "const": [
+                    "ru-fns-bfo"
+                  ]
+                },
+                "AU": {
+                  "type": "array",
+                  "const": [
+                    "au-asic-companies"
+                  ]
+                },
+                "CN": {
+                  "type": "array",
+                  "const": [
+                    "cn-sse-xbrl"
+                  ]
+                },
+                "IN": {
+                  "type": "array",
+                  "const": [
+                    "in-company-master-data"
+                  ]
+                },
+                "ID": {
+                  "type": "array",
+                  "const": [
+                    "id-idx-financial-reports"
+                  ]
+                },
+                "JP": {
+                  "type": "array",
+                  "const": [
+                    "jp-edinet-api"
+                  ]
+                },
+                "SA": {
+                  "type": "array",
+                  "const": [
+                    "sa-saudi-exchange-issuers"
+                  ]
+                },
+                "ZA": {
+                  "type": "array",
+                  "const": [
+                    "za-cipc-disclosures",
+                    "za-jse-financials"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "registered_sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "KR",
+        "US",
+        "CA",
+        "MX",
+        "BR",
+        "AR",
+        "GB",
+        "FR",
+        "DE",
+        "IT",
+        "TR",
+        "RU",
+        "AU",
+        "CN",
+        "IN",
+        "ID",
+        "JP",
+        "SA",
+        "ZA"
+      ],
+      "properties": {
+        "KR": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "kr-dart-corporation-registry",
+              "endpoint": "https://dart.fss.or.kr/dsae001/downloadExcel.do"
+            },
+            {
+              "source_id": "kr-opendart-financial-bulk",
+              "endpoint": "https://opendart.fss.or.kr/disclosureinfo/fnltt/dwld/main.do"
+            },
+            {
+              "source_id": "kr-opendart-employee-bulk",
+              "endpoint": "https://opendart.fss.or.kr/disclosureinfo/biz/ExcelDownload.do"
+            }
+          ]
+        },
+        "US": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "us-sec-quarterly-financials",
+              "endpoint": "https://www.sec.gov/files/dera/data/financial-statement-data-sets.html"
+            },
+            {
+              "source_id": "us-sec-filing-employee",
+              "endpoint": "https://www.sec.gov/Archives/edgar/data/"
+            }
+          ]
+        },
+        "CA": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "ca-sedar-data-distribution",
+              "endpoint": "https://systems.securities-administrators.ca/onlinehelp/faqs/general-faqs-about-filings/"
+            }
+          ]
+        },
+        "MX": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "mx-cnbv-xbrl",
+              "endpoint": "https://xbrl.cnbv.gob.mx/visorXbrl.html?v=1.0.3"
+            }
+          ]
+        },
+        "BR": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "br-cvm-open-company",
+              "endpoint": "https://dados.cvm.gov.br/dataset/cia_aberta-cad"
+            }
+          ]
+        },
+        "AR": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "ar-cnv-companies",
+              "endpoint": "https://www.cnv.gov.ar/SitioWeb/Empresas"
+            }
+          ]
+        },
+        "GB": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "gb-companies-house-products",
+              "endpoint": "https://www.gov.uk/guidance/companies-house-data-products"
+            }
+          ]
+        },
+        "FR": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "fr-inpi-rne-api",
+              "endpoint": "https://data.inpi.fr/content/editorial/Acces_API_Entreprises"
+            }
+          ]
+        },
+        "DE": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "de-unternehmensregister",
+              "endpoint": "https://www.unternehmensregister.de/de/howto/search"
+            }
+          ]
+        },
+        "IT": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "it-consob-listed",
+              "endpoint": "https://www.consob.it/web/area-pubblica/quotate"
+            }
+          ]
+        },
+        "TR": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "tr-kap-companies",
+              "endpoint": "https://www.kap.org.tr/en/sirketler/ALL"
+            }
+          ]
+        },
+        "RU": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "ru-fns-bfo",
+              "endpoint": "https://bo.nalog.gov.ru/about"
+            }
+          ]
+        },
+        "AU": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "au-asic-companies",
+              "endpoint": "https://data.gov.au/data/dataset/asic-companies"
+            }
+          ]
+        },
+        "CN": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "cn-sse-xbrl",
+              "endpoint": "https://english.sse.com.cn/markets/dataservice/xbrl/companyinfo/"
+            }
+          ]
+        },
+        "IN": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "in-company-master-data",
+              "endpoint": "https://www.data.gov.in/catalog/company-master-data"
+            }
+          ]
+        },
+        "ID": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "id-idx-financial-reports",
+              "endpoint": "https://idx.co.id/en/listed-companies/financial-statements-and-annual-report"
+            }
+          ]
+        },
+        "JP": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "jp-edinet-api",
+              "endpoint": "https://disclosure2dl.edinet-fsa.go.jp/guide/static/disclosure/download/ESE140206.pdf"
+            }
+          ]
+        },
+        "SA": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "sa-saudi-exchange-issuers",
+              "endpoint": "https://saudiexchange.sa/wps/portal/tadawul/market-participants/issuers/issuers-directory?locale=en"
+            }
+          ]
+        },
+        "ZA": {
+          "type": "array",
+          "const": [
+            {
+              "source_id": "za-cipc-disclosures",
+              "endpoint": "https://www.cipc.co.za/?page_id=6125"
+            },
+            {
+              "source_id": "za-jse-financials",
+              "endpoint": "https://marketdataconnect.jse.co.za/pages/Data-Shop"
+            }
+          ]
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection_unit",
+        "domestic_rule",
+        "international_rule",
+        "separate_roles",
+        "related_entity_rule"
+      ],
+      "properties": {
+        "selection_unit": {
+          "const": "selected_reporting_legal_entity"
+        },
+        "domestic_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "international_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "separate_roles": {
+          "const": [
+            "selected_reporting_legal_entity",
+            "financial_consolidation_parent",
+            "ultimate_parent",
+            "benefit_policy_owner"
+          ]
+        },
+        "related_entity_rule": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domestic_non_financial",
+        "international_non_financial",
+        "domestic_financial",
+        "international_financial",
+        "maximum_fiscal_age_months",
+        "public_sector_rule"
+      ],
+      "properties": {
+        "domestic_non_financial": {
+          "type": "object",
+          "const": {
+            "metric": "revenue",
+            "minimum": 100000000000,
+            "currency": "KRW"
+          }
+        },
+        "international_non_financial": {
+          "type": "object",
+          "const": {
+            "metric": "revenue",
+            "minimum": 1000000000,
+            "currency": "USD"
+          }
+        },
+        "domestic_financial": {
+          "type": "object",
+          "const": {
+            "metric": "total_assets",
+            "minimum": 10000000000000,
+            "currency": "KRW"
+          }
+        },
+        "international_financial": {
+          "type": "object",
+          "const": {
+            "metric": "total_assets",
+            "minimum": 10000000000,
+            "currency": "USD"
+          }
+        },
+        "maximum_fiscal_age_months": {
+          "const": 24
+        },
+        "public_sector_rule": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "currency_conversion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "source_owner",
+        "indicator",
+        "url",
+        "rule"
+      ],
+      "properties": {
+        "source_id": {
+          "const": "int-world-bank-fx"
+        },
+        "source_owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "indicator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "rule": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "source_precedence": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "canonical_selection": {
+      "type": "object",
+      "required": [
+        "seed",
+        "required_fields",
+        "jurisdiction_format",
+        "normalization",
+        "serialization",
+        "hash",
+        "missing_value_rule",
+        "order",
+        "exclusion_rule",
+        "replacement_rule",
+        "next_hash_rule",
+        "replacement_event_required_fields",
+        "exclusion_reason_enum"
+      ]
+    },
+    "immutable_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eligible_ledgers",
+        "selected_ledgers",
+        "initial_effective_ledgers",
+        "effective_ledgers",
+        "event_ledger",
+        "freeze_manifest",
+        "effective_manifest",
+        "freeze_manifest_artifacts",
+        "effective_manifest_artifacts",
+        "effective_manifest_freeze_reference",
+        "state_rule"
+      ],
+      "properties": {
+        "eligible_ledgers": {
+          "const": [
+            "population/domestic-eligible.jsonl",
+            "population/international-eligible.jsonl"
+          ]
+        },
+        "selected_ledgers": {
+          "const": [
+            "population/domestic-selected.jsonl",
+            "population/international-selected.jsonl"
+          ]
+        },
+        "effective_ledgers": {
+          "const": [
+            "population/domestic-effective-selected.jsonl",
+            "population/international-effective-selected.jsonl"
+          ]
+        },
+        "event_ledger": {
+          "const": "population/effective-selection-events.jsonl"
+        },
+        "freeze_manifest": {
+          "const": "population/freeze-manifest.json"
+        },
+        "effective_manifest": {
+          "const": "population/effective-selection-manifest.json"
+        },
+        "freeze_manifest_artifacts": {
+          "const": [
+            "population-protocol.json",
+            "population/domestic-eligible.jsonl",
+            "population/international-eligible.jsonl",
+            "population/domestic-selected.jsonl",
+            "population/international-selected.jsonl",
+            "population/international-coverage-gaps.json",
+            "population/source-artifact-bindings.jsonl",
+            "population/source-artifacts.jsonl",
+            "population/independent-sec-workforce-reviews.jsonl",
+            "population/acquisition-audit-manifest.json"
+          ]
+        },
+        "effective_manifest_artifacts": {
+          "const": [
+            "population/domestic-effective-selected.jsonl",
+            "population/international-effective-selected.jsonl",
+            "population/effective-selection-events.jsonl"
+          ]
+        },
+        "effective_manifest_freeze_reference": {
+          "const": "freeze_manifest_sha256"
+        },
+        "state_rule": {
+          "const": "These files are prohibited while status is blocked. After lawful acquisition and validation, selected ledgers are immutable; effective ledgers are deterministic projections of selected ledgers plus append-only events."
+        },
+        "initial_effective_ledgers": {
+          "const": [
+            "population/domestic-initial-effective-selected.jsonl",
+            "population/international-initial-effective-selected.jsonl"
+          ]
+        }
+      }
+    },
+    "coverage_gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "KR",
+        "US",
+        "CA",
+        "MX",
+        "BR",
+        "AR",
+        "GB",
+        "FR",
+        "DE",
+        "IT",
+        "TR",
+        "RU",
+        "AU",
+        "CN",
+        "IN",
+        "ID",
+        "JP",
+        "SA",
+        "ZA"
+      ],
+      "properties": {
+        "KR": {
+          "type": "string",
+          "minLength": 1
+        },
+        "US": {
+          "type": "string",
+          "minLength": 1
+        },
+        "CA": {
+          "type": "string",
+          "minLength": 1
+        },
+        "MX": {
+          "type": "string",
+          "minLength": 1
+        },
+        "BR": {
+          "type": "string",
+          "minLength": 1
+        },
+        "AR": {
+          "type": "string",
+          "minLength": 1
+        },
+        "GB": {
+          "type": "string",
+          "minLength": 1
+        },
+        "FR": {
+          "type": "string",
+          "minLength": 1
+        },
+        "DE": {
+          "type": "string",
+          "minLength": 1
+        },
+        "IT": {
+          "type": "string",
+          "minLength": 1
+        },
+        "TR": {
+          "type": "string",
+          "minLength": 1
+        },
+        "RU": {
+          "type": "string",
+          "minLength": 1
+        },
+        "AU": {
+          "type": "string",
+          "minLength": 1
+        },
+        "CN": {
+          "type": "string",
+          "minLength": 1
+        },
+        "IN": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ID": {
+          "type": "string",
+          "minLength": 1
+        },
+        "JP": {
+          "type": "string",
+          "minLength": 1
+        },
+        "SA": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ZA": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "gate",
+          "requirement",
+          "jurisdictions"
+        ],
+        "properties": {
+          "gate": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requirement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "jurisdictions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "enum": [
+                "KR",
+                "US",
+                "CA",
+                "MX",
+                "BR",
+                "AR",
+                "GB",
+                "FR",
+                "DE",
+                "IT",
+                "TR",
+                "RU",
+                "AU",
+                "CN",
+                "IN",
+                "ID",
+                "JP",
+                "SA",
+                "ZA"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "forbidden_while_blocked": {
+      "type": "array",
+      "const": [
+        "population/domestic-eligible.jsonl",
+        "population/international-eligible.jsonl",
+        "population/domestic-selected.jsonl",
+        "population/international-selected.jsonl",
+        "population/domestic-initial-effective-selected.jsonl",
+        "population/international-initial-effective-selected.jsonl",
+        "population/freeze-manifest.json",
+        "population/domestic-effective-selected.jsonl",
+        "population/international-effective-selected.jsonl",
+        "population/effective-selection-events.jsonl",
+        "population/effective-selection-manifest.json"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "approved"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "approval": {
+            "$ref": "#/$defs/approval"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "draft",
+              "blocked"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "approval": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

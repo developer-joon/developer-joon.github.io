@@ -1,0 +1,730 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company.schema.json",
+  "title": "Company selection record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "company_id",
+    "jurisdiction",
+    "incorporation_country",
+    "scope",
+    "registry_id",
+    "legal_name",
+    "selected_reporting_legal_entity",
+    "registered_head_office_country",
+    "financial_consolidation_parent",
+    "ultimate_parent",
+    "benefit_policy_owner",
+    "related_company_exception",
+    "entity_status",
+    "sector",
+    "scale_metric",
+    "scale_evidence",
+    "employer_evidence",
+    "scale_source_precedence_rank",
+    "source_availability",
+    "selection_hash",
+    "employment_evidence_scope",
+    "employment_boundary_note"
+  ],
+  "properties": {
+    "company_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "jurisdiction": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "scope": {
+      "enum": [
+        "domestic",
+        "international"
+      ]
+    },
+    "registry_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "legal_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "registered_head_office_country": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "financial_consolidation_parent": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "ultimate_parent": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "benefit_policy_owner": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "entity_status": {
+      "const": "active"
+    },
+    "sector": {
+      "enum": [
+        "financial",
+        "non_financial"
+      ]
+    },
+    "scale_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "value",
+        "currency",
+        "original_value",
+        "original_currency",
+        "conversion",
+        "fiscal_year_end",
+        "financial_scope",
+        "source_ids"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "revenue",
+            "total_assets"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "band": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fiscal_year_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "financial_scope": {
+          "enum": [
+            "consolidated",
+            "standalone"
+          ]
+        },
+        "source_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "original_value": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "original_currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "conversion": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "rate",
+                "source_id",
+                "year",
+                "converted_value"
+              ],
+              "properties": {
+                "rate": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "source_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "year": {
+                  "type": "integer",
+                  "minimum": 2000
+                },
+                "converted_value": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "scale_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "url",
+        "locator",
+        "content_sha256",
+        "hash_provenance",
+        "retrieved_at",
+        "filing_date",
+        "registry_id",
+        "legal_name",
+        "fiscal_period_end",
+        "metric",
+        "value",
+        "currency"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 1000
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hash_provenance": {
+          "enum": [
+            "observed_response",
+            "retained_source_artifact"
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "filing_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "registry_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "legal_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "fiscal_period_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "metric": {
+          "enum": [
+            "revenue",
+            "total_assets"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "accepted_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "accession": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "employer_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "url",
+        "locator",
+        "content_sha256",
+        "hash_provenance",
+        "retrieved_at",
+        "filing_date",
+        "registry_id",
+        "legal_name",
+        "fiscal_period_end",
+        "employee_count",
+        "quote"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 1000
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hash_provenance": {
+          "enum": [
+            "observed_response",
+            "retained_source_artifact"
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "filing_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "registry_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "legal_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "fiscal_period_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "employee_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "accepted_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "accession": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "date_basis": {
+          "enum": [
+            "explicit_quote_date",
+            "undated_current"
+          ]
+        }
+      }
+    },
+    "scale_source_precedence_rank": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "source_availability": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "precedence_rank",
+          "status",
+          "reason",
+          "checked_source_ids"
+        ],
+        "properties": {
+          "precedence_rank": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "status": {
+            "const": "unavailable"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "checked_source_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "selection_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "incorporation_country": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "related_company_exception": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "separate_scale_source_ids",
+            "entity_specific_benefit_source_ids",
+            "no_inheritance"
+          ],
+          "properties": {
+            "separate_scale_source_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            },
+            "entity_specific_benefit_source_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            },
+            "no_inheritance": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "selected_reporting_legal_entity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "employment_evidence_scope": {
+      "enum": [
+        "filing_entity_total",
+        "filing_entity_total_or_stated_workforce"
+      ]
+    },
+    "employment_boundary_note": {
+      "type": "string",
+      "minLength": 20
+    },
+    "incorporation_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "url",
+        "locator",
+        "content_sha256",
+        "hash_provenance",
+        "retrieved_at",
+        "filing_date",
+        "accepted_at",
+        "accession",
+        "registry_id",
+        "legal_name",
+        "quote",
+        "official_field",
+        "normalized_official_code",
+        "normalized_official_value"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hash_provenance": {
+          "enum": [
+            "observed_response",
+            "retained_source_artifact"
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "filing_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "accepted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "accession": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registry_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "legal_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "official_field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "normalized_official_code": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "normalized_official_value": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "head_office_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "url",
+        "locator",
+        "content_sha256",
+        "hash_provenance",
+        "retrieved_at",
+        "filing_date",
+        "accepted_at",
+        "accession",
+        "registry_id",
+        "legal_name",
+        "quote",
+        "official_field",
+        "normalized_official_code",
+        "normalized_official_value"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hash_provenance": {
+          "enum": [
+            "observed_response",
+            "retained_source_artifact"
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "filing_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "accepted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "accession": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registry_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "legal_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "official_field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "normalized_official_code": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "normalized_official_value": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "const": "international"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "incorporation_evidence",
+          "head_office_evidence"
+        ],
+        "properties": {
+          "employer_evidence": {
+            "required": [
+              "evidence_date",
+              "date_basis"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

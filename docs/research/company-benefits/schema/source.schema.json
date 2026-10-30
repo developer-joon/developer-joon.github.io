@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source.schema.json",
+  "title": "Audited source registry record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_id",
+    "title",
+    "owner",
+    "source_type",
+    "jurisdiction",
+    "url",
+    "locator",
+    "supporting_quote",
+    "content_sha256",
+    "hash_provenance",
+    "retrieved_at",
+    "access_model",
+    "authentication",
+    "terms_url",
+    "reuse_decision",
+    "decisions",
+    "supported_fields",
+    "evidence_eligibility",
+    "checked_at",
+    "http_verification",
+    "current_blocker"
+  ],
+  "properties": {
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_type": {
+      "enum": [
+        "government_register",
+        "regulator_filing",
+        "public_enterprise_disclosure",
+        "exchange_filing",
+        "official_company_report",
+        "commercial",
+        "editorial",
+        "search_result"
+      ]
+    },
+    "jurisdiction": {
+      "type": "string",
+      "pattern": "^(INT|[A-Z]{2})$"
+    },
+    "url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "access_model": {
+      "enum": [
+        "public_keyless",
+        "public_api_key",
+        "account_required",
+        "fee_required",
+        "contract_required",
+        "blocked",
+        "discovery_only"
+      ]
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api_key",
+        "login",
+        "fee"
+      ],
+      "properties": {
+        "api_key": {
+          "type": "boolean"
+        },
+        "login": {
+          "type": "boolean"
+        },
+        "fee": {
+          "type": "boolean"
+        }
+      }
+    },
+    "terms_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "reuse_decision": {
+      "enum": [
+        "allowed",
+        "allowed_with_attribution",
+        "unknown",
+        "restricted",
+        "contract_required",
+        "discovery_only"
+      ]
+    },
+    "decisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "extract",
+        "quote",
+        "retention",
+        "snapshot",
+        "attribution"
+      ],
+      "properties": {
+        "extract": {
+          "enum": [
+            "allowed",
+            "prohibited",
+            "unknown",
+            "contract_required"
+          ]
+        },
+        "quote": {
+          "enum": [
+            "allowed",
+            "prohibited",
+            "unknown",
+            "contract_required"
+          ]
+        },
+        "retention": {
+          "enum": [
+            "allowed",
+            "metadata_only",
+            "prohibited",
+            "unknown",
+            "contract_required"
+          ]
+        },
+        "snapshot": {
+          "enum": [
+            "allowed",
+            "prohibited",
+            "unknown",
+            "contract_required"
+          ]
+        },
+        "attribution": {
+          "enum": [
+            "allowed",
+            "required",
+            "unknown",
+            "contract_required"
+          ]
+        }
+      }
+    },
+    "supported_fields": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_eligibility": {
+      "enum": [
+        "A",
+        "B",
+        "population_only",
+        "discovery_only",
+        "ineligible"
+      ]
+    },
+    "checked_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "http_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "redirect_chain",
+        "content_type",
+        "final_url",
+        "final_owner_domain",
+        "access_wall",
+        "expected_marker"
+      ],
+      "properties": {
+        "status": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "redirect_chain": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "content_type": {
+          "type": "string"
+        },
+        "final_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "final_owner_domain": {
+          "type": "string"
+        },
+        "access_wall": {
+          "enum": [
+            "none",
+            "api_key",
+            "login",
+            "fee",
+            "contract",
+            "bot_or_network_block"
+          ]
+        },
+        "expected_marker": {
+          "type": "string"
+        }
+      }
+    },
+    "current_blocker": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "locator": {
+      "type": "string",
+      "minLength": 1
+    },
+    "supporting_quote": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_evidence_role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claim_evidence_proposition": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "hash_provenance": {
+      "enum": [
+        "retained_file",
+        "observed_response",
+        "artifact_manifest"
+      ]
+    },
+    "retrieved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "publication_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "evidence_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "applicable_legal_entities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "policy_owner_legal_entity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "multi_jurisdiction_applicability": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z]{2}$"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "artifact_manifest_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "official_artifact_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "derived_artifact_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

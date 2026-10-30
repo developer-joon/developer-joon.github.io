@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "benefit-claim.schema.json",
+  "title": "Benefit claim or unknown research result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "claim_id",
+    "company_id",
+    "benefit_name",
+    "detail",
+    "status",
+    "current_validity",
+    "evidence_grade",
+    "source_ids",
+    "application_scope",
+    "checked_at",
+    "researched_at"
+  ],
+  "properties": {
+    "claim_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "company_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "benefit_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "detail": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "confirmed",
+        "limited",
+        "past",
+        "name_only",
+        "unknown",
+        "conflict"
+      ]
+    },
+    "current_validity": {
+      "enum": [
+        "current",
+        "undated_current",
+        "historical"
+      ]
+    },
+    "evidence_grade": {
+      "enum": [
+        "A",
+        "B",
+        "none"
+      ]
+    },
+    "source_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "searched_source_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "searched_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "search_scope": {
+      "const": "benefit_nonclaim"
+    },
+    "application_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "countries",
+        "legal_entities",
+        "roles",
+        "employment_types",
+        "tenure_condition"
+      ],
+      "properties": {
+        "countries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$"
+          }
+        },
+        "legal_entities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "employment_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "tenure_condition": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "publication_date": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "checked_at": {
+      "type": "string",
+      "format": "date"
+    },
+    "prepublication_checked_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "researched_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_locator": {
+      "type": "string",
+      "minLength": 1
+    },
+    "supporting_quote": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "role", "proposition", "source_locator", "supporting_quote", "content_sha256"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "role": {"type": "string", "minLength": 1},
+          "proposition": {"type": "string", "minLength": 1},
+          "source_locator": {"type": "string", "minLength": 1},
+          "supporting_quote": {"type": "string", "minLength": 1},
+          "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "conflict_evidence": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "position", "proposition", "source_locator", "supporting_quote", "content_sha256"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "position": {"enum": ["supports", "contradicts"]},
+          "proposition": {"type": "string", "minLength": 1},
+          "source_locator": {"type": "string", "minLength": 1},
+          "supporting_quote": {"type": "string", "minLength": 1},
+          "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "confirmed",
+              "limited",
+              "past",
+              "name_only",
+              "conflict"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "prepublication_checked_at",
+          "source_locator",
+          "supporting_quote",
+          "content_sha256",
+          "source_evidence"
+        ],
+        "properties": {
+          "evidence_grade": {
+            "enum": [
+              "A",
+              "B"
+            ]
+          },
+          "source_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "conflict"
+          }
+        }
+      },
+      "then": {
+        "required": ["conflict_evidence"],
+        "properties": {
+          "source_ids": {
+            "minItems": 2
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unknown"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "searched_source_ids",
+          "searched_at",
+          "search_scope"
+        ],
+        "properties": {
+          "evidence_grade": {
+            "const": "none"
+          },
+          "source_ids": {
+            "maxItems": 0
+          },
+          "searched_source_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

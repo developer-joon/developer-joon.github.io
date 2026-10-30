@@ -1,0 +1,7 @@
+{
+  "schema_version": "1",
+  "protocol_version": "<protocol version>",
+  "freeze_manifest_sha256": "<external candidate digest; do not commit an authorizing value>",
+  "review_status": "review_pending",
+  "issued_at": "<actual issuance timestamp> "
+}

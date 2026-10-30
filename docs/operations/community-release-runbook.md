@@ -95,6 +95,16 @@ Any missing, stale, or revision-mismatched evidence is no-go.
 
 Run local exhaustive proof from a clean revision. Task 16 must replace both intentional sentinels before a release can be green.
 
+The gate resolves Chromium during preflight, before either site build. An explicit
+`BENEFITS_CHROMIUM` path takes priority and must be an executable regular file;
+otherwise the gate searches the documented `chromium`, `chromium-browser`,
+`google-chrome`, and `google-chrome-stable` candidates on `PATH` plus their usual
+system locations. No browser means a failed preflight, never a skipped acceptance
+test. Set `TMPDIR` to the operator's private scratch filesystem when needed. Each
+invocation creates its own mode-0700 run directory there, records a run UUID in
+evidence, derives both builds and reproducibility manifests from that directory,
+and removes only that invocation's directory during cleanup.
+
 ```bash
 node scripts/release-gate.mjs --mode local \
   --evidence "${LOCAL_EVIDENCE_PATH:?set an absolute path outside the repository}"
