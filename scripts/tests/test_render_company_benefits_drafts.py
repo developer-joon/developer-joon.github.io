@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import tempfile
 import unittest
 from unittest import mock
@@ -60,6 +61,27 @@ class RendererTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "external freeze-anchor receipt"):
             self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29))
 
+    def test_renderer_rejects_pending_batch(self):
+        verifier = self.renderer.load_verifier()
+        verify_workspace = verifier.verify_workspace
+        anchors = self.approved_freeze_anchors
+        verifier.verify_workspace = lambda *args, **kwargs: verify_workspace(*args, **kwargs, approved_freeze_anchors=anchors)
+        with mock.patch.object(self.renderer, "load_verifier", return_value=verifier):
+            with self.assertRaisesRegex(ValueError, "pending"):
+                self.renderer.render_batch(self.root, self.out, "domestic", 2, as_of=date(2026, 10, 29))
+
+    def test_hub_reports_actual_approved_progress(self):
+        progress_path = self.root / "series-progress.json"
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        second = next(item for item in progress["batches"] if item["batch_id"] == "domestic-02")
+        second.update(status="approved", approved_at="2026-10-22T00:00:00Z", reviewer_ids=["carol"])
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+        output = self.renderer.render_hub(self.root, self.out)
+        text = output.read_text(encoding="utf-8")
+        self.assertIn("승인 배치: 2/80", text)
+        self.assertIn("승인 회사: 50/2000", text)
+        self.assertNotIn("25/1000", text)
+
     def test_renderer_validates_freshness_at_render_date_not_protocol_cutoff(self):
         self.fixture.claims[0]["publication_date"] = "2026-01-01"
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
@@ -107,6 +129,17 @@ class RendererTests(unittest.TestCase):
         self.fixture.reviews = [item for item in self.fixture.reviews if item["claim_id"] not in removed_ids]
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
+        self.fixture.write_jsonl("series-research-gaps.jsonl", [{
+            "audit_id": f"company-gap::{company_id}", "company_id": company_id,
+            "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
+            "searched_official_source_ids": [], "searched_official_urls": [],
+            "nonabsence_wording": "복지가 없다는 뜻이 아닙니다.",
+        }])
+        (self.root / "series-prepublication-checks.jsonl").unlink()
+        from scripts import company_benefits_series
+        company_benefits_series.materialize_contract(
+            self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "bob"
+        )
 
         text = self.render().read_text(encoding="utf-8")
 

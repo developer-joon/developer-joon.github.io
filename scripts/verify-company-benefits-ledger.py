@@ -15,6 +15,9 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import company_benefits_series
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PANEL = ["US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]
 CLAIM_STATUSES = {"confirmed", "limited", "past", "name_only", "unknown", "conflict"}
@@ -752,7 +755,7 @@ def validate_manifest(path, required_paths, root, errors, label, as_of, not_befo
     return manifest
 
 
-def validate_population(root, protocol, source_map, as_of, errors, approved_freeze_anchors):
+def validate_population(root, protocol, source_map, as_of, errors, approved_freeze_anchors, approved_effective_anchors):
     model = protocol.get("immutable_model", {})
     required_model = ("eligible_ledgers", "selected_ledgers", "initial_effective_ledgers", "effective_ledgers", "event_ledger", "freeze_manifest", "effective_manifest")
     if any(not model.get(field) for field in required_model):
@@ -783,7 +786,8 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
             if len(ledgers[(scope, "eligible")]) != expected_eligible:
                 errors.append(f"{scope} eligible must contain exactly {expected_eligible} verified records")
         for kind in ("selected", "initial", "current"):
-            validate_ledger_records(protocol, ledgers[(scope, kind)], f"{scope} {kind}", source_map, as_of, errors, exact_count=1000)
+            validate_ledger_records(protocol, ledgers[(scope, kind)], f"{scope} {kind}", source_map, as_of, errors,
+                                    exact_count=1000, enforce_order=kind != "current")
         if ledgers[(scope, "selected")] != ledgers[(scope, "eligible")][:1000]:
             errors.append(f"{scope} selected must be the first 1000 eligible records")
         selected_path = root / expected_paths["selected_ledgers"][index]
@@ -884,7 +888,8 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
         excluded_record = next(item for item in before if item.get("company_id") == excluded)
         if event.get("excluded_selection_hash") != excluded_record.get("selection_hash"):
             errors.append(f"{event_id}: excluded_selection_hash mismatch")
-        if event.get("excluded_hash_position") != before.index(excluded_record):
+        replacement_position = before.index(excluded_record)
+        if event.get("excluded_hash_position") != replacement_position:
             errors.append(f"{event_id}: excluded_hash_position mismatch")
         replacement = next((item for item in ledgers[(scope, "eligible")] if item.get("company_id") not in ever_used[scope]), None)
         if replacement is None or event.get("replacement_company_id") != replacement.get("company_id"):
@@ -892,8 +897,8 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
             continue
         if event.get("replacement_selection_hash") != replacement.get("selection_hash"):
             errors.append(f"{event_id}: replacement_selection_hash mismatch")
-        after = [item for item in before if item.get("company_id") != excluded] + [replacement]
-        after.sort(key=lambda company: canonical_key(protocol, company))
+        after = list(before)
+        after[replacement_position] = replacement
         if event.get("next_effective_sha256") != sha256(jsonl_bytes(after)):
             errors.append(f"{event_id}: next_effective_sha256 mismatch")
         projected[scope] = after
@@ -922,6 +927,21 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
     effective_manifest = validate_manifest(root / "population/effective-selection-manifest.json", effective_required, root, errors, "effective", as_of, event_boundary)
     if isinstance(effective_manifest, dict) and freeze_path.is_file() and effective_manifest.get("freeze_manifest_sha256") != sha256(freeze_path.read_bytes()):
         errors.append("effective manifest freeze_manifest_sha256 mismatch")
+    if events:
+        expected_effective = approved_effective_anchors.get(protocol.get("version"))
+        if not expected_effective:
+            errors.append("approved external effective-selection receipt is required when replacement events change the effective set")
+        else:
+            latest_scope = events[-1].get("scope")
+            actual_effective = {
+                "effective_manifest_sha256": sha256((root / "population/effective-selection-manifest.json").read_bytes()),
+                "domestic_effective_sequence_sha256": sha256((root / "population/domestic-effective-selected.jsonl").read_bytes()),
+                "international_effective_sequence_sha256": sha256((root / "population/international-effective-selected.jsonl").read_bytes()),
+                "replacement_events_sha256": sha256(event_path.read_bytes()),
+                "candidate_effective_sha256": sha256((root / f"population/{latest_scope}-effective-selected.jsonl").read_bytes()),
+            }
+            if expected_effective != actual_effective:
+                errors.append("effective-selection receipt digest mismatch")
     return projected
 
 
@@ -1189,78 +1209,6 @@ def validate_related_entity_exceptions(companies, claims, approved_claim_ids, so
                 errors.append(f"{company_id}: related-company source policy owner/applicability does not include selected reporting legal entity")
 
 
-def validate_pilot_package(root, claims, reviews, source_map, projected, as_of, errors):
-    pilot_files = (root / "pilot-prepublication-checks.jsonl", root / "pilot-research-gaps.jsonl")
-    present = [path.exists() for path in pilot_files]
-    if not claims:
-        return
-    if len(claims) == 199 and not all(present):
-        errors.append("populated pilot package is missing required prepublication or gap audit artifact")
-        return
-    if not any(present):
-        return
-    if not all(present):
-        errors.append("pilot package artifacts must be present as a complete pair")
-        return
-    if len(claims) != 199 or len(reviews) != 199 or len({item.get("company_id") for item in claims}) != 48:
-        errors.append("pilot package must contain exactly 199 claims, 199 reviews, and 48 claiming companies")
-    allowed = {
-        item.get("company_id")
-        for scope in ("domestic", "international")
-        for item in projected.get(scope, [])[:25]
-    }
-    if {item.get("company_id") for item in claims} - allowed:
-        errors.append("pilot claims must belong to the first 25 effective companies in each scope")
-    used_sources = {
-        source_id
-        for claim in claims
-        for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])
-    }
-    for source_id in used_sources:
-        source = source_map.get(source_id, {})
-        if source.get("hash_provenance") != "observed_response" or "evidence_path" in source or "evidence_file" in source:
-            errors.append(f"{source_id}: pilot packaging must retain metadata only with observed_response provenance")
-    checks = read_jsonl(root / "pilot-prepublication-checks.jsonl", errors, required_file=True)
-    check_map = {item.get("url"): item for item in checks}
-    expected_urls = {source_map.get(source_id, {}).get("url") for source_id in used_sources}
-    if len(check_map) != len(checks) or set(check_map) != expected_urls:
-        errors.append("pilot prepublication checks must contain one record per unique used official URL")
-    review_map = {item.get("claim_id"): item for item in reviews}
-    for url, check in check_map.items():
-        checked = parse_timestamp(check.get("checked_at"), "checked_at", f"prepublication {url}", errors)
-        if checked and checked > as_of_end(as_of): errors.append(f"prepublication {url}: checked_at is in the future")
-        if check.get("status") != 200 or check.get("marker_confirmed") is not True or not check.get("marker"):
-            errors.append(f"prepublication {url}: current official URL or marker check failed")
-        if not re.fullmatch(r"[0-9a-f]{64}", str(check.get("content_sha256", ""))):
-            errors.append(f"prepublication {url}: invalid content hash")
-        final_host = urlparse(str(check.get("final_url", ""))).hostname
-        original_host = urlparse(str(url)).hostname
-        owner_hosts = {str(source.get("final_owner_domain", "")).casefold().removeprefix("www.") for source in source_map.values() if source.get("url") == url}
-        normalized_final = str(final_host or "").casefold().removeprefix("www.")
-        if urlparse(str(check.get("final_url", ""))).scheme != "https":
-            errors.append(f"prepublication {url}: final URL must use HTTPS")
-        if not normalized_final or normalized_final not in ({str(original_host or '').casefold().removeprefix('www.')} | owner_hosts):
-            errors.append(f"prepublication {url}: final destination is outside the approved official domain")
-    for claim in claims:
-        claim_checks = [check_map.get(source_map.get(source_id, {}).get("url"), {}) for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])]
-        timestamps = [parse_timestamp(item.get("checked_at"), "checked_at", claim.get("claim_id"), errors) for item in claim_checks]
-        timestamps = [item for item in timestamps if item]
-        reviewed = parse_timestamp(review_map.get(claim.get("claim_id"), {}).get("reviewed_at"), "reviewed_at", claim.get("claim_id"), errors)
-        prepub = parse_timestamp(claim.get("prepublication_checked_at"), "prepublication_checked_at", claim.get("claim_id"), errors)
-        if not timestamps or not reviewed or min(timestamps) <= reviewed or not prepub or prepub != max(timestamps):
-            errors.append(f"{claim.get('claim_id')}: prepublication chronology or URL binding mismatch")
-    gaps = read_jsonl(root / "pilot-research-gaps.jsonl", errors, required_file=True)
-    company_gaps = [item for item in gaps if str(item.get("audit_id", "")).startswith("company-gap::")]
-    omitted = [item for item in gaps if str(item.get("audit_id", "")).startswith("omitted::")]
-    expected_gap_companies = allowed - {item.get("company_id") for item in claims}
-    omitted_ids = [item.get("original_claim_id") for item in omitted]
-    if (len(gaps) != 99 or len(company_gaps) != 2 or len(omitted) != 97
-            or {item.get("company_id") for item in company_gaps} != expected_gap_companies
-            or len(set(omitted_ids)) != 97 or set(omitted_ids) & {item.get("claim_id") for item in claims}
-            or any("복지가 없다는 뜻이 아닙니다" not in item.get("nonabsence_wording", "") for item in gaps)):
-        errors.append("pilot gap audit must preserve 97 unique omitted originals, the exact 2 no-claim companies, and non-absence wording")
-
-
 def validate_corrections(corrections, claim_ids, as_of, errors):
     seen = set()
     schema = load_schema("correction.schema.json")
@@ -1342,7 +1290,60 @@ def external_freeze_anchor(path, protocol, errors, workspace_root=None):
     return {protocol.get("version"): digest}
 
 
-def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt=None, approved_freeze_anchors=None):
+def external_effective_selection_anchor(path, protocol, workspace_root, errors):
+    if path is None:
+        return {}
+    receipt_path = Path(path)
+    workspace = Path(workspace_root).resolve()
+    repository = REPOSITORY_ROOT.resolve()
+    lexical_path = Path(os.path.abspath(receipt_path))
+    if receipt_path.is_symlink():
+        errors.append("effective-selection receipt symlinks are prohibited")
+        return {}
+    try:
+        resolved_path = receipt_path.resolve(strict=True)
+    except OSError as exc:
+        errors.append(f"effective-selection receipt is invalid: {exc}")
+        return {}
+    if lexical_path.is_relative_to(workspace) or resolved_path.is_relative_to(workspace):
+        errors.append("effective-selection receipt must be outside the verified workspace")
+        return {}
+    if lexical_path.is_relative_to(repository) or resolved_path.is_relative_to(repository):
+        errors.append("effective-selection receipt must be outside the repository")
+        return {}
+    receipt = read_json(receipt_path, errors)
+    digest_fields = {
+        "effective_manifest_sha256", "domestic_effective_sequence_sha256",
+        "international_effective_sequence_sha256", "replacement_events_sha256",
+        "candidate_effective_sha256",
+    }
+    required_fields = {"schema_version", "protocol_version", "freeze_manifest_sha256", "review_status", "issued_at", *digest_fields}
+    if not isinstance(receipt, dict) or set(receipt) != required_fields:
+        errors.append("effective-selection receipt schema mismatch")
+        return {}
+    if receipt.get("schema_version") != "1" or receipt.get("protocol_version") != protocol.get("version"):
+        errors.append("effective-selection receipt protocol identity mismatch")
+    if receipt.get("review_status") != "approved":
+        errors.append("effective-selection receipt is not approved")
+        return {}
+    parse_timestamp(receipt.get("issued_at"), "issued_at", "effective-selection receipt", errors)
+    if any(not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get(field, ""))) for field in digest_fields | {"freeze_manifest_sha256"}):
+        errors.append("effective-selection receipt digest is invalid")
+        return {}
+    freeze_path = Path(workspace_root) / "population" / "freeze-manifest.json"
+    if not freeze_path.is_file() or receipt.get("freeze_manifest_sha256") != sha256(freeze_path.read_bytes()):
+        errors.append("effective-selection receipt immutable freeze digest mismatch")
+        return {}
+    sequence_hashes = {receipt.get("domestic_effective_sequence_sha256"), receipt.get("international_effective_sequence_sha256")}
+    if receipt.get("candidate_effective_sha256") not in sequence_hashes:
+        errors.append("effective-selection receipt candidate effective digest mismatch")
+        return {}
+    anchor = {field: receipt[field] for field in digest_fields}
+    return {protocol.get("version"): anchor}
+
+
+def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt=None, approved_freeze_anchors=None,
+                     effective_selection_receipt=None, approved_effective_anchors=None):
     root = Path(root)
     as_of = as_of or date.today()
     errors = []
@@ -1353,6 +1354,8 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
         return errors
     if approved_freeze_anchors is None:
         approved_freeze_anchors = external_freeze_anchor(freeze_anchor_receipt, protocol, errors, root)
+    if approved_effective_anchors is None:
+        approved_effective_anchors = external_effective_selection_anchor(effective_selection_receipt, protocol, root, errors)
     if protocol.get('protocol_id') == 'company-benefits-population-v3':
         spec = importlib.util.spec_from_file_location('sec_workforce_audit', Path(__file__).with_name('sec-workforce-audit.py'))
         audit = importlib.util.module_from_spec(spec)
@@ -1384,7 +1387,7 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
     except ValueError as exc:
         errors.append(str(exc))
         return errors
-    projected = validate_population(root, protocol, source_map, as_of, errors, approved_freeze_anchors)
+    projected = validate_population(root, protocol, source_map, as_of, errors, approved_freeze_anchors, approved_effective_anchors)
     validate_coverage_gaps(root, errors)
 
     companies = read_jsonl(find_file(root, "companies.jsonl"), errors, required_file=True)
@@ -1398,10 +1401,19 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
     claims = read_jsonl(find_file(root, "benefit-claims.jsonl"), errors, required_file=True)
     reviews = read_jsonl(find_file(root, "reviews.jsonl"), errors, required_file=True)
     corrections = read_jsonl(find_file(root, "corrections.jsonl"), errors, required_file=True)
+    review_ids = [review.get("review_id") for review in reviews]
+    if len(review_ids) != len(set(review_ids)):
+        errors.append("reviews ledger contains duplicate review_id across claim and outcome review types")
+    for review in reviews:
+        if bool(review.get("claim_id")) == bool(review.get("record_id")):
+            errors.append(f"{review.get('review_id', 'review[missing-id]')}: review must have exactly one claim_id or record_id")
+    claim_reviews = [review for review in reviews if review.get("claim_id") and not review.get("record_id")]
     claim_ids = validate_claims(claims, company_map, source_map, as_of, errors)
-    approved_claim_ids = validate_reviews(reviews, claims, source_map, as_of, errors)
+    approved_claim_ids = validate_reviews(claim_reviews, claims, source_map, as_of, errors)
     validate_related_entity_exceptions(companies, claims, approved_claim_ids, source_map, errors)
-    validate_pilot_package(root, claims, reviews, source_map, projected, as_of, errors)
+    company_benefits_series.validate_series(
+        root, projected, claims, reviews, source_map, as_of, errors, parse_timestamp
+    )
     validate_corrections(corrections, claim_ids, as_of, errors)
     validate_ranking_language(root, errors)
     return errors
@@ -1413,8 +1425,10 @@ def main(argv=None):
     parser.add_argument("--as-of", type=date.fromisoformat)
     parser.add_argument("--evidence-root", type=Path)
     parser.add_argument("--freeze-anchor-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT"))
+    parser.add_argument("--effective-selection-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_EFFECTIVE_SELECTION_RECEIPT"))
     args = parser.parse_args(argv)
-    errors = verify_workspace(Path(args.root), args.as_of, args.evidence_root, args.freeze_anchor_receipt)
+    errors = verify_workspace(Path(args.root), args.as_of, args.evidence_root, args.freeze_anchor_receipt,
+                              effective_selection_receipt=args.effective_selection_receipt)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

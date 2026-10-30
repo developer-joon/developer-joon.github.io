@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company-benefits-outcome-review.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["review_id", "record_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "issues", "resolution", "quote_entailment_confirmed"],
+  "properties": {
+    "review_id": {"type": "string", "minLength": 1},
+    "record_id": {"type": "string", "minLength": 1},
+    "researcher_id": {"type": "string", "minLength": 1},
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "decision": {"const": "approved"},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "issues": {"type": "array"},
+    "resolution": {"type": "string", "minLength": 1},
+    "quote_entailment_confirmed": {"type": "boolean"}
+  }
+}

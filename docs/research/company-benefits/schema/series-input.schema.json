@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company-benefits-series-input.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256", "status", "approved_at", "reviewer_id", "artifacts"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "batch_id": {"type": "string", "pattern": "^(domestic|international)-(0[1-9]|[1-3][0-9]|40)$"},
+    "company_list_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "effective_sequence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "replacement_events_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {"const": "approved"},
+    "approved_at": {"type": "string", "format": "date-time"},
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "artifacts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl"],
+      "properties": {
+        "sources.jsonl": {"$ref": "#/$defs/hash"}, "claims.jsonl": {"$ref": "#/$defs/hash"},
+        "reviews.jsonl": {"$ref": "#/$defs/hash"}, "gaps.jsonl": {"$ref": "#/$defs/hash"},
+        "checks.jsonl": {"$ref": "#/$defs/hash"}
+      }
+    }
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

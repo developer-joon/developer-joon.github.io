@@ -3,6 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from scripts import company_benefits_series
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RESEARCH_ROOT = REPOSITORY_ROOT / "docs" / "research" / "company-benefits"
 PANEL = ["US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]
@@ -146,11 +148,24 @@ class ContractFixture:
     def approved_freeze_anchors(self):
         return {self.protocol["version"]: sha((self.population / "freeze-manifest.json").read_bytes())}
 
+    def approved_effective_anchors(self):
+        if not self.events:
+            return {}
+        scope = self.events[-1]["scope"]
+        return {self.protocol["version"]: {
+            "effective_manifest_sha256": sha((self.population / "effective-selection-manifest.json").read_bytes()),
+            "domestic_effective_sequence_sha256": sha((self.population / "domestic-effective-selected.jsonl").read_bytes()),
+            "international_effective_sequence_sha256": sha((self.population / "international-effective-selected.jsonl").read_bytes()),
+            "replacement_events_sha256": sha((self.population / "effective-selection-events.jsonl").read_bytes()),
+            "candidate_effective_sha256": sha((self.population / f"{scope}-effective-selected.jsonl").read_bytes()),
+        }}
+
     def replacement_event(self, scope="domestic", excluded_index=-1):
         old = self.current[scope]
         excluded = old[excluded_index]
         replacement = next(record for record in self.eligible[scope] if record["company_id"] not in {item["company_id"] for item in old})
-        new = sorted([record for record in old if record["company_id"] != excluded["company_id"]] + [replacement], key=lambda item: item["selection_hash"])
+        new = list(old)
+        new[excluded_index] = replacement
         event = {
             "event_id": "event-1", "protocol_version": self.protocol["version"], "scope": scope,
             "exclusion_reason": "entity_ineligible", "exclusion_details": "Official registry shows the entity no longer qualifies.",
@@ -219,6 +234,13 @@ class ContractFixture:
         self.write_jsonl("reviews.jsonl", self.reviews)
         self.write_jsonl("corrections.jsonl", [])
         self.refresh_manifests()
+        try:
+            company_benefits_series.materialize_contract(
+                self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "bob"
+            )
+        except ValueError:
+            # Mutation tests intentionally write invalid population sizes; the verifier must report them.
+            pass
 
 
 # Backwards-compatible test helper name while callers migrate.
