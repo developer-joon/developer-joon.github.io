@@ -142,6 +142,30 @@ class SeriesIntegrationTests(unittest.TestCase):
                     self.module.merge_checks(existing, [dict(existing[0], **mutation)],
                                              {"https://dol.gov/shared": reviewed_at})
 
+    def test_accepts_metadata_only_gap_source_and_rejects_body_leakage(self):
+        source = {
+            "record_type": "nonpublishable_metadata", "source_id": "kr-dart-generic-search",
+            "title": "DART generic reflected search route", "owner": "금융감독원 전자공시시스템",
+            "source_type": "regulator_filing", "jurisdiction": "KR", "url": "https://dart.fss.or.kr/dsab002/main.do",
+            "checked_at": "2026-10-20T01:00:00Z", "route_quality": "reflected_query",
+            "publication_eligible": False, "nonpublication_reason": "The generic route did not establish an exact-entity benefit document.",
+            "entity_binding_status": "unresolved", "retention_mode": "metadata_only", "reuse_status": "discovery_only",
+            "access_observation": {"status": 200, "final_url": "https://dart.fss.or.kr/dsab002/main.do", "access_wall": "none"},
+        }
+        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [source["source_id"]], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        checks = [{"url": source["url"], "status": 200, "final_url": source["url"], "marker": "DART route",
+                   "marker_confirmed": True, "content_sha256": "a" * 64, "checked_at": "2026-10-22T05:00:00Z"}]
+        self.package(sources=[source], gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        self.module.load_package(self.input, self.root)
+        source["body"] = "retained body is prohibited"
+        self.package(sources=[source], gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        with self.assertRaisesRegex(ValueError, "schema|metadata|additional"):
+            self.module.load_package(self.input, self.root)
+
     def test_check_coverage_unions_93_claims_and_14_gap_urls_and_rejects_extra(self):
         sources = {f"source-{index}": {"url": f"https://claims.example/{index}"} for index in range(13)}
         claims = [{"source_ids": [f"source-{index % 13}"], "searched_source_ids": []} for index in range(93)]

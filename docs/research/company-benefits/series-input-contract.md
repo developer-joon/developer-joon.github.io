@@ -2,12 +2,60 @@
 
 The full series is partitioned by `series-batches.jsonl`. It is the only authority for batch IDs, canonical company order, company IDs, legal-entity boundaries, and each 25-company list SHA-256. Agents must not reconstruct a batch from names or select substitutes.
 
-## Scratch package layout
+## Authoritative candidate layout
 
-Prepare one directory outside the repository, preferably:
+Research producers submit exactly one review-pending candidate directory:
 
 ```text
-/home/bread/.hermes/profiles/conan/cache/scratch/company-benefits-series/<batch-id>/
+<batch-id>-candidate/
+├── candidate.json
+├── sources.jsonl
+├── claims.jsonl
+├── gaps.jsonl
+└── review-requests.jsonl
+```
+
+`candidate.json` has `schema_version`, the canonical `batch_id`, all three canonical batch hashes (`company_list_sha256`, `effective_sequence_sha256`, and `replacement_events_sha256`), `status: review_pending`, `researcher_id`, and exact byte hashes for the four JSONL artifacts. The ledgers are in canonical 25-company order. Each company has claims or one `company-gap::<company-id>`, never both, and every outcome has one canonical `pending_independent_review` request. Pending requests are routing records, not reviews, and can never be copied into the production review ledger.
+
+Validate it with:
+
+```bash
+python scripts/validate-company-benefits-series-candidate.py <candidate-dir> \
+  --research-root docs/research/company-benefits
+```
+
+For heterogeneous scratch output, use the separate deterministic compiler. It accepts only `draft.json`, `sources.jsonl`, `claims.jsonl`, and `gaps.jsonl`, canonicalizes order, generates pending requests, hashes the result, and then invokes the production candidate validator:
+
+```bash
+python scripts/compile-company-benefits-series-candidate.py <scratch-dir> <candidate-dir> \
+  --research-root docs/research/company-benefits
+```
+
+## Independent review and promotion
+
+Independent review artifacts must be outside the repository and must contain exactly:
+
+```text
+<external-review-dir>/
+├── review-bundle.json
+├── reviews.jsonl
+└── checks.jsonl
+```
+
+The bundle binds the exact candidate manifest hash and all candidate artifact hashes, preventing approval transfer after any candidate change. Reviews must cover every claim/gap exactly once in canonical order, be approved by someone other than the bound researcher, and precede both the exact URL post-review checks and promotion approval. Missing, duplicate, orphan, cross-target, self-approved, stale, repository-local, or symlink-aliased review material fails closed.
+
+Promotion emits the existing integration package and nothing else:
+
+```bash
+python scripts/promote-company-benefits-series-candidate.py \
+  <candidate-dir> <external-review-dir> <approved-package-dir> \
+  --research-root docs/research/company-benefits
+```
+
+## Approved integration package layout
+
+```text
+<approved-package-dir>/
 ├── batch.json
 ├── sources.jsonl
 ├── claims.jsonl
@@ -16,9 +64,9 @@ Prepare one directory outside the repository, preferably:
 └── checks.jsonl
 ```
 
-No other file or subdirectory is accepted. In particular, do not include PDFs, screenshots, archives, raw responses, `evidence_path`, `evidence_file`, or `retained_file` provenance. The package is metadata-only.
+No package may include PDFs, screenshots, archives, raw responses, `evidence_path`, `evidence_file`, or `retained_file` provenance. A `nonpublishable_metadata` source follows `schema/nonpublishable-source.schema.json`: it explicitly records route quality, publication ineligibility, the nonpublication reason, entity-binding status, metadata-only retention, and reuse status. It cannot retain or assert a body, quote, content hash, expected marker, locator, or legal-entity applicability. Such a source may document a gap search route only; claim and unknown-claim source rules remain unchanged.
 
-`batch.json` follows `schema/series-input.schema.json`. It binds `company_list_sha256`, `effective_sequence_sha256`, and `replacement_events_sha256` from the canonical batch manifest. Its `artifacts` object contains the SHA-256 of the exact bytes of each of the five JSONL files. `status` must be `approved`; `reviewer_id` and `approved_at` identify the batch approval. Empty JSONL artifacts are zero-byte files and use the SHA-256 of zero bytes.
+`batch.json` follows `schema/series-input.schema.json`. It binds the three canonical hashes and the exact bytes of all five final JSONL artifacts. It is created only by promotion with `status: approved`, `reviewer_id`, and `approved_at`; empty JSONL artifacts are zero-byte files and use the SHA-256 of zero bytes.
 
 The five ledgers use the existing source, claim, and review contracts plus these batch rules:
 

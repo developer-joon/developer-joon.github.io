@@ -138,6 +138,12 @@ def load_package(input_dir, research_root):
         if "evidence_path" in serialized or "evidence_file" in serialized or any(item.get("hash_provenance") == "retained_file" for item in records[name]):
             raise ValueError("evidence files and retained-file provenance are prohibited")
 
+    verifier = _load_script(Path(__file__).with_name("verify-company-benefits-ledger.py"), "series_package_verifier")
+    source_errors = []
+    verifier.validate_sources(records["sources.jsonl"], source_errors)
+    if source_errors:
+        raise ValueError("incoming source schema validation failed:\n" + "\n".join(source_errors))
+
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
     for name in ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl"):
         field = ID_FIELDS[name]
@@ -202,6 +208,9 @@ def load_package(input_dir, research_root):
     used_ids = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
     if None in source_map or used_ids - set(source_map):
         raise ValueError("claim has missing source bindings")
+    metadata_claim_sources = {source_id for source_id in used_ids if source_map[source_id].get("record_type") == "nonpublishable_metadata"}
+    if metadata_claim_sources:
+        raise ValueError("nonpublishable metadata sources cannot support claim or unknown-claim records")
     for claim in claims:
         if claim.get("status") != "unknown":
             evidence_ids = [item.get("source_id") for item in claim.get("source_evidence", [])]

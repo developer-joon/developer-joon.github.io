@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "nonpublishable-source.schema.json",
+  "title": "Nonpublishable metadata-only discovery source",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["record_type", "source_id", "title", "owner", "source_type", "jurisdiction", "url", "checked_at", "route_quality", "publication_eligible", "nonpublication_reason", "entity_binding_status", "retention_mode", "reuse_status", "access_observation"],
+  "properties": {
+    "record_type": {"const": "nonpublishable_metadata"},
+    "source_id": {"type": "string", "pattern": "^[a-z0-9]+(?:[a-z0-9:-]*[a-z0-9])?$"},
+    "title": {"type": "string", "minLength": 1},
+    "owner": {"type": "string", "minLength": 1},
+    "source_type": {"enum": ["government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report", "search_result"]},
+    "jurisdiction": {"type": "string", "pattern": "^(INT|[A-Z]{2})$"},
+    "url": {"type": "string", "format": "uri"},
+    "checked_at": {"type": "string", "format": "date-time"},
+    "route_quality": {"enum": ["exact_entity", "generic", "reflected_query", "discovery_only"]},
+    "publication_eligible": {"const": false},
+    "nonpublication_reason": {"type": "string", "minLength": 20},
+    "entity_binding_status": {"enum": ["exact_entity", "unresolved", "generic_route", "reflected_only"]},
+    "retention_mode": {"const": "metadata_only"},
+    "reuse_status": {"enum": ["unavailable", "restricted", "unknown", "discovery_only"]},
+    "access_observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "final_url", "access_wall"],
+      "properties": {
+        "status": {"type": ["integer", "null"]},
+        "final_url": {"type": "string", "format": "uri"},
+        "access_wall": {"enum": ["none", "api_key", "login", "fee", "contract", "bot_or_network_block"]}
+      }
+    }
+  }
+}

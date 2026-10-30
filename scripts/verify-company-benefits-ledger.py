@@ -378,16 +378,36 @@ def source_is_eligible(source, field, grade_required=False):
 def validate_sources(sources, errors, as_of=None, evidence_root=None):
     result = {}
     schema = load_schema("source.schema.json")
+    metadata_schema = load_schema("nonpublishable-source.schema.json")
     fields = ("source_id", "title", "owner", "source_type", "jurisdiction", "url", "locator", "supporting_quote", "content_sha256", "hash_provenance", "retrieved_at", "access_model", "authentication", "terms_url", "reuse_decision", "decisions", "supported_fields", "evidence_eligibility", "checked_at", "http_verification")
     for index, source in enumerate(sources, 1):
         source_id = source.get("source_id") or f"source[{index}]"
+        if source_id in result:
+            errors.append(f"duplicate source_id: {source_id}")
+        result[source_id] = source
+        if source.get("record_type") == "nonpublishable_metadata":
+            validate_structure(source, metadata_schema, source_id, errors)
+            prohibited = {"locator", "supporting_quote", "content_sha256", "hash_provenance", "expected_marker",
+                          "applicable_legal_entities", "policy_owner_legal_entity", "body", "content", "raw_response",
+                          "http_verification", "evidence_path", "evidence_file"}
+            leaked = sorted(set(source) & prohibited)
+            if leaked:
+                errors.append(f"{source_id}: nonpublishable metadata contains prohibited retained/asserted fields")
+            if source.get("publication_eligible") is not False or source.get("retention_mode") != "metadata_only":
+                errors.append(f"{source_id}: nonpublishable metadata must remain publication-ineligible metadata_only")
+            if urlparse(str(source.get("url", ""))).scheme != "https":
+                errors.append(f"{source_id}: url must use HTTPS")
+            checked = parse_timestamp(source.get("checked_at"), "source checked_at", source_id, errors)
+            if as_of and checked and checked > as_of_end(as_of):
+                errors.append(f"{source_id}: source checked_at is in the future")
+            observation = source.get("access_observation", {})
+            if urlparse(str(observation.get("final_url", ""))).scheme != "https":
+                errors.append(f"{source_id}: final URL must use HTTPS")
+            continue
         validate_structure(source, schema, source_id, errors)
         required(source, fields, "source", source_id, errors)
         if "current_blocker" not in source:
             errors.append(f"{source_id}: missing source current_blocker")
-        if source_id in result:
-            errors.append(f"duplicate source_id: {source_id}")
-        result[source_id] = source
         source_type = source.get("source_type")
         grade = source.get("evidence_eligibility")
         if str(source.get("owner", "")).strip().casefold() in {"", "anonymous", "unknown", "n/a"}:
