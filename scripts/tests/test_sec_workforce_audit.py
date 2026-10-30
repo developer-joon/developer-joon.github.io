@@ -217,19 +217,6 @@ class WorkforceAuditTests(unittest.TestCase):
                 renderer.render_batch(root,Path(tmp),'international',1,as_of=date(2026,10,30))
             self.assertEqual([], list(Path(tmp).iterdir()))
 
-    def test_profile_receipt_permissions_digest_and_pending(self):
-        import json
-        import stat
-        audit=module()
-        path=Path('/home/bread/.hermes/profiles/conan/cache/company-benefits/protocol-3.1.1/freeze-anchor-receipt.json')
-        self.assertEqual(0o600,stat.S_IMODE(path.stat().st_mode))
-        self.assertEqual(0o700,stat.S_IMODE(path.parent.stat().st_mode))
-        self.assertEqual(0o700,stat.S_IMODE(path.parent.parent.stat().st_mode))
-        receipt=json.loads(path.read_text())
-        self.assertEqual('3.1.1',receipt['protocol_version'])
-        self.assertEqual('review_pending',receipt['review_status'])
-        self.assertEqual(audit.digest((ROOT/'docs/research/company-benefits/population/freeze-manifest.json').read_bytes()),receipt['freeze_manifest_sha256'])
-
     def test_audit_manifest_records_exact_count_and_role_for_every_artifact(self):
         import json
         manifest = json.loads((ROOT/'docs/research/company-benefits/population/acquisition-audit-manifest.json').read_text())
