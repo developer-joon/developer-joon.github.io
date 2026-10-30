@@ -428,6 +428,64 @@ class VerifierTests(unittest.TestCase):
         for needle in ("jurisdiction", "selected reporting", "benefit policy owner"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
 
+    def test_unknown_population_owner_accepts_exact_entity_positive_source(self):
+        company_id = self.fixture.claims[0]["company_id"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            company = next(item for item in collection if item["company_id"] == company_id)
+            company["benefit_policy_owner"] = {"status": "unknown", "reason": "Population evidence does not establish policy ownership."}
+        selected_entity = self.fixture.claims[0]["application_scope"]["legal_entities"][0]
+        self.fixture.benefit_source["applicable_legal_entities"] = [selected_entity]
+        self.fixture.benefit_source["policy_owner_legal_entity"] = selected_entity
+        self.fixture.write_all()
+        self.approved_freeze_anchors = self.fixture.approved_freeze_anchors()
+
+        self.assertEqual([], self.errors())
+
+    def test_unknown_population_owner_rejects_unrelated_positive_owner(self):
+        company_id = self.fixture.claims[0]["company_id"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            company = next(item for item in collection if item["company_id"] == company_id)
+            company["benefit_policy_owner"] = {"status": "unknown", "reason": "Population evidence does not establish policy ownership."}
+        self.fixture.benefit_source["policy_owner_legal_entity"] = "Unrelated Parent Corp"
+        self.fixture.write_all()
+
+        self.assert_error("does not establish an applicable benefit policy owner")
+
+    def test_unknown_search_does_not_require_policy_owner(self):
+        claim = self.fixture.claims[0]
+        company_id = claim["company_id"]
+        for collection in (self.fixture.eligible["domestic"], self.fixture.selected["domestic"], self.fixture.current["domestic"], self.fixture.companies):
+            company = next(item for item in collection if item["company_id"] == company_id)
+            company["benefit_policy_owner"] = {"status": "unknown", "reason": "Population evidence does not establish policy ownership."}
+        source_id = self.fixture.benefit_source["source_id"]
+        self.fixture.benefit_source.pop("policy_owner_legal_entity")
+        claim.update({"status": "unknown", "evidence_grade": "none", "source_ids": [], "current_validity": "undated_current", "publication_date": None, "detail": "조사에서 확인되지 않았으며, 혜택이 없다는 뜻이 아니다.", "searched_source_ids": [source_id], "searched_at": "2026-10-20T02:00:00Z", "search_scope": "benefit_nonclaim"})
+        for field in ("prepublication_checked_at", "source_locator", "supporting_quote", "content_sha256"):
+            claim.pop(field, None)
+        self.fixture.write_all()
+        self.approved_freeze_anchors = self.fixture.approved_freeze_anchors()
+
+        self.assertEqual([], self.errors())
+
+    def test_unknown_search_rejects_affiliate_only_source(self):
+        claim = self.fixture.claims[0]
+        source_id = self.fixture.benefit_source["source_id"]
+        self.fixture.benefit_source.pop("policy_owner_legal_entity")
+        self.fixture.benefit_source["applicable_legal_entities"] = ["Affiliate Corp"]
+        claim.update({"status": "unknown", "evidence_grade": "none", "source_ids": [], "current_validity": "undated_current", "publication_date": None, "detail": "조사에서 확인되지 않았으며, 혜택이 없다는 뜻이 아니다.", "searched_source_ids": [source_id], "searched_at": "2026-10-20T02:00:00Z", "search_scope": "benefit_nonclaim"})
+        for field in ("prepublication_checked_at", "source_locator", "supporting_quote", "content_sha256"):
+            claim.pop(field, None)
+        self.fixture.write_all()
+
+        self.assert_error("applicability does not include selected reporting legal entity")
+
+    def test_known_population_policy_owner_mismatch_still_fails(self):
+        self.fixture.benefit_source["policy_owner_legal_entity"] = "Different Policy Owner"
+        self.fixture.benefit_source["applicable_legal_entities"].append("Different Policy Owner")
+        self.fixture.write_all()
+
+        self.assert_error("does not match recorded benefit policy owner")
+
     def test_explicit_global_policy_mapping_has_no_wildcards(self):
         company = self.fixture.selected["domestic"][0]
         source = self.fixture.benefit_source

@@ -464,7 +464,7 @@ def validate_source_use(source_map, source_ids, field, record_id, errors, grade_
     return eligible
 
 
-def source_applies_to_company(source, company, record_id, errors):
+def source_applies_to_company(source, company, record_id, errors, claim_status):
     if not isinstance(source, dict) or not isinstance(company, dict):
         return False
     jurisdiction = company.get("jurisdiction")
@@ -482,9 +482,25 @@ def source_applies_to_company(source, company, record_id, errors):
     if selected_entity not in applicable:
         errors.append(f"{record_id}: source {source.get('source_id')} applicability does not include selected reporting legal entity")
         aligned = False
-    if source.get("policy_owner_legal_entity") != company.get("benefit_policy_owner"):
-        errors.append(f"{record_id}: source {source.get('source_id')} does not match recorded benefit policy owner")
-        aligned = False
+    if claim_status != "unknown":
+        recorded_owner = company.get("benefit_policy_owner")
+        source_owner = source.get("policy_owner_legal_entity")
+        if isinstance(recorded_owner, str):
+            owner_aligned = source_owner == recorded_owner
+        else:
+            owner_aligned = (
+                isinstance(recorded_owner, dict)
+                and recorded_owner.get("status") == "unknown"
+                and isinstance(source_owner, str)
+                and bool(source_owner.strip())
+                and (source_owner == selected_entity or source_owner in applicable)
+            )
+        if not owner_aligned:
+            if isinstance(recorded_owner, str):
+                errors.append(f"{record_id}: source {source.get('source_id')} does not match recorded benefit policy owner")
+            else:
+                errors.append(f"{record_id}: source {source.get('source_id')} does not establish an applicable benefit policy owner")
+            aligned = False
     return aligned
 
 
@@ -923,7 +939,7 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
         eligible = validate_source_use(source_map, source_ids, "benefit_claim", claim_id, errors, grade_required=True)
         for source_id in source_ids:
             if source_id in source_map and company:
-                source_applies_to_company(source_map[source_id], company, claim_id, errors)
+                source_applies_to_company(source_map[source_id], company, claim_id, errors, status)
         required_count = 2 if status == "conflict" else (1 if status in EVIDENCED_STATUSES else 0)
         if len(set(eligible)) < required_count:
             errors.append(f"{claim_id}: {status} requires at least {required_count} eligible claim-field source(s)")
@@ -945,7 +961,7 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
                     errors.append(f"{claim_id}: unknown searched source {source_id} does not resolve")
                 elif "benefit_claim" not in source.get("supported_fields", []):
                     errors.append(f"{claim_id}: unknown searched source {source_id} does not support benefit_claim")
-                elif source.get("source_type") not in OFFICIAL_SOURCE_TYPES or not source_is_eligible(source, "benefit_claim", grade_required=True) or not source_applies_to_company(source, company, claim_id, errors):
+                elif source.get("source_type") not in OFFICIAL_SOURCE_TYPES or not source_is_eligible(source, "benefit_claim", grade_required=True) or not source_applies_to_company(source, company, claim_id, errors, status):
                     errors.append(f"{claim_id}: unknown searched source {source_id} is not official, accessible, or jurisdiction-applicable")
                 elif searched_at:
                     source_checked = parse_timestamp(source.get("checked_at"), "source checked_at", source_id, errors)
