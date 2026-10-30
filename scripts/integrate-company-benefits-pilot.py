@@ -298,6 +298,7 @@ def bind_source_entailment_reviews(claims, reviews):
                 "reviewed_quote": item["supporting_quote"],
                 "content_sha256": item["content_sha256"],
                 "entailment_confirmed": True,
+                "reviewer_id": review["reviewer_id"],
             }
             for item in claim["source_evidence"]
         ]

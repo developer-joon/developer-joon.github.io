@@ -604,6 +604,35 @@ class VerifierTests(unittest.TestCase):
         errors = validation_errors(mutated_claim, copy.deepcopy(original_review), original_source_map)
         self.assertTrue(any("source evidence entailment coverage" in error for error in errors), errors)
 
+    def test_source_entailment_reviewer_identity_must_exactly_match_review(self):
+        research = ROOT / "docs" / "research" / "company-benefits"
+        claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines() if line]
+        reviews = [json.loads(line) for line in (research / "reviews.jsonl").read_text().splitlines() if line]
+        sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines() if line]
+        claim_id = "US-CIK0000827187-2024-health"
+        claim = next(item for item in claims if item["claim_id"] == claim_id)
+        original = next(item for item in reviews if item["claim_id"] == claim_id)
+        source_map = {item["source_id"]: item for item in sources}
+
+        def validation_errors(review):
+            errors = []
+            self.verifier.validate_reviews([review], [claim], source_map, date(2026, 10, 30), errors)
+            return errors
+
+        mutated = copy.deepcopy(original)
+        mutated["reviewer_id"] = "different-independent-reviewer"
+        errors = validation_errors(mutated)
+        self.assertTrue(any("source entailment reviewer_id must exactly match review reviewer_id" in error for error in errors), errors)
+
+        for invalid_value in (None, ""):
+            mutated = copy.deepcopy(original)
+            if invalid_value is None:
+                mutated["source_entailment_reviews"][0].pop("reviewer_id")
+            else:
+                mutated["source_entailment_reviews"][0]["reviewer_id"] = invalid_value
+            errors = validation_errors(mutated)
+            self.assertTrue(any("source entailment reviewer_id must exactly match review reviewer_id" in error for error in errors), errors)
+
     def test_causal_evidence_review_and_prepublication_order_is_enforced(self):
         self.fixture.claims[0]["researched_at"] = "2026-10-19T00:00:00Z"
         self.fixture.claims[0]["prepublication_checked_at"] = "2026-10-20T02:30:00Z"
@@ -648,7 +677,7 @@ class VerifierTests(unittest.TestCase):
                 for item in claim["conflict_evidence"]
             ]
         review["source_entailment_reviews"] = [
-            {"source_id": item["source_id"], "reviewed_role": item["role"], "reviewed_proposition": item["proposition"], "source_locator": item["source_locator"], "reviewed_quote": item["supporting_quote"], "content_sha256": item["content_sha256"], "entailment_confirmed": True}
+            {"source_id": item["source_id"], "reviewed_role": item["role"], "reviewed_proposition": item["proposition"], "source_locator": item["source_locator"], "reviewed_quote": item["supporting_quote"], "content_sha256": item["content_sha256"], "entailment_confirmed": True, "reviewer_id": review["reviewer_id"]}
             for item in claim["source_evidence"]
         ]
         self.fixture.write_all()

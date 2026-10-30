@@ -30,6 +30,11 @@ class PilotIntegrationTests(unittest.TestCase):
         referenced = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
         self.assertEqual((215, 196, 215), (len(bound_sources), len(bindings), len(referenced)))
         self.assertTrue(all(len(review.get("source_entailment_reviews", [])) == len(claim.get("source_evidence", [])) for claim, review in zip(claims, reviews)))
+        self.assertTrue(all(
+            binding.get("reviewer_id") == review["reviewer_id"]
+            for review in reviews
+            for binding in review.get("source_entailment_reviews", [])
+        ))
         dol = next(item for item in claims if item["claim_id"] == "US-CIK0000827187-2024-health")
         self.assertEqual(["primary_plan_row", "secondary_code_definition"], [item["role"] for item in dol["source_evidence"]])
         self.assertEqual("4A Health (other than vision or dental).", dol["source_evidence"][1]["supporting_quote"])

@@ -103,7 +103,7 @@ class ContractFixture:
             self.sources.append(source)
         # Claims cover only the first render batch; the fixture does not imply complete benefit coverage.
         self.claims = [self._claim(company) for company in self.current["domestic"][:25]]
-        self.reviews = [{"review_id": f"review-{i:04d}", "claim_id": claim["claim_id"], "researcher_id": "alice", "reviewer_id": "bob", "decision": "approved", "reviewed_at": "2026-10-20T03:00:00Z", "issues": [], "resolution": "accepted", "quote_entailment_confirmed": True, "source_entailment_reviews": [{"source_id": item["source_id"], "reviewed_role": item["role"], "reviewed_proposition": item["proposition"], "source_locator": item["source_locator"], "reviewed_quote": item["supporting_quote"], "content_sha256": item["content_sha256"], "entailment_confirmed": True} for item in claim["source_evidence"]]} for i, claim in enumerate(self.claims)]
+        self.reviews = [{"review_id": f"review-{i:04d}", "claim_id": claim["claim_id"], "researcher_id": "alice", "reviewer_id": "bob", "decision": "approved", "reviewed_at": "2026-10-20T03:00:00Z", "issues": [], "resolution": "accepted", "quote_entailment_confirmed": True, "source_entailment_reviews": [{"source_id": item["source_id"], "reviewed_role": item["role"], "reviewed_proposition": item["proposition"], "source_locator": item["source_locator"], "reviewed_quote": item["supporting_quote"], "content_sha256": item["content_sha256"], "entailment_confirmed": True, "reviewer_id": "bob"} for item in claim["source_evidence"]]} for i, claim in enumerate(self.claims)]
         self.write_all()
 
     def _companies(self, scope, count):

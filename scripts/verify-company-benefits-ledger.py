@@ -1115,6 +1115,8 @@ def validate_reviews(reviews, claims, source_map, as_of, errors):
                     for item in reviewed_source_entries
                     if item.get("entailment_confirmed") is True
                 }
+                if any(item.get("reviewer_id") != review.get("reviewer_id") for item in reviewed_source_entries):
+                    errors.append(f"{review_id}: source entailment reviewer_id must exactly match review reviewer_id")
                 if len(reviewed_source_entries) != len(expected_entries) or len(actual) != len(reviewed_source_entries) or actual != expected:
                     errors.append(f"{review_id}: independent review requires exact one-to-one source evidence entailment coverage with no duplicates")
             prepub = parse_timestamp(claim.get("prepublication_checked_at"), "prepublication_checked_at", claim_id, errors) if claim.get("prepublication_checked_at") else None
