@@ -990,6 +990,21 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
                 for source_id in source_ids
             ):
                 errors.append(f"{claim_id}: claim locator, quote, and hash do not resolve to one referenced source")
+            source_evidence = claim.get("source_evidence")
+            evidence_entries = [item for item in source_evidence if isinstance(item, dict)] if isinstance(source_evidence, list) else []
+            evidence_ids = [item.get("source_id") for item in evidence_entries]
+            if len(evidence_entries) != len(source_ids) or len(set(evidence_ids)) != len(evidence_ids) or set(evidence_ids) != set(source_ids):
+                errors.append(f"{claim_id}: source evidence requires exact one-to-one source_ids coverage with no duplicates, omissions, or extras")
+            for item in evidence_entries:
+                source = source_map.get(item.get("source_id"), {})
+                if not item.get("role") or not item.get("proposition") or not (
+                    item.get("source_locator") == source.get("locator")
+                    and item.get("supporting_quote") == source.get("supporting_quote")
+                    and item.get("content_sha256") == source.get("content_sha256")
+                    and item.get("role") == source.get("claim_evidence_role")
+                    and item.get("proposition") == source.get("claim_evidence_proposition")
+                ):
+                    errors.append(f"{claim_id}: source evidence tuple must exactly match its source registry row and state a role and proposition")
             parse_timestamp(claim.get("researched_at"), "researched_at", claim_id, errors)
             if status == "conflict":
                 conflict = claim.get("conflict_evidence")
@@ -1082,6 +1097,26 @@ def validate_reviews(reviews, claims, source_map, as_of, errors):
             observed = any(source_map.get(source_id, {}).get("hash_provenance") == "observed_response" for source_id in claim.get("source_ids", []))
             if observed and review.get("quote_entailment_confirmed") is not True:
                 errors.append(f"{review_id}: independent review must confirm quote entailment for observed-response evidence")
+            if claim.get("status") in EVIDENCED_STATUSES:
+                expected_entries = [item for item in claim.get("source_evidence", []) if isinstance(item, dict)]
+                reviewed_source_entries = [item for item in review.get("source_entailment_reviews", []) if isinstance(item, dict)]
+                expected = {
+                    (
+                        item.get("source_id"), item.get("role"), item.get("proposition"),
+                        item.get("source_locator"), item.get("supporting_quote"), item.get("content_sha256"),
+                    )
+                    for item in expected_entries
+                }
+                actual = {
+                    (
+                        item.get("source_id"), item.get("reviewed_role"), item.get("reviewed_proposition"),
+                        item.get("source_locator"), item.get("reviewed_quote"), item.get("content_sha256"),
+                    )
+                    for item in reviewed_source_entries
+                    if item.get("entailment_confirmed") is True
+                }
+                if len(reviewed_source_entries) != len(expected_entries) or len(actual) != len(reviewed_source_entries) or actual != expected:
+                    errors.append(f"{review_id}: independent review requires exact one-to-one source evidence entailment coverage with no duplicates")
             prepub = parse_timestamp(claim.get("prepublication_checked_at"), "prepublication_checked_at", claim_id, errors) if claim.get("prepublication_checked_at") else None
             if reviewed and prepub and prepub < reviewed:
                 errors.append(f"{review_id}: prepublication check must follow independent review")

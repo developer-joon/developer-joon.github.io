@@ -156,6 +156,24 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "source_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "role", "proposition", "source_locator", "supporting_quote", "content_sha256"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "role": {"type": "string", "minLength": 1},
+          "proposition": {"type": "string", "minLength": 1},
+          "source_locator": {"type": "string", "minLength": 1},
+          "supporting_quote": {"type": "string", "minLength": 1},
+          "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
     "conflict_evidence": {
       "type": "array",
       "minItems": 2,
@@ -195,7 +213,8 @@
           "prepublication_checked_at",
           "source_locator",
           "supporting_quote",
-          "content_sha256"
+          "content_sha256",
+          "source_evidence"
         ],
         "properties": {
           "evidence_grade": {

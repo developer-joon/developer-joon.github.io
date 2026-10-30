@@ -96,13 +96,14 @@ class ContractFixture:
             )
             source.update(
                 locator="benefits", supporting_quote="Paid leave is offered.", publication_date="2026-01-01",
+                claim_evidence_role="primary_claim_evidence", claim_evidence_proposition="Paid leave is offered.",
                 applicable_legal_entities=[company["selected_reporting_legal_entity"]],
                 policy_owner_legal_entity=company["benefit_policy_owner"],
             )
             self.sources.append(source)
         # Claims cover only the first render batch; the fixture does not imply complete benefit coverage.
         self.claims = [self._claim(company) for company in self.current["domestic"][:25]]
-        self.reviews = [{"review_id": f"review-{i:04d}", "claim_id": claim["claim_id"], "researcher_id": "alice", "reviewer_id": "bob", "decision": "approved", "reviewed_at": "2026-10-20T03:00:00Z", "issues": [], "resolution": "accepted", "quote_entailment_confirmed": True} for i, claim in enumerate(self.claims)]
+        self.reviews = [{"review_id": f"review-{i:04d}", "claim_id": claim["claim_id"], "researcher_id": "alice", "reviewer_id": "bob", "decision": "approved", "reviewed_at": "2026-10-20T03:00:00Z", "issues": [], "resolution": "accepted", "quote_entailment_confirmed": True, "source_entailment_reviews": [{"source_id": item["source_id"], "reviewed_role": item["role"], "reviewed_proposition": item["proposition"], "source_locator": item["source_locator"], "reviewed_quote": item["supporting_quote"], "content_sha256": item["content_sha256"], "entailment_confirmed": True} for item in claim["source_evidence"]]} for i, claim in enumerate(self.claims)]
         self.write_all()
 
     def _companies(self, scope, count):
@@ -136,7 +137,7 @@ class ContractFixture:
 
     def _claim(self, company):
         source_id = "benefit-source-" + company["company_id"]
-        return {"claim_id": "claim-" + company["company_id"], "company_id": company["company_id"], "benefit_name": "Leave", "detail": "Paid leave is offered.", "status": "confirmed", "current_validity": "current", "evidence_grade": "A", "source_ids": [source_id], "application_scope": {"countries": [company["jurisdiction"]], "legal_entities": [company["legal_name"]], "roles": ["all"], "employment_types": ["full_time"], "tenure_condition": "none"}, "publication_date": "2026-01-01", "checked_at": "2026-10-20", "researched_at": "2026-10-20T02:00:00Z", "prepublication_checked_at": "2026-10-20T04:00:00Z", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64}
+        return {"claim_id": "claim-" + company["company_id"], "company_id": company["company_id"], "benefit_name": "Leave", "detail": "Paid leave is offered.", "status": "confirmed", "current_validity": "current", "evidence_grade": "A", "source_ids": [source_id], "source_evidence": [{"source_id": source_id, "role": "primary_claim_evidence", "proposition": "Paid leave is offered.", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64}], "application_scope": {"countries": [company["jurisdiction"]], "legal_entities": [company["legal_name"]], "roles": ["all"], "employment_types": ["full_time"], "tenure_condition": "none"}, "publication_date": "2026-01-01", "checked_at": "2026-10-20", "researched_at": "2026-10-20T02:00:00Z", "prepublication_checked_at": "2026-10-20T04:00:00Z", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64}
 
     @property
     def benefit_source(self):

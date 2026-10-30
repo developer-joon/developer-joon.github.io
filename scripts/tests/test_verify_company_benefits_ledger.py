@@ -326,8 +326,12 @@ class VerifierTests(unittest.TestCase):
                 continue
             source.update(hash_provenance="retained_file", evidence_path="benefit.bin", content_sha256=sha(payload))
             source["decisions"].update(retention="allowed", snapshot="allowed")
-        for claim in self.fixture.claims:
+        for claim, review in zip(self.fixture.claims, self.fixture.reviews):
             claim["content_sha256"] = sha(payload)
+            for evidence in claim["source_evidence"]:
+                evidence["content_sha256"] = sha(payload)
+            for entailment in review["source_entailment_reviews"]:
+                entailment["content_sha256"] = sha(payload)
         self.fixture.write_all()
         self.assertEqual([], self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29), evidence_root=evidence_root, approved_freeze_anchors=self.approved_freeze_anchors))
 
@@ -559,6 +563,47 @@ class VerifierTests(unittest.TestCase):
         self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
         self.assert_error("missing approved independent review")
 
+    def test_secondary_dol_source_tuple_mutation_fails(self):
+        research = ROOT / "docs" / "research" / "company-benefits"
+        claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines() if line]
+        reviews = [json.loads(line) for line in (research / "reviews.jsonl").read_text().splitlines() if line]
+        sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines() if line]
+        companies = [json.loads(line) for line in (research / "companies.jsonl").read_text().splitlines() if line]
+        claim_id = "US-CIK0000827187-2024-health"
+        original_claim = next(item for item in claims if item["claim_id"] == claim_id)
+        original_review = next(item for item in reviews if item["claim_id"] == claim_id)
+        company_map = {item["company_id"]: item for item in companies if item["company_id"] == original_claim["company_id"]}
+        original_source_map = {item["source_id"]: item for item in sources}
+        secondary_id = next(source_id for source_id in original_claim["source_ids"] if "instructions" in source_id)
+
+        def validation_errors(claim, review, source_map):
+            errors = []
+            self.verifier.validate_claims([claim], company_map, source_map, date(2026, 10, 30), errors)
+            self.verifier.validate_reviews([review], [claim], source_map, date(2026, 10, 30), errors)
+            return errors
+
+        mutated_sources = copy.deepcopy(original_source_map)
+        mutated_sources[secondary_id]["supporting_quote"] = "4A Vision only."
+        errors = validation_errors(copy.deepcopy(original_claim), copy.deepcopy(original_review), mutated_sources)
+        self.assertTrue(any("source evidence tuple" in error for error in errors), errors)
+
+        mutated_sources = copy.deepcopy(original_source_map)
+        mutated_sources[secondary_id]["claim_evidence_role"] = "primary_plan_row"
+        errors = validation_errors(copy.deepcopy(original_claim), copy.deepcopy(original_review), mutated_sources)
+        self.assertTrue(any("source evidence tuple" in error for error in errors), errors)
+
+        mutated_review = copy.deepcopy(original_review)
+        secondary_review = next(item for item in mutated_review["source_entailment_reviews"] if item["source_id"] == secondary_id)
+        secondary_review["reviewed_role"] = "primary_plan_row"
+        errors = validation_errors(copy.deepcopy(original_claim), mutated_review, original_source_map)
+        self.assertTrue(any("source evidence entailment coverage" in error for error in errors), errors)
+
+        mutated_claim = copy.deepcopy(original_claim)
+        secondary_evidence = next(item for item in mutated_claim["source_evidence"] if item["source_id"] == secondary_id)
+        secondary_evidence["proposition"] = "Code 4A means vision only."
+        errors = validation_errors(mutated_claim, copy.deepcopy(original_review), original_source_map)
+        self.assertTrue(any("source evidence entailment coverage" in error for error in errors), errors)
+
     def test_causal_evidence_review_and_prepublication_order_is_enforced(self):
         self.fixture.claims[0]["researched_at"] = "2026-10-19T00:00:00Z"
         self.fixture.claims[0]["prepublication_checked_at"] = "2026-10-20T02:30:00Z"
@@ -578,11 +623,19 @@ class VerifierTests(unittest.TestCase):
         duplicate["source_id"] = "benefit-source-alias"
         duplicate["content_sha256"] = "b" * 64
         duplicate["supporting_quote"] = contradicting_quote
+        duplicate["claim_evidence_role"] = "conflict_contradicts"
+        duplicate["claim_evidence_proposition"] = "Paid leave is not offered."
+        self.fixture.benefit_source["claim_evidence_role"] = "conflict_supports"
+        self.fixture.benefit_source["claim_evidence_proposition"] = "Paid leave is offered."
         self.fixture.sources.append(duplicate)
         claim.update(status="conflict", source_ids=[claim["source_ids"][0], duplicate["source_id"]], conflict_evidence=[
             {"source_id": claim["source_ids"][0], "position": "supports", "proposition": "Paid leave is offered.", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64},
             {"source_id": duplicate["source_id"], "position": "contradicts", "proposition": "Paid leave is not offered.", "source_locator": "benefits", "supporting_quote": contradicting_quote, "content_sha256": "b" * 64},
         ])
+        claim["source_evidence"] = [
+            {"source_id": item["source_id"], "role": f"conflict_{item['position']}", "proposition": item["proposition"], "source_locator": item["source_locator"], "supporting_quote": item["supporting_quote"], "content_sha256": item["content_sha256"]}
+            for item in claim["conflict_evidence"]
+        ]
         review = self.fixture.reviews[0]
         review.update(
             conflict_determination="unresolved",
@@ -594,6 +647,10 @@ class VerifierTests(unittest.TestCase):
                 {"source_id": item["source_id"], "position": item["position"], "reviewed_proposition": item["proposition"], "source_locator": item["source_locator"], "reviewed_quote": item["supporting_quote"], "content_sha256": item["content_sha256"], "entailment_confirmed": True, "reviewer_id": review["reviewer_id"]}
                 for item in claim["conflict_evidence"]
             ]
+        review["source_entailment_reviews"] = [
+            {"source_id": item["source_id"], "reviewed_role": item["role"], "reviewed_proposition": item["proposition"], "source_locator": item["source_locator"], "reviewed_quote": item["supporting_quote"], "content_sha256": item["content_sha256"], "entailment_confirmed": True}
+            for item in claim["source_evidence"]
+        ]
         self.fixture.write_all()
         return claim, duplicate, review
 
@@ -776,6 +833,13 @@ class VerifierTests(unittest.TestCase):
         self.assertEqual(2000, len((research / "companies.jsonl").read_bytes().splitlines()))
         self.assertEqual(199, len((research / "benefit-claims.jsonl").read_bytes().splitlines()))
         self.assertEqual(199, len((research / "reviews.jsonl").read_bytes().splitlines()))
+        claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines()]
+        sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines()]
+        referenced = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
+        bindings = [entry for claim in claims for entry in claim.get("source_evidence", [])]
+        self.assertEqual(242, len(sources))
+        self.assertEqual(215, len(referenced))
+        self.assertEqual(196, len(bindings))
 
 
 if __name__ == "__main__":

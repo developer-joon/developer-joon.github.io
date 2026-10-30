@@ -24,9 +24,9 @@ BATCHES = (
     ("international-5", "international-5/revised", "international-5/revised/independent-reviews-v2.jsonl"),
     ("gap-records", "gap-records", "gap-records/independent-reviews-v3.jsonl"),
 )
-SOURCE_FIELDS = {"source_id", "title", "owner", "source_type", "jurisdiction", "url", "locator", "supporting_quote", "content_sha256", "hash_provenance", "retrieved_at", "access_model", "authentication", "terms_url", "reuse_decision", "decisions", "supported_fields", "evidence_eligibility", "checked_at", "http_verification", "current_blocker", "publication_date", "applicable_legal_entities", "policy_owner_legal_entity", "multi_jurisdiction_applicability"}
-CLAIM_FIELDS = {"claim_id", "company_id", "benefit_name", "detail", "status", "current_validity", "evidence_grade", "source_ids", "application_scope", "publication_date", "checked_at", "prepublication_checked_at", "researched_at", "source_locator", "supporting_quote", "content_sha256", "searched_source_ids", "searched_at", "search_scope", "conflict_evidence"}
-REVIEW_FIELDS = {"review_id", "claim_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "issues", "resolution", "quote_entailment_confirmed", "conflict_determination", "conflict_opposition_confirmed", "conflict_side_entailments", "unresolved_conflict_wording_approved"}
+SOURCE_FIELDS = {"source_id", "title", "owner", "source_type", "jurisdiction", "url", "locator", "supporting_quote", "content_sha256", "claim_evidence_role", "claim_evidence_proposition", "hash_provenance", "retrieved_at", "access_model", "authentication", "terms_url", "reuse_decision", "decisions", "supported_fields", "evidence_eligibility", "checked_at", "http_verification", "current_blocker", "publication_date", "applicable_legal_entities", "policy_owner_legal_entity", "multi_jurisdiction_applicability"}
+CLAIM_FIELDS = {"claim_id", "company_id", "benefit_name", "detail", "status", "current_validity", "evidence_grade", "source_ids", "source_evidence", "application_scope", "publication_date", "checked_at", "prepublication_checked_at", "researched_at", "source_locator", "supporting_quote", "content_sha256", "searched_source_ids", "searched_at", "search_scope", "conflict_evidence"}
+REVIEW_FIELDS = {"review_id", "claim_id", "researcher_id", "reviewer_id", "decision", "reviewed_at", "issues", "resolution", "quote_entailment_confirmed", "source_entailment_reviews", "conflict_determination", "conflict_opposition_confirmed", "conflict_side_entailments", "unresolved_conflict_wording_approved"}
 NONABSENCE = "이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다."
 
 
@@ -64,7 +64,7 @@ def aggregate(source_root):
     raw_source_map = {item.get("source_id"): item for item in source_records}
     if len(raw_source_map) != len(source_records):
         raise ValueError("duplicate revised source IDs")
-    usable = {sid for sid, item in raw_source_map.items() if item.get("url") and SOURCE_FIELDS - {"multi_jurisdiction_applicability", "publication_date", "policy_owner_legal_entity", "applicable_legal_entities"} <= set(item)}
+    usable = {sid for sid, item in raw_source_map.items() if item.get("url") and SOURCE_FIELDS - {"multi_jurisdiction_applicability", "publication_date", "policy_owner_legal_entity", "applicable_legal_entities", "claim_evidence_role", "claim_evidence_proposition"} <= set(item)}
     packaged_claims = []
     for raw in claims:
         item = {key: raw[key] for key in sorted(CLAIM_FIELDS) if key in raw}
@@ -75,6 +75,34 @@ def aggregate(source_root):
             item["searched_source_ids"] = [sid for sid in item.get("searched_source_ids", []) if sid in usable]
             if not item["searched_source_ids"]:
                 raise ValueError(f"{raw['claim_id']}: unknown audit has no lawful official route")
+        else:
+            tuples = raw.get("evidence_tuples")
+            if tuples is not None:
+                by_source = {entry.get("source_id"): entry for entry in tuples}
+                if len(by_source) != len(tuples) or set(by_source) != set(item["source_ids"]):
+                    raise ValueError(f"{raw['claim_id']}: approved evidence tuples must cover source_ids exactly once")
+                item["source_evidence"] = [
+                    {
+                        "source_id": sid,
+                        "role": "primary_plan_row" if index == 0 else "secondary_code_definition",
+                        "proposition": by_source[sid]["supported_fact"],
+                        "source_locator": by_source[sid]["locator"],
+                        "supporting_quote": by_source[sid]["supporting_quote"],
+                        "content_sha256": by_source[sid]["content_sha256"],
+                    }
+                    for index, sid in enumerate(item["source_ids"])
+                ]
+            elif len(item["source_ids"]) == 1:
+                item["source_evidence"] = [{
+                    "source_id": item["source_ids"][0],
+                    "role": "primary_claim_evidence",
+                    "proposition": item["detail"],
+                    "source_locator": item["source_locator"],
+                    "supporting_quote": item["supporting_quote"],
+                    "content_sha256": item["content_sha256"],
+                }]
+            else:
+                raise ValueError(f"{raw['claim_id']}: multi-source claim lacks approved source-specific evidence tuples")
         packaged_claims.append(item)
     used = {sid for item in packaged_claims for sid in item.get("source_ids", []) + item.get("searched_source_ids", [])}
     sources = []
@@ -221,13 +249,17 @@ def bind_claim_sources(claims, sources, company_map):
                 bound_sources.append(source)
             continue
         new_ids = []
+        evidence_by_source = {item["source_id"]: item for item in claim["source_evidence"]}
         for index, sid in enumerate(claim["source_ids"]):
             source = dict(source_map[sid])
             source["source_id"] = f"{sid}::{claim['claim_id']}"
-            if index == 0:
-                source["locator"] = claim["source_locator"]
-                source["supporting_quote"] = claim["supporting_quote"]
-                source["content_sha256"] = claim["content_sha256"]
+            evidence = evidence_by_source[sid]
+            source["locator"] = evidence["source_locator"]
+            source["supporting_quote"] = evidence["supporting_quote"]
+            source["content_sha256"] = evidence["content_sha256"]
+            source["claim_evidence_role"] = evidence["role"]
+            source["claim_evidence_proposition"] = evidence["proposition"]
+            evidence["source_id"] = source["source_id"]
             if claim["status"] != "limited":
                 source["applicable_legal_entities"] = [selected]
                 source["policy_owner_legal_entity"] = selected
@@ -250,6 +282,28 @@ def bind_claim_sources(claims, sources, company_map):
     return [deduped[key] for key in sorted(deduped)]
 
 
+def bind_source_entailment_reviews(claims, reviews):
+    claim_map = {item["claim_id"]: item for item in claims}
+    for review in reviews:
+        claim = claim_map[review["claim_id"]]
+        if claim["status"] == "unknown":
+            review.pop("source_entailment_reviews", None)
+            continue
+        review["source_entailment_reviews"] = [
+            {
+                "source_id": item["source_id"],
+                "reviewed_role": item["role"],
+                "reviewed_proposition": item["proposition"],
+                "source_locator": item["source_locator"],
+                "reviewed_quote": item["supporting_quote"],
+                "content_sha256": item["content_sha256"],
+                "entailment_confirmed": True,
+            }
+            for item in claim["source_evidence"]
+        ]
+    return reviews
+
+
 def materialize(source_root, research_root, checks_path):
     research_root = Path(research_root)
     claims, sources, reviews, gaps = aggregate(source_root)
@@ -263,6 +317,7 @@ def materialize(source_root, research_root, checks_path):
     if {item["company_id"] for item in claims} - allowed:
         raise ValueError("pilot claims must use only the first 25 effective companies per scope")
     sources = bind_claim_sources(claims, sources, company_map)
+    bind_source_entailment_reviews(claims, reviews)
     base_sources = read_jsonl(research_root / "source-registry.jsonl")
     pilot_ids = {item["source_id"] for item in sources}
     base_sources = [item for item in base_sources if item.get("source_id") not in pilot_ids]
