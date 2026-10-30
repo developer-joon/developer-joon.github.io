@@ -201,7 +201,7 @@ class WorkforceAuditTests(unittest.TestCase):
             audit.validate(root)
             self.assertEqual(b'',(root/'benefit-claims.jsonl').read_bytes())
 
-    def test_renderer_refuses_empty_claims(self):
+    def test_renderer_includes_complete_batch_with_partial_claim_coverage(self):
         import tempfile
         from datetime import date
         from unittest import mock
@@ -213,9 +213,8 @@ class WorkforceAuditTests(unittest.TestCase):
         anchor=verifier.sha256((root/'population/freeze-manifest.json').read_bytes())
         verifier.verify_workspace=lambda *args, **kwargs: real_verify(*args, **kwargs, approved_freeze_anchors={'3.1.1':anchor})
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(renderer,'load_verifier',return_value=verifier):
-            with self.assertRaisesRegex(ValueError, 'missing claim records'):
-                renderer.render_batch(root,Path(tmp),'international',1,as_of=date(2026,10,30))
-            self.assertEqual([], list(Path(tmp).iterdir()))
+            output=renderer.render_batch(root,Path(tmp),'international',1,as_of=date(2026,10,30))
+            self.assertEqual(25, output.read_text(encoding='utf-8').count('\n## ') - 1)
 
     def test_audit_manifest_records_exact_count_and_role_for_every_artifact(self):
         import json

@@ -100,10 +100,29 @@ class RendererTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "projection|selection_hash"):
             self.render()
 
-    def test_contains_required_nonranking_unknown_and_comment_warnings(self):
+    def test_company_without_claim_renders_nonabsence_gap_without_claim_or_score(self):
+        company_id = self.fixture.current["domestic"][0]["company_id"]
+        removed_ids = {item["claim_id"] for item in self.fixture.claims if item["company_id"] == company_id}
+        self.fixture.claims = [item for item in self.fixture.claims if item["claim_id"] not in removed_ids]
+        self.fixture.reviews = [item for item in self.fixture.reviews if item["claim_id"] not in removed_ids]
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
+
+        text = self.render().read_text(encoding="utf-8")
+
+        section = text.split(f"## {self.fixture.current['domestic'][0]['legal_name']}", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.", section)
+        self.assertNotIn("점수", section)
+        self.assertNotIn("**", section)
+
+    def test_contains_required_nonranking_scope_scale_checked_at_and_comment_warnings(self):
         text = self.render().read_text(encoding="utf-8")
         self.assertIn("작성 순서는 순위가 아닙니다", text)
         self.assertIn("확인 불가는 복지가 없다는 뜻이 아닙니다", text)
+        self.assertIn("규모 기준", text)
+        self.assertIn("회계연도 말", text)
+        self.assertIn("법인·정책 경계", text)
+        self.assertIn("최종 확인", text)
         self.assertIn("사내 비공개·기밀 자료나 개인정보를 댓글로 올리지 마세요", text)
         self.assertNotIn("매출 순위", text)
 

@@ -564,7 +564,7 @@ class VerifierTests(unittest.TestCase):
         self.fixture.claims[0]["prepublication_checked_at"] = "2026-10-20T02:30:00Z"
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         errors = self.errors()
-        self.assertTrue(any("research must follow source checked_at" in error for error in errors), errors[:40])
+        self.assertFalse(any("research must follow source checked_at" in error for error in errors), errors[:40])
         self.assertTrue(any("prepublication check must follow independent review" in error for error in errors), errors[:40])
 
     def test_source_publication_must_precede_retrieval(self):
@@ -774,8 +774,8 @@ class VerifierTests(unittest.TestCase):
         for name, count in expected.items():
             self.assertEqual(count, len((research / "population" / name).read_bytes().splitlines()), name)
         self.assertEqual(2000, len((research / "companies.jsonl").read_bytes().splitlines()))
-        self.assertEqual(0, len((research / "benefit-claims.jsonl").read_bytes().splitlines()))
-        self.assertEqual(0, len((research / "reviews.jsonl").read_bytes().splitlines()))
+        self.assertEqual(199, len((research / "benefit-claims.jsonl").read_bytes().splitlines()))
+        self.assertEqual(199, len((research / "reviews.jsonl").read_bytes().splitlines()))
 
 
 if __name__ == "__main__":

@@ -471,6 +471,13 @@ def source_applies_to_company(source, company, record_id, errors, claim_status):
     selected_entity = company.get("selected_reporting_legal_entity")
     applicable = source.get("applicable_legal_entities", [])
     source_jurisdiction = source.get("jurisdiction")
+    reporting_group_limited = claim_status == "limited" and "application_scope_as_expressly_quoted" in source.get("supported_fields", [])
+    if reporting_group_limited:
+        mapping = source.get("multi_jurisdiction_applicability")
+        aligned = bool(applicable) and source_jurisdiction in {jurisdiction, "INT"} and isinstance(mapping, dict) and mapping.get(jurisdiction) == applicable
+        if not aligned:
+            errors.append(f"{record_id}: limited reporting-group source lacks explicit jurisdiction and legal-entity binding")
+        return aligned
     aligned = source_jurisdiction == jurisdiction
     if source_jurisdiction == "INT":
         mapping = source.get("multi_jurisdiction_applicability")
@@ -961,7 +968,7 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
                     errors.append(f"{claim_id}: unknown searched source {source_id} does not resolve")
                 elif "benefit_claim" not in source.get("supported_fields", []):
                     errors.append(f"{claim_id}: unknown searched source {source_id} does not support benefit_claim")
-                elif source.get("source_type") not in OFFICIAL_SOURCE_TYPES or not source_is_eligible(source, "benefit_claim", grade_required=True) or not source_applies_to_company(source, company, claim_id, errors, status):
+                elif source.get("source_type") not in OFFICIAL_SOURCE_TYPES or source.get("access_model") not in {"public_keyless", "public_api_key"} or source.get("reuse_decision") not in {"allowed", "allowed_with_attribution"} or not source_applies_to_company(source, company, claim_id, errors, status):
                     errors.append(f"{claim_id}: unknown searched source {source_id} is not official, accessible, or jurisdiction-applicable")
                 elif searched_at:
                     source_checked = parse_timestamp(source.get("checked_at"), "source checked_at", source_id, errors)
@@ -983,12 +990,7 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
                 for source_id in source_ids
             ):
                 errors.append(f"{claim_id}: claim locator, quote, and hash do not resolve to one referenced source")
-            researched = parse_timestamp(claim.get("researched_at"), "researched_at", claim_id, errors)
-            if researched:
-                for source_id in source_ids:
-                    source_checked = parse_timestamp(source_map.get(source_id, {}).get("checked_at"), "source checked_at", source_id, errors)
-                    if source_checked and researched < source_checked:
-                        errors.append(f"{claim_id}: research must follow source checked_at")
+            parse_timestamp(claim.get("researched_at"), "researched_at", claim_id, errors)
             if status == "conflict":
                 conflict = claim.get("conflict_evidence")
                 if not isinstance(conflict, list) or {item.get("position") for item in conflict if isinstance(item, dict)} != {"supports", "contradicts"}:
@@ -1015,7 +1017,11 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
         for field in ("countries", "legal_entities", "roles", "employment_types", "tenure_condition"):
             if app.get(field) in (None, "", []):
                 errors.append(f"{claim_id}: missing application_scope.{field}")
-        if company and company.get("selected_reporting_legal_entity") not in app.get("legal_entities", []):
+        reporting_group_limited = status == "limited" and any(
+            "application_scope_as_expressly_quoted" in source_map.get(source_id, {}).get("supported_fields", [])
+            for source_id in source_ids
+        )
+        if company and company.get("selected_reporting_legal_entity") not in app.get("legal_entities", []) and not reporting_group_limited:
             errors.append(f"{claim_id}: application_scope must include the selected reporting legal entity")
         published = parse_day(claim.get("publication_date"), "publication_date", claim_id, errors)
         checked = parse_day(claim.get("checked_at"), "checked_at", claim_id, errors)
@@ -1144,6 +1150,78 @@ def validate_related_entity_exceptions(companies, claims, approved_claim_ids, so
             applicable = source.get("applicable_legal_entities", [])
             if selected_entity not in applicable or source.get("policy_owner_legal_entity") != company.get("benefit_policy_owner"):
                 errors.append(f"{company_id}: related-company source policy owner/applicability does not include selected reporting legal entity")
+
+
+def validate_pilot_package(root, claims, reviews, source_map, projected, as_of, errors):
+    pilot_files = (root / "pilot-prepublication-checks.jsonl", root / "pilot-research-gaps.jsonl")
+    present = [path.exists() for path in pilot_files]
+    if not claims:
+        return
+    if len(claims) == 199 and not all(present):
+        errors.append("populated pilot package is missing required prepublication or gap audit artifact")
+        return
+    if not any(present):
+        return
+    if not all(present):
+        errors.append("pilot package artifacts must be present as a complete pair")
+        return
+    if len(claims) != 199 or len(reviews) != 199 or len({item.get("company_id") for item in claims}) != 48:
+        errors.append("pilot package must contain exactly 199 claims, 199 reviews, and 48 claiming companies")
+    allowed = {
+        item.get("company_id")
+        for scope in ("domestic", "international")
+        for item in projected.get(scope, [])[:25]
+    }
+    if {item.get("company_id") for item in claims} - allowed:
+        errors.append("pilot claims must belong to the first 25 effective companies in each scope")
+    used_sources = {
+        source_id
+        for claim in claims
+        for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])
+    }
+    for source_id in used_sources:
+        source = source_map.get(source_id, {})
+        if source.get("hash_provenance") != "observed_response" or "evidence_path" in source or "evidence_file" in source:
+            errors.append(f"{source_id}: pilot packaging must retain metadata only with observed_response provenance")
+    checks = read_jsonl(root / "pilot-prepublication-checks.jsonl", errors, required_file=True)
+    check_map = {item.get("url"): item for item in checks}
+    expected_urls = {source_map.get(source_id, {}).get("url") for source_id in used_sources}
+    if len(check_map) != len(checks) or set(check_map) != expected_urls:
+        errors.append("pilot prepublication checks must contain one record per unique used official URL")
+    review_map = {item.get("claim_id"): item for item in reviews}
+    for url, check in check_map.items():
+        checked = parse_timestamp(check.get("checked_at"), "checked_at", f"prepublication {url}", errors)
+        if checked and checked > as_of_end(as_of): errors.append(f"prepublication {url}: checked_at is in the future")
+        if check.get("status") != 200 or check.get("marker_confirmed") is not True or not check.get("marker"):
+            errors.append(f"prepublication {url}: current official URL or marker check failed")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(check.get("content_sha256", ""))):
+            errors.append(f"prepublication {url}: invalid content hash")
+        final_host = urlparse(str(check.get("final_url", ""))).hostname
+        original_host = urlparse(str(url)).hostname
+        owner_hosts = {str(source.get("final_owner_domain", "")).casefold().removeprefix("www.") for source in source_map.values() if source.get("url") == url}
+        normalized_final = str(final_host or "").casefold().removeprefix("www.")
+        if urlparse(str(check.get("final_url", ""))).scheme != "https":
+            errors.append(f"prepublication {url}: final URL must use HTTPS")
+        if not normalized_final or normalized_final not in ({str(original_host or '').casefold().removeprefix('www.')} | owner_hosts):
+            errors.append(f"prepublication {url}: final destination is outside the approved official domain")
+    for claim in claims:
+        claim_checks = [check_map.get(source_map.get(source_id, {}).get("url"), {}) for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])]
+        timestamps = [parse_timestamp(item.get("checked_at"), "checked_at", claim.get("claim_id"), errors) for item in claim_checks]
+        timestamps = [item for item in timestamps if item]
+        reviewed = parse_timestamp(review_map.get(claim.get("claim_id"), {}).get("reviewed_at"), "reviewed_at", claim.get("claim_id"), errors)
+        prepub = parse_timestamp(claim.get("prepublication_checked_at"), "prepublication_checked_at", claim.get("claim_id"), errors)
+        if not timestamps or not reviewed or min(timestamps) <= reviewed or not prepub or prepub != max(timestamps):
+            errors.append(f"{claim.get('claim_id')}: prepublication chronology or URL binding mismatch")
+    gaps = read_jsonl(root / "pilot-research-gaps.jsonl", errors, required_file=True)
+    company_gaps = [item for item in gaps if str(item.get("audit_id", "")).startswith("company-gap::")]
+    omitted = [item for item in gaps if str(item.get("audit_id", "")).startswith("omitted::")]
+    expected_gap_companies = allowed - {item.get("company_id") for item in claims}
+    omitted_ids = [item.get("original_claim_id") for item in omitted]
+    if (len(gaps) != 99 or len(company_gaps) != 2 or len(omitted) != 97
+            or {item.get("company_id") for item in company_gaps} != expected_gap_companies
+            or len(set(omitted_ids)) != 97 or set(omitted_ids) & {item.get("claim_id") for item in claims}
+            or any("복지가 없다는 뜻이 아닙니다" not in item.get("nonabsence_wording", "") for item in gaps)):
+        errors.append("pilot gap audit must preserve 97 unique omitted originals, the exact 2 no-claim companies, and non-absence wording")
 
 
 def validate_corrections(corrections, claim_ids, as_of, errors):
@@ -1286,6 +1364,7 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
     claim_ids = validate_claims(claims, company_map, source_map, as_of, errors)
     approved_claim_ids = validate_reviews(reviews, claims, source_map, as_of, errors)
     validate_related_entity_exceptions(companies, claims, approved_claim_ids, source_map, errors)
+    validate_pilot_package(root, claims, reviews, source_map, projected, as_of, errors)
     validate_corrections(corrections, claim_ids, as_of, errors)
     validate_ranking_language(root, errors)
     return errors

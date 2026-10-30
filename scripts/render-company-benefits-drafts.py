@@ -104,9 +104,6 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     for claim in claims:
         if claim.get("company_id") in claims_by_company and claim.get("claim_id") in approved_claim_ids:
             claims_by_company[claim["company_id"]].append(claim)
-    missing_claims = [cid for cid, values in claims_by_company.items() if not values]
-    if missing_claims:
-        raise ValueError(f"missing claim records for: {', '.join(missing_claims)}")
     source_map = {source.get("source_id"): source for source in sources}
     used_source_ids = {
         source_id
@@ -127,9 +124,21 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     for company in batch:
         parts.append(f"## {company['legal_name']}\n\n")
         parts.append(f"- 법인 ID: `{company['company_id']}`\n")
-        for claim in sorted(claims_by_company[company["company_id"]], key=lambda c: c.get("claim_id", "")):
+        metric = company.get("scale_metric", {})
+        parts.append(f"- 규모 기준: {metric.get('type', '미상')} {metric.get('value', '미상')} {metric.get('currency', '')}\n")
+        parts.append(f"- 회계연도 말: {metric.get('fiscal_year_end', '미상')}\n")
+        owner = company.get("benefit_policy_owner")
+        owner_label = owner if isinstance(owner, str) else "공개 모집단 자료에서 미확정"
+        parts.append(f"- 법인·정책 경계: 선정 법인 `{company.get('selected_reporting_legal_entity', company['legal_name'])}` / 복지 정책 주체 {owner_label}\n")
+        values = sorted(claims_by_company[company["company_id"]], key=lambda c: c.get("claim_id", ""))
+        if not values:
+            parts.append("- 이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.\n")
+        for claim in values:
             status = status_labels.get(claim.get("status"), claim.get("status", "미정"))
             parts.append(f"- **{claim.get('benefit_name', '복지 항목')}** — {status}: {claim.get('detail', '')}\n")
+            scope_value = claim.get("application_scope", {})
+            parts.append(f"  - 적용 범위: 국가 {', '.join(scope_value.get('countries', []))}; 법인 {', '.join(scope_value.get('legal_entities', []))}; 고용형태 {', '.join(scope_value.get('employment_types', []))}\n")
+            parts.append(f"  - 최종 확인: {claim.get('prepublication_checked_at', claim.get('checked_at', '미상'))}\n")
             for source_id in sorted(claim.get("source_ids", [])):
                 source = source_map[source_id]
                 parts.append(f"  - 출처: [{source.get('title', source_id)}]({source.get('url', '')})\n")
