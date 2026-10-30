@@ -18,6 +18,7 @@
     "benefit_policy_owner",
     "related_company_exception",
     "entity_status",
+    "active_at_cutoff",
     "sector",
     "scale_metric",
     "scale_evidence",
@@ -131,7 +132,17 @@
       ]
     },
     "entity_status": {
-      "const": "active"
+      "const": "active_at_cutoff"
+    },
+    "active_at_cutoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "cutoff_at", "evidence_source_ids"],
+      "properties": {
+        "status": {"const": "no_official_cessation_evidence"},
+        "cutoff_at": {"type": "string", "format": "date-time"},
+        "evidence_source_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
     },
     "sector": {
       "enum": [

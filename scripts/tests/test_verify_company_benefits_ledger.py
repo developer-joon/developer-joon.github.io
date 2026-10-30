@@ -277,6 +277,21 @@ class VerifierTests(unittest.TestCase):
         for needle in ("employer_evidence", "scale evidence registry_id", "scale evidence value"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
 
+    def test_employee_count_99_fails_and_100_passes(self):
+        self.rewrite_company_everywhere("domestic", 0, lambda company: company["employer_evidence"].update(employee_count=99))
+        self.assert_error("workforce minimum")
+        self.fixture = FrozenFixture(self.root)
+        self.rewrite_company_everywhere("domestic", 0, lambda company: company["employer_evidence"].update(employee_count=100))
+        self.approved_freeze_anchors = self.fixture.approved_freeze_anchors()
+        self.assertEqual([], self.errors())
+
+    def test_active_at_cutoff_contract_rejects_stale_active_label(self):
+        def mutate(company):
+            company["entity_status"] = "active"
+            company["active_at_cutoff"] = {"status": "ceased", "event_type": "dissolved", "effective_date": "2026-10-01", "evidence_source_ids": [self.fixture.source_for_jurisdiction["KR"]]}
+        self.rewrite_company_everywhere("domestic", 0, mutate)
+        self.assert_error("ceased on or before cutoff")
+
     def test_evidence_source_url_hash_period_and_legal_entity_must_match(self):
         def jurisdiction_mutate(company):
             company.pop("incorporation_evidence", None)
@@ -621,8 +636,9 @@ class VerifierTests(unittest.TestCase):
 
     def test_secondary_dol_source_tuple_mutation_fails(self):
         research = ROOT / "docs" / "research" / "company-benefits"
-        claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines() if line]
-        reviews = [json.loads(line) for line in (research / "reviews.jsonl").read_text().splitlines() if line]
+        audit = [json.loads(line) for line in (research / "series-historical-audit.jsonl").read_text().splitlines() if line]
+        claims = [item["record"] for item in audit if item["record_type"] == "claim"]
+        reviews = [item["record"] for item in audit if item["record_type"] == "review"]
         sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines() if line]
         companies = [json.loads(line) for line in (research / "companies.jsonl").read_text().splitlines() if line]
         claim_id = "US-CIK0000827187-2024-health"
@@ -662,8 +678,9 @@ class VerifierTests(unittest.TestCase):
 
     def test_source_entailment_reviewer_identity_must_exactly_match_review(self):
         research = ROOT / "docs" / "research" / "company-benefits"
-        claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines() if line]
-        reviews = [json.loads(line) for line in (research / "reviews.jsonl").read_text().splitlines() if line]
+        audit = [json.loads(line) for line in (research / "series-historical-audit.jsonl").read_text().splitlines() if line]
+        claims = [item["record"] for item in audit if item["record_type"] == "claim"]
+        reviews = [item["record"] for item in audit if item["record_type"] == "review"]
         sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines() if line]
         claim_id = "US-CIK0000827187-2024-health"
         claim = next(item for item in claims if item["claim_id"] == claim_id)
@@ -916,12 +933,13 @@ class VerifierTests(unittest.TestCase):
         errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 30), freeze_anchor_receipt=receipt)
         self.assertEqual([], errors)
         self.assertEqual("approved", protocol["status"])
-        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1066,
+        expected = {"domestic-eligible.jsonl": 1037, "international-eligible.jsonl": 1060,
                     "domestic-selected.jsonl": 1000, "international-selected.jsonl": 1000,
                     "domestic-effective-selected.jsonl": 1000, "international-effective-selected.jsonl": 1000}
         for name, count in expected.items():
             self.assertEqual(count, len((research / "population" / name).read_bytes().splitlines()), name)
         self.assertEqual(2000, len((research / "companies.jsonl").read_bytes().splitlines()))
+        self.assertEqual(497, len((research / "series-historical-audit.jsonl").read_bytes().splitlines()))
         claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines()]
         sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines()]
         referenced = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}

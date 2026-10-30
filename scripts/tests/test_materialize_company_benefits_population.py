@@ -18,6 +18,35 @@ def load_module():
 
 
 class MaterializerTests(unittest.TestCase):
+    def test_workforce_boundary_and_ceased_entity_predicate(self):
+        materializer = load_module()
+        base = {"company_id": "test", "employer_evidence": {"employee_count": 100}}
+        self.assertEqual((True, None), materializer.eligibility_decision(base, []))
+        below = {"company_id": "below", "employer_evidence": {"employee_count": 99}}
+        self.assertEqual("workforce_below_minimum", materializer.eligibility_decision(below, [])[1])
+        missing = {"company_id": "missing", "employer_evidence": {}}
+        self.assertEqual("workforce_missing_or_ambiguous", materializer.eligibility_decision(missing, [])[1])
+        stale_active = {"company_id": "ceased", "entity_status": "active", "employer_evidence": {"employee_count": 100}}
+        cessation = [{"event_type": "dissolved", "effective_date": "2026-10-01"}]
+        self.assertEqual("entity_ceased_before_cutoff", materializer.eligibility_decision(stale_active, cessation)[1])
+        delisted = [{"event_type": "delisted", "effective_date": "2026-10-01"}]
+        self.assertEqual((True, None), materializer.eligibility_decision(stale_active, delisted))
+
+    def test_repository_refreeze_has_minimum_workforce_reserves_and_ceased_exclusion(self):
+        population = ROOT / "docs" / "research" / "company-benefits" / "population"
+        eligible = {
+            scope: [json.loads(line) for line in (population / f"{scope}-eligible.jsonl").read_text().splitlines()]
+            for scope in ("domestic", "international")
+        }
+        self.assertEqual({"domestic": 1037, "international": 1060}, {scope: len(rows) for scope, rows in eligible.items()})
+        for scope, rows in eligible.items():
+            self.assertTrue(all(row["employer_evidence"]["employee_count"] >= 100 for row in rows))
+            reserve = [json.loads(line) for line in (population / f"{scope}-reserve.jsonl").read_text().splitlines()]
+            self.assertEqual(rows[1000:], reserve)
+        exclusions = [json.loads(line) for line in (population / "exclusion-ledger.jsonl").read_text().splitlines()]
+        humax = next(row for row in exclusions if row["company_id"] == "KR-CRN-1101110604200")
+        self.assertEqual("entity_ceased_before_cutoff", humax["reason_code"])
+        self.assertEqual("2026-10-01", humax["evidence"]["effective_date"])
     def test_repository_strict_us_population_excludes_known_foreign_and_ambiguous_entities(self):
         population = ROOT / "docs" / "research" / "company-benefits" / "population"
         prohibited = {"NCL CORP LTD.", "TRINSEO PLC", "MOBILEYE GLOBAL INC."}
@@ -26,8 +55,9 @@ class MaterializerTests(unittest.TestCase):
             self.assertTrue(prohibited.isdisjoint(names), ledger)
 
     def test_repository_preserves_all_eleven_non_december_korean_evidence_dates(self):
-        path = ROOT / "docs" / "research" / "company-benefits" / "population" / "domestic-eligible.jsonl"
-        records = {item["company_id"]: item for item in (json.loads(line) for line in path.read_text().splitlines())}
+        materializer = load_module()
+        path = Path("/home/bread/.hermes/profiles/conan/cache/scratch/korea-no-key-acquisition/korean_fully_qualifying_entities.csv")
+        records = {item["company_id"]: item for item in materializer.load_domestic(path)}
         expected = {
             "KR-CRN-1101110035108": "2024-09-30", "KR-CRN-1201110002022": "2024-09-30",
             "KR-CRN-1101112507551": "2024-06-30", "KR-CRN-1701110021816": "2024-03-31",

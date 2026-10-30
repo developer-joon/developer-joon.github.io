@@ -150,6 +150,64 @@ def materialize_contract(root, approved_batch_ids, approved_at, reviewer_id, sta
     return batches, progress
 
 
+def reconcile_refreeze(root, previous_selected, previous_claims, previous_reviews, previous_gaps):
+    """Preserve old research as nonpublishable audit records and remap by company ID."""
+    root = Path(root)
+    batches = build_batches(root)
+    new_batch_by_company = {
+        company_id: batch["batch_id"]
+        for batch in batches for company_id in batch["company_ids"]
+    }
+    old_ids = {item["company_id"] for item in previous_selected}
+    new_ids = set(new_batch_by_company)
+    retained = old_ids & new_ids
+    removed = old_ids - new_ids
+    added = new_ids - old_ids
+    old_batch_by_company = {}
+    for scope in SCOPES:
+        ids = [item["company_id"] for item in previous_selected if item.get("scope") == scope]
+        for index, company_id in enumerate(ids):
+            old_batch_by_company[company_id] = f"{scope}-{index // BATCH_SIZE + 1:02d}"
+    claim_company = {item.get("claim_id"): item.get("company_id") for item in previous_claims}
+    audit = []
+    for record_type, records in (("claim", previous_claims), ("review", previous_reviews), ("gap", previous_gaps)):
+        for record in records:
+            company_id = record.get("company_id")
+            if not company_id and record_type == "review":
+                company_id = claim_company.get(record.get("claim_id"))
+            audit.append({
+                "record_type": record_type,
+                "company_id": company_id,
+                "selection_status": "retained" if company_id in retained else "removed",
+                "old_batch_id": old_batch_by_company.get(company_id),
+                "new_batch_id": new_batch_by_company.get(company_id),
+                "publishable": False,
+                "reason": "protocol_4_refreeze_requires_new_batch_review",
+                "record": record,
+            })
+    write_jsonl(root / "series-historical-audit.jsonl", audit)
+    write_jsonl(root / "benefit-claims.jsonl", [])
+    write_jsonl(root / "reviews.jsonl", [])
+    write_jsonl(root / "series-research-gaps.jsonl", [])
+    write_jsonl(root / "series-prepublication-checks.jsonl", [])
+    materialize_contract(root, set(), {}, {}, status="in_progress")
+    report = {
+        "protocol_version": "4.0.0",
+        "old_population_count": len(old_ids),
+        "new_population_count": len(new_ids),
+        "retained_count": len(retained),
+        "removed_count": len(removed),
+        "new_count": len(added),
+        "retained_company_ids": sorted(retained),
+        "removed_company_ids": sorted(removed),
+        "new_company_ids": sorted(added),
+        "new_batch_by_company_id": {key: new_batch_by_company[key] for key in sorted(new_batch_by_company)},
+        "approval_rule": "A batch remains pending unless all 25 new canonical member IDs are reviewed or otherwise accounted; old batch approval is never transferred.",
+    }
+    (root / "series-remap-report.json").write_bytes(json_bytes(report))
+    return report
+
+
 def validate_series(root, projected, claims, reviews, source_map, as_of, errors, parse_timestamp):
     root = Path(root)
     batches = read_jsonl(root / "series-batches.jsonl")

@@ -84,16 +84,19 @@ class SeriesContractTests(unittest.TestCase):
         self.assertEqual(self.series.file_sha256(self.root / "population/effective-selection-events.jsonl"),
                          first["replacement_events_sha256"])
 
-    def test_repository_pilot_migration_preserves_bytes_and_historical_totals(self):
+    def test_repository_refreeze_preserves_prior_work_as_nonpublishable_audit(self):
         research = ROOT / "docs" / "research" / "company-benefits"
-        self.assertEqual((research / "pilot-prepublication-checks.jsonl").read_bytes(),
-                         (research / "series-prepublication-checks.jsonl").read_bytes())
-        self.assertEqual((research / "pilot-research-gaps.jsonl").read_bytes(),
-                         (research / "series-research-gaps.jsonl").read_bytes())
-        self.assertEqual(199, len((research / "benefit-claims.jsonl").read_bytes().splitlines()))
-        self.assertEqual(199, len((research / "reviews.jsonl").read_bytes().splitlines()))
-        self.assertEqual(99, len((research / "series-research-gaps.jsonl").read_bytes().splitlines()))
-        self.assertEqual(48, len({item["company_id"] for item in self.series.read_jsonl(research / "benefit-claims.jsonl")}))
+        report = json.loads((research / "series-remap-report.json").read_text())
+        self.assertEqual(2000, report["new_population_count"])
+        self.assertEqual(report["removed_count"], len(report["removed_company_ids"]))
+        self.assertEqual(report["new_count"], len(report["new_company_ids"]))
+        self.assertEqual([], self.series.read_jsonl(research / "benefit-claims.jsonl"))
+        self.assertEqual([], self.series.read_jsonl(research / "reviews.jsonl"))
+        historical = self.series.read_jsonl(research / "series-historical-audit.jsonl")
+        self.assertTrue(historical)
+        self.assertTrue(all(row["publishable"] is False for row in historical))
+        retained = [row for row in historical if row.get("new_batch_id")]
+        self.assertTrue(retained)
 
 
 if __name__ == "__main__":

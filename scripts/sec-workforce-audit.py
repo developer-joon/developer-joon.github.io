@@ -37,7 +37,7 @@ EXTERNAL = Path('/home/bread/.hermes/profiles/conan/cache/scratch/international-
 
 PINNED_EXTERNAL = {'/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/all_1740_jurisdiction_audit.csv': ('5f58b110006d3deca6fb71fcea90677e46f3942b71579f9822cfaa2c557e3f26', 1740), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/exclusions.csv': ('5af14248248f67b6303aacbfe01e7ada4395284195dd0761b23a08ccdf73b4af', 670), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/new_recoveries_full_false_positive_audit.csv': ('74e264dfea1e978af5aa103301e6f67b51e76818444998f38c62b7f0e8fc76a1', 167), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/replacement_reserve_full_audit.csv': ('0fed890b3fdde187c69d421a72baa5e4c85763263fac890f264b9bcf705aa1ec', 70), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/validation_report.json': ('474f566979357cf5adad0ede375138663ea016d7f6ee0fc6035d7a3cb3994e39', None), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/manifest.json': ('e53e99780170f12bd66a00f1acf0cd9667df7a883f0144fa4661ba19b61cfb52', None), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/corrected_strict_us_employee_eligible_ledger.csv': ('05078c97c115a493b88e8a472456b5eff2f9e7e58ee89a48e245be13d5de5762', 1070), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/new_employee_recoveries.csv': ('0fb900e0274fc2e57327af503b0cfd25dbaa3caacde0f9598324a4d7509cc742', 167), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/independent_review/independent_sec_workforce_reviews.jsonl': ('ed7c5e8cd0a765b7735d3ef86fc17d6045d708d4e8cbe6b0d1e05df1515c59bd', None), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/independent_review/summary.json': ('e4d3bbd10d02e16afd844afaba1d8ab7dc32d756ae832fbbdf90563c39ec37d9', None), '/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/independent_review/sha256_manifest.json': ('2d5b8c3b99bab96b6234f7698809c6feb81423c2c750161a6c47a2afc9bab4c3', None)}
 PINNED_EXTERNAL['/home/bread/.hermes/profiles/conan/cache/scratch/international-open-acquisition/threshold_jurisdiction_corrected/independent_review/build_independent_review.py'] = ('cec2a4887ce76c300813c5fc96c70933f1b694f318cf4099eb874cee7788265e', None)
-EXPECTED_COUNTS = {'candidates': 1740, 'excluded': 674, 'eligible': 1066, 'selected': 1000, 'reserve': 66, 'reviews': 167, 'approved': 163, 'rejected': 4}
+EXPECTED_COUNTS = {'candidates': 1740, 'historical_review_excluded': 674, 'workforce_below_minimum': 6, 'excluded': 680, 'eligible': 1060, 'selected': 1000, 'reserve': 60, 'reviews': 167, 'approved': 163, 'rejected': 4}
 PINNED_FILE_COUNTS = {
     'all_1740_jurisdiction_audit.csv': 1740,
     'exclusions.csv': 670,
@@ -190,7 +190,7 @@ def validate(root):
     root = Path(root)
     p = root/'population'
     manifest = json.loads((p/'acquisition-audit-manifest.json').read_text())
-    if manifest['protocol_version'] != '3.1.1':
+    if manifest['protocol_version'] != '4.0.0':
         raise ValueError('audit protocol mismatch')
     expected_pins = {
         path: (sha, PINNED_FILE_COUNTS[Path(path).name], 'external_audit_artifact')
@@ -226,7 +226,7 @@ def validate(root):
         raise ValueError('1740 partition mismatch')
     for name in ['international-eligible','international-selected','international-initial-effective-selected','international-effective-selected']:
         rows = [json.loads(x) for x in (p/f'{name}.jsonl').read_text().splitlines()]
-        if len(rows) != (1066 if name.endswith('eligible') else 1000):
+        if len(rows) != (1060 if name.endswith('eligible') else 1000):
             raise ValueError('international count mismatch')
         for row in rows:
             ev = row['employer_evidence']; accession = ev['accession']
@@ -267,6 +267,6 @@ def build(root, external=EXTERNAL):
     for name in names:
         path=external/name; data=path.read_bytes()
         pins.append({'path':str(path),'sha256':digest(data),'count':artifact_count(path, data),'role':'external_audit_artifact'})
-    value={'protocol_version':'3.1.1','counts':{'candidates':1740,'excluded':674,'eligible':1066,'selected':1000,'reserve':66,'reviews':167,'approved':163,'rejected':4},'external_pins':pins,'committed_copies':[{'path':'population/independent-sec-workforce-reviews.jsonl','sha256':digest(compact),'count':167,'role':'repo_compact_copy'}]}
+    value={'protocol_version':'4.0.0','counts':EXPECTED_COUNTS,'external_pins':pins,'committed_copies':[{'path':'population/independent-sec-workforce-reviews.jsonl','sha256':digest(compact),'count':167,'role':'repo_compact_copy'}]}
     (p/'acquisition-audit-manifest.json').write_text(json.dumps(value,separators=(',',':')))
     return reviews(p/'independent-sec-workforce-reviews.jsonl')

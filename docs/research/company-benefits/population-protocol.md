@@ -1,4 +1,4 @@
-# Company benefits population protocol — version 3.1.1 frozen population
+# Company benefits population protocol — version 4.0.0 refreeze
 
 **Status: APPROVED for the user-authorized population freeze. Independent technical review remains pending.**
 
@@ -6,13 +6,15 @@ This freeze contains 1,000 domestic and 1,000 international selected reporting l
 
 ## Materialized scope
 
-- **Domestic:** 1,350 eligible Korean reporting legal entities were built from official, keyless DART/OpenDART bulk downloads. The first 1,000 in canonical SHA-256 order are selected.
-- **International:** 1,066 eligible strict-US entities were built from official SEC quarterly Financial Statement Data Sets and primary Form 10-K workforce evidence. Every row requires `countryinc=US` and `countryba=US` evidence bound to the same accession, CIK and legal name as scale and workforce evidence. The first 1,000 in canonical SHA-256 order are selected; exactly 66 unused canonical records remain for replacement.
+- **Domestic:** 1,037 Korean reporting legal entities have official `employee_count >= 100`; the first 1,000 in canonical SHA-256 order are selected and 37 are deterministic reserves.
+- **International:** 1,060 strict-US entities have official `employee_count >= 100`; the first 1,000 are selected and 60 are deterministic reserves. Every row requires `countryinc=US` and `countryba=US` evidence bound to the same accession, CIK and legal name as scale and workforce evidence.
 - The fixed international panel remains US, CA, MX, BR, AR, GB, FR, DE, IT, TR, RU, AU, CN, IN, ID, JP, SA and ZA. The current selected international population contains only US-incorporated, US principal-business-address SEC 10-K filers. It is not globally representative and is not all SEC filers. The other 17 panel jurisdictions are explicit coverage gaps with zero selected entities; see `population/international-coverage-gaps.json`.
 
 ## Legal entity and thresholds
 
-The selected unit is the reporting legal entity. Positive workforce evidence establishes population eligibility, not the payroll employer, parent/subsidiary relationship, benefit-policy owner, or benefit scope. Those roles remain structured unknowns until separately evidenced.
+The selected unit is the reporting legal entity. `employee_count` is the reporting-entity or stated consolidated workforce count from the same official evidence boundary; it is not guaranteed payroll headcount and does not establish the payroll employer, parent/subsidiary relationship, benefit-policy owner, or benefit scope. Missing or ambiguous counts fail.
+
+Official evidence that an entity closed, dissolved, completed liquidation, or merged out on or before cutoff excludes it and overrides stale `active` labels. Delisting alone is not closure. Humax Holdings (`KR-CRN-1101110604200`) is independently recorded as dissolved on 2026-10-01 in `population/exclusion-ledger.jsonl`; Sangsin EDP competes only by normal canonical order.
 
 - Domestic non-financial: annual revenue at least KRW 100 billion.
 - Domestic financial: year-end total assets at least KRW 10 trillion.

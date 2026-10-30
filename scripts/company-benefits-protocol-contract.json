@@ -263,6 +263,18 @@
     "public_sector_rule": "Public ownership or institution type does not auto-qualify an entity; the same sector threshold applies.",
     "maximum_fiscal_age_months": 24
   },
+  "eligibility": {
+    "minimum_employee_count": 100,
+    "workforce_boundary": "The employee_count is the reporting-entity or stated consolidated workforce count from the same official evidence boundary; it is not guaranteed payroll headcount. Missing or ambiguous counts fail.",
+    "cessation_event_types": [
+      "closed",
+      "dissolved",
+      "liquidation_complete",
+      "merged_out"
+    ],
+    "cessation_rule": "Official evidence that an entity closed, dissolved, completed liquidation, or merged out on or before cutoff overrides stale active labels and excludes the entity.",
+    "delisting_rule": "Delisting alone is not evidence of closure or cessation."
+  },
   "currency_conversion": {
     "source_owner": "World Bank",
     "indicator": "PA.NUS.FCR",
@@ -313,7 +325,10 @@
       "entity_ineligible",
       "duplicate_entity",
       "evidence_invalidated",
-      "scope_correction"
+      "scope_correction",
+      "workforce_below_minimum",
+      "workforce_missing_or_ambiguous",
+      "entity_ceased_before_cutoff"
     ]
   },
   "immutable_model": {
@@ -342,7 +357,11 @@
       "population/source-artifact-bindings.jsonl",
       "population/source-artifacts.jsonl",
       "population/independent-sec-workforce-reviews.jsonl",
-      "population/acquisition-audit-manifest.json"
+      "population/acquisition-audit-manifest.json",
+      "population/candidate-manifest.json",
+      "population/exclusion-ledger.jsonl",
+      "population/domestic-reserve.jsonl",
+      "population/international-reserve.jsonl"
     ],
     "effective_manifest_artifacts": [
       "population/domestic-effective-selected.jsonl",
@@ -350,7 +369,7 @@
       "population/effective-selection-events.jsonl"
     ],
     "effective_manifest_freeze_reference": "freeze_manifest_sha256",
-    "state_rule": "These files are prohibited while status is blocked. After lawful acquisition and validation, selected ledgers are immutable; effective ledgers are deterministic projections of selected ledgers plus append-only events.",
+    "state_rule": "Protocol 4 is a new freeze. Candidate exclusions, eligible/selected/reserve partitions, and evidence bindings are immutable after external approval; effective ledgers initially equal selected ledgers.",
     "initial_effective_ledgers": [
       "population/domestic-initial-effective-selected.jsonl",
       "population/international-initial-effective-selected.jsonl"

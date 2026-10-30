@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "population-protocol.schema.json",
   "title": "Company benefits population protocol",
-  "x-pinned-protocol-contract-sha256": "5d097133dd59dba3a93688c57236529924c67c6bf7c2416961db3834936a9863",
+  "x-pinned-protocol-contract-sha256": "b8e32062e2522fb7efbb2081eee150fc346bf33f812a277e6ab6110cf0770bcf",
   "type": "object",
   "additionalProperties": false,
   "$defs": {
@@ -77,6 +77,7 @@
     "registered_sources",
     "classification",
     "thresholds",
+    "eligibility",
     "currency_conversion",
     "source_precedence",
     "canonical_selection",
@@ -736,7 +737,11 @@
             "population/source-artifact-bindings.jsonl",
             "population/source-artifacts.jsonl",
             "population/independent-sec-workforce-reviews.jsonl",
-            "population/acquisition-audit-manifest.json"
+            "population/acquisition-audit-manifest.json",
+            "population/candidate-manifest.json",
+            "population/exclusion-ledger.jsonl",
+            "population/domestic-reserve.jsonl",
+            "population/international-reserve.jsonl"
           ]
         },
         "effective_manifest_artifacts": {
@@ -750,7 +755,7 @@
           "const": "freeze_manifest_sha256"
         },
         "state_rule": {
-          "const": "These files are prohibited while status is blocked. After lawful acquisition and validation, selected ledgers are immutable; effective ledgers are deterministic projections of selected ledgers plus append-only events."
+          "const": "Protocol 4 is a new freeze. Candidate exclusions, eligible/selected/reserve partitions, and evidence bindings are immutable after external approval; effective ledgers initially equal selected ledgers."
         },
         "initial_effective_ledgers": {
           "const": [
@@ -927,6 +932,41 @@
         "population/effective-selection-events.jsonl",
         "population/effective-selection-manifest.json"
       ]
+    },
+    "eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_employee_count",
+        "workforce_boundary",
+        "cessation_event_types",
+        "cessation_rule",
+        "delisting_rule"
+      ],
+      "properties": {
+        "minimum_employee_count": {
+          "const": 100
+        },
+        "workforce_boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cessation_event_types": {
+          "const": [
+            "closed",
+            "dissolved",
+            "liquidation_complete",
+            "merged_out"
+          ]
+        },
+        "cessation_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "delisting_rule": {
+          "const": "Delisting alone is not evidence of closure or cessation."
+        }
+      }
     }
   },
   "allOf": [

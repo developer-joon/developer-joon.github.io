@@ -173,13 +173,14 @@ def render_hub(root, output_dir):
     ) or "- 승인된 배치 없음"
     text = f"""---
 status: draft
-protocol_id: company-benefits-population-v3
+protocol_id: company-benefits-population-v4
 series_status: {progress.get('status', '')}
 ---
 
 # 대기업 복지 검증 시리즈 — 검토용 허브
 
 > 작성 순서는 순위가 아닙니다. 확인 불가는 복지가 없다는 뜻이 아닙니다.
+> 모집단은 동일한 공식 근거 경계에서 보고된 인원 100명 미만 법인과 기준일 이전 폐업·해산·청산완료·합병소멸 법인을 제외합니다. 공식 근거가 모든 법인을 완전하게 포괄한다는 뜻은 아닙니다.
 
 - 승인 배치: {len(approved)}/80
 - 승인 회사: {approved_companies}/2000
@@ -192,6 +193,7 @@ series_status: {progress.get('status', '')}
 {links}
 
 공개 공식 근거를 확보하지 못한 회사도 승인된 배치 목록에서 제외하지 않습니다. 이는 복지가 없다는 뜻이 아닙니다.
+전체 시리즈 완료 전 기존 탐색기 화면은 fixture이며 실제 완료 모집단을 뜻하지 않습니다.
 """
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / "hub.md"

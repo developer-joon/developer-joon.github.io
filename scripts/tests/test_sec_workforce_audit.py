@@ -93,7 +93,7 @@ class WorkforceAuditTests(unittest.TestCase):
         audit.validate(root)
         import json
         rows = [json.loads(x) for x in (root/'population/international-eligible.jsonl').read_text().splitlines()]
-        self.assertEqual(1066, len(rows))
+        self.assertEqual(1060, len(rows))
         rejected_reviews = [
             json.loads(x) for x in (root/'population/independent-sec-workforce-reviews.jsonl').read_text().splitlines()
             if json.loads(x)['decision'] == 'rejected'
@@ -172,14 +172,14 @@ class WorkforceAuditTests(unittest.TestCase):
         import tempfile
         spec = importlib.util.spec_from_file_location('verifier', ROOT/'scripts/verify-company-benefits-ledger.py')
         verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
-        protocol = {'version':'3.1.1'}
+        protocol = {'version':'4.0.0'}
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'receipt.json'
-            receipt={'schema_version':'1','protocol_version':'3.1.1','freeze_manifest_sha256':'a'*64,'review_status':'review_pending','issued_at':'2026-10-30T00:00:00Z'}
+            receipt={'schema_version':'1','protocol_version':'4.0.0','freeze_manifest_sha256':'a'*64,'review_status':'review_pending','issued_at':'2026-10-30T00:00:00Z'}
             path.write_text(json.dumps(receipt)); errors=[]
             self.assertEqual({},verifier.external_freeze_anchor(path,protocol,errors))
             self.assertIn('not approved', ' '.join(errors))
-            receipt.update(review_status='approved',protocol_version='3.1.0');path.write_text(json.dumps(receipt));errors=[]
+            receipt.update(review_status='approved',protocol_version='3.1.1');path.write_text(json.dumps(receipt));errors=[]
             verifier.external_freeze_anchor(path,protocol,errors)
             self.assertIn('protocol identity mismatch',' '.join(errors))
 
@@ -201,7 +201,7 @@ class WorkforceAuditTests(unittest.TestCase):
             audit.validate(root)
             self.assertEqual(b'',(root/'benefit-claims.jsonl').read_bytes())
 
-    def test_renderer_includes_complete_batch_with_partial_claim_coverage(self):
+    def test_renderer_refuses_pending_refrozen_batch(self):
         import tempfile
         from datetime import date
         from unittest import mock
@@ -211,10 +211,10 @@ class WorkforceAuditTests(unittest.TestCase):
         real_verify=verifier.verify_workspace
         root=ROOT/'docs/research/company-benefits'
         anchor=verifier.sha256((root/'population/freeze-manifest.json').read_bytes())
-        verifier.verify_workspace=lambda *args, **kwargs: real_verify(*args, **kwargs, approved_freeze_anchors={'3.1.1':anchor})
+        verifier.verify_workspace=lambda *args, **kwargs: real_verify(*args, **kwargs, approved_freeze_anchors={'4.0.0':anchor})
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(renderer,'load_verifier',return_value=verifier):
-            output=renderer.render_batch(root,Path(tmp),'international',1,as_of=date(2026,10,30))
-            self.assertEqual(25, output.read_text(encoding='utf-8').count('\n## ') - 1)
+            with self.assertRaisesRegex(ValueError, 'pending'):
+                renderer.render_batch(root,Path(tmp),'international',1,as_of=date(2026,10,30))
 
     def test_audit_manifest_records_exact_count_and_role_for_every_artifact(self):
         import json

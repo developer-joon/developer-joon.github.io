@@ -42,12 +42,13 @@ EXPECTED_THRESHOLDS = {
 }
 PINNED_PROTOCOL_FIELDS = (
     "cutoff_at", "scopes", "registered_sources", "classification", "thresholds",
-    "currency_conversion", "source_precedence", "canonical_selection", "immutable_model",
+    "eligibility", "currency_conversion", "source_precedence", "canonical_selection", "immutable_model",
 )
-EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction"}
+EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction",
+                     "workforce_below_minimum", "workforce_missing_or_ambiguous", "entity_ceased_before_cutoff"}
 OFFICIAL_SOURCE_TYPES = {"government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report"}
-PINNED_CONTRACT_SHA256 = "8a9174d66adf5f2fae6d0e6d8144ea873d4d068f918d712573dcb0ed2b861059"
-PINNED_CONTRACT_VERSION = "3.1.1"
+PINNED_CONTRACT_SHA256 = "393c44ddd262c1d7be8877494aecc1fb2d4f4f2f88877d31042ec8de6e78e78d"
+PINNED_CONTRACT_VERSION = "4.0.0"
 MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
 HASH_SCHEMA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 EVENT_SCHEMA = {
@@ -317,6 +318,13 @@ def validate_protocol(protocol, source_map, errors):
             errors.append(f"protocol threshold {name} must be {metric} {minimum} {currency}")
     if thresholds.get("maximum_fiscal_age_months") != 24:
         errors.append("protocol threshold freshness must be exactly 24 months")
+    eligibility = protocol.get("eligibility", {})
+    if eligibility.get("minimum_employee_count") != 100:
+        errors.append("protocol workforce minimum must be exactly 100")
+    if eligibility.get("cessation_event_types") != ["closed", "dissolved", "liquidation_complete", "merged_out"]:
+        errors.append("protocol cessation event types mismatch")
+    if eligibility.get("delisting_rule") != "Delisting alone is not evidence of closure or cessation.":
+        errors.append("protocol must not equate delisting alone with closure")
 
     registered = protocol.get("registered_sources")
     expected_jurisdictions = {"KR", *PANEL}
@@ -517,7 +525,7 @@ def source_applies_to_company(source, company, record_id, errors, claim_status):
 def validate_company(protocol, company, source_map, as_of, errors):
     company_id = company.get("company_id") or "company[missing-id]"
     validate_structure(company, load_schema("company.schema.json"), company_id, errors)
-    required(company, ("company_id", "jurisdiction", "incorporation_country", "scope", "registry_id", "legal_name", "selected_reporting_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "related_company_exception", "entity_status", "sector", "employment_evidence_scope", "employment_boundary_note", "scale_metric", "scale_evidence", "employer_evidence", "scale_source_precedence_rank", "source_availability", "selection_hash"), "", company_id, errors, allow_null=("related_company_exception",))
+    required(company, ("company_id", "jurisdiction", "incorporation_country", "scope", "registry_id", "legal_name", "selected_reporting_legal_entity", "registered_head_office_country", "financial_consolidation_parent", "ultimate_parent", "benefit_policy_owner", "related_company_exception", "entity_status", "active_at_cutoff", "sector", "employment_evidence_scope", "employment_boundary_note", "scale_metric", "scale_evidence", "employer_evidence", "scale_source_precedence_rank", "source_availability", "selection_hash"), "", company_id, errors, allow_null=("related_company_exception",))
     scope = company.get("scope")
     jurisdiction = company.get("jurisdiction")
     incorporation = company.get("incorporation_country")
@@ -532,8 +540,11 @@ def validate_company(protocol, company, source_map, as_of, errors):
         errors.append(f"{company_id}: known foreign or ambiguous entity is excluded from strict-US cohort")
     if scope not in {"domestic", "international"}:
         errors.append(f"{company_id}: invalid scope")
-    if company.get("entity_status") != "active":
-        errors.append(f"{company_id}: invalid entity status")
+    active = company.get("active_at_cutoff", {})
+    if company.get("entity_status") != "active_at_cutoff" or active.get("status") == "ceased":
+        errors.append(f"{company_id}: entity ceased on or before cutoff or lacks active-at-cutoff contract")
+    if active.get("cutoff_at") != protocol.get("cutoff_at") or not active.get("evidence_source_ids"):
+        errors.append(f"{company_id}: active-at-cutoff evidence boundary mismatch")
     if company.get("selected_reporting_legal_entity") != company.get("legal_name"):
         errors.append(f"{company_id}: selected reporting entity must be the legal entity")
     for parent_field in ("financial_consolidation_parent", "ultimate_parent"):
@@ -636,8 +647,10 @@ def validate_company(protocol, company, source_map, as_of, errors):
             for field, expected_value in (("metric", metric.get("type")), ("value", metric.get("value")), ("currency", metric.get("currency"))):
                 if evidence.get(field) != expected_value:
                     errors.append(f"{company_id}: scale evidence {field} does not match scale metric")
-        elif not isinstance(evidence.get("employee_count"), int) or evidence.get("employee_count") < 1:
-            errors.append(f"{company_id}: employer evidence must show a positive employee count")
+        elif not isinstance(evidence.get("employee_count"), int):
+            errors.append(f"{company_id}: employer evidence workforce count is missing or ambiguous")
+        elif evidence.get("employee_count") < 100:
+            errors.append(f"{company_id}: employer evidence is below workforce minimum 100")
     if scope == "international":
         accessions = {company.get("scale_evidence", {}).get("accession"), company.get("employer_evidence", {}).get("accession")}
         for field, label, official_field in (("incorporation_evidence", "incorporation", "countryinc/stprinc"), ("head_office_evidence", "head office", "countryba/stprba")):
@@ -781,8 +794,8 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
             relative = expected_paths[field][index]
             ledgers[(scope, kind)] = read_jsonl(root / relative, errors, required_file=True)
         validate_ledger_records(protocol, ledgers[(scope, "eligible")], f"{scope} eligible", source_map, as_of, errors)
-        if protocol.get("protocol_id") in {"company-benefits-population-v2", "company-benefits-population-v3"}:
-            expected_eligible = 1350 if scope == "domestic" else (1066 if protocol.get("version") == "3.1.1" else 1070)
+        if protocol.get("protocol_id") in {"company-benefits-population-v2", "company-benefits-population-v3", "company-benefits-population-v4"}:
+            expected_eligible = 1037 if scope == "domestic" else 1060
             if len(ledgers[(scope, "eligible")]) != expected_eligible:
                 errors.append(f"{scope} eligible must contain exactly {expected_eligible} verified records")
         for kind in ("selected", "initial", "current"):
@@ -794,6 +807,9 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
         initial_path = root / expected_paths["initial_effective_ledgers"][index]
         if selected_path.is_file() and initial_path.is_file() and selected_path.read_bytes() != initial_path.read_bytes():
             errors.append(f"{scope} initial effective ledger must be byte-identical to selected")
+        reserve = read_jsonl(root / f"population/{scope}-reserve.jsonl", errors, required_file=True)
+        if reserve != ledgers[(scope, "eligible")][1000:]:
+            errors.append(f"{scope} reserve must be the deterministic eligible suffix after 1000 selected records")
 
     artifacts = read_jsonl(root / "population/source-artifacts.jsonl", errors, required_file=True)
     artifact_map = {item.get("artifact_id"): item for item in artifacts}
@@ -910,8 +926,10 @@ def validate_population(root, protocol, source_map, as_of, errors, approved_free
 
     effective_required = ["population/domestic-effective-selected.jsonl", "population/international-effective-selected.jsonl", "population/effective-selection-events.jsonl"]
     freeze_required = [
-        "population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
+        "population-protocol.json", "population/candidate-manifest.json", "population/exclusion-ledger.jsonl",
+        "population/domestic-eligible.jsonl", "population/international-eligible.jsonl",
         "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json",
+        "population/domestic-reserve.jsonl", "population/international-reserve.jsonl",
         "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl",
         "population/independent-sec-workforce-reviews.jsonl", "population/acquisition-audit-manifest.json",
     ]
@@ -1356,7 +1374,7 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
         approved_freeze_anchors = external_freeze_anchor(freeze_anchor_receipt, protocol, errors, root)
     if approved_effective_anchors is None:
         approved_effective_anchors = external_effective_selection_anchor(effective_selection_receipt, protocol, root, errors)
-    if protocol.get('protocol_id') == 'company-benefits-population-v3':
+    if protocol.get('protocol_id') in {'company-benefits-population-v3', 'company-benefits-population-v4'}:
         spec = importlib.util.spec_from_file_location('sec_workforce_audit', Path(__file__).with_name('sec-workforce-audit.py'))
         audit = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(audit)
