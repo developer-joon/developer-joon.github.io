@@ -3,7 +3,7 @@
   "$id": "company-benefits-series-input.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256", "status", "approved_at", "reviewer_id", "artifacts"],
+  "required": ["schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256", "status", "approved_at", "reviewer_id", "artifacts", "review_audit"],
   "properties": {
     "schema_version": {"const": "1"},
     "batch_id": {"type": "string", "pattern": "^(domestic|international)-(0[1-9]|[1-3][0-9]|40)$"},
@@ -13,6 +13,28 @@
     "status": {"const": "approved"},
     "approved_at": {"type": "string", "format": "date-time"},
     "reviewer_id": {"type": "string", "minLength": 1},
+    "review_audit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate_manifest_sha256", "candidate_artifacts", "review_artifacts"],
+      "properties": {
+        "candidate_manifest_sha256": {"$ref": "#/$defs/hash"},
+        "candidate_artifacts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl"],
+          "properties": {
+            "sources.jsonl": {"$ref": "#/$defs/hash"}, "claims.jsonl": {"$ref": "#/$defs/hash"},
+            "gaps.jsonl": {"$ref": "#/$defs/hash"}, "review-requests.jsonl": {"$ref": "#/$defs/hash"}
+          }
+        },
+        "review_artifacts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["reviews.jsonl", "checks.jsonl"],
+          "properties": {
+            "reviews.jsonl": {"$ref": "#/$defs/hash"}, "checks.jsonl": {"$ref": "#/$defs/hash"}
+          }
+        }
+      }
+    },
     "artifacts": {
       "type": "object", "additionalProperties": false,
       "required": ["sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl"],

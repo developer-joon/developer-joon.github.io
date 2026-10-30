@@ -157,8 +157,8 @@ class SeriesIntegrationTests(unittest.TestCase):
                  "searched_official_source_ids": [source["source_id"]], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
                 for company_id in self.batch["company_ids"]]
-        checks = [{"url": source["url"], "status": 200, "final_url": source["url"], "marker": "DART route",
-                   "marker_confirmed": True, "content_sha256": "a" * 64, "checked_at": "2026-10-22T05:00:00Z"}]
+        checks = [{"url": source["url"], **source["access_observation"],
+                   "checked_at": "2026-10-22T05:00:00Z"}]
         self.package(sources=[source], gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
         self.module.load_package(self.input, self.root)
         source["body"] = "retained body is prohibited"

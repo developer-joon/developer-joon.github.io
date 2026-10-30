@@ -401,7 +401,11 @@ def validate_sources(sources, errors, as_of=None, evidence_root=None):
             if as_of and checked and checked > as_of_end(as_of):
                 errors.append(f"{source_id}: source checked_at is in the future")
             observation = source.get("access_observation", {})
-            if urlparse(str(observation.get("final_url", ""))).scheme != "https":
+            final_url = observation.get("final_url")
+            if observation.get("status") is None:
+                if final_url is not None:
+                    errors.append(f"{source_id}: network failure final URL must be null")
+            elif urlparse(str(final_url or "")).scheme != "https":
                 errors.append(f"{source_id}: final URL must use HTTPS")
             continue
         validate_structure(source, schema, source_id, errors)

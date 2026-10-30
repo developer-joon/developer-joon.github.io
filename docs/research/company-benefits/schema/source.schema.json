@@ -58,7 +58,8 @@
     },
     "url": {
       "type": "string",
-      "format": "uri"
+      "format": "uri",
+      "pattern": "^https://"
     },
     "access_model": {
       "enum": [
@@ -211,7 +212,8 @@
         },
         "final_url": {
           "type": "string",
-          "format": "uri"
+          "format": "uri",
+          "pattern": "^https://"
         },
         "final_owner_domain": {
           "type": "string"

@@ -2,6 +2,7 @@
 """Validate the sole protocol-4 review-pending series candidate layout."""
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -70,19 +71,36 @@ def _validate_sources(records, verifier):
                   "locator", "http_verification", "evidence_path", "evidence_file"}
     for source in records:
         source_id = source.get("source_id", "source[missing-id]")
+        if not isinstance(source.get("url"), str) or not source["url"].startswith("https://"):
+            errors.append(f"{source_id}: candidate source URL must use HTTPS")
         if source.get("record_type") == "nonpublishable_metadata":
             metadata_ids.add(source_id)
             leaked = sorted(set(source) & prohibited)
             if leaked:
                 errors.append(f"{source_id}: metadata source contains prohibited retained/asserted fields: {', '.join(leaked)}")
             verifier.validate_structure(source, metadata_schema, source_id, errors)
+            observation = source.get("access_observation", {})
+            if observation.get("status") is None and observation.get("final_url") is not None:
+                errors.append(f"{source_id}: network failure final URL must be null")
             if source.get("publication_eligible") is not False or source.get("retention_mode") != "metadata_only":
                 errors.append(f"{source_id}: metadata source must be nonpublishable metadata_only")
         else:
+            if source.get("hash_provenance") == "retained_file":
+                errors.append(f"{source_id}: retained_file provenance cannot be integrated and is prohibited in candidates")
             verifier.validate_structure(source, publishable_schema, source_id, errors)
     if errors:
         raise ValueError("source schema validation failed:\n" + "\n".join(errors))
     return metadata_ids
+
+
+def _candidate_claim_schema(verifier):
+    """Derive the immutable review input schema from the final claim schema."""
+    schema = copy.deepcopy(verifier.load_schema("benefit-claim.schema.json"))
+    schema["properties"].pop("prepublication_checked_at", None)
+    for condition in schema.get("allOf", []):
+        required = condition.get("then", {}).get("required", [])
+        condition.get("then", {})["required"] = [field for field in required if field != "prepublication_checked_at"]
+    return schema
 
 
 def validate_candidate(candidate_dir, research_root):
@@ -134,13 +152,15 @@ def validate_candidate(candidate_dir, research_root):
 
     claim_by_company = {}
     claim_errors = []
-    claim_schema = verifier.load_schema("benefit-claim.schema.json")
+    claim_schema = _candidate_claim_schema(verifier)
     for claim in claims:
         company_id, claim_id = claim.get("company_id"), claim.get("claim_id")
         if company_id not in position:
             raise ValueError(f"{claim_id}: claim company is outside canonical batch")
         if not isinstance(claim_id, str) or not claim_id.startswith(company_id + "-"):
             raise ValueError(f"{claim_id}: noncanonical claim ID")
+        if "prepublication_checked_at" in claim:
+            raise ValueError(f"{claim_id}: candidate cannot assert post-review prepublication gate state")
         verifier.validate_structure(claim, claim_schema, claim_id, claim_errors)
         for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
             if source_id not in sources:

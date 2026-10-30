@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -86,10 +87,18 @@ def merge_checks(existing, incoming, latest_review_by_url, expected_urls=None):
             raise ValueError(f"{url}: check must follow review chronology")
         previous = merged.get(url)
         if previous is not None:
-            if check.get("content_sha256") != previous.get("content_sha256"):
-                raise ValueError(f"{url}: conflicting shared URL content hash")
-            if check.get("marker") != previous.get("marker") or check.get("marker_confirmed") is not True:
-                raise ValueError(f"{url}: conflicting shared URL marker")
+            metadata_check = "access_wall" in check
+            if metadata_check != ("access_wall" in previous):
+                raise ValueError(f"{url}: shared URL changed between metadata-only and publishable semantics")
+            if metadata_check:
+                fields = ("status", "final_url", "access_wall")
+                if any(check.get(field) != previous.get(field) for field in fields):
+                    raise ValueError(f"{url}: conflicting metadata route observation")
+            else:
+                if check.get("content_sha256") != previous.get("content_sha256"):
+                    raise ValueError(f"{url}: conflicting shared URL content hash")
+                if check.get("marker") != previous.get("marker") or check.get("marker_confirmed") is not True:
+                    raise ValueError(f"{url}: conflicting shared URL marker")
             if checked <= parse_timestamp(previous.get("checked_at"), "existing check checked_at"):
                 raise ValueError(f"{url}: shared URL check must be strictly newer")
         merged[url] = check
@@ -107,7 +116,7 @@ def load_package(input_dir, research_root):
         raise ValueError(f"invalid batch manifest: {exc}") from exc
     expected_manifest_fields = {"schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256",
                                 "replacement_events_sha256", "status", "approved_at", "reviewer_id", "artifacts"}
-    if set(manifest) != expected_manifest_fields or manifest.get("schema_version") != "1":
+    if set(manifest) not in (expected_manifest_fields, expected_manifest_fields | {"review_audit"}) or manifest.get("schema_version") != "1":
         raise ValueError("batch manifest schema mismatch")
     if manifest.get("status") != "approved" or not manifest.get("reviewer_id"):
         raise ValueError("only explicitly approved batches with reviewer identity may be integrated")
@@ -127,6 +136,20 @@ def load_package(input_dir, research_root):
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != set(FILES):
         raise ValueError("batch manifest must hash all five exact artifacts")
+    review_audit = manifest.get("review_audit")
+    if review_audit is not None:
+        audit_fields = {"candidate_manifest_sha256", "candidate_artifacts", "review_artifacts"}
+        candidate_files = {"sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl"}
+        review_files = {"reviews.jsonl", "checks.jsonl"}
+        if (not isinstance(review_audit, dict) or set(review_audit) != audit_fields
+                or not re.fullmatch(r"[0-9a-f]{64}", str(review_audit.get("candidate_manifest_sha256", "")))
+                or not isinstance(review_audit.get("candidate_artifacts"), dict)
+                or set(review_audit["candidate_artifacts"]) != candidate_files
+                or not isinstance(review_audit.get("review_artifacts"), dict)
+                or set(review_audit["review_artifacts"]) != review_files
+                or any(not re.fullmatch(r"[0-9a-f]{64}", str(value)) for value in review_audit["candidate_artifacts"].values())
+                or any(review_audit["review_artifacts"].get(name) != artifacts.get(name) for name in review_files)):
+            raise ValueError("batch review_audit candidate/review hash binding mismatch")
     records = {}
     for name in FILES:
         raw = (input_dir / name).read_bytes()
@@ -194,9 +217,11 @@ def load_package(input_dir, research_root):
         if review.get("decision") != "approved" or review.get("researcher_id") == review.get("reviewer_id"):
             raise ValueError(f"{claim_id}: unapproved or self-approved review")
         reviewed = parse_timestamp(review.get("reviewed_at"), "reviewed_at")
-        prepub = parse_timestamp(claim_map[claim_id].get("prepublication_checked_at"), "prepublication_checked_at")
-        if prepub <= reviewed:
-            raise ValueError(f"{claim_id}: stale or pre-review prepublication check")
+        claim = claim_map[claim_id]
+        if claim.get("status") != "unknown":
+            prepub = parse_timestamp(claim.get("prepublication_checked_at"), "prepublication_checked_at")
+            if prepub <= reviewed:
+                raise ValueError(f"{claim_id}: stale or pre-review prepublication check")
     for record_id, review in outcome_review_map.items():
         if review.get("decision") != "approved" or review.get("researcher_id") == review.get("reviewer_id"):
             raise ValueError(f"{record_id}: unapproved or self-approved outcome review")
@@ -220,17 +245,53 @@ def load_package(input_dir, research_root):
     check_map = _unique_map(records["checks.jsonl"], "url", "checks")
     if set(check_map) != expected_urls:
         raise ValueError("checks must bind every used official URL exactly once")
+    bound_source_ids = {source_id for claim in claims
+                        for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
+    bound_source_ids.update(source_id for gap in gaps for source_id in gap.get("searched_official_source_ids", []))
+    sources_by_url = {}
+    for source_id in bound_source_ids:
+        source = source_map[source_id]
+        sources_by_url.setdefault(source.get("url"), []).append(source)
+    for url, check in check_map.items():
+        bound_sources = sources_by_url.get(url, [])
+        kinds = {source.get("record_type") == "nonpublishable_metadata" for source in bound_sources}
+        if len(kinds) > 1:
+            raise ValueError(f"{url}: check route ambiguously mixes metadata and publishable sources")
+        if True in kinds:
+            fields = {"url", "status", "final_url", "access_wall", "checked_at"}
+            observations = [source.get("access_observation") for source in bound_sources]
+            actual = {field: check.get(field) for field in ("status", "final_url", "access_wall")}
+            if set(check) != fields or any(observation != actual for observation in observations):
+                raise ValueError(f"{url}: metadata check must exactly match the observed route failure/access semantics")
+        else:
+            fields = {"url", "status", "final_url", "marker", "marker_confirmed", "content_sha256", "checked_at"}
+            expected = {(source.get("http_verification", {}).get("final_url"),
+                         source.get("http_verification", {}).get("expected_marker"), source.get("content_sha256"))
+                        for source in bound_sources}
+            if not bound_sources:
+                expected = {(url, check.get("marker"), check.get("content_sha256"))}
+            actual = (check.get("final_url"), check.get("marker"), check.get("content_sha256"))
+            if (set(check) != fields or not str(url).startswith("https://") or len(expected) != 1
+                    or check.get("status") != 200 or check.get("marker_confirmed") is not True or actual not in expected):
+                raise ValueError(f"{url}: publishable source check must be a successful exact HTTPS URL/hash/marker check")
     latest_review_by_url = {}
     for claim in claims:
         reviewed = parse_timestamp(review_map[claim["claim_id"]].get("reviewed_at"), "reviewed_at")
+        bound_check_times = []
         for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
             url = source_map[source_id]["url"]
             current = latest_review_by_url.get(url)
             if current is None or reviewed > parse_timestamp(current, "latest review"):
                 latest_review_by_url[url] = review_map[claim["claim_id"]]["reviewed_at"]
             checked = parse_timestamp(check_map[url].get("checked_at"), "check checked_at")
-            if checked <= reviewed or checked.isoformat() != parse_timestamp(claim.get("prepublication_checked_at"), "prepublication_checked_at").isoformat():
-                raise ValueError(f"{claim['claim_id']}: stale, pre-review, or unbound prepublication check")
+            if checked <= reviewed:
+                raise ValueError(f"{claim['claim_id']}: stale or pre-review prepublication check")
+            if source_id in claim.get("source_ids", []):
+                bound_check_times.append(checked)
+        if claim.get("status") != "unknown":
+            prepub = parse_timestamp(claim.get("prepublication_checked_at"), "prepublication_checked_at")
+            if not bound_check_times or prepub != max(bound_check_times):
+                raise ValueError(f"{claim['claim_id']}: prepublication timestamp is not the exact latest successful bound check")
     for record_id, review in outcome_review_map.items():
         reviewed_at = review["reviewed_at"]
         for url in expected_check_urls([], [gap_map[record_id]], source_map):

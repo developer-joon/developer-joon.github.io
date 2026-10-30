@@ -12,7 +12,7 @@
     "owner": {"type": "string", "minLength": 1},
     "source_type": {"enum": ["government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report", "search_result"]},
     "jurisdiction": {"type": "string", "pattern": "^(INT|[A-Z]{2})$"},
-    "url": {"type": "string", "format": "uri"},
+    "url": {"type": "string", "format": "uri", "pattern": "^https://"},
     "checked_at": {"type": "string", "format": "date-time"},
     "route_quality": {"enum": ["exact_entity", "generic", "reflected_query", "discovery_only"]},
     "publication_eligible": {"const": false},
@@ -25,7 +25,7 @@
       "required": ["status", "final_url", "access_wall"],
       "properties": {
         "status": {"type": ["integer", "null"]},
-        "final_url": {"type": "string", "format": "uri"},
+        "final_url": {"type": ["string", "null"], "format": "uri", "pattern": "^https://"},
         "access_wall": {"enum": ["none", "api_key", "login", "fee", "contract", "bot_or_network_block"]}
       }
     }

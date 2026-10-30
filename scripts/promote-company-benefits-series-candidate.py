@@ -2,6 +2,7 @@
 """Promote a protocol-4 candidate using repository-external reviews."""
 
 import argparse
+import copy
 import importlib.util
 import json
 import os
@@ -130,6 +131,14 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
     source_map = {item["source_id"]: item for item in records["sources.jsonl"]}
     claim_map = {item["claim_id"]: item for item in records["claims.jsonl"]}
     gap_map = {item["audit_id"]: item for item in records["gaps.jsonl"]}
+    bound_source_ids = {source_id for claim in claim_map.values()
+                        for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
+    bound_source_ids.update(source_id for gap in gap_map.values()
+                            for source_id in gap.get("searched_official_source_ids", []))
+    sources_by_url = {}
+    for source_id in bound_source_ids:
+        source = source_map[source_id]
+        sources_by_url.setdefault(source["url"], []).append(source)
     expected_urls = set()
     latest_review = {}
     for kind, target in targets:
@@ -141,10 +150,27 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
         raise ValueError("post-review checks must exactly cover every candidate source URL once")
     for check in checks:
         url = check.get("url")
-        expected_fields = {"url", "status", "final_url", "marker", "marker_confirmed", "content_sha256", "checked_at"}
-        if (set(check) != expected_fields or check.get("status") != 200 or check.get("marker_confirmed") is not True
-                or not check.get("marker") or not HASH.fullmatch(str(check.get("content_sha256", "")))):
-            raise ValueError(f"{url}: invalid post-review check")
+        bound_sources = sources_by_url.get(url, [])
+        kinds = {source.get("record_type") == "nonpublishable_metadata" for source in bound_sources}
+        if len(kinds) > 1:
+            raise ValueError(f"{url}: check route ambiguously mixes metadata and publishable sources")
+        if True in kinds:
+            expected_fields = {"url", "status", "final_url", "access_wall", "checked_at"}
+            observations = {json.dumps(source["access_observation"], sort_keys=True) for source in bound_sources}
+            actual = {field: check.get(field) for field in ("status", "final_url", "access_wall")}
+            if set(check) != expected_fields or len(observations) != 1 or actual != bound_sources[0]["access_observation"]:
+                raise ValueError(f"{url}: metadata check must exactly match the observed route failure/access semantics")
+        else:
+            expected_fields = {"url", "status", "final_url", "marker", "marker_confirmed", "content_sha256", "checked_at"}
+            expected = {(source["http_verification"]["final_url"], source["http_verification"]["expected_marker"],
+                         source["content_sha256"]) for source in bound_sources}
+            if not bound_sources:
+                expected = {(url, check.get("marker"), check.get("content_sha256"))}
+            actual = (check.get("final_url"), check.get("marker"), check.get("content_sha256"))
+            if (set(check) != expected_fields or not str(url).startswith("https://") or len(expected) != 1
+                    or check.get("status") != 200 or check.get("marker_confirmed") is not True
+                    or actual not in expected or not HASH.fullmatch(str(check.get("content_sha256", "")))):
+                raise ValueError(f"{url}: publishable source check must be a successful exact HTTPS URL/hash/marker check")
         checked = _timestamp(check.get("checked_at"), "check checked_at")
         if checked <= latest_review[url]:
             raise ValueError(f"{url}: post-review check must follow every bound independent review")
@@ -153,8 +179,18 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
 
     output_dir = Path(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
+    check_map = {check["url"]: check for check in checks}
+    promoted_claims = copy.deepcopy(records["claims.jsonl"])
+    for claim in promoted_claims:
+        if claim.get("status") == "unknown":
+            continue
+        bound_checks = [check_map[source_map[source_id]["url"]] for source_id in claim.get("source_ids", [])]
+        if not bound_checks:
+            raise ValueError(f"{claim.get('claim_id')}: factual claim has no successful post-review source check")
+        latest = max(bound_checks, key=lambda check: _timestamp(check["checked_at"], "check checked_at"))
+        claim["prepublication_checked_at"] = latest["checked_at"]
     values = {
-        "sources.jsonl": records["sources.jsonl"], "claims.jsonl": records["claims.jsonl"],
+        "sources.jsonl": records["sources.jsonl"], "claims.jsonl": promoted_claims,
         "reviews.jsonl": reviews, "gaps.jsonl": records["gaps.jsonl"], "checks.jsonl": checks,
     }
     with tempfile.TemporaryDirectory(prefix="benefits-promotion-", dir=output_dir.parent) as temporary:
@@ -172,6 +208,9 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
             "replacement_events_sha256": package["manifest"]["replacement_events_sha256"],
             "status": "approved", "approved_at": bundle["approved_at"], "reviewer_id": reviewer,
             "artifacts": final_hashes,
+            "review_audit": {"candidate_manifest_sha256": package["manifest_sha256"],
+                             "candidate_artifacts": package["manifest"]["artifacts"],
+                             "review_artifacts": bundle["artifacts"]},
         }
         (staged / "batch.json").write_bytes(verifier.company_benefits_series.json_bytes(manifest))
         integrator = _load(Path(__file__).with_name("integrate-company-benefits-series-batch.py"), "candidate_promotion_integrator")
