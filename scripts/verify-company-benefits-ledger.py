@@ -1109,7 +1109,8 @@ def validate_claims(claims, company_map, source_map, as_of, errors):
 def validate_reviews(reviews, claims, source_map, as_of, errors):
     claim_map = {claim.get("claim_id"): claim for claim in claims}
     claim_ids = set(claim_map)
-    approved = set()
+    approved_targets = []
+    review_targets = []
     review_ids = set()
     schema = load_schema("review.schema.json")
     for index, review in enumerate(reviews, 1):
@@ -1120,6 +1121,7 @@ def validate_reviews(reviews, claims, source_map, as_of, errors):
             errors.append(f"duplicate review_id: {review_id}")
         review_ids.add(review_id)
         claim_id = review.get("claim_id")
+        review_targets.append(claim_id)
         claim = claim_map.get(claim_id)
         if claim is None:
             errors.append(f"{review_id}: unknown claim_id")
@@ -1194,9 +1196,13 @@ def validate_reviews(reviews, claims, source_map, as_of, errors):
         if review.get("researcher_id") == review.get("reviewer_id"):
             errors.append(f"{review_id}: review self-approval is prohibited")
         elif review.get("decision") == "approved" and claim_id in claim_ids:
-            approved.add(claim_id)
+            approved_targets.append(claim_id)
+    approved = set(approved_targets)
     for claim_id in claim_ids - approved:
         errors.append(f"{claim_id}: missing approved independent review")
+    if (len(review_targets) != len(claim_ids) or set(review_targets) != claim_ids
+            or len(approved_targets) != len(claim_ids) or approved != claim_ids):
+        errors.append("approved claim review coverage must be exact one-to-one with no missing, duplicate, or orphan targets")
     return approved
 
 

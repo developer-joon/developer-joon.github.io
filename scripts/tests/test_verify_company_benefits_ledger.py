@@ -634,6 +634,20 @@ class VerifierTests(unittest.TestCase):
         self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
         self.assert_error("missing approved independent review")
 
+    def test_approved_claim_review_coverage_rejects_duplicate_target(self):
+        duplicate = copy.deepcopy(self.fixture.reviews[0])
+        duplicate.update(
+            review_id="review-duplicate-target",
+            reviewer_id="carol",
+            reviewed_at="2026-10-20T03:30:00Z",
+        )
+        for entailment in duplicate["source_entailment_reviews"]:
+            entailment["reviewer_id"] = "carol"
+        self.fixture.reviews.append(duplicate)
+        self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
+
+        self.assert_error("approved claim review coverage must be exact one-to-one")
+
     def test_secondary_dol_source_tuple_mutation_fails(self):
         research = ROOT / "docs" / "research" / "company-benefits"
         audit = [json.loads(line) for line in (research / "series-historical-audit.jsonl").read_text().splitlines() if line]
