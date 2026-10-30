@@ -107,7 +107,10 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     claims_by_company = {company_id: [] for company_id in company_ids}
     approved_claim_ids = {
         review["claim_id"] for review in reviews
-        if review.get("decision") == "approved" and review.get("researcher_id") != review.get("reviewer_id")
+        if review.get("claim_id")
+        and not review.get("record_id")
+        and review.get("decision") == "approved"
+        and review.get("researcher_id") != review.get("reviewer_id")
     }
     for claim in claims:
         if claim.get("company_id") in claims_by_company and claim.get("claim_id") in approved_claim_ids:

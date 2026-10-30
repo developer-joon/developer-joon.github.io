@@ -11,6 +11,20 @@ SCOPES = ("domestic", "international")
 BATCH_SIZE = 25
 BATCHES_PER_SCOPE = 40
 NONABSENCE_PHRASES = ("복지가 없다는 뜻이 아닙니다", "복지가 없다는 뜻이 아니다")
+BATCH_IDS = {f"{scope}-{number:02d}" for scope in SCOPES for number in range(1, BATCHES_PER_SCOPE + 1)}
+OUTCOME_REVIEW_FIELDS = {
+    "review_id", "record_id", "researcher_id", "reviewer_id", "decision",
+    "reviewed_at", "issues", "resolution", "quote_entailment_confirmed",
+}
+HISTORICAL_AUDIT_MANIFEST_SHA256 = "14f42bb46cd35e43fd4ed4ab6946f2da34e06d952b11b3332b76868770b5e5cc"
+HISTORICAL_AUDIT_SHA256 = "7df4aae36e7c6ab0021702862c46a3a5ebab6442cefd7fb49cc4a269353f7797"
+HISTORICAL_AUDIT_SCHEMA_SHA256 = "910fe8e3a0dc3d062704fe6239359e1cb70a618aba3ab8a8146126795e07482e"
+HISTORICAL_PROTOCOL_SHA256 = "863ee9149fb2f48b0330944d4b8422630d89c34bcbfa21d4c47a75540570d60d"
+HISTORICAL_FREEZE_SHA256 = "2bcad6384d8e367c7f89e99a48d2f6e53c4315a27f50ee4b80007325aefec665"
+HISTORICAL_AUDIT_FIELDS = {
+    "record_type", "company_id", "selection_status", "old_batch_id",
+    "new_batch_id", "publishable", "reason", "record",
+}
 
 
 def json_bytes(value):
@@ -38,6 +52,96 @@ def company_list_sha256(company_ids):
 
 def file_sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def validate_historical_audit(root, active_company_ids, errors):
+    root = Path(root)
+    manifest_path = root / "series-historical-audit-manifest.json"
+    audit_path = root / "series-historical-audit.jsonl"
+    schema_path = root / "schema" / "series-historical-audit.schema.json"
+    historical_protocol = root / "population" / "history" / "protocol-3.1.1" / "population-protocol.json"
+    historical_freeze = root / "population" / "history" / "protocol-3.1.1" / "freeze-manifest.json"
+    required = (manifest_path, audit_path, schema_path, historical_protocol, historical_freeze)
+    missing = [path.name for path in required if not path.is_file()]
+    if missing:
+        errors.append(f"historical audit required artifact missing: {', '.join(missing)}")
+        return
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        audit_bytes = audit_path.read_bytes()
+        rows = [json.loads(line) for line in audit_bytes.splitlines()]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        errors.append(f"historical audit is invalid: {exc}")
+        return
+    if hashlib.sha256(manifest_bytes).hexdigest() != HISTORICAL_AUDIT_MANIFEST_SHA256:
+        errors.append("historical audit manifest violates immutable repository pin")
+    expected_manifest = {
+        "schema_version": "1",
+        "audit_path": "series-historical-audit.jsonl",
+        "audit_sha256": HISTORICAL_AUDIT_SHA256,
+        "audit_schema_path": "schema/series-historical-audit.schema.json",
+        "audit_schema_sha256": HISTORICAL_AUDIT_SCHEMA_SHA256,
+        "byte_count": 893563,
+        "row_count": 497,
+        "record_type_counts": {"claim": 199, "review": 199, "gap": 99},
+        "publishable": False,
+        "source_protocol_version": "3.1.1",
+        "source_protocol_sha256": HISTORICAL_PROTOCOL_SHA256,
+        "source_freeze_manifest_sha256": HISTORICAL_FREEZE_SHA256,
+        "source_commit": "0871312fcb82d3e2f141d472a225d95147c9e12c",
+        "wrapper_reason": "protocol_4_refreeze_requires_new_batch_review",
+    }
+    if manifest != expected_manifest:
+        errors.append("historical audit manifest provenance or counts mismatch")
+    if hashlib.sha256(schema_path.read_bytes()).hexdigest() != HISTORICAL_AUDIT_SCHEMA_SHA256:
+        errors.append("historical audit schema violates immutable manifest binding")
+    if (hashlib.sha256(audit_bytes).hexdigest() != HISTORICAL_AUDIT_SHA256
+            or len(audit_bytes) != 893563 or len(rows) != 497):
+        errors.append("historical audit exact bytes, order, or row count mismatch")
+    if hashlib.sha256(historical_protocol.read_bytes()).hexdigest() != HISTORICAL_PROTOCOL_SHA256:
+        errors.append("historical audit source protocol digest mismatch")
+    if hashlib.sha256(historical_freeze.read_bytes()).hexdigest() != HISTORICAL_FREEZE_SHA256:
+        errors.append("historical audit source freeze digest mismatch")
+    type_counts = {record_type: 0 for record_type in ("claim", "review", "gap")}
+    claim_companies = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != HISTORICAL_AUDIT_FIELDS:
+            errors.append("historical audit wrapper schema mismatch")
+            continue
+        record_type = row.get("record_type")
+        if record_type not in type_counts:
+            errors.append("historical audit contains unknown record type")
+            continue
+        type_counts[record_type] += 1
+        company_id = row.get("company_id")
+        selection_status = row.get("selection_status")
+        record = row.get("record")
+        if (not isinstance(company_id, str) or not company_id
+                or selection_status not in {"retained", "removed"}
+                or row.get("publishable") is not False
+                or row.get("reason") != "protocol_4_refreeze_requires_new_batch_review"
+                or row.get("old_batch_id") not in BATCH_IDS
+                or row.get("new_batch_id") not in ({None} | BATCH_IDS)
+                or not isinstance(record, dict)):
+            errors.append("historical audit wrapper schema mismatch")
+        if not isinstance(record, dict):
+            record = {}
+        if selection_status == "removed" and (row.get("new_batch_id") is not None or company_id in active_company_ids):
+            errors.append("historical audit removed company leaked into active ledger")
+        if selection_status == "retained" and not isinstance(row.get("new_batch_id"), str):
+            errors.append("historical audit retained-company provenance mismatch")
+        if record_type in {"claim", "gap"} and record.get("company_id") != company_id:
+            errors.append("historical audit record company binding mismatch")
+        if record_type == "claim":
+            claim_companies[record.get("claim_id")] = company_id
+    for row in rows:
+        if isinstance(row, dict) and row.get("record_type") == "review":
+            record = row.get("record", {})
+            if claim_companies.get(record.get("claim_id")) != row.get("company_id"):
+                errors.append("historical audit review provenance mismatch")
+    if type_counts != {"claim": 199, "review": 199, "gap": 99}:
+        errors.append("historical audit record-type counts mismatch")
 
 
 def build_batches(root):
@@ -210,6 +314,11 @@ def reconcile_refreeze(root, previous_selected, previous_claims, previous_review
 
 def validate_series(root, projected, claims, reviews, source_map, as_of, errors, parse_timestamp):
     root = Path(root)
+    active_company_ids = {
+        company.get("company_id")
+        for records in projected.values() for company in records
+    }
+    validate_historical_audit(root, active_company_ids, errors)
     batches = read_jsonl(root / "series-batches.jsonl")
     try:
         expected = build_batches(root)
@@ -258,7 +367,17 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         outcome_targets.add(record_id)
         if record_id not in gap_by_id:
             errors.append(f"{review.get('review_id')}: orphan outcome review target")
-        if review.get("decision") != "approved" or review.get("researcher_id") == review.get("reviewer_id"):
+        if set(review) != OUTCOME_REVIEW_FIELDS:
+            errors.append(f"{review.get('review_id', 'outcome review')}: outcome review schema mismatch")
+        researcher_id = review.get("researcher_id")
+        reviewer_id = review.get("reviewer_id")
+        if (review.get("decision") != "approved"
+                or not isinstance(researcher_id, str) or not researcher_id.strip()
+                or not isinstance(reviewer_id, str) or not reviewer_id.strip()
+                or researcher_id == reviewer_id
+                or review.get("quote_entailment_confirmed") is not True
+                or not isinstance(review.get("resolution"), str) or not review["resolution"].strip()
+                or not isinstance(review.get("issues"), list)):
             errors.append(f"{review.get('review_id')}: outcome review must be approved and independent")
         parse_timestamp(review.get("reviewed_at"), "reviewed_at", review.get("review_id", "outcome review"), errors)
     approved_companies = set()
@@ -313,6 +432,19 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         errors.append("claims for a pending batch are prohibited")
     if set(gap_map) - approved_companies:
         errors.append("company gaps for a pending batch are prohibited")
+    expected_outcome_targets = {
+        gap.get("audit_id")
+        for gap in gaps
+        if gap.get("company_id") in approved_companies
+    }
+    for gap in gaps:
+        expected_id = f"company-gap::{gap.get('company_id')}"
+        if gap.get("audit_id") != expected_id:
+            errors.append(f"{gap.get('audit_id')}: company gap target must exactly bind company_id")
+    actual_outcome_targets = [review.get("record_id") for review in outcome_reviews]
+    if (len(actual_outcome_targets) != len(expected_outcome_targets)
+            or set(actual_outcome_targets) != expected_outcome_targets):
+        errors.append("approved gap/nonclaim outcome review coverage must be exact one-to-one with no missing, duplicate, or orphan targets")
 
     used_source_ids = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
     checks = read_jsonl(root / "series-prepublication-checks.jsonl")

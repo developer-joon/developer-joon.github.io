@@ -127,6 +127,17 @@ class RendererTests(unittest.TestCase):
         removed_ids = {item["claim_id"] for item in self.fixture.claims if item["company_id"] == company_id}
         self.fixture.claims = [item for item in self.fixture.claims if item["claim_id"] not in removed_ids]
         self.fixture.reviews = [item for item in self.fixture.reviews if item["claim_id"] not in removed_ids]
+        self.fixture.reviews.append({
+            "review_id": f"review::company-gap::{company_id}",
+            "record_id": f"company-gap::{company_id}",
+            "researcher_id": "gap-researcher",
+            "reviewer_id": "bob",
+            "decision": "approved",
+            "reviewed_at": "2026-10-20T03:00:00Z",
+            "issues": [],
+            "resolution": "approved nonclaim outcome",
+            "quote_entailment_confirmed": True,
+        })
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
         self.fixture.write_jsonl("series-research-gaps.jsonl", [{

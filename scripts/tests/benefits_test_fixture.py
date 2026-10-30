@@ -237,6 +237,16 @@ class ContractFixture:
         self.write_jsonl("benefit-claims.jsonl", self.claims)
         self.write_jsonl("reviews.jsonl", self.reviews)
         self.write_jsonl("corrections.jsonl", [])
+        for relative in (
+            "series-historical-audit.jsonl",
+            "series-historical-audit-manifest.json",
+            "schema/series-historical-audit.schema.json",
+            "population/history/protocol-3.1.1/population-protocol.json",
+            "population/history/protocol-3.1.1/freeze-manifest.json",
+        ):
+            destination = self.root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((RESEARCH_ROOT / relative).read_bytes())
         self.refresh_manifests()
         try:
             company_benefits_series.materialize_contract(
