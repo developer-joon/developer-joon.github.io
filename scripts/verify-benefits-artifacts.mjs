@@ -1,118 +1,72 @@
-import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
+import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
-import { gzipSync, brotliCompressSync } from 'node:zlib'
-import {
-  manifestSchema,
-  indexSchema,
-  rankingsSchema,
-  detailsSchema,
-  methodologySchema,
-  categories,
-  statuses,
-  assertRankingEvidence,
-  assertDetailEvidence,
-} from '../community-app/src/types/benefits.ts'
+import { manifestSchema, listingChunkSchema, detailSchema, methodologySchema, categories, assertCompanyDetailEvidence, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
 
-export function buildBenefitsLookupMaps(manifest, index) {
-  const companyById = new Map(
-    index.companies.map((company) => [company.company_id, company]),
-  )
-  const expectedIdsByUrl = new Map()
-  for (const [companyId, url] of Object.entries(manifest.detail_shards)) {
-    const expected = expectedIdsByUrl.get(url)
-    if (expected) expected.push(companyId)
-    else expectedIdsByUrl.set(url, [companyId])
+const forbiddenText = [/fixture-v1/i, /"fixture"\s*:\s*true/i, /example-\d{3}/i, /example\.org/i, /rankings\.json/i, /rankings_url/i, /\/benefits\/rankings\//i, /가상 별빛|가상 검증기업|예시 데이터|모든 기업·정책·점수는 가상/]
+const forbiddenKey = /score|rank|percentile|coverage(?:_percent)?|fitScore|rankOrder/i
+
+async function filesRecursively(root) {
+  const output = []
+  async function visit(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name)
+      if (entry.isDirectory()) await visit(target)
+      else output.push(target)
+    }
   }
-  return { companyById, expectedIdsByUrl }
+  await visit(root)
+  return output
+}
+function rejectForbiddenKeys(value, location) {
+  if (Array.isArray(value)) return value.forEach((entry) => rejectForbiddenKeys(entry, location))
+  if (!value || typeof value !== 'object') return
+  for (const [key, child] of Object.entries(value)) {
+    if (forbiddenKey.test(key)) throw Error(`forbidden benefits key ${key}: ${location}`)
+    rejectForbiddenKeys(child, location)
+  }
+}
+export async function assertNoBenefitsFixtureLeaks(root) {
+  const benefitsRoot = path.join(root, 'community')
+  let files
+  try { files = await filesRecursively(benefitsRoot) } catch (error) { if (error.code === 'ENOENT') return; throw error }
+  for (const file of files) {
+    if (!/benefits|company-benefits|assets/.test(file)) continue
+    const raw = await readFile(file, 'utf8').catch(() => '')
+    for (const pattern of forbiddenText) if (pattern.test(raw) || pattern.test(file)) throw Error(`forbidden benefits release content ${pattern}: ${file}`)
+    if (file.endsWith('.json')) { const value = JSON.parse(raw); rejectForbiddenKeys(value, file); if (JSON.stringify(value).includes('"publishable":false')) throw Error(`historical nonpublishable record: ${file}`) }
+  }
 }
 
 export async function verifyBenefitsArtifacts(root) {
-  const get = (relative) => readFile(path.join(root, relative), 'utf8')
-  const manifest = manifestSchema.parse(
-    JSON.parse(await get('community/data/company-benefits/manifest.json')),
-  )
-  if (
-    new Set(manifest.category_taxonomy).size !== categories.length ||
-    new Set(manifest.status_taxonomy).size !== statuses.length
-  )
-    throw Error('benefits taxonomy mismatch')
-  const results = new Map()
-  for (const [url, descriptor] of Object.entries(manifest.artifact_sha256)) {
-    const raw = await get(url.slice(1))
-    if (createHash('sha256').update(raw).digest('hex') !== descriptor.sha256)
-      throw Error(`benefits hash 무결성 오류: ${url}`)
-    const schema =
-      url === manifest.index_url
-        ? indexSchema
-        : url === manifest.rankings_url
-          ? rankingsSchema
-          : url === manifest.methodology_url
-            ? methodologySchema
-            : detailsSchema
-    const data = schema.parse(JSON.parse(raw))
-    const records = data.companies ?? data.rows ?? data.paragraphs
-    if (records.length !== descriptor.record_count)
-      throw Error(`benefits record count mismatch: ${url}`)
-    results.set(url, data)
+  const manifestPath = path.join(root, 'community/data/company-benefits/manifest.json')
+  let manifestRaw
+  try { manifestRaw = await readFile(manifestPath, 'utf8') } catch (error) { if (error.code === 'ENOENT') { await assertNoBenefitsFixtureLeaks(root); return 'Benefits artifacts unavailable: no approved manifest.' } throw error }
+  const manifest = manifestSchema.parse(JSON.parse(manifestRaw)); const companies = []; const byId = new Map()
+  const load = async (descriptor) => {
+    const target = path.join(root, descriptor.url.slice(1)); const raw = await readFile(target, 'utf8')
+    if (Buffer.byteLength(raw) !== descriptor.byte_count) throw Error(`benefits byte count mismatch: ${descriptor.url}`)
+    if (createHash('sha256').update(raw).digest('hex') !== descriptor.sha256) throw Error(`benefits hash mismatch: ${descriptor.url}`)
+    rejectForbiddenKeys(JSON.parse(raw), descriptor.url)
+    return { raw, value: JSON.parse(raw) }
   }
-  const index = results.get(manifest.index_url),
-    rankings = results.get(manifest.rankings_url),
-    methodology = results.get(manifest.methodology_url)
-  if (!index || !rankings || !methodology)
-    throw Error('benefits required payload missing')
-  const ids = new Set(index.companies.map((c) => c.company_id))
-  if (
-    ids.size !== index.companies.length ||
-    ids.size !== manifest.company_count ||
-    Object.keys(manifest.detail_shards).length !== ids.size
-  )
-    throw Error('benefits company count mismatch')
-  const { companyById, expectedIdsByUrl } = buildBenefitsLookupMaps(
-    manifest,
-    index,
-  )
-  assertRankingEvidence(index, rankings)
-  const keys = new Set(
-    rankings.rows.map((r) => `${r.company_id}:${r.category}`),
-  )
-  if (
-    keys.size !== rankings.rows.length ||
-    keys.size !== ids.size * categories.length ||
-    rankings.rows.some((r) => !ids.has(r.company_id))
-  )
-    throw Error('benefits rankings references mismatch')
-  const verifiedDetailIds = new Set()
-  for (const [url, data] of results) {
-    if (!url.includes('/details/')) continue
-    const seen = new Set()
-    const expected = expectedIdsByUrl.get(url) ?? []
-    for (const c of data.companies) {
-      if (
-        !ids.has(c.company_id) ||
-        seen.has(c.company_id) ||
-        manifest.detail_shards[c.company_id] !== url
-      )
-        throw Error('benefits detail references mismatch')
-      seen.add(c.company_id)
-      verifiedDetailIds.add(c.company_id)
-      assertDetailEvidence(
-        companyById.get(c.company_id),
-        c,
-      )
-    }
-    if (
-      expected.length === 0 ||
-      seen.size !== expected.length ||
-      expected.some((companyId) => !seen.has(companyId))
-    )
-      throw Error('benefits detail shard completeness mismatch')
+  for (const descriptor of manifest.listing_chunks) {
+    const { value } = await load(descriptor); const chunk = listingChunkSchema.parse(value)
+    if (chunk.companies.length !== descriptor.record_count || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw Error(`benefits listing metadata mismatch: ${descriptor.url}`)
+    companies.push(...chunk.companies)
   }
-  if (
-    verifiedDetailIds.size !== ids.size ||
-    [...ids].some((id) => !verifiedDetailIds.has(id))
-  )
-    throw Error('benefits detail mapping missing')
-  const raw = await get(manifest.index_url.slice(1))
-  return `Benefits fixture: ${ids.size} companies; index ${Buffer.byteLength(raw)} bytes, gzip ${gzipSync(raw).length}, brotli ${brotliCompressSync(raw).length}.`
+  assertListingOutcomes(companies)
+  if (companies.length !== 2000 || companies.some((company, index) => company.population_sequence !== index + 1)) throw Error('benefits canonical population mismatch')
+  companies.forEach((company) => byId.set(company.company_id, company))
+  for (const [id, descriptor] of Object.entries(manifest.company_shards)) {
+    const { value } = await load(descriptor); const detail = detailSchema.parse(value)
+    if (descriptor.record_count !== 1 || descriptor.company_id !== id || detail.company.company_id !== id || detail.data_version !== manifest.data_version) throw Error(`benefits company shard mismatch: ${id}`)
+    assertCompanyDetailEvidence(byId.get(id), detail)
+    for (const outcome of detail.category_outcomes) if (outcome.kind === 'insufficient_evidence' && !outcome.nonabsence_notice) throw Error(`missing nonabsence notice: ${id}`)
+  }
+  if (Object.keys(manifest.company_shards).length !== 2000) throw Error('benefits company shard count mismatch')
+  const methodology = methodologySchema.parse((await load(manifest.methodology)).value)
+  if (methodology.data_version !== manifest.data_version) throw Error('benefits methodology version mismatch')
+  await load(manifest.taxonomy); await load(manifest.sources); await assertNoBenefitsFixtureLeaks(root)
+  return `Benefits artifacts v2: ${companies.length} companies; ${manifest.listing_chunks.length} listing chunks; ${categories.length} categories.`
 }

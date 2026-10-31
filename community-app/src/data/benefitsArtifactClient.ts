@@ -1,350 +1,115 @@
 import { z } from 'zod'
-import {
-  manifestSchema,
-  indexSchema,
-  rankingsSchema,
-  detailsSchema,
-  methodologySchema,
-  categories,
-  statuses,
-  assertRankingEvidence,
-  assertDetailEvidence,
-  type Manifest,
-  type CompanyIndex,
-} from '../types/benefits'
+import { assertCompanyDetailEvidence, assertListingOutcomes, detailSchema, listingChunkSchema, manifestSchema, methodologySchema, type CompanyListing, type Manifest } from '../types/benefits'
 
 const RESPONSE_LIMIT = 12_000_000
-const DETAIL_SHARD_LIMIT = 256_000
-const DETAIL_BATCH_LIMIT = 1_000_000
+const SHARD_LIMIT = 256_000
+const BATCH_LIMIT = 1_000_000
+
+type Descriptor = { url: string; sha256: string; record_count: number; byte_count: number }
 
 export class BenefitsArtifactClient {
   private cache = new Map<string, Promise<unknown>>()
+  constructor(private request: (url: string, signal?: AbortSignal) => Promise<Response> = (url, signal) => fetch(url, { credentials: 'omit', redirect: 'error', signal }), private subtle: SubtleCrypto = crypto.subtle) {}
 
-  constructor(
-    private request: (url: string, signal?: AbortSignal) => Promise<Response> = (
-      url,
-      signal,
-    ) => fetch(url, { credentials: 'omit', redirect: 'error', signal }),
-    private subtle: SubtleCrypto = crypto.subtle,
-  ) {}
-
-  private async raw(
-    url: string,
-    signal?: AbortSignal,
-    maxChars = RESPONSE_LIMIT,
-    maxBytes = RESPONSE_LIMIT,
-    account?: (chars: number, bytes: number) => void,
-  ) {
+  private async raw(url: string, signal?: AbortSignal, maxBytes = RESPONSE_LIMIT, account?: (bytes: number) => void) {
     signal?.throwIfAborted()
     const response = await this.request(url, signal)
-    signal?.throwIfAborted()
     if (!response.ok) throw new Error('데이터 요청 실패')
-
-    const declaredLength = response.headers?.get?.('content-length')
-    if (declaredLength !== null && declaredLength !== undefined) {
-      if (!/^\d+$/.test(declaredLength)) {
-        response.body?.cancel().catch(() => undefined)
-        throw new Error('데이터 크기 정보 오류')
-      }
-      const declaredBytes = Number(declaredLength)
-      if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxBytes) {
-        response.body?.cancel().catch(() => undefined)
-        throw new Error('데이터 크기 초과')
-      }
+    const declared = response.headers.get('content-length')
+    if (declared && (!/^\d+$/.test(declared) || Number(declared) > maxBytes)) { await response.body?.cancel(); throw new Error('데이터 크기 초과') }
+    if (!response.body) {
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      if (bytes.byteLength > maxBytes) throw new Error('데이터 크기 초과')
+      account?.(bytes.byteLength)
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
     }
-
-    if (!response.body || typeof response.body.getReader !== 'function') {
-      const raw = await response.text()
-      signal?.throwIfAborted()
-      const bytes = new TextEncoder().encode(raw).byteLength
-      if (raw.length > maxChars || bytes > maxBytes)
-        throw new Error('데이터 크기 초과')
-      account?.(raw.length, bytes)
-      return raw
-    }
-
-    const reader = response.body.getReader()
-    const chunks: Uint8Array[] = []
-    let byteLength = 0
-    let cancelled = false
-    const cancelReader = (reason?: unknown) => {
-      if (cancelled) return
-      cancelled = true
-      reader.cancel(reason).catch(() => undefined)
-    }
-    const abortReader = () => cancelReader(signal?.reason)
-    signal?.addEventListener('abort', abortReader, { once: true })
+    const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0
+    const abort = () => { void reader.cancel(signal?.reason) }
+    signal?.addEventListener('abort', abort, { once: true })
     try {
       while (true) {
-        signal?.throwIfAborted()
-        const { done, value } = await reader.read()
-        signal?.throwIfAborted()
-        if (done) break
-        if (!value || !Number.isSafeInteger(value.byteLength)) {
-          cancelReader()
-          throw new Error('데이터 응답 형식 오류')
-        }
-        if (value.byteLength > maxBytes - byteLength) {
-          cancelReader()
-          throw new Error('데이터 크기 초과')
-        }
-        account?.(0, value.byteLength)
-        byteLength += value.byteLength
-        chunks.push(Uint8Array.from(value))
+        signal?.throwIfAborted(); const { done, value } = await reader.read(); if (done) break
+        if (!value || value.byteLength > maxBytes - size) { await reader.cancel(); throw new Error('데이터 크기 초과') }
+        size += value.byteLength; account?.(value.byteLength); chunks.push(value)
       }
-    } catch (error) {
-      cancelReader(error)
-      throw error
-    } finally {
-      signal?.removeEventListener('abort', abortReader)
-    }
-
-    const bytes = new Uint8Array(byteLength)
-    let offset = 0
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset)
-      offset += chunk.byteLength
-    }
-    let raw: string
-    try {
-      raw = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-    } catch {
-      throw new Error('데이터 UTF-8 오류')
-    }
-    if (raw.length > maxChars) throw new Error('데이터 크기 초과')
-    account?.(raw.length, 0)
-    return raw
+    } finally { signal?.removeEventListener('abort', abort) }
+    const bytes = new Uint8Array(size); let offset = 0
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { throw new Error('데이터 UTF-8 오류') }
   }
 
   async loadManifest(signal?: AbortSignal) {
-    const m = manifestSchema.parse(
-      JSON.parse(
-        await this.raw(
-          '/community/data/company-benefits/manifest.json',
-          signal,
-        ),
-      ),
-    )
+    const manifest = manifestSchema.parse(JSON.parse(await this.raw('/community/data/company-benefits/manifest.json', signal)))
     signal?.throwIfAborted()
-    if (
-      new Set(m.category_taxonomy).size !== categories.length ||
-      new Set(m.status_taxonomy).size !== statuses.length ||
-      Object.keys(m.detail_shards).length !== m.company_count
-    )
-      throw new Error('manifest 개수 불일치')
-    return m
+    return manifest
   }
 
-  private async payload<T>(
-    m: Manifest,
-    url: string,
-    schema: z.ZodType<T>,
-    count: (data: T) => number,
-    signal?: AbortSignal,
-    limits?: {
-      maxChars: number
-      maxBytes: number
-      account: (chars: number, bytes: number) => void
-    },
-  ): Promise<T> {
-    const descriptor = m.artifact_sha256[url]
-    if (!descriptor) throw new Error('등록되지 않은 artifact')
-    const key = `${m.data_version}:${url}:${descriptor.sha256}`
+  private async payload<T>(manifest: Manifest, descriptor: Descriptor, schema: z.ZodType<T>, count: (value: T) => number, signal?: AbortSignal, limits?: { maxBytes: number; account?: (bytes: number) => void }) {
+    if (!descriptor.url.startsWith(`/community/data/company-benefits/${manifest.data_version}/`)) throw new Error('artifact 버전 경로 불일치')
+    const key = `${manifest.data_version}:${descriptor.url}:${descriptor.sha256}`
     const load = async () => {
-      const raw = await this.raw(
-        url,
-        signal,
-        limits?.maxChars,
-        limits?.maxBytes,
-        limits?.account,
-      )
-      signal?.throwIfAborted()
-      const digest = await this.subtle.digest(
-        'SHA-256',
-        new TextEncoder().encode(raw),
-      )
-      signal?.throwIfAborted()
-      if (
-        Array.from(new Uint8Array(digest), (byte) =>
-          byte.toString(16).padStart(2, '0'),
-        ).join('') !== descriptor.sha256
-      )
-        throw new Error('무결성 오류')
-      const parsed = JSON.parse(raw)
-      signal?.throwIfAborted()
-      const data = schema.parse(parsed)
-      signal?.throwIfAborted()
-      if (count(data) !== descriptor.record_count)
-        throw new Error('record count 불일치')
-      return data
+      const raw = await this.raw(descriptor.url, signal, limits?.maxBytes, limits?.account)
+      const encoded = new TextEncoder().encode(raw)
+      if (encoded.byteLength !== descriptor.byte_count) throw new Error('byte count 불일치')
+      const digest = await this.subtle.digest('SHA-256', encoded)
+      const actual = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+      if (actual !== descriptor.sha256) throw new Error('무결성 오류')
+      const value = schema.parse(JSON.parse(raw))
+      if (count(value) !== descriptor.record_count) throw new Error('record count 불일치')
+      return value
     }
-    // A caller-owned signal must not be shared through the immutable cache: one
-    // stale view aborting must not cancel another live view's request.
     if (signal) return load()
-    if (!this.cache.has(key))
-      this.cache.set(
-        key,
-        load().catch((error) => {
-          this.cache.delete(key)
-          throw error
-        }),
-      )
+    if (!this.cache.has(key)) this.cache.set(key, load().catch((error) => { this.cache.delete(key); throw error }))
     return this.cache.get(key) as Promise<T>
   }
 
-  async loadCompanyIndex(m: Manifest, signal?: AbortSignal) {
-    const data = await this.payload(
-      m,
-      m.index_url,
-      indexSchema,
-      (payload) => payload.companies.length,
-      signal,
-    )
-    const ids = new Set(data.companies.map((company) => company.company_id))
-    if (
-      ids.size !== m.company_count ||
-      data.companies.length !== m.company_count ||
-      [...ids].some((id) => !m.detail_shards[id])
-    )
-      throw new Error('회사 개수/참조 불일치')
-    return data
-  }
-
-  async loadRankings(
-    m: Manifest,
-    index: CompanyIndex,
-    signal?: AbortSignal,
-  ) {
-    const data = await this.payload(
-      m,
-      m.rankings_url,
-      rankingsSchema,
-      (payload) => payload.rows.length,
-      signal,
-    )
-    const ids = new Set(index.companies.map((company) => company.company_id))
-    const keys = new Set(
-      data.rows.map((row) => `${row.company_id}:${row.category}`),
-    )
-    if (
-      data.rows.some((row) => !ids.has(row.company_id)) ||
-      keys.size !== data.rows.length ||
-      keys.size !== ids.size * categories.length
-    )
-      throw new Error('순위 회사 참조 불일치')
-    assertRankingEvidence(index, data)
-    return data
-  }
-
-  async loadCompanyDetail(
-    m: Manifest,
-    index: CompanyIndex,
-    id: string,
-    signal?: AbortSignal,
-  ) {
-    const [result] = await this.loadCompanyDetails(m, index, [id], signal)
-    return result
-  }
-
-  async loadCompanyDetails(
-    m: Manifest,
-    index: CompanyIndex,
-    requestedIds: string[],
-    signal?: AbortSignal,
-  ) {
-    const requested = [...new Set(requestedIds)]
-    const companies = new Map(
-      index.companies.map((company) => [company.company_id, company]),
-    )
-    if (requested.some((id) => !companies.has(id) || !m.detail_shards[id]))
-      throw new Error('기업을 찾을 수 없습니다')
-    const shardUrls = [...new Set(requested.map((id) => m.detail_shards[id]))]
-    const loaded = new Map<
-      string,
-      z.infer<typeof detailsSchema>['companies'][number]
-    >()
-    const batchController = new AbortController()
-    const batchSignal = signal
-      ? AbortSignal.any([signal, batchController.signal])
-      : batchController.signal
-    let totalChars = 0
-    let totalBytes = 0
-    let nextShard = 0
-    let firstFailure: unknown
-    const account = (chars: number, bytes: number) => {
-      if (
-        chars > DETAIL_BATCH_LIMIT - totalChars ||
-        bytes > DETAIL_BATCH_LIMIT - totalBytes
-      ) {
-        const error = new Error('상세 데이터 배치 크기 초과')
-        batchController.abort(error)
-        throw error
-      }
-      totalChars += chars
-      totalBytes += bytes
-    }
+  async loadListingChunks(manifest: Manifest, signal?: AbortSignal): Promise<CompanyListing[]> {
+    const results: CompanyListing[][] = Array.from({ length: manifest.listing_chunks.length }, () => [])
+    let next = 0; let failure: unknown
+    const controller = new AbortController(); const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
     const worker = async () => {
-      while (!firstFailure && nextShard < shardUrls.length) {
-        const shardUrl = shardUrls[nextShard++]
+      while (!failure && next < manifest.listing_chunks.length) {
+        const index = next++; const descriptor = manifest.listing_chunks[index]
         try {
-          const data = await this.payload(
-            m,
-            shardUrl,
-            detailsSchema,
-            (payload) => payload.companies.length,
-            batchSignal,
-            {
-              maxChars: DETAIL_SHARD_LIMIT,
-              maxBytes: DETAIL_SHARD_LIMIT,
-              account,
-            },
-          )
-          const ids = new Set(
-            data.companies.map((detail) => detail.company_id),
-          )
-          const expectedIds = Object.entries(m.detail_shards)
-            .filter(([, url]) => url === shardUrl)
-            .map(([id]) => id)
-          if (
-            ids.size !== data.companies.length ||
-            ids.size !== expectedIds.length ||
-            expectedIds.some((id) => !ids.has(id)) ||
-            data.companies.some(
-              (detail) =>
-                !companies.has(detail.company_id) ||
-                m.detail_shards[detail.company_id] !== shardUrl,
-            )
-          )
-            throw new Error('상세 회사/shard 참조 불일치')
-          for (const detail of data.companies) {
-            assertDetailEvidence(companies.get(detail.company_id)!, detail)
-            loaded.set(detail.company_id, detail)
-          }
-        } catch (error) {
-          if (!firstFailure) firstFailure = error
-          batchController.abort(error)
-        }
+          const chunk = await this.payload(manifest, descriptor, listingChunkSchema, (value) => value.companies.length, combined)
+          if (chunk.data_version !== manifest.data_version || chunk.taxonomy_version !== manifest.taxonomy_version || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw new Error('목록 chunk 메타데이터 불일치')
+          chunk.companies.forEach((company, offset) => { if (company.population_sequence !== descriptor.first_sequence + offset || !manifest.company_shards[company.company_id]) throw new Error('목록 회사 참조 불일치') })
+          results[index] = chunk.companies
+        } catch (error) { failure ??= error; controller.abort(error) }
       }
     }
-    await Promise.all(
-      Array.from({ length: Math.min(4, shardUrls.length) }, () => worker()),
-    )
-    if (firstFailure) throw firstFailure
-    signal?.throwIfAborted()
-    const results = requested.map((id) => loaded.get(id))
-    if (results.some((detail) => !detail)) throw new Error('상세 누락')
-    return results as z.infer<typeof detailsSchema>['companies']
+    await Promise.all(Array.from({ length: 4 }, worker))
+    if (failure) throw failure
+    const companies = results.flat(); if (companies.length !== manifest.company_count) throw new Error('회사 개수 불일치')
+    assertListingOutcomes(companies)
+    return companies
   }
 
-  loadMethodology(m: Manifest, signal?: AbortSignal) {
-    return this.payload(
-      m,
-      m.methodology_url,
-      methodologySchema,
-      (payload) => payload.paragraphs.length,
-      signal,
-    )
+  async loadCompanyDetail(manifest: Manifest, listings: CompanyListing[], id: string, signal?: AbortSignal) { return (await this.loadCompanyDetails(manifest, listings, [id], signal))[0] }
+
+  async loadCompanyDetails(manifest: Manifest, listings: CompanyListing[], requestedIds: string[], signal?: AbortSignal) {
+    const ids = [...new Set(requestedIds)].slice(0, 4)
+    if (ids.length !== requestedIds.length || requestedIds.length > 4) throw new Error('비교는 고유 기업 네 곳까지 가능합니다')
+    const byId = new Map(listings.map((company) => [company.company_id, company]))
+    if (ids.some((id) => !byId.has(id) || !manifest.company_shards[id])) throw new Error('기업을 찾을 수 없습니다')
+    let bytes = 0; let next = 0; let failure: unknown
+    const output = new Map<string, z.infer<typeof detailSchema>>(); const controller = new AbortController(); const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    const account = (amount: number) => { if (amount > BATCH_LIMIT - bytes) { const error = new Error('상세 데이터 배치 크기 초과'); controller.abort(error); throw error } bytes += amount }
+    const worker = async () => {
+      while (!failure && next < ids.length) {
+        const id = ids[next++]; const descriptor = manifest.company_shards[id]
+        try {
+          const detail = await this.payload(manifest, descriptor, detailSchema, () => 1, combined, { maxBytes: SHARD_LIMIT, account })
+          if (detail.data_version !== manifest.data_version || detail.taxonomy_version !== manifest.taxonomy_version || detail.company.company_id !== id) throw new Error('상세 shard 메타데이터 불일치')
+          assertCompanyDetailEvidence(byId.get(id)!, detail); output.set(id, detail)
+        } catch (error) { failure ??= error; controller.abort(error) }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker))
+    if (failure) throw failure
+    return ids.map((id) => output.get(id)!)
   }
+
+  loadMethodology(manifest: Manifest, signal?: AbortSignal) { return this.payload(manifest, manifest.methodology, methodologySchema, (value) => value.paragraphs.length, signal) }
 }
-
 export const benefitsClient = new BenefitsArtifactClient()
