@@ -44,15 +44,33 @@ class SeriesContractTests(unittest.TestCase):
 
     def configure_gap_only_batch(self, include_reviews=True):
         companies = self.fixture.current["domestic"][:25]
+        routes = [{
+            "record_type": "nonpublishable_metadata",
+            "source_id": f"gap-route-{index:02d}",
+            "title": f"Exact entity official route {index:02d}",
+            "owner": company["legal_name"],
+            "source_type": "official_company_report",
+            "jurisdiction": "KR",
+            "url": f"https://official.invalid/entity/{index:02d}",
+            "checked_at": "2026-10-20T02:00:00Z",
+            "route_quality": "exact_entity",
+            "publication_eligible": False,
+            "nonpublication_reason": "Exact-entity discovery metadata is not publishable benefit evidence.",
+            "entity_binding_status": "exact_entity",
+            "retention_mode": "metadata_only",
+            "reuse_status": "discovery_only",
+            "access_observation": {"status": 200, "final_url": f"https://official.invalid/entity/{index:02d}",
+                                   "access_wall": "none"},
+        } for index, company in enumerate(companies)]
         gaps = [{
             "audit_id": f"company-gap::{company['company_id']}",
             "company_id": company["company_id"],
             "disposition": "nonpublishable",
             "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
-            "searched_official_source_ids": [],
+            "searched_official_source_ids": [routes[index]["source_id"]],
             "searched_official_urls": [],
             "nonabsence_wording": "복지가 없다는 뜻이 아닙니다.",
-        } for company in companies]
+        } for index, company in enumerate(companies)]
         reviews = [{
             "review_id": f"review::{gap['audit_id']}",
             "record_id": gap["audit_id"],
@@ -66,14 +84,45 @@ class SeriesContractTests(unittest.TestCase):
         } for gap in gaps] if include_reviews else []
         self.fixture.claims = []
         self.fixture.reviews = reviews
+        self.fixture.sources.extend(route for route in routes if route["source_id"] not in {
+            source["source_id"] for source in self.fixture.sources
+        })
+        checks = [{"source_id": route["source_id"], "url": route["url"],
+                   **route["access_observation"], "checked_at": "2026-10-20T04:00:00Z"} for route in routes]
         self.fixture.write_jsonl("benefit-claims.jsonl", [])
         self.fixture.write_jsonl("reviews.jsonl", reviews)
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         self.fixture.write_jsonl("series-research-gaps.jsonl", gaps)
-        self.fixture.write_jsonl("series-prepublication-checks.jsonl", [])
+        self.fixture.write_jsonl("series-prepublication-checks.jsonl", checks)
         self.series.materialize_contract(
             self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "gap-reviewer"
         )
         return gaps, reviews
+
+    def test_gap_routes_reject_empty_url_only_orphan_generic_and_missing_check(self):
+        gaps, _ = self.configure_gap_only_batch()
+        self.assertEqual([], self.errors())
+        gap_path = self.root / "series-research-gaps.jsonl"
+        source_path = self.root / "source-registry.jsonl"
+        check_path = self.root / "series-prepublication-checks.jsonl"
+        original_gaps = copy.deepcopy(gaps)
+        original_sources = self.series.read_jsonl(source_path)
+        original_checks = self.series.read_jsonl(check_path)
+        cases = []
+        empty = copy.deepcopy(original_gaps); empty[0]["searched_official_source_ids"] = []; cases.append(("empty", empty, original_sources, original_checks))
+        url_only = copy.deepcopy(empty); url_only[0]["searched_official_urls"] = [original_sources[-25]["url"]]; cases.append(("URL-only", url_only, original_sources, original_checks))
+        orphan = copy.deepcopy(original_gaps); orphan[0]["searched_official_source_ids"] = ["orphan-route"]; cases.append(("orphan", orphan, original_sources, original_checks))
+        generic_sources = copy.deepcopy(original_sources); generic_sources[-25]["route_quality"] = "generic"; cases.append(("generic", original_gaps, generic_sources, original_checks))
+        cases.append(("missing check", original_gaps, original_sources, original_checks[1:]))
+        for label, mutated_gaps, mutated_sources, mutated_checks in cases:
+            with self.subTest(label=label):
+                self.fixture.write_jsonl("series-research-gaps.jsonl", mutated_gaps)
+                self.fixture.write_jsonl("source-registry.jsonl", mutated_sources)
+                self.fixture.write_jsonl("series-prepublication-checks.jsonl", mutated_checks)
+                errors = self.errors()
+                self.assertTrue(any(token in error for error in errors for token in
+                                    ("official source-ID route", "raw searched URLs", "does not resolve",
+                                     "exact-entity", "prepublication checks")), errors[:20])
 
     def install_historical_audit(self):
         research = ROOT / "docs" / "research" / "company-benefits"
@@ -186,14 +235,14 @@ class SeriesContractTests(unittest.TestCase):
         self.assertEqual(self.series.file_sha256(self.root / "population/effective-selection-events.jsonl"),
                          first["replacement_events_sha256"])
 
-    def test_repository_refreeze_preserves_prior_work_as_nonpublishable_audit(self):
+    def test_repository_production_series_preserves_refreeze_work_as_nonpublishable_audit(self):
         research = ROOT / "docs" / "research" / "company-benefits"
         report = json.loads((research / "series-remap-report.json").read_text())
         self.assertEqual(2000, report["new_population_count"])
         self.assertEqual(report["removed_count"], len(report["removed_company_ids"]))
         self.assertEqual(report["new_count"], len(report["new_company_ids"]))
-        self.assertEqual([], self.series.read_jsonl(research / "benefit-claims.jsonl"))
-        self.assertEqual([], self.series.read_jsonl(research / "reviews.jsonl"))
+        self.assertEqual(150, len(self.series.read_jsonl(research / "benefit-claims.jsonl")))
+        self.assertEqual(2000, len(self.series.read_jsonl(research / "reviews.jsonl")))
         historical = self.series.read_jsonl(research / "series-historical-audit.jsonl")
         self.assertTrue(historical)
         self.assertTrue(all(row["publishable"] is False for row in historical))

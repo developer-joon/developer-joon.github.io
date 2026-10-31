@@ -54,10 +54,8 @@ class MaterializerTests(unittest.TestCase):
             names = {json.loads(line)["legal_name"] for line in (population / ledger).read_text().splitlines()}
             self.assertTrue(prohibited.isdisjoint(names), ledger)
 
-    def test_repository_preserves_all_eleven_non_december_korean_evidence_dates(self):
+    def test_domestic_load_preserves_all_eleven_non_december_korean_evidence_dates(self):
         materializer = load_module()
-        path = Path("/home/bread/.hermes/profiles/conan/cache/scratch/korea-no-key-acquisition/korean_fully_qualifying_entities.csv")
-        records = {item["company_id"]: item for item in materializer.load_domestic(path)}
         expected = {
             "KR-CRN-1101110035108": "2024-09-30", "KR-CRN-1201110002022": "2024-09-30",
             "KR-CRN-1101112507551": "2024-06-30", "KR-CRN-1701110021816": "2024-03-31",
@@ -66,6 +64,34 @@ class MaterializerTests(unittest.TestCase):
             "KR-CRN-1101110006612": "2024-03-31", "KR-CRN-1701110039207": "2024-06-30",
             "KR-CRN-1101110542484": "2024-03-31",
         }
+        rows = []
+        for index, (company_id, evidence_date) in enumerate(expected.items(), start=1):
+            registration_number = company_id.removeprefix("KR-CRN-")
+            rows.append({
+                "entity_id": company_id,
+                "legal_registration_number": registration_number,
+                "legal_name": f"Fixture Employer {index}",
+                "is_financial_sector": "False",
+                "revenue_krw": "200000000000",
+                "assets_krw": "1",
+                "revenue_basis": "standalone",
+                "assets_basis": "standalone",
+                "employee_max_reported_row_total": "100",
+                "positive_employee_rows": "1",
+                "employee_evidence_dates": evidence_date,
+                "filing_name": f"Fixture Employer {index}",
+                "stock_code": f"{index:06d}",
+                "legal_id_source_url": "https://dart.fss.or.kr/dsae001/downloadExcel.do",
+                "employee_source_url": "https://opendart.fss.or.kr/disclosureinfo/biz/ExcelDownload.do",
+                "financial_source_url": "https://opendart.fss.or.kr/disclosureinfo/fnltt/dwld/main.do",
+            })
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "korean_fully_qualifying_entities.csv"
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=rows[0])
+                writer.writeheader()
+                writer.writerows(rows)
+            records = {item["company_id"]: item for item in materializer.load_domestic(path)}
         self.assertEqual(expected, {company_id: records[company_id]["employer_evidence"]["fiscal_period_end"] for company_id in expected})
 
     def test_domestic_preserves_non_december_employee_evidence_period(self):

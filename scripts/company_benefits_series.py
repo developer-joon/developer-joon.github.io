@@ -30,6 +30,10 @@ IDENTITY_ALGORITHM = "sec-submissions-identity"
 IDENTITY_VERSION = "1"
 IDENTITY_SOURCE_FIELDS = {"entity_identity", "legal_name", "registry_id", "tax_id"}
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+OFFICIAL_DISCOVERY_SOURCE_TYPES = {
+    "government_register", "regulator_filing", "public_enterprise_disclosure",
+    "exchange_filing", "official_company_report",
+}
 
 
 def json_bytes(value):
@@ -110,6 +114,34 @@ def validate_source_check(check, source):
                 or recomputed != source["normalization"]["projection_sha256"]
                 or recomputed != check.get("content_sha256")):
             raise ValueError(f"{source_id}: official identity projection drift")
+
+
+def validate_gap_source_routes(gap, source_map):
+    """Require explicit, exact-entity, metadata-only official routes for a gap."""
+    gap_id = gap.get("audit_id", "gap[missing-id]")
+    if (gap.get("disposition") != "nonpublishable"
+            or not any(phrase in gap.get("nonabsence_wording", "") for phrase in NONABSENCE_PHRASES)):
+        raise ValueError(f"{gap_id}: gap must remain nonpublishable with mandatory non-absence wording")
+    source_ids = gap.get("searched_official_source_ids")
+    if (not isinstance(source_ids, list) or not source_ids
+            or any(not isinstance(source_id, str) or not source_id for source_id in source_ids)
+            or len(source_ids) != len(set(source_ids))):
+        raise ValueError(f"{gap_id}: gap requires at least one unique nonempty official source-ID route")
+    if gap.get("searched_official_urls"):
+        raise ValueError(f"{gap_id}: raw searched URLs must be migrated to source-ID records")
+    for source_id in source_ids:
+        source = source_map.get(source_id)
+        if source is None:
+            raise ValueError(f"{gap_id}: official route source_id does not resolve: {source_id}")
+        if (source.get("record_type") != "nonpublishable_metadata"
+                or source.get("publication_eligible") is not False
+                or source.get("retention_mode") != "metadata_only"):
+            raise ValueError(f"{gap_id}: official route must remain nonpublishable metadata: {source_id}")
+        if (source.get("route_quality") != "exact_entity"
+                or source.get("entity_binding_status") != "exact_entity"
+                or source.get("source_type") not in OFFICIAL_DISCOVERY_SOURCE_TYPES):
+            raise ValueError(f"{gap_id}: official route must be an exact-entity official discovery route: {source_id}")
+    return source_ids
 
 
 def read_jsonl(path):
@@ -534,14 +566,10 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
     expected_source_ids = set(used_source_ids)
     for gap_id in outcome_targets:
         gap = gap_by_id.get(gap_id, {})
-        for source_id in gap.get("searched_official_source_ids", []):
-            source = source_map.get(source_id)
-            if not source or not source.get("url"):
-                errors.append(f"{gap.get('audit_id')}: unresolved searched official source {source_id}")
-            else:
-                expected_source_ids.add(source_id)
-        if gap.get("searched_official_urls"):
-            errors.append(f"{gap.get('audit_id')}: raw searched URLs must be migrated to source_id records")
+        try:
+            expected_source_ids.update(validate_gap_source_routes(gap, source_map))
+        except ValueError as exc:
+            errors.append(str(exc))
     if len(check_map) != len(checks) or set(check_map) != expected_source_ids:
         errors.append("series prepublication checks must contain one record per used official source_id")
     for source_id, check in check_map.items():

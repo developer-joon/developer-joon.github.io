@@ -13,6 +13,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 test('pins a non-root unified Docker build toolchain', async () => {
   const dockerfile = await readFile(path.join(repoRoot, 'Dockerfile.build'), 'utf8')
+  assert.match(dockerfile, /^# syntax=docker\/dockerfile:1\.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e$/m)
   assert.match(dockerfile, /ARG SITE_BUILD_PLATFORM=linux\/amd64/)
   assert.match(dockerfile, /FROM --platform=\$\{SITE_BUILD_PLATFORM\} node:24\.15\.0-bookworm-slim@sha256:152aceace5c03e2597988763165ee33e3fd3633636db0fc983cd2e126b02cfde AS node-runtime/)
   assert.match(dockerfile, /FROM --platform=\$\{SITE_BUILD_PLATFORM\} ruby:3\.3\.10-bookworm@sha256:[a-f0-9]{64} AS build/)

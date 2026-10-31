@@ -924,8 +924,15 @@ class VerifierTests(unittest.TestCase):
             for entry in entries:
                 self.assertEqual(source_map[entry["source_id"]]["url"], entry["endpoint"])
         for source in sources:
-            for field in ("title", "locator", "supporting_quote", "content_sha256"):
-                self.assertTrue(source.get(field), (source["source_id"], field))
+            self.assertTrue(source.get("title"), (source["source_id"], "title"))
+            if source.get("record_type") == "nonpublishable_metadata":
+                self.assertEqual("metadata_only", source.get("retention_mode"), source["source_id"])
+                self.assertIs(source.get("publication_eligible"), False, source["source_id"])
+                for field in ("locator", "supporting_quote", "content_sha256"):
+                    self.assertNotIn(field, source, (source["source_id"], field))
+            else:
+                for field in ("locator", "supporting_quote", "content_sha256"):
+                    self.assertTrue(source.get(field), (source["source_id"], field))
         schema = json.loads((research / "schema" / "population-protocol.schema.json").read_text())
         self.assertEqual(PANEL, schema["$defs"]["country_panel"]["const"])
         contract = json.loads((ROOT / "scripts" / "company-benefits-protocol-contract.json").read_text())
@@ -944,7 +951,7 @@ class VerifierTests(unittest.TestCase):
             "review_status": "approved",
             "issued_at": "2026-10-30T00:00:00Z",
         })
-        errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 30), freeze_anchor_receipt=receipt)
+        errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 31), freeze_anchor_receipt=receipt)
         self.assertEqual([], errors)
         self.assertEqual("approved", protocol["status"])
         expected = {"domestic-eligible.jsonl": 1037, "international-eligible.jsonl": 1060,

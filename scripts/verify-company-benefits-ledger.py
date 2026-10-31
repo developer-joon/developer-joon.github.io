@@ -1411,7 +1411,10 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
         approved_freeze_anchors = external_freeze_anchor(freeze_anchor_receipt, protocol, errors, root)
     if approved_effective_anchors is None:
         approved_effective_anchors = external_effective_selection_anchor(effective_selection_receipt, protocol, root, errors)
-    if protocol.get('protocol_id') in {'company-benefits-population-v3', 'company-benefits-population-v4'}:
+    # Protocol 4 freezes workforce evidence into the authoritative repository
+    # artifacts validated below and binds them through both external receipts.
+    # Only legacy protocol 3 still depends on the external CSV audit package.
+    if protocol.get('protocol_id') == 'company-benefits-population-v3':
         spec = importlib.util.spec_from_file_location('sec_workforce_audit', Path(__file__).with_name('sec-workforce-audit.py'))
         audit = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(audit)

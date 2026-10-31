@@ -2,14 +2,17 @@
 """Render the complete, approved company-benefits series into Jekyll posts."""
 
 import argparse
+import fcntl
+import hashlib
 import importlib.util
 import json
 import os
 import re
-import shutil
+import stat
 import sys
-import tempfile
-from datetime import date
+import uuid
+from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 EXPECTED_SCOPES = ("domestic", "international")
@@ -20,6 +23,17 @@ STATUS_LABELS = {
     "name_only": "명칭만 확인",
     "conflict": "상충",
 }
+PUBLIC_GAP_MESSAGES = {
+    "access_limited": "공식 경로의 접근이 제한되어 게시 가능한 복지 근거를 확인하지 못했습니다.",
+    "entity_or_scope_unproven": "공식 경로를 확인했지만 선정 법인과 복지 적용 범위를 함께 입증하는 게시 가능한 근거를 확인하지 못했습니다.",
+    "publication_requirements_unmet": "공식 경로를 확인했지만 현재 적용 범위와 게시 가능 요건을 충족하는 근거를 확인하지 못했습니다.",
+    "not_verified": "공식 공개 경로에서 게시 가능한 복지 근거를 확인하지 못했습니다.",
+}
+EXPECTED_PUBLICATION_FILENAMES = frozenset(
+    [f"_posts/2026-10-31-company-benefits-domestic-d{number:02d}.md" for number in range(1, 41)]
+    + [f"_posts/2026-10-31-company-benefits-international-i{number:02d}.md" for number in range(1, 41)]
+    + ["_posts/2026-10-31-company-benefits-verified-directory-hub.md"]
+)
 
 
 def load_module(path, name):
@@ -29,6 +43,11 @@ def load_module(path, name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+COMPANY_BENEFITS_SERIES = load_module(
+    Path(__file__).with_name("company_benefits_series.py"), "company_benefits_post_contract"
+)
 
 
 def read_json(path):
@@ -112,10 +131,10 @@ def verify_active_ledgers(research_root, as_of, freeze_anchor_receipt=None, effe
         raise ValueError("active ledger verification failed:\n" + "\n".join(errors))
 
 
-def validate_complete_inputs(research_root, taxonomy):
+def validate_complete_inputs(research_root, taxonomy, taxonomy_sha256):
     generator = load_module(Path(__file__).with_name("generate-company-benefits-artifacts.py"), "benefits_post_inputs")
     generator.taxonomy_contract(taxonomy)
-    return generator.validate_inputs(Path(research_root), taxonomy)
+    return generator.validate_inputs(Path(research_root), taxonomy, taxonomy_sha256)
 
 
 def yaml_quote(value):
@@ -166,7 +185,35 @@ def render_sources(source_ids, source_map):
     return "".join(f"[{number}] {source_map[source_id]['url']}\n" for number, source_id in enumerate(source_ids, 1))
 
 
-def render_installment(entry, company_map, claims_by_company, gaps_by_company, source_map, assignments, taxonomy):
+def public_check_time(value):
+    """Render an exact instant without exposing a raw ledger timestamp."""
+    if not isinstance(value, str) or not value:
+        return "미기록"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("invalid official-route check time") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("official-route check time requires a timezone")
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def public_gap_message(gap, checks):
+    """Map reviewed internal gap detail to a bounded public taxonomy."""
+    if any(check.get("status") is None or check.get("status") >= 400
+           or check.get("access_wall") not in (None, "", "none") for check in checks):
+        return PUBLIC_GAP_MESSAGES["access_limited"]
+    reason = str(gap.get("reason", "")).casefold()
+    if any(term in reason for term in (
+            "entity", "법인", "sponsor", "ein", "cik", "affiliate", "subsidiary", "정확", "결속")):
+        return PUBLIC_GAP_MESSAGES["entity_or_scope_unproven"]
+    if any(term in reason for term in (
+            "current", "현행", "permission", "publish", "게시", "applicability", "적용", "scope", "범위")):
+        return PUBLIC_GAP_MESSAGES["publication_requirements_unmet"]
+    return PUBLIC_GAP_MESSAGES["not_verified"]
+
+
+def render_installment(entry, company_map, claims_by_company, gaps_by_company, source_map, check_map, assignments, taxonomy):
     type_map = {item["id"]: item for item in taxonomy["benefit_types"]}
     cited = []
 
@@ -200,8 +247,32 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
             if len(gap_values) != 1:
                 raise ValueError(f"{company_id}: missing exact approved gap")
             gap = gap_values[0]
-            parts.append(f"- 근거 상태: {gap.get('reason', '공개 공식자료에서 게시 가능한 복지 근거를 확인하지 못했습니다.')} ")
-            parts.append(gap["nonabsence_wording"] + "\n\n")
+            searched_ids = COMPANY_BENEFITS_SERIES.validate_gap_source_routes(gap, source_map)
+            route_checks = []
+            for source_id in searched_ids:
+                source = source_map.get(source_id)
+                check = check_map.get(source_id)
+                if source is None or check is None:
+                    raise ValueError(f"{company_id}: gap route lacks bound source/check")
+                route_checks.append(check)
+                url = str(source.get("url", ""))
+                if not url.startswith("https://") or check.get("url") != url:
+                    raise ValueError(f"{company_id}: gap route URL is missing or unbound")
+                owner = str(source.get("owner", ""))
+                title = str(source.get("title", ""))
+                label = title if title and source_id not in title else owner
+                if not label or source_id in label:
+                    label = "공식 검색 경로"
+                marker = citations([source_id])
+                parts.append(f"- 조사한 공식 경로: [{label}]({url}){marker}\n")
+                status = check.get("status")
+                status_text = f"HTTP {status}" if status is not None else "HTTP 상태 미기록"
+                parts.append(f"  - 관찰 상태: {status_text}\n")
+                if check.get("checked_at"):
+                    parts.append(f"  - 확인 시점: {public_check_time(check['checked_at'])}\n")
+            parts.append(
+                f"- 조사 결과: {public_gap_message(gap, route_checks)} {gap['nonabsence_wording']}\n\n"
+            )
             continue
         for claim in claims:
             if claim.get("status") == "unknown":
@@ -211,12 +282,15 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
                     f"복지가 없다는 뜻이 아닙니다.{marker}\n"
                 )
                 parts.append(f"  - 조사 결과: {claim.get('detail', '공개자료에서 확인하지 못했습니다.')}\n")
-                parts.append(f"  - 조사 시점: {claim.get('searched_at', claim.get('checked_at', '미상'))}\n")
+                searched_at = claim.get("searched_at", claim.get("checked_at"))
+                parts.append(f"  - 조사 시점: {public_check_time(searched_at) if searched_at else '미상'}\n")
                 continue
             assignment = assignments.get(claim["claim_id"])
             if assignment is None:
                 raise ValueError(f"{claim['claim_id']}: missing approved taxonomy assignment")
-            labels = [type_map[type_id]["label_ko"] for type_id in assignment["benefit_type_ids"]]
+            outcome = assignment["assignment"]
+            labels = ([type_map[type_id]["label_ko"] for type_id in outcome["benefit_type_ids"]]
+                      if outcome["state"] == "assigned" else ["분류 보류"])
             source_ids = [item["source_id"] for item in claim.get("source_evidence", [])]
             if set(source_ids) != set(claim.get("source_ids", [])):
                 raise ValueError(f"{claim['claim_id']}: source evidence coverage mismatch")
@@ -224,7 +298,9 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
             status = STATUS_LABELS.get(claim.get("status"), claim.get("status", "범위 제한 확인"))
             parts.append(f"- **{claim['benefit_name']}** ({', '.join(labels)}) — {status}: {claim['detail']}{marker}\n")
             parts.append(f"  - 적용 범위: {scope_text(claim)}\n")
-            parts.append(f"  - 근거 등급·확인일: {claim.get('evidence_grade', '미상')} / {claim.get('prepublication_checked_at', claim.get('checked_at', '미상'))}\n")
+            checked_at = claim.get("prepublication_checked_at", claim.get("checked_at"))
+            checked_text = public_check_time(checked_at) if checked_at else "미상"
+            parts.append(f"  - 근거 등급·확인일: {claim.get('evidence_grade', '미상')} / {checked_text}\n")
             if claim.get("current_validity") == "historical" or claim.get("status") == "past":
                 parts.append("  - 한계: 과거의 명시된 계획·기간에 대한 근거이며 현재 제공이나 개인 자격을 뜻하지 않습니다.\n")
         parts.append("\n")
@@ -249,9 +325,399 @@ def render_hub(entry, installment_entries, source_map):
         parts.append(f"- [{item['title']}]({{% post_url {Path(item['filename']).stem} %}})\n")
     parts.append("\n## 읽는 법과 한계\n\n")
     parts.append(entry["summary_text"] + "\n\n")
-    parts.append("해외 범위는 미국 설립·미국 주사업장 근거를 갖춘 SEC 10-K 공시 법인 코호트이고, 국내 범위는 선정된 대한민국 보고 법인입니다. 서로 다른 회계연도와 지표를 하나의 순위로 합치지 않습니다. 과거 계획 근거는 현재 제공이나 개인 자격으로 확대하지 않습니다.\n\n")
+    population_source_ids = entry["citation_source_mapping"]["population_source_ids"]
+    citation_marks = "".join(f"[{index}]" for index in range(1, len(population_source_ids) + 1))
+    parts.append("해외 범위는 미국 설립·미국 주사업장 근거를 갖춘 SEC 10-K 공시 법인 코호트이고, 국내 범위는 선정된 대한민국 보고 법인입니다. 서로 다른 회계연도와 지표를 하나의 순위로 합치지 않습니다. 과거 계획 근거는 현재 제공이나 개인 자격으로 확대하지 않습니다." + citation_marks + "\n\n")
     parts.append("## Sources\n\n")
+    parts.append(render_sources(population_source_ids, source_map))
     return "".join(parts)
+
+
+def _sha256(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _transaction_paths(output_root):
+    parent = Path(output_root).parent
+    return parent / ".company-benefits-posts-transaction.json", parent / ".company-benefits-posts.lock"
+
+
+def _absolute(path):
+    """Return a lexical absolute path; resolving would follow an attacker symlink."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _assert_no_symlink(path):
+    """Reject symlinks in every existing component of a publication path."""
+    path = _absolute(path)
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(mode):
+            raise RuntimeError(f"publication path contains symlink: {current}")
+    return path
+
+
+def _fsync_dir(path):
+    descriptor = os.open(_assert_no_symlink(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _mkdir_no_symlinks(path):
+    path = _absolute(path)
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        parent = current
+        current /= part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            os.mkdir(current, 0o700)
+            _fsync_dir(parent)
+            mode = current.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise RuntimeError(f"publication path contains symlink: {current}")
+        if not stat.S_ISDIR(mode):
+            raise RuntimeError(f"publication parent is not a directory: {current}")
+    return path
+
+
+def _read_regular(path):
+    path = _assert_no_symlink(path)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError(f"publication path is not a regular file: {path}")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+
+
+def _write_file_durable(path, raw):
+    path = _assert_no_symlink(path)
+    _mkdir_no_symlinks(path.parent)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        view = memoryview(raw)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_dir(path.parent)
+
+
+@contextmanager
+def _publication_lock(output_root):
+    output_root = _assert_no_symlink(output_root)
+    _mkdir_no_symlinks(output_root.parent)
+    _, lock_path = _transaction_paths(output_root)
+    _assert_no_symlink(lock_path)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError("publication lock is not a regular file")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("company-benefits publication publisher lock is held") from exc
+        yield output_root
+    finally:
+        os.close(descriptor)
+
+
+def _write_journal(path, journal):
+    path = _assert_no_symlink(path)
+    temporary = Path(str(path) + ".tmp")
+    if temporary.exists() or temporary.is_symlink():
+        _assert_no_symlink(temporary)
+        temporary.unlink()
+    raw = json.dumps(journal, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    _write_file_durable(temporary, raw)
+    _assert_no_symlink(path.parent)
+    os.replace(temporary, path)
+    _fsync_dir(path.parent)
+
+
+def _remove_tree_durable(root):
+    root = _assert_no_symlink(root)
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise RuntimeError(f"transaction path is not a directory: {root}")
+    for directory, names, files in os.walk(root, topdown=False, followlinks=False):
+        directory = _assert_no_symlink(directory)
+        for name in files:
+            _assert_no_symlink(Path(directory) / name).unlink()
+        for name in names:
+            _assert_no_symlink(Path(directory) / name).rmdir()
+        _fsync_dir(directory)
+    root.rmdir()
+    _fsync_dir(root.parent)
+
+
+def _finish_cleanup(journal_path, transaction_root):
+    _remove_tree_durable(transaction_root)
+    journal_path = _assert_no_symlink(journal_path)
+    journal_path.unlink(missing_ok=True)
+    temporary = Path(str(journal_path) + ".tmp")
+    if temporary.exists():
+        _assert_no_symlink(temporary).unlink()
+    _fsync_dir(journal_path.parent)
+
+
+def _validate_journal(raw, output_root):
+    required = {"schema_version", "state", "output_root", "transaction", "items"}
+    if not isinstance(raw, dict) or set(raw) != required:
+        raise RuntimeError("invalid publication journal schema")
+    if raw["schema_version"] != "company-benefits-publication-v2":
+        raise RuntimeError("unsupported company-benefits publication journal")
+    if raw["state"] not in {"preparing", "prepared", "committed"}:
+        raise RuntimeError("invalid publication journal state")
+    if raw["output_root"] != os.path.abspath(os.fspath(output_root)):
+        raise RuntimeError("publication journal belongs to a different output root")
+    transaction = raw["transaction"]
+    if not isinstance(transaction, str) or not re.fullmatch(r"\.company-benefits-posts-transaction-[0-9a-f]{32}", transaction):
+        raise RuntimeError("invalid publication transaction identity")
+    items = raw["items"]
+    if not isinstance(items, list) or len(items) != 81:
+        raise RuntimeError("publication journal requires exactly 81 items")
+    relatives = []
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {"relative", "old_exists", "old_sha256", "new_sha256"}:
+            raise RuntimeError("invalid publication journal item schema")
+        relative = item["relative"]
+        if not isinstance(relative, str):
+            raise RuntimeError("invalid publication journal relative path")
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts or path.parent != Path("_posts"):
+            raise RuntimeError("unsafe publication journal relative path")
+        if not isinstance(item["old_exists"], bool):
+            raise RuntimeError("invalid publication journal existence state")
+        digest = item["old_sha256"]
+        if item["old_exists"] != isinstance(digest, str):
+            raise RuntimeError("invalid publication journal old hash state")
+        if not isinstance(item["new_sha256"], str):
+            raise RuntimeError("invalid publication journal new hash state")
+        for value in (digest, item["new_sha256"]):
+            if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)):
+                raise RuntimeError("invalid publication journal hash")
+        relatives.append(relative)
+    if relatives != sorted(EXPECTED_PUBLICATION_FILENAMES):
+        raise RuntimeError("publication journal filename contract mismatch")
+    return raw
+
+
+def _load_journal(journal_path, output_root):
+    raw = _read_regular(journal_path)
+    if raw is None:
+        temporary = Path(str(journal_path) + ".tmp")
+        raw = _read_regular(temporary)
+        if raw is None:
+            return None
+        try:
+            value = _validate_journal(json.loads(raw), output_root)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("invalid publication journal encoding") from exc
+        os.replace(temporary, journal_path)
+        _fsync_dir(journal_path.parent)
+        return value
+    try:
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("invalid publication journal encoding") from exc
+    return _validate_journal(value, output_root)
+
+
+def _validate_transaction_tree(transaction_root, items):
+    """Refuse to remove anything not proven to belong to this journal."""
+    transaction_root = _assert_no_symlink(transaction_root)
+    if not transaction_root.exists():
+        return
+    by_relative = {item["relative"]: item for item in items}
+    allowed_directories = {Path("."), Path("staged"), Path("backups"), Path("restore")}
+    allowed_directories.update(Path(kind) / "_posts" for kind in ("staged", "backups", "restore"))
+    for directory, names, files in os.walk(transaction_root, followlinks=False):
+        directory = _assert_no_symlink(directory)
+        relative_directory = Path(directory).relative_to(transaction_root)
+        if relative_directory not in allowed_directories:
+            raise RuntimeError("unexpected publication transaction directory")
+        for name in names:
+            _assert_no_symlink(Path(directory) / name)
+        for name in files:
+            path = _assert_no_symlink(Path(directory) / name)
+            relative = path.relative_to(transaction_root)
+            if len(relative.parts) != 3 or relative.parts[0] not in {"staged", "backups", "restore"}:
+                raise RuntimeError("unexpected publication transaction entry")
+            publication_relative = str(Path(*relative.parts[1:]))
+            item = by_relative.get(publication_relative)
+            if item is None:
+                raise RuntimeError("unexpected publication transaction filename")
+            expected = item["new_sha256"] if relative.parts[0] == "staged" else item["old_sha256"]
+            raw = _read_regular(path)
+            if expected is None or raw is None or _sha256(raw) != expected:
+                raise RuntimeError("publication transaction file hash mismatch")
+
+
+def _recover_publication_locked(output_root):
+    journal_path, _ = _transaction_paths(output_root)
+    journal = _load_journal(journal_path, output_root)
+    if journal is None:
+        return False
+    transaction_root = output_root.parent / journal["transaction"]
+    _assert_no_symlink(transaction_root)
+    items = journal["items"]
+    _validate_transaction_tree(transaction_root, items)
+
+    if journal["state"] == "committed":
+        for item in items:
+            current = _read_regular(output_root / item["relative"])
+            if current is None or _sha256(current) != item["new_sha256"]:
+                raise RuntimeError("committed publication target hash mismatch")
+        _finish_cleanup(journal_path, transaction_root)
+        return True
+
+    actions = []
+    for item in items:
+        target = output_root / item["relative"]
+        current = _read_regular(target)
+        current_sha = _sha256(current) if current is not None else None
+        old_sha = item["old_sha256"]
+        if current_sha == old_sha and (current is not None) == item["old_exists"]:
+            actions.append(("keep", item, target))
+            continue
+        if journal["state"] == "preparing":
+            raise RuntimeError("preparing publication target hash mismatch")
+        if current_sha != item["new_sha256"]:
+            raise RuntimeError("publication journal or target hash mismatch; concurrent bytes preserved")
+        if item["old_exists"]:
+            backup = transaction_root / "backups" / item["relative"]
+            backup_raw = _read_regular(backup)
+            if backup_raw is None or _sha256(backup_raw) != old_sha:
+                raise RuntimeError("publication backup hash mismatch")
+            actions.append(("restore", item, target))
+        else:
+            actions.append(("delete", item, target))
+
+    if (journal["state"] == "prepared" and not transaction_root.is_dir()
+            and any(action != "keep" for action, _, _ in actions)):
+        raise RuntimeError("prepared publication transaction data is missing")
+    for action, item, target in reversed(actions):
+        if action == "keep":
+            continue
+        _assert_no_symlink(target.parent)
+        if action == "delete":
+            target.unlink()
+        else:
+            backup_raw = _read_regular(transaction_root / "backups" / item["relative"])
+            restore = transaction_root / "restore" / item["relative"]
+            _mkdir_no_symlinks(restore.parent)
+            _write_file_durable(restore, backup_raw)
+            _assert_no_symlink(target)
+            os.replace(restore, target)
+        _fsync_dir(target.parent)
+    _finish_cleanup(journal_path, transaction_root)
+    return True
+
+
+def recover_publication(output_root):
+    """Recover an interrupted publication while preserving unowned bytes."""
+    with _publication_lock(output_root) as output_root:
+        return _recover_publication_locked(output_root)
+
+
+def publish_rendered_posts(rendered, output_root):
+    """Publish the exact 81-post contract as a durable transaction."""
+    if not isinstance(rendered, dict) or set(rendered) != EXPECTED_PUBLICATION_FILENAMES:
+        raise ValueError("publication transaction requires the exact 81 filename contract")
+    encoded = {}
+    for relative, text in rendered.items():
+        path = Path(relative)
+        if (not isinstance(relative, str) or not isinstance(text, str) or path.is_absolute()
+                or ".." in path.parts or path.parent != Path("_posts") or path.suffix != ".md"):
+            raise ValueError(f"invalid rendered publication item: {relative}")
+        encoded[relative] = text.encode("utf-8")
+
+    with _publication_lock(output_root) as output_root:
+        journal_path, _ = _transaction_paths(output_root)
+        _recover_publication_locked(output_root)
+        transaction_name = ".company-benefits-posts-transaction-" + uuid.uuid4().hex
+        transaction_root = output_root.parent / transaction_name
+        items = []
+        for relative in sorted(encoded):
+            old = _read_regular(output_root / relative)
+            items.append({
+                "relative": relative,
+                "old_exists": old is not None,
+                "old_sha256": _sha256(old) if old is not None else None,
+                "new_sha256": _sha256(encoded[relative]),
+            })
+        journal = {
+            "schema_version": "company-benefits-publication-v2",
+            "state": "preparing",
+            "output_root": os.path.abspath(os.fspath(output_root)),
+            "transaction": transaction_name,
+            "items": items,
+        }
+        _write_journal(journal_path, journal)
+        try:
+            os.mkdir(transaction_root, 0o700)
+            _fsync_dir(transaction_root.parent)
+            for directory in (transaction_root / "staged", transaction_root / "backups"):
+                os.mkdir(directory, 0o700)
+                _fsync_dir(directory.parent)
+            for item in items:
+                relative = item["relative"]
+                staged = transaction_root / "staged" / relative
+                _mkdir_no_symlinks(staged.parent)
+                _write_file_durable(staged, encoded[relative])
+                if item["old_exists"]:
+                    old = _read_regular(output_root / relative)
+                    if old is None or _sha256(old) != item["old_sha256"]:
+                        raise RuntimeError("concurrent publication target change during preparation")
+                    backup = transaction_root / "backups" / relative
+                    _mkdir_no_symlinks(backup.parent)
+                    _write_file_durable(backup, old)
+            journal["state"] = "prepared"
+            _write_journal(journal_path, journal)
+
+            for item in items:
+                target = output_root / item["relative"]
+                _mkdir_no_symlinks(target.parent)
+                current = _read_regular(target)
+                current_sha = _sha256(current) if current is not None else None
+                if current_sha != item["old_sha256"] or (current is not None) != item["old_exists"]:
+                    raise RuntimeError(f"concurrent publication target change: {target}")
+                staged = transaction_root / "staged" / item["relative"]
+                staged_raw = _read_regular(staged)
+                if staged_raw is None or _sha256(staged_raw) != item["new_sha256"]:
+                    raise RuntimeError("staged publication hash mismatch")
+                _assert_no_symlink(target)
+                os.replace(staged, target)
+                _fsync_dir(target.parent)
+            journal["state"] = "committed"
+            _write_journal(journal_path, journal)
+        except Exception:
+            _recover_publication_locked(output_root)
+            raise
+        _validate_transaction_tree(transaction_root, items)
+        _finish_cleanup(journal_path, transaction_root)
 
 
 def render_series(research_root, render_map_path, output_root, taxonomy_path, as_of=None,
@@ -268,7 +734,10 @@ def render_series(research_root, render_map_path, output_root, taxonomy_path, as
     as_of_date = date.fromisoformat(as_of) if isinstance(as_of, str) else (as_of or date.today())
     verify_active_ledgers(research_root, as_of_date, freeze_anchor_receipt, effective_selection_receipt)
     taxonomy = read_json(taxonomy_path)
-    companies, company_map, claims_by_company, gaps_by_company, source_map, assignments = validate_complete_inputs(research_root, taxonomy)
+    taxonomy_sha256 = hashlib.sha256(Path(taxonomy_path).read_bytes()).hexdigest()
+    validated = validate_complete_inputs(research_root, taxonomy, taxonomy_sha256)
+    companies, company_map, claims_by_company, gaps_by_company, source_map, assignments = validated[:6]
+    check_map = unique_map(read_jsonl(research_root / "series-prepublication-checks.jsonl"), "source_id", "prepublication checks")
     if len(companies) != 2000:
         raise ValueError("validated active company ledger must contain exactly 2,000 rows")
     batch_map = unique_map(read_jsonl(research_root / "series-batches.jsonl"), "batch_id", "series batches")
@@ -280,35 +749,13 @@ def render_series(research_root, render_map_path, output_root, taxonomy_path, as
     rendered = {}
     for entry in installments:
         rendered[entry["filename"]] = render_installment(
-            entry, company_map, claims_by_company, gaps_by_company, source_map, assignments, taxonomy
+            entry, company_map, claims_by_company, gaps_by_company, source_map, check_map, assignments, taxonomy
         )
     hub = next(entry for entry in entries if entry["artifact_type"] == "hub")
     rendered[hub["filename"]] = render_hub(hub, installments, source_map)
     if len(rendered) != 81:
         raise ValueError("renderer did not produce exactly 81 unique posts")
-    existing = [output_root / relative for relative in rendered if (output_root / relative).exists()]
-    if existing:
-        raise ValueError("refusing to overwrite existing production post: " + ", ".join(str(path) for path in existing))
-    output_root.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".company-benefits-posts-", dir=output_root.parent))
-    try:
-        for relative, text in rendered.items():
-            target = staging / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8", newline="\n")
-        for relative in sorted(rendered):
-            source = staging / relative
-            target = output_root / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source, target)
-    except Exception:
-        for relative in rendered:
-            target = output_root / relative
-            if target.exists():
-                target.unlink()
-        raise
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+    publish_rendered_posts(rendered, output_root)
     return sorted(rendered)
 
 
@@ -319,8 +766,8 @@ def main(argv=None):
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--taxonomy", required=True, type=Path)
     parser.add_argument("--as-of", type=date.fromisoformat)
-    parser.add_argument("--freeze-anchor-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT"))
-    parser.add_argument("--effective-selection-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_EFFECTIVE_SELECTION_RECEIPT"))
+    parser.add_argument("--freeze-anchor-receipt", required=True, type=Path)
+    parser.add_argument("--effective-selection-receipt", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         paths = render_series(
@@ -328,7 +775,7 @@ def main(argv=None):
             as_of=args.as_of, freeze_anchor_receipt=args.freeze_anchor_receipt,
             effective_selection_receipt=args.effective_selection_receipt,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
         print(f"production post rendering failed: {exc}", file=sys.stderr)
         return 1
     print(f"Rendered {len(paths)} deterministic Jekyll posts.")

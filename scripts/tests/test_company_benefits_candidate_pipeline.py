@@ -76,12 +76,12 @@ class CandidatePipelineTests(unittest.TestCase):
 
     def metadata_source(self):
         return {
-            "record_type": "nonpublishable_metadata", "source_id": "kr-dart-generic-search",
-            "title": "DART generic reflected search route", "owner": "금융감독원 전자공시시스템",
+            "record_type": "nonpublishable_metadata", "source_id": "kr-dart-exact-entity-route",
+            "title": "DART exact entity discovery route", "owner": "금융감독원 전자공시시스템",
             "source_type": "regulator_filing", "jurisdiction": "KR", "url": "https://dart.fss.or.kr/dsab002/main.do",
-            "checked_at": "2026-10-30T01:00:00Z", "route_quality": "reflected_query",
-            "publication_eligible": False, "nonpublication_reason": "The generic route did not establish an exact-entity benefit document.",
-            "entity_binding_status": "unresolved", "retention_mode": "metadata_only", "reuse_status": "discovery_only",
+            "checked_at": "2026-10-30T01:00:00Z", "route_quality": "exact_entity",
+            "publication_eligible": False, "nonpublication_reason": "The exact-entity official route is retained only as nonclaim discovery metadata.",
+            "entity_binding_status": "exact_entity", "retention_mode": "metadata_only", "reuse_status": "discovery_only",
             "access_observation": {"status": 200, "final_url": "https://dart.fss.or.kr/dsab002/main.do", "access_wall": "none"},
         }
 
@@ -89,7 +89,7 @@ class CandidatePipelineTests(unittest.TestCase):
         return {
             "audit_id": f"company-gap::{company_id}", "company_id": company_id, "disposition": "nonpublishable",
             "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
-            "searched_official_source_ids": ["kr-dart-generic-search"], "searched_official_urls": [],
+            "searched_official_source_ids": ["kr-dart-exact-entity-route"], "searched_official_urls": [],
             "nonabsence_wording": "복지가 없다는 뜻이 아닙니다.", "researcher_id": "researcher-a",
         }
 
@@ -124,11 +124,13 @@ class CandidatePipelineTests(unittest.TestCase):
              "quote_entailment_confirmed": True}
             for gap in self.gaps
         ]
-        checks = checks if checks is not None else [{
-            "source_id": self.sources[0]["source_id"], "url": self.sources[0]["url"],
-            **self.sources[0]["access_observation"],
-            "checked_at": "2026-10-30T03:00:00Z",
-        }]
+        if checks is None:
+            checks = [self.review_check(source) for source in self.sources]
+        elif checks:
+            checked_ids = {check.get("source_id") for check in checks}
+            checks = [*checks, *(self.review_check(source) for source in self.sources
+                                 if source.get("record_type") == "nonpublishable_metadata"
+                                 and source["source_id"] not in checked_ids)]
         review_raw, check_raw = jsonl_bytes(reviews), jsonl_bytes(checks)
         (self.review / "reviews.jsonl").write_bytes(review_raw)
         (self.review / "checks.jsonl").write_bytes(check_raw)
@@ -168,11 +170,10 @@ class CandidatePipelineTests(unittest.TestCase):
             "researched_at": "2026-10-30T01:00:00Z", "source_locator": "benefits",
             "supporting_quote": "Meal support is offered.", "content_sha256": "a" * 64,
         }
-        self.sources = [source]
+        route = next(source for source in self.sources if source.get("record_type") == "nonpublishable_metadata")
+        self.sources = [source, route]
         self.claims = [claim]
         self.gaps = self.gaps[1:]
-        for gap in self.gaps:
-            gap["searched_official_source_ids"] = []
         self.requests = [self.request(claim["claim_id"], "claim")] + [self.request(g["audit_id"], "gap") for g in self.gaps]
         self.write_candidate()
         return source, claim
@@ -217,9 +218,53 @@ class CandidatePipelineTests(unittest.TestCase):
         value.update(updates)
         return value
 
-    def test_accepts_generic_reflected_dart_only_as_nonpublishable_metadata(self):
+    def review_check(self, source):
+        if source.get("record_type") == "nonpublishable_metadata":
+            return {"source_id": source["source_id"], "url": source["url"],
+                    **source["access_observation"], "checked_at": "2026-10-30T03:00:00Z"}
+        return self.source_check(source)
+
+    def test_accepts_exact_entity_route_only_as_nonpublishable_metadata(self):
         package = self.validator.validate_candidate(self.candidate, self.root)
         self.assertEqual("nonpublishable_metadata", package["records"]["sources.jsonl"][0]["record_type"])
+
+    def test_every_gap_requires_a_nonempty_official_source_id_route(self):
+        self.gaps[0]["searched_official_source_ids"] = []
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "nonempty|source-ID|official route"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_gap_rejects_url_only_route(self):
+        self.gaps[0]["searched_official_source_ids"] = []
+        self.gaps[0]["searched_official_urls"] = [self.sources[0]["url"]]
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "source-ID|source_id|raw searched URLs"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_gap_rejects_orphan_source_id(self):
+        self.gaps[0]["searched_official_source_ids"] = ["orphan-official-route"]
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "does not resolve|orphan"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_gap_rejects_generic_or_nonmetadata_route(self):
+        for field, value in (("route_quality", "generic"), ("entity_binding_status", "generic_route"),
+                             ("record_type", None)):
+            with self.subTest(field=field):
+                original = self.sources[0].get(field)
+                if value is None:
+                    self.sources[0].pop(field)
+                else:
+                    self.sources[0][field] = value
+                self.write_candidate()
+                with self.assertRaisesRegex(ValueError, "exact-entity|metadata|official route|schema"):
+                    self.validator.validate_candidate(self.candidate, self.root)
+                self.sources[0][field] = original
+
+    def test_gap_route_requires_post_review_source_id_check(self):
+        self.write_review_bundle(checks=[])
+        with self.assertRaisesRegex(ValueError, "post-review checks|missing|cover"):
+            self.promoter.promote(self.candidate, self.review, self.output, self.root)
 
     def test_metadata_source_rejects_quote_hash_marker_entity_and_body_assertions(self):
         for field, value in (
@@ -354,7 +399,8 @@ class CandidatePipelineTests(unittest.TestCase):
         self.write_review_bundle(reviews=self.factual_reviews(claim), checks=checks)
         self.promoter.promote(self.candidate, self.review, self.output, self.root)
         promoted = [json.loads(line) for line in (self.output / "checks.jsonl").read_text().splitlines()]
-        self.assertEqual([first["source_id"], second["source_id"]], [item["source_id"] for item in promoted])
+        self.assertEqual([first["source_id"], second["source_id"], "kr-dart-exact-entity-route"],
+                         [item["source_id"] for item in promoted])
 
     def test_source_id_check_coverage_rejects_missing_duplicate_orphan_and_cross_source_tuple(self):
         first, claim = self.use_factual_claim(url="https://www.dol.gov/shared/archive.zip")
@@ -387,7 +433,7 @@ class CandidatePipelineTests(unittest.TestCase):
                      searched_at="2026-10-30T01:00:00Z", search_scope="benefit_nonclaim")
         for field in ("source_evidence", "source_locator", "supporting_quote", "content_sha256"):
             claim.pop(field)
-        self.sources = [source]
+        self.sources = [source, self.metadata_source()]
         self.write_candidate()
         self.validator.validate_candidate(self.candidate, self.root)
         reviews = [{"review_id": f"review::{claim['claim_id']}", "claim_id": claim["claim_id"],
@@ -413,7 +459,7 @@ class CandidatePipelineTests(unittest.TestCase):
     def test_normalized_identity_provenance_cannot_support_benefit_claim_prose(self):
         source, _ = self.normalized_identity_source()
         _, claim = self.use_factual_claim()
-        self.sources = [source]
+        self.sources = [source, self.metadata_source()]
         claim["source_ids"] = [source["source_id"]]
         claim["source_evidence"][0].update(source_id=source["source_id"], content_sha256=source["content_sha256"])
         self.write_candidate()

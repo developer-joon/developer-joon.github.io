@@ -16,14 +16,28 @@ const snapshotId = '11111111-1111-4111-8111-111111111111'
 const snapshotPath = `community/content/${snapshotId}/index.html`
 const snapshotUrl = `https://www.breadlab.ai/community/content/${snapshotId}/`
 
-test('recursive benefits release assertion rejects nested fixture and evaluation keys', async () => {
+test('recursive benefits release assertion rejects nested fixture, ranking, and evaluation leaks', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'benefits-leak-test-'))
   try {
     await put(root, 'community/data/company-benefits/v2/nested/leak.json', '{"fitScore":1}')
     await assert.rejects(assertNoBenefitsFixtureLeaks(root), /forbidden benefits key/)
     await rm(path.join(root, 'community/data/company-benefits/v2/nested/leak.json'))
-    await put(root, 'community/assets/nested-benefits.js', 'const source = "fixture-v1"')
+    await put(root, 'community/data/company-benefits/v2/nested/leak.js', 'const source = "fixture-v1"')
     await assert.rejects(assertNoBenefitsFixtureLeaks(root), /forbidden benefits release content/)
+    await rm(path.join(root, 'community/data/company-benefits/v2/nested/leak.js'))
+    await put(root, 'community/data/company-benefits/v2/nested/rankings.json', '{}')
+    await assert.rejects(assertNoBenefitsFixtureLeaks(root), /forbidden benefits release content/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('benefits release assertion ignores unrelated fixtures under an ancestor named company-benefits', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'company-benefits-artifact-'))
+  try {
+    await put(root, 'community/data/company-benefits/v2/clean.json', '{}')
+    await put(root, snapshotPath, '{"fixture":"fixture-v1","rankings_url":"/community/benefits/rankings/"}')
+    await assert.doesNotReject(assertNoBenefitsFixtureLeaks(root))
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -290,6 +304,11 @@ test('rejects a community snapshot without canonical, OpenGraph, and JSON-LD met
     await put(root, `community/benefits/${part}index.html`, `<title>${title} · 기업 복지 탐색기</title><meta name="description" content="예시 데이터"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
   }
   await cp(path.join(repoRoot, 'community-app/public/data/company-benefits'),path.join(root,'community/data/company-benefits'),{recursive:true})
+  const copiedManifestPath = path.join(root, 'community/data/company-benefits/manifest.json')
+  const copiedManifest = JSON.parse(await readFile(copiedManifestPath, 'utf8'))
+  const copiedDescriptors = [copiedManifest.taxonomy, copiedManifest.sources, copiedManifest.methodology, ...copiedManifest.listing_chunks, ...Object.values(copiedManifest.company_shards)]
+  for (const descriptor of copiedDescriptors) descriptor.url = descriptor.url.replace(/^\//, '')
+  await writeFile(copiedManifestPath, JSON.stringify(copiedManifest))
   await put(root,'community/benefits/methodology/index.html','<h1>조사 기준·정정 이력</h1><p>예시 데이터</p>')
   await put(root, snapshotPath, '<title>Published snapshot example | Breadlab 커뮤니티</title>')
     const result = verify(root)

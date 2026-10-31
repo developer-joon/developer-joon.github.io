@@ -2,6 +2,7 @@
 """Validate and deterministically merge one approved benefits-series batch."""
 
 import argparse
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -29,6 +30,10 @@ ID_FIELDS = {
     "sources.jsonl": "source_id", "claims.jsonl": "claim_id", "reviews.jsonl": "review_id",
     "gaps.jsonl": "audit_id", "checks.jsonl": "source_id",
 }
+LEDGER_TARGETS = tuple(TARGETS.values()) + ("series-progress.json", "series-batches.jsonl")
+TRANSACTION_DIRNAME = ".company-benefits-series-batch-transaction"
+COMMITTED_TRANSACTION_DIRNAME = ".company-benefits-series-batch-committed"
+TRANSACTION_SCHEMA_VERSION = "1"
 
 
 def sha256(data):
@@ -61,13 +66,7 @@ def expected_check_source_ids(claims, gaps, source_map):
                 raise ValueError(f"missing source binding for check coverage: {source_id}")
             source_ids.add(source_id)
     for gap in gaps:
-        for source_id in gap.get("searched_official_source_ids", []):
-            source = source_map.get(source_id)
-            if not source or not source.get("url"):
-                raise ValueError(f"missing gap source binding for check coverage: {source_id}")
-            source_ids.add(source_id)
-        if gap.get("searched_official_urls"):
-            raise ValueError("raw gap searched URLs must be migrated to source_id records")
+        source_ids.update(series.validate_gap_source_routes(gap, source_map))
     return source_ids
 
 
@@ -276,8 +275,267 @@ def _load_script(path, name):
     return module
 
 
-def integrate_batch(input_dir, research_root, freeze_anchor_receipt, effective_selection_receipt=None,
-                    as_of=None, dry_run=False):
+def claim_review_map(reviews):
+    """Index claim-targeted reviews while leaving gap outcome reviews separate."""
+    return {item["claim_id"]: item for item in reviews if item.get("claim_id")}
+
+
+def _fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_file_durable(path, raw, exclusive=False):
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+
+
+def _journal_bytes(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _read_transaction_journal(transaction_dir):
+    journal_path = Path(transaction_dir) / "journal.json"
+    try:
+        value = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("batch transaction journal is missing or invalid; refusing unsafe cleanup") from exc
+    if (not isinstance(value, dict) or value.get("schema_version") != TRANSACTION_SCHEMA_VERSION
+            or value.get("status") not in {"preparing", "ready"} or not isinstance(value.get("entries"), list)
+            or not isinstance(value.get("created_directories"), list)):
+        raise RuntimeError("batch transaction journal schema is invalid; refusing unsafe cleanup")
+    return value
+
+
+def _remove_transaction_directory(research_root, transaction_dir):
+    shutil.rmtree(transaction_dir)
+    _fsync_directory(research_root)
+
+
+def _cleanup_committed_transaction(research_root):
+    committed = Path(research_root) / COMMITTED_TRANSACTION_DIRNAME
+    if not committed.exists():
+        return
+    if committed.is_symlink() or not committed.is_dir():
+        raise RuntimeError("committed batch transaction path is not an owned directory")
+    allowed = re.compile(r"(?:journal\.json|journal\.next|(?:backup|proposed|restore)-\d{2})")
+    children = list(committed.iterdir())
+    if any(not child.is_file() or child.is_symlink() or not allowed.fullmatch(child.name) for child in children):
+        raise RuntimeError("committed batch transaction contains an unowned file")
+    shutil.rmtree(committed)
+    _fsync_directory(research_root)
+
+
+def recover_transaction(research_root):
+    """Finish rollback of an interrupted, durably journaled batch transaction."""
+    research_root = Path(research_root)
+    _cleanup_committed_transaction(research_root)
+    transaction_dir = research_root / TRANSACTION_DIRNAME
+    if not transaction_dir.exists():
+        return
+    if transaction_dir.is_symlink() or not transaction_dir.is_dir():
+        raise RuntimeError("batch transaction path is not an owned directory")
+    try:
+        journal = _read_transaction_journal(transaction_dir)
+    except RuntimeError:
+        children = list(transaction_dir.iterdir())
+        if all(path.name == "journal.json" and path.is_file() and not path.is_symlink() for path in children):
+            _remove_transaction_directory(research_root, transaction_dir)
+            return
+        raise
+    if journal["status"] == "preparing":
+        if journal["entries"] or journal["created_directories"]:
+            raise RuntimeError("preparing batch transaction journal contains unexpected state")
+        _remove_transaction_directory(research_root, transaction_dir)
+        return
+    rollback_transaction(research_root, journal)
+
+
+def _validated_transaction_entries(research_root, transaction_dir, journal):
+    entries = journal["entries"]
+    target_names = [entry.get("target") for entry in entries if isinstance(entry, dict)]
+    if (len(target_names) != len(LEDGER_TARGETS) + 1 or tuple(target_names[:-1]) != LEDGER_TARGETS
+            or not re.fullmatch(r"drafts/(?:domestic|international)-\d{2}\.md", str(target_names[-1]))):
+        raise RuntimeError("batch transaction journal target set is invalid")
+    if journal["created_directories"] not in ([], ["drafts"]):
+        raise RuntimeError("batch transaction journal created-directory set is invalid")
+    targets = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict) or set(entry) != {"target", "backup", "proposed", "prior_sha256", "proposed_sha256"}:
+            raise RuntimeError("batch transaction journal entry is invalid")
+        relative = Path(entry["target"])
+        if relative.is_absolute() or ".." in relative.parts or relative.as_posix() != entry["target"]:
+            raise RuntimeError("batch transaction journal target is unsafe")
+        if entry["backup"] not in (None, f"backup-{index:02d}") or entry["proposed"] != f"proposed-{index:02d}":
+            raise RuntimeError("batch transaction journal owned-file binding is invalid")
+        if entry["prior_sha256"] is not None and entry["backup"] is None:
+            raise RuntimeError("batch transaction journal backup binding is invalid")
+        for field in ("prior_sha256", "proposed_sha256"):
+            value = entry[field]
+            if value is not None and not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise RuntimeError("batch transaction journal digest is invalid")
+        target = research_root / relative
+        proposed = transaction_dir / entry["proposed"]
+        backup = transaction_dir / entry["backup"] if entry["backup"] else None
+        if proposed.exists() and sha256(proposed.read_bytes()) != entry["proposed_sha256"]:
+            raise RuntimeError("batch transaction proposed bytes are corrupt")
+        if backup is not None and (not backup.is_file() or sha256(backup.read_bytes()) != entry["prior_sha256"]):
+            raise RuntimeError("batch transaction backup bytes are corrupt")
+        targets.append((entry, target, backup))
+    return targets
+
+
+def rollback_transaction(research_root, journal=None):
+    """Restore all transaction targets without overwriting unknown concurrent bytes."""
+    research_root = Path(research_root)
+    transaction_dir = research_root / TRANSACTION_DIRNAME
+    journal = journal or _read_transaction_journal(transaction_dir)
+    if journal.get("status") != "ready":
+        raise RuntimeError("batch transaction is not ready for rollback")
+    targets = _validated_transaction_entries(research_root, transaction_dir, journal)
+
+    # Validate the entire rollback before touching any target.
+    for entry, target, _ in targets:
+        if target.exists():
+            if not target.is_file() or target.is_symlink():
+                raise RuntimeError(f"unexpected concurrent target type blocks rollback: {entry['target']}")
+            current = sha256(target.read_bytes())
+            if current not in {entry["prior_sha256"], entry["proposed_sha256"]}:
+                raise RuntimeError(f"unexpected concurrent bytes block rollback: {entry['target']}")
+        elif entry["prior_sha256"] is not None:
+            raise RuntimeError(f"unexpected missing target blocks rollback: {entry['target']}")
+
+    synced_directories = set()
+    for index in range(len(targets) - 1, -1, -1):
+        entry, target, backup = targets[index]
+        prior_sha = entry["prior_sha256"]
+        current_sha = sha256(target.read_bytes()) if target.exists() else None
+        if prior_sha is None:
+            if current_sha == entry["proposed_sha256"]:
+                target.unlink()
+                synced_directories.add(target.parent)
+            continue
+        if current_sha == prior_sha:
+            continue
+        restore = transaction_dir / f"restore-{index:02d}"
+        _write_file_durable(restore, backup.read_bytes())
+        os.replace(restore, target)
+        synced_directories.add(target.parent)
+    for directory in sorted(synced_directories, key=str):
+        _fsync_directory(directory)
+    _remove_transaction_directory(research_root, transaction_dir)
+    for relative in sorted(journal["created_directories"], key=lambda value: len(Path(value).parts), reverse=True):
+        directory = research_root / relative
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    _fsync_directory(research_root)
+
+
+def commit_staged_outputs(research_root, replacements):
+    """Durably promote staged outputs as one recoverable file transaction."""
+    research_root = Path(research_root)
+    recover_transaction(research_root)
+    transaction_dir = research_root / TRANSACTION_DIRNAME
+    transaction_dir.mkdir(mode=0o700)
+    journal_path = transaction_dir / "journal.json"
+    preparing = {"schema_version": TRANSACTION_SCHEMA_VERSION, "status": "preparing",
+                 "entries": [], "created_directories": []}
+    ready = False
+    journal = None
+    try:
+        _fsync_directory(research_root)
+        _write_file_durable(journal_path, _journal_bytes(preparing), exclusive=True)
+        _fsync_directory(transaction_dir)
+        entries = []
+        created_directories = []
+        seen_targets = set()
+        for index, (source, relative_value) in enumerate(replacements):
+            source = Path(source)
+            relative = Path(relative_value)
+            if (not source.is_file() or source.is_symlink() or relative.is_absolute() or ".." in relative.parts
+                    or relative.as_posix() != str(relative_value) or relative in seen_targets):
+                raise ValueError("transaction replacements require unique safe relative file targets")
+            seen_targets.add(relative)
+            target = research_root / relative
+            missing = []
+            parent = target.parent
+            while parent != research_root and not parent.exists():
+                missing.append(parent.relative_to(research_root).as_posix())
+                parent = parent.parent
+            if not parent.exists() or parent.is_symlink() or not parent.is_dir():
+                raise ValueError(f"transaction target parent is unsafe: {relative}")
+            for item in reversed(missing):
+                if item not in created_directories:
+                    created_directories.append(item)
+            if target.exists() and (not target.is_file() or target.is_symlink()):
+                raise ValueError(f"transaction target is not a regular file: {relative}")
+            proposed_raw = source.read_bytes()
+            proposed_name = f"proposed-{index:02d}"
+            _write_file_durable(transaction_dir / proposed_name, proposed_raw, exclusive=True)
+            prior_sha = None
+            backup_name = None
+            if target.exists():
+                prior_raw = target.read_bytes()
+                prior_sha = sha256(prior_raw)
+                backup_name = f"backup-{index:02d}"
+                _write_file_durable(transaction_dir / backup_name, prior_raw, exclusive=True)
+            entries.append({"target": relative.as_posix(), "backup": backup_name, "proposed": proposed_name,
+                            "prior_sha256": prior_sha, "proposed_sha256": sha256(proposed_raw)})
+        journal = {"schema_version": TRANSACTION_SCHEMA_VERSION, "status": "ready",
+                   "entries": entries, "created_directories": created_directories}
+        _validated_transaction_entries(research_root, transaction_dir, journal)
+        journal_temporary = transaction_dir / "journal.next"
+        _write_file_durable(journal_temporary, _journal_bytes(journal), exclusive=True)
+        os.replace(journal_temporary, journal_path)
+        _fsync_directory(transaction_dir)
+        ready = True
+        for relative in created_directories:
+            (research_root / relative).mkdir()
+            _fsync_directory((research_root / relative).parent)
+        for entry in entries:
+            target = research_root / entry["target"]
+            if target.exists():
+                if not target.is_file() or target.is_symlink() or sha256(target.read_bytes()) != entry["prior_sha256"]:
+                    raise RuntimeError(f"concurrent target change blocks commit: {entry['target']}")
+            elif entry["prior_sha256"] is not None:
+                raise RuntimeError(f"concurrent target removal blocks commit: {entry['target']}")
+            os.replace(transaction_dir / entry["proposed"], target)
+            _fsync_directory(target.parent)
+        committed = research_root / COMMITTED_TRANSACTION_DIRNAME
+        os.replace(transaction_dir, committed)
+        _fsync_directory(research_root)
+        _cleanup_committed_transaction(research_root)
+    except BaseException:
+        committed = research_root / COMMITTED_TRANSACTION_DIRNAME
+        if ready and transaction_dir.exists():
+            if journal is None:
+                raise RuntimeError("ready transaction has no journal")
+            rollback_transaction(research_root, journal)
+        elif committed.exists():
+            _cleanup_committed_transaction(research_root)
+        elif transaction_dir.exists():
+            _remove_transaction_directory(research_root, transaction_dir)
+        raise
+
+
+def _integrate_batch_locked(input_dir, research_root, freeze_anchor_receipt, effective_selection_receipt=None,
+                            as_of=None, dry_run=False):
     input_dir, research_root = Path(input_dir), Path(research_root)
     manifest, batch, incoming = load_package(input_dir, research_root)
     with tempfile.TemporaryDirectory(prefix="company-benefits-series-") as directory:
@@ -287,7 +545,7 @@ def integrate_batch(input_dir, research_root, freeze_anchor_receipt, effective_s
             current = series.read_jsonl(staged / target)
             if name == "checks.jsonl":
                 claims = incoming["claims.jsonl"]
-                reviews = {item["claim_id"]: item for item in incoming["reviews.jsonl"]}
+                reviews = claim_review_map(incoming["reviews.jsonl"])
                 source_map = {item["source_id"]: item for item in series.read_jsonl(staged / "source-registry.jsonl")}
                 latest = {}
                 for claim in claims:
@@ -328,12 +586,31 @@ def integrate_batch(input_dir, research_root, freeze_anchor_receipt, effective_s
                               freeze_anchor_receipt=freeze_anchor_receipt,
                               effective_selection_receipt=effective_selection_receipt)
         if not dry_run:
-            for target in set(TARGETS.values()) | {"series-progress.json", "series-batches.jsonl"}:
-                os.replace(staged / target, research_root / target)
-            draft = f"{batch['batch_id']}.md"
-            (research_root / "drafts").mkdir(exist_ok=True)
-            os.replace(staged / "drafts" / draft, research_root / "drafts" / draft)
+            draft = f"drafts/{batch['batch_id']}.md"
+            replacements = [(staged / target, target) for target in LEDGER_TARGETS]
+            replacements.append((staged / draft, draft))
+            commit_staged_outputs(research_root, replacements)
     return new_progress
+
+
+def integrate_batch(input_dir, research_root, freeze_anchor_receipt, effective_selection_receipt=None,
+                    as_of=None, dry_run=False):
+    """Serialize recovery, validation, staging, and commit on the research root."""
+    research_root = Path(research_root)
+    if research_root.is_symlink():
+        raise ValueError("research root symlinks are prohibited")
+    research_root = research_root.resolve(strict=True)
+    lock_descriptor = os.open(research_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("another company-benefits batch integration is in progress") from exc
+        recover_transaction(research_root)
+        return _integrate_batch_locked(input_dir, research_root, freeze_anchor_receipt,
+                                       effective_selection_receipt, as_of, dry_run)
+    finally:
+        os.close(lock_descriptor)
 
 
 def main(argv=None):

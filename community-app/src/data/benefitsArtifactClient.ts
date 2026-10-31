@@ -6,6 +6,12 @@ const SHARD_LIMIT = 256_000
 const BATCH_LIMIT = 1_000_000
 
 type Descriptor = { url: string; sha256: string; record_count: number; byte_count: number }
+const safePathSegment = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/
+const requestUrl = (manifest: Manifest, descriptor: Descriptor) => {
+  const segments = descriptor.url.split('/')
+  if (descriptor.url !== `community/data/company-benefits/${manifest.data_version}/${segments.slice(4).join('/')}` || segments.some((segment) => !safePathSegment.test(segment))) throw new Error('artifact 경로 오류')
+  return `/${segments.map((segment) => encodeURIComponent(segment)).join('/')}`
+}
 
 export class BenefitsArtifactClient {
   private cache = new Map<string, Promise<unknown>>()
@@ -45,10 +51,10 @@ export class BenefitsArtifactClient {
   }
 
   private async payload<T>(manifest: Manifest, descriptor: Descriptor, schema: z.ZodType<T>, count: (value: T) => number, signal?: AbortSignal, limits?: { maxBytes: number; account?: (bytes: number) => void }) {
-    if (!descriptor.url.startsWith(`/community/data/company-benefits/${manifest.data_version}/`)) throw new Error('artifact 버전 경로 불일치')
+    if (!descriptor.url.startsWith(`community/data/company-benefits/${manifest.data_version}/`)) throw new Error('artifact 버전 경로 불일치')
     const key = `${manifest.data_version}:${descriptor.url}:${descriptor.sha256}`
     const load = async () => {
-      const raw = await this.raw(descriptor.url, signal, limits?.maxBytes, limits?.account)
+      const raw = await this.raw(requestUrl(manifest, descriptor), signal, limits?.maxBytes, limits?.account)
       const encoded = new TextEncoder().encode(raw)
       if (encoded.byteLength !== descriptor.byte_count) throw new Error('byte count 불일치')
       const digest = await this.subtle.digest('SHA-256', encoded)

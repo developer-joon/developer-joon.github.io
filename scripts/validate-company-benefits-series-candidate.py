@@ -188,13 +188,7 @@ def validate_candidate(candidate_dir, research_root):
             raise ValueError(f"{gap.get('audit_id')}: gap must be nonpublishable with non-absence wording")
         if gap.get("researcher_id") != manifest["researcher_id"]:
             raise ValueError(f"{gap.get('audit_id')}: gap researcher does not bind candidate researcher")
-        for source_id in gap.get("searched_official_source_ids", []):
-            if source_id not in sources:
-                raise ValueError(f"{gap.get('audit_id')}: gap source does not resolve")
-        if gap.get("searched_official_urls"):
-            raise ValueError(f"{gap.get('audit_id')}: raw searched URLs must be migrated to source_id records")
-        if any(not isinstance(url, str) or not url.startswith("https://") for url in gap.get("searched_official_urls", [])):
-            raise ValueError(f"{gap.get('audit_id')}: gap URL must use HTTPS")
+        verifier.company_benefits_series.validate_gap_source_routes(gap, sources)
         gap_by_company.setdefault(company_id, []).append(gap)
 
     referenced_source_ids = {source_id for claim in claims

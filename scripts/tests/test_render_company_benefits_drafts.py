@@ -124,6 +124,29 @@ class RendererTests(unittest.TestCase):
 
     def test_company_without_claim_renders_nonabsence_gap_without_claim_or_score(self):
         company_id = self.fixture.current["domestic"][0]["company_id"]
+        official_route_id = f"gap-route-{company_id}"
+        official_route = {
+            "record_type": "nonpublishable_metadata",
+            "source_id": official_route_id,
+            "title": "Exact entity official route",
+            "owner": self.fixture.current["domestic"][0]["legal_name"],
+            "source_type": "official_company_report",
+            "jurisdiction": "KR",
+            "url": f"https://official.invalid/entity/{company_id}",
+            "checked_at": "2026-10-20T02:00:00Z",
+            "route_quality": "exact_entity",
+            "publication_eligible": False,
+            "nonpublication_reason": "Exact-entity discovery metadata is not publishable benefit evidence.",
+            "entity_binding_status": "exact_entity",
+            "retention_mode": "metadata_only",
+            "reuse_status": "discovery_only",
+            "access_observation": {
+                "status": 200,
+                "final_url": f"https://official.invalid/entity/{company_id}",
+                "access_wall": "none",
+            },
+        }
+        self.fixture.sources.append(official_route)
         removed_ids = {item["claim_id"] for item in self.fixture.claims if item["company_id"] == company_id}
         self.fixture.claims = [item for item in self.fixture.claims if item["claim_id"] not in removed_ids]
         self.fixture.reviews = [item for item in self.fixture.reviews if item["claim_id"] not in removed_ids]
@@ -140,13 +163,30 @@ class RendererTests(unittest.TestCase):
         })
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
         self.fixture.write_jsonl("series-research-gaps.jsonl", [{
             "audit_id": f"company-gap::{company_id}", "company_id": company_id,
             "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
-            "searched_official_source_ids": [], "searched_official_urls": [],
+            "searched_official_source_ids": [official_route_id], "searched_official_urls": [],
             "nonabsence_wording": "복지가 없다는 뜻이 아닙니다.",
         }])
-        (self.root / "series-prepublication-checks.jsonl").unlink()
+        used_source_ids = {
+            source_id
+            for claim in self.fixture.claims
+            for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])
+        }
+        checks = [
+            json.loads(line)
+            for line in (self.root / "series-prepublication-checks.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip() and json.loads(line).get("source_id") in used_source_ids
+        ]
+        checks.append({
+            "source_id": official_route_id,
+            "url": official_route["url"],
+            **official_route["access_observation"],
+            "checked_at": "2026-10-20T04:00:00Z",
+        })
+        self.fixture.write_jsonl("series-prepublication-checks.jsonl", checks)
         from scripts import company_benefits_series
         company_benefits_series.materialize_contract(
             self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "bob"
