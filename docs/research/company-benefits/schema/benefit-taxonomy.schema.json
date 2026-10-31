@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "benefit-taxonomy.schema.json",
+  "title": "Versioned non-ranking benefit taxonomy",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["artifact_kind", "taxonomy_version", "categories", "benefit_types", "dol_form_5500_mappings"],
+  "properties": {
+    "artifact_kind": {"const": "benefit_taxonomy"},
+    "taxonomy_version": {"const": "benefit-taxonomy-v1"},
+    "categories": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["id", "label_ko", "order"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z-]+$"},
+          "label_ko": {"type": "string", "minLength": 1},
+          "order": {"type": "integer", "minimum": 1, "maximum": 10}
+        }
+      }
+    },
+    "benefit_types": {
+      "type": "array",
+      "minItems": 45,
+      "maxItems": 45,
+      "items": {
+        "type": "object",
+        "required": ["id", "category_id", "label_ko"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"},
+          "category_id": {"type": "string"},
+          "label_ko": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "dol_form_5500_mappings": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "items": {
+        "type": "object",
+        "required": ["field", "code", "benefit_type_id", "forced_status", "evidence_semantics"],
+        "properties": {
+          "forced_status": {"const": "bounded"},
+          "evidence_semantics": {"const": "historical_named_plan_feature_only"}
+        }
+      }
+    }
+  }
+}

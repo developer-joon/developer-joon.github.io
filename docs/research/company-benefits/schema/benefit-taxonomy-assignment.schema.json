@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "benefit-taxonomy-assignment.schema.json",
+  "title": "Independently reviewed exact claim taxonomy assignment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "claim_id",
+    "benefit_type_ids",
+    "taxonomy_version",
+    "claim_content_sha256",
+    "researcher_id",
+    "reviewer_id",
+    "reviewed_at",
+    "decision"
+  ],
+  "properties": {
+    "claim_id": {"type": "string", "minLength": 1},
+    "benefit_type_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "taxonomy_version": {"type": "string", "minLength": 1},
+    "claim_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "researcher_id": {"type": "string", "minLength": 1},
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "decision": {"const": "approved"}
+  }
+}
