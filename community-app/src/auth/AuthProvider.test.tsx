@@ -84,6 +84,8 @@ describe('AuthProvider', () => {
       </AuthProvider>,
     )
     await screen.findByText('dev@example.com')
+    // The DOM can commit before Harness' effect publishes the latest context to `auth`.
+    await waitFor(() => expect(auth?.session).toBe(session))
     const expectedSession = auth!.session
 
     act(() => expect(auth!.invalidateStaleSession(expectedSession)).toBe(true))
