@@ -27,7 +27,7 @@ TARGETS = {
 }
 ID_FIELDS = {
     "sources.jsonl": "source_id", "claims.jsonl": "claim_id", "reviews.jsonl": "review_id",
-    "gaps.jsonl": "audit_id", "checks.jsonl": "url",
+    "gaps.jsonl": "audit_id", "checks.jsonl": "source_id",
 }
 
 
@@ -52,56 +52,46 @@ def _unique_map(records, field, label):
     return dict(zip(values, records))
 
 
-def expected_check_urls(claims, gaps, source_map):
-    urls = set()
+def expected_check_source_ids(claims, gaps, source_map):
+    source_ids = set()
     for item in claims:
         for source_id in item.get("source_ids", []) + item.get("searched_source_ids", []):
             source = source_map.get(source_id)
             if not source or not source.get("url"):
                 raise ValueError(f"missing source binding for check coverage: {source_id}")
-            urls.add(source["url"])
+            source_ids.add(source_id)
     for gap in gaps:
         for source_id in gap.get("searched_official_source_ids", []):
             source = source_map.get(source_id)
             if not source or not source.get("url"):
                 raise ValueError(f"missing gap source binding for check coverage: {source_id}")
-            urls.add(source["url"])
-        for url in gap.get("searched_official_urls", []):
-            if not isinstance(url, str) or not url.startswith("https://"):
-                raise ValueError("gap searched official URL must use HTTPS")
-            urls.add(url)
-    return urls
+            source_ids.add(source_id)
+        if gap.get("searched_official_urls"):
+            raise ValueError("raw gap searched URLs must be migrated to source_id records")
+    return source_ids
 
 
-def merge_checks(existing, incoming, latest_review_by_url, expected_urls=None):
-    """Upsert URL checks only when a shared-source recheck is newer and compatible."""
-    merged = _unique_map(existing, "url", "existing checks")
-    incoming_map = _unique_map(incoming, "url", "incoming checks")
-    expected_urls = set(latest_review_by_url) if expected_urls is None else set(expected_urls)
-    if set(incoming_map) != expected_urls:
+def merge_checks(existing, incoming, latest_review_by_source_id, expected_source_ids=None):
+    """Upsert source checks only when the same source_id tuple is newer and unchanged."""
+    merged = _unique_map(existing, "source_id", "existing checks")
+    incoming_map = _unique_map(incoming, "source_id", "incoming checks")
+    expected_source_ids = set(latest_review_by_source_id) if expected_source_ids is None else set(expected_source_ids)
+    if set(incoming_map) != expected_source_ids:
         raise ValueError("incoming checks do not match source bindings")
-    for url, check in incoming_map.items():
+    for source_id, check in incoming_map.items():
         checked = parse_timestamp(check.get("checked_at"), "check checked_at")
-        reviewed = parse_timestamp(latest_review_by_url[url], "latest review") if url in latest_review_by_url else None
+        reviewed = parse_timestamp(latest_review_by_source_id[source_id], "latest review") if source_id in latest_review_by_source_id else None
         if reviewed and checked <= reviewed:
-            raise ValueError(f"{url}: check must follow review chronology")
-        previous = merged.get(url)
+            raise ValueError(f"{source_id}: check must follow review chronology")
+        previous = merged.get(source_id)
         if previous is not None:
-            metadata_check = "access_wall" in check
-            if metadata_check != ("access_wall" in previous):
-                raise ValueError(f"{url}: shared URL changed between metadata-only and publishable semantics")
-            if metadata_check:
-                fields = ("status", "final_url", "access_wall")
-                if any(check.get(field) != previous.get(field) for field in fields):
-                    raise ValueError(f"{url}: conflicting metadata route observation")
-            else:
-                if check.get("content_sha256") != previous.get("content_sha256"):
-                    raise ValueError(f"{url}: conflicting shared URL content hash")
-                if check.get("marker") != previous.get("marker") or check.get("marker_confirmed") is not True:
-                    raise ValueError(f"{url}: conflicting shared URL marker")
+            current_tuple = {key: value for key, value in check.items() if key != "checked_at"}
+            previous_tuple = {key: value for key, value in previous.items() if key != "checked_at"}
+            if current_tuple != previous_tuple:
+                raise ValueError(f"{source_id}: conflicting source check tuple")
             if checked <= parse_timestamp(previous.get("checked_at"), "existing check checked_at"):
-                raise ValueError(f"{url}: shared URL check must be strictly newer")
-        merged[url] = check
+                raise ValueError(f"{source_id}: source check must be strictly newer")
+        merged[source_id] = check
     return [merged[key] for key in sorted(merged)]
 
 
@@ -238,52 +228,27 @@ def load_package(input_dir, research_root):
         raise ValueError("nonpublishable metadata sources cannot support claim or unknown-claim records")
     for claim in claims:
         if claim.get("status") != "unknown":
+            if any(source_map[source_id].get("hash_provenance") == series.IDENTITY_PROVENANCE
+                   for source_id in claim.get("source_ids", [])):
+                raise ValueError(f"{claim.get('claim_id')}: official identity projections cannot support benefit claim prose")
             evidence_ids = [item.get("source_id") for item in claim.get("source_evidence", [])]
             if len(evidence_ids) != len(set(evidence_ids)) or set(evidence_ids) != set(claim.get("source_ids", [])):
                 raise ValueError(f"{claim.get('claim_id')}: missing one-to-one source evidence bindings")
-    expected_urls = expected_check_urls(claims, gaps, source_map)
-    check_map = _unique_map(records["checks.jsonl"], "url", "checks")
-    if set(check_map) != expected_urls:
-        raise ValueError("checks must bind every used official URL exactly once")
-    bound_source_ids = {source_id for claim in claims
-                        for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
-    bound_source_ids.update(source_id for gap in gaps for source_id in gap.get("searched_official_source_ids", []))
-    sources_by_url = {}
-    for source_id in bound_source_ids:
-        source = source_map[source_id]
-        sources_by_url.setdefault(source.get("url"), []).append(source)
-    for url, check in check_map.items():
-        bound_sources = sources_by_url.get(url, [])
-        kinds = {source.get("record_type") == "nonpublishable_metadata" for source in bound_sources}
-        if len(kinds) > 1:
-            raise ValueError(f"{url}: check route ambiguously mixes metadata and publishable sources")
-        if True in kinds:
-            fields = {"url", "status", "final_url", "access_wall", "checked_at"}
-            observations = [source.get("access_observation") for source in bound_sources]
-            actual = {field: check.get(field) for field in ("status", "final_url", "access_wall")}
-            if set(check) != fields or any(observation != actual for observation in observations):
-                raise ValueError(f"{url}: metadata check must exactly match the observed route failure/access semantics")
-        else:
-            fields = {"url", "status", "final_url", "marker", "marker_confirmed", "content_sha256", "checked_at"}
-            expected = {(source.get("http_verification", {}).get("final_url"),
-                         source.get("http_verification", {}).get("expected_marker"), source.get("content_sha256"))
-                        for source in bound_sources}
-            if not bound_sources:
-                expected = {(url, check.get("marker"), check.get("content_sha256"))}
-            actual = (check.get("final_url"), check.get("marker"), check.get("content_sha256"))
-            if (set(check) != fields or not str(url).startswith("https://") or len(expected) != 1
-                    or check.get("status") != 200 or check.get("marker_confirmed") is not True or actual not in expected):
-                raise ValueError(f"{url}: publishable source check must be a successful exact HTTPS URL/hash/marker check")
-    latest_review_by_url = {}
+    expected_source_ids = expected_check_source_ids(claims, gaps, source_map)
+    check_map = _unique_map(records["checks.jsonl"], "source_id", "checks")
+    if set(check_map) != expected_source_ids:
+        raise ValueError("checks must bind every used official source_id exactly once")
+    for source_id, check in check_map.items():
+        verifier.company_benefits_series.validate_source_check(check, source_map[source_id])
+    latest_review_by_source_id = {}
     for claim in claims:
         reviewed = parse_timestamp(review_map[claim["claim_id"]].get("reviewed_at"), "reviewed_at")
         bound_check_times = []
         for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
-            url = source_map[source_id]["url"]
-            current = latest_review_by_url.get(url)
+            current = latest_review_by_source_id.get(source_id)
             if current is None or reviewed > parse_timestamp(current, "latest review"):
-                latest_review_by_url[url] = review_map[claim["claim_id"]]["reviewed_at"]
-            checked = parse_timestamp(check_map[url].get("checked_at"), "check checked_at")
+                latest_review_by_source_id[source_id] = review_map[claim["claim_id"]]["reviewed_at"]
+            checked = parse_timestamp(check_map[source_id].get("checked_at"), "check checked_at")
             if checked <= reviewed:
                 raise ValueError(f"{claim['claim_id']}: stale or pre-review prepublication check")
             if source_id in claim.get("source_ids", []):
@@ -294,11 +259,11 @@ def load_package(input_dir, research_root):
                 raise ValueError(f"{claim['claim_id']}: prepublication timestamp is not the exact latest successful bound check")
     for record_id, review in outcome_review_map.items():
         reviewed_at = review["reviewed_at"]
-        for url in expected_check_urls([], [gap_map[record_id]], source_map):
-            current = latest_review_by_url.get(url)
+        for source_id in expected_check_source_ids([], [gap_map[record_id]], source_map):
+            current = latest_review_by_source_id.get(source_id)
             if current is None or parse_timestamp(reviewed_at, "outcome reviewed_at") > parse_timestamp(current, "latest review"):
-                latest_review_by_url[url] = reviewed_at
-    merge_checks(existing["checks.jsonl"], records["checks.jsonl"], latest_review_by_url, expected_urls)
+                latest_review_by_source_id[source_id] = reviewed_at
+    merge_checks(existing["checks.jsonl"], records["checks.jsonl"], latest_review_by_source_id, expected_source_ids)
     return manifest, batch, records
 
 
@@ -327,20 +292,19 @@ def integrate_batch(input_dir, research_root, freeze_anchor_receipt, effective_s
                 latest = {}
                 for claim in claims:
                     for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
-                        url = source_map[source_id]["url"]
                         reviewed_at = reviews[claim["claim_id"]]["reviewed_at"]
-                        if url not in latest or parse_timestamp(reviewed_at, "reviewed_at") > parse_timestamp(latest[url], "reviewed_at"):
-                            latest[url] = reviewed_at
+                        if source_id not in latest or parse_timestamp(reviewed_at, "reviewed_at") > parse_timestamp(latest[source_id], "reviewed_at"):
+                            latest[source_id] = reviewed_at
                 gap_map = {item["audit_id"]: item for item in incoming["gaps.jsonl"]}
                 for review in incoming["reviews.jsonl"]:
                     record_id = review.get("record_id")
                     if not record_id:
                         continue
-                    for url in expected_check_urls([], [gap_map[record_id]], source_map):
+                    for source_id in expected_check_source_ids([], [gap_map[record_id]], source_map):
                         reviewed_at = review["reviewed_at"]
-                        if url not in latest or parse_timestamp(reviewed_at, "outcome reviewed_at") > parse_timestamp(latest[url], "reviewed_at"):
-                            latest[url] = reviewed_at
-                expected = expected_check_urls(claims, incoming["gaps.jsonl"], source_map)
+                        if source_id not in latest or parse_timestamp(reviewed_at, "outcome reviewed_at") > parse_timestamp(latest[source_id], "reviewed_at"):
+                            latest[source_id] = reviewed_at
+                expected = expected_check_source_ids(claims, incoming["gaps.jsonl"], source_map)
                 values = merge_checks(current, incoming[name], latest, expected)
             else:
                 field = ID_FIELDS[name]

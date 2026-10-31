@@ -263,8 +263,19 @@
       "enum": [
         "retained_file",
         "observed_response",
-        "artifact_manifest"
+        "artifact_manifest",
+        "official_identity_projection"
       ]
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "version", "projection_sha256"],
+      "properties": {
+        "algorithm": {"const": "sec-submissions-identity"},
+        "version": {"const": "1"},
+        "projection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
     },
     "retrieved_at": {
       "type": "string",

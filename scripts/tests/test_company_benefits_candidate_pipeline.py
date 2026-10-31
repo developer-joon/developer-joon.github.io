@@ -125,7 +125,8 @@ class CandidatePipelineTests(unittest.TestCase):
             for gap in self.gaps
         ]
         checks = checks if checks is not None else [{
-            "url": self.sources[0]["url"], **self.sources[0]["access_observation"],
+            "source_id": self.sources[0]["source_id"], "url": self.sources[0]["url"],
+            **self.sources[0]["access_observation"],
             "checked_at": "2026-10-30T03:00:00Z",
         }]
         review_raw, check_raw = jsonl_bytes(reviews), jsonl_bytes(checks)
@@ -195,6 +196,26 @@ class CandidatePipelineTests(unittest.TestCase):
                         "reviewed_at": "2026-10-30T02:00:00Z", "issues": [], "resolution": "approved",
                         "quote_entailment_confirmed": True} for gap in self.gaps]
         return [claim_review, *gap_reviews]
+
+    def normalized_identity_source(self):
+        source = audited_source("sec-submissions-example", ["entity_identity"],
+                                url="https://data.sec.gov/submissions/CIK0000123456.json",
+                                source_type="regulator_filing", jurisdiction="US")
+        source.update(locator="top-level cik/name/ein", supporting_quote="Example Corp / 12-3456789")
+        identity = {"cik": "0000123456", "legal_name": "EXAMPLE CORP", "ein": "12-3456789"}
+        projection = digest(json_bytes(identity))
+        source.update(content_sha256=projection, hash_provenance="official_identity_projection",
+                      normalization={"algorithm": "sec-submissions-identity", "version": "1",
+                                     "projection_sha256": projection})
+        return source, identity
+
+    def source_check(self, source, **updates):
+        value = {"source_id": source["source_id"], "url": source["url"], "status": 200,
+                 "final_url": source["http_verification"]["final_url"],
+                 "marker": source["http_verification"]["expected_marker"], "marker_confirmed": True,
+                 "content_sha256": source["content_sha256"], "checked_at": "2026-10-30T03:00:00Z"}
+        value.update(updates)
+        return value
 
     def test_accepts_generic_reflected_dart_only_as_nonpublishable_metadata(self):
         package = self.validator.validate_candidate(self.candidate, self.root)
@@ -267,7 +288,8 @@ class CandidatePipelineTests(unittest.TestCase):
             self.validator.validate_candidate(self.candidate, self.root)
         del claim["prepublication_checked_at"]
         self.write_candidate()
-        checks = [{"url": source["url"], "status": 200, "final_url": source["url"],
+        checks = [{"source_id": source["source_id"], "url": source["url"], "status": 200,
+                   "final_url": source["url"],
                    "marker": source["http_verification"]["expected_marker"], "marker_confirmed": True,
                    "content_sha256": source["content_sha256"], "checked_at": "2026-10-30T03:00:00Z"}]
         self.write_review_bundle(reviews=self.factual_reviews(claim), checks=checks)
@@ -293,7 +315,8 @@ class CandidatePipelineTests(unittest.TestCase):
                   "reviewed_at": "2026-10-30T02:00:00Z", "issues": [], "resolution": "approved unknown",
                   "quote_entailment_confirmed": True}
         reviews = [review, *self.factual_reviews({**claim, "source_evidence": []})[1:]]
-        check = {"url": source["url"], "status": 200, "final_url": source["url"],
+        check = {"source_id": source["source_id"], "url": source["url"], "status": 200,
+                 "final_url": source["url"],
                  "marker": source["http_verification"]["expected_marker"], "marker_confirmed": True,
                  "content_sha256": source["content_sha256"], "checked_at": "2026-10-30T03:00:00Z"}
         self.write_review_bundle(reviews=reviews, checks=[check])
@@ -303,7 +326,8 @@ class CandidatePipelineTests(unittest.TestCase):
 
     def test_publishable_check_must_match_exact_https_source_hash_marker_and_final_url(self):
         source, claim = self.use_factual_claim()
-        valid = {"url": source["url"], "status": 200, "final_url": source["url"],
+        valid = {"source_id": source["source_id"], "url": source["url"], "status": 200,
+                 "final_url": source["url"],
                  "marker": source["http_verification"]["expected_marker"], "marker_confirmed": True,
                  "content_sha256": source["content_sha256"], "checked_at": "2026-10-30T03:00:00Z"}
         for field, value in (("status", 403), ("final_url", "https://other.example/"),
@@ -313,12 +337,95 @@ class CandidatePipelineTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "publishable|exact|check"):
                     self.promoter.promote(self.candidate, self.review, self.output, self.root)
 
+    def test_same_url_supports_distinct_source_id_marker_locator_and_hash_checks(self):
+        first, claim = self.use_factual_claim(url="https://www.dol.gov/shared/archive.zip")
+        second = copy.deepcopy(first)
+        second.update(source_id="official-benefit-policy-part-b", locator="form-5500:plan-b",
+                      supporting_quote="Dental support is offered.", content_sha256="b" * 64)
+        second["http_verification"] = dict(first["http_verification"], expected_marker="Plan B")
+        self.sources.append(second)
+        claim["source_ids"].append(second["source_id"])
+        claim["source_evidence"].append({"source_id": second["source_id"], "role": "primary_claim_evidence",
+                                         "proposition": claim["detail"], "source_locator": second["locator"],
+                                         "supporting_quote": second["supporting_quote"],
+                                         "content_sha256": second["content_sha256"]})
+        self.write_candidate()
+        checks = [self.source_check(first), self.source_check(second)]
+        self.write_review_bundle(reviews=self.factual_reviews(claim), checks=checks)
+        self.promoter.promote(self.candidate, self.review, self.output, self.root)
+        promoted = [json.loads(line) for line in (self.output / "checks.jsonl").read_text().splitlines()]
+        self.assertEqual([first["source_id"], second["source_id"]], [item["source_id"] for item in promoted])
+
+    def test_source_id_check_coverage_rejects_missing_duplicate_orphan_and_cross_source_tuple(self):
+        first, claim = self.use_factual_claim(url="https://www.dol.gov/shared/archive.zip")
+        second = copy.deepcopy(first)
+        second.update(source_id="official-benefit-policy-part-b", locator="form-5500:plan-b",
+                      content_sha256="b" * 64)
+        second["http_verification"] = dict(first["http_verification"], expected_marker="Plan B")
+        self.sources.append(second)
+        claim["source_ids"].append(second["source_id"])
+        claim["source_evidence"].append(dict(claim["source_evidence"][0], source_id=second["source_id"],
+                                             source_locator=second["locator"], content_sha256=second["content_sha256"]))
+        self.write_candidate()
+        valid = [self.source_check(first), self.source_check(second)]
+        cases = [
+            (valid[:-1], "missing|cover"),
+            (valid + [copy.deepcopy(valid[-1])], "duplicate|cover"),
+            (valid + [dict(valid[-1], source_id="orphan")], "orphan|cover"),
+            ([valid[0], dict(valid[1], marker=first["http_verification"]["expected_marker"])], "source|tuple|marker"),
+        ]
+        for checks, message in cases:
+            with self.subTest(message=message):
+                self.write_review_bundle(reviews=self.factual_reviews(claim), checks=checks)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.promoter.promote(self.candidate, self.review, self.output, self.root)
+
+    def test_official_identity_projection_is_stable_but_rejects_identity_drift(self):
+        source, identity = self.normalized_identity_source()
+        _, claim = self.use_factual_claim()
+        claim.update(status="unknown", evidence_grade="none", source_ids=[], searched_source_ids=[source["source_id"]],
+                     searched_at="2026-10-30T01:00:00Z", search_scope="benefit_nonclaim")
+        for field in ("source_evidence", "source_locator", "supporting_quote", "content_sha256"):
+            claim.pop(field)
+        self.sources = [source]
+        self.write_candidate()
+        self.validator.validate_candidate(self.candidate, self.root)
+        reviews = [{"review_id": f"review::{claim['claim_id']}", "claim_id": claim["claim_id"],
+                    "researcher_id": "researcher-a", "reviewer_id": "reviewer-b", "decision": "approved",
+                    "reviewed_at": "2026-10-30T02:00:00Z", "issues": [], "resolution": "approved unknown",
+                    "quote_entailment_confirmed": True},
+                   *self.factual_reviews({**claim, "source_evidence": []})[1:]]
+        check = self.source_check(source, normalization={"algorithm": "sec-submissions-identity", "version": "1",
+                                                         "official_response_identity": {"cik": 123456,
+                                                                                        "name": identity["legal_name"],
+                                                                                        "ein": identity["ein"]},
+                                                         "projection_sha256": source["content_sha256"]})
+        self.write_review_bundle(reviews=reviews, checks=[check])
+        self.promoter.promote(self.candidate, self.review, self.output, self.root)
+        for field, value in (("name", "EXAMPLE CORP RENAMED"), ("ein", "00-0000000"), ("cik", 654321)):
+            with self.subTest(field=field):
+                mutated = copy.deepcopy(check)
+                mutated["normalization"]["official_response_identity"][field] = value
+                self.write_review_bundle(reviews=reviews, checks=[mutated])
+                with self.assertRaisesRegex(ValueError, "identity|projection|normalization"):
+                    self.promoter.promote(self.candidate, self.review, self.output, self.root)
+
+    def test_normalized_identity_provenance_cannot_support_benefit_claim_prose(self):
+        source, _ = self.normalized_identity_source()
+        _, claim = self.use_factual_claim()
+        self.sources = [source]
+        claim["source_ids"] = [source["source_id"]]
+        claim["source_evidence"][0].update(source_id=source["source_id"], content_sha256=source["content_sha256"])
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "identity|benefit|claim"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
     def test_metadata_gap_accepts_exact_failed_observation_but_not_mutation(self):
         self.sources[0]["access_observation"] = {"status": 403, "final_url": self.sources[0]["url"],
                                                  "access_wall": "bot_or_network_block"}
         self.write_candidate()
-        check = {"url": self.sources[0]["url"], **self.sources[0]["access_observation"],
-                 "checked_at": "2026-10-30T03:00:00Z"}
+        check = {"source_id": self.sources[0]["source_id"], "url": self.sources[0]["url"],
+                 **self.sources[0]["access_observation"], "checked_at": "2026-10-30T03:00:00Z"}
         self.write_review_bundle(checks=[check])
         self.promoter.promote(self.candidate, self.review, self.output, self.root)
         self.assertNotIn("content_sha256", json.loads((self.output / "checks.jsonl").read_text()))
@@ -330,8 +437,8 @@ class CandidatePipelineTests(unittest.TestCase):
         self.sources[0]["access_observation"] = {"status": None, "final_url": None,
                                                  "access_wall": "bot_or_network_block"}
         self.write_candidate()
-        check = {"url": self.sources[0]["url"], **self.sources[0]["access_observation"],
-                 "checked_at": "2026-10-30T03:00:00Z"}
+        check = {"source_id": self.sources[0]["source_id"], "url": self.sources[0]["url"],
+                 **self.sources[0]["access_observation"], "checked_at": "2026-10-30T03:00:00Z"}
         self.write_review_bundle(checks=[check])
         self.promoter.promote(self.candidate, self.review, self.output, self.root)
         self.assertIsNone(json.loads((self.output / "checks.jsonl").read_text())["final_url"])
@@ -390,7 +497,8 @@ class CandidatePipelineTests(unittest.TestCase):
         self.write_review_bundle(candidate_manifest_sha256="0" * 64)
         with self.assertRaisesRegex(ValueError, "candidate.*hash|binding"):
             self.promoter.promote(self.candidate, self.review, self.output, self.root)
-        stale = [{"url": self.sources[0]["url"], **self.sources[0]["access_observation"],
+        stale = [{"source_id": self.sources[0]["source_id"], "url": self.sources[0]["url"],
+                  **self.sources[0]["access_observation"],
                   "checked_at": "2026-10-30T01:30:00Z"}]
         self.write_review_bundle(checks=stale)
         with self.assertRaisesRegex(ValueError, "post-review|follow"):

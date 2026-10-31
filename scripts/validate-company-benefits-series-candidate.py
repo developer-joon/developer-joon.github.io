@@ -167,6 +167,10 @@ def validate_candidate(candidate_dir, research_root):
                 raise ValueError(f"{claim_id}: claim source does not resolve in candidate package")
             if source_id in metadata_ids:
                 raise ValueError(f"{claim_id}: nonpublishable metadata cannot be a claim source")
+        normalized_claim_sources = [source_id for source_id in claim.get("source_ids", [])
+                                    if sources[source_id].get("hash_provenance") == verifier.company_benefits_series.IDENTITY_PROVENANCE]
+        if normalized_claim_sources:
+            raise ValueError(f"{claim_id}: official identity projections cannot support benefit claim prose")
         claim_by_company.setdefault(company_id, []).append(claim)
     if claim_errors:
         raise ValueError("claim schema validation failed:\n" + "\n".join(claim_errors))
@@ -187,9 +191,17 @@ def validate_candidate(candidate_dir, research_root):
         for source_id in gap.get("searched_official_source_ids", []):
             if source_id not in sources:
                 raise ValueError(f"{gap.get('audit_id')}: gap source does not resolve")
+        if gap.get("searched_official_urls"):
+            raise ValueError(f"{gap.get('audit_id')}: raw searched URLs must be migrated to source_id records")
         if any(not isinstance(url, str) or not url.startswith("https://") for url in gap.get("searched_official_urls", [])):
             raise ValueError(f"{gap.get('audit_id')}: gap URL must use HTTPS")
         gap_by_company.setdefault(company_id, []).append(gap)
+
+    referenced_source_ids = {source_id for claim in claims
+                             for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
+    referenced_source_ids.update(source_id for gap in gaps for source_id in gap.get("searched_official_source_ids", []))
+    if referenced_source_ids != set(sources):
+        raise ValueError("candidate sources must be referenced exactly by claim/gap source_id bindings; orphan sources are prohibited")
 
     targets = []
     for company_id in company_ids:

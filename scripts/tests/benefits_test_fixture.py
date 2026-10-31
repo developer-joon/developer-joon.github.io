@@ -249,9 +249,20 @@ class ContractFixture:
             destination.write_bytes((RESEARCH_ROOT / relative).read_bytes())
         self.refresh_manifests()
         try:
+            checks = self.root / "series-prepublication-checks.jsonl"
+            previous_checks = {item.get("source_id"): item for item in company_benefits_series.read_jsonl(checks)}
+            if checks.exists():
+                checks.unlink()
             company_benefits_series.materialize_contract(
                 self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "bob"
             )
+            regenerated = {item.get("source_id"): item for item in company_benefits_series.read_jsonl(checks)}
+            unknown_source_ids = {source_id for claim in self.claims if claim.get("status") == "unknown"
+                                  for source_id in claim.get("searched_source_ids", [])}
+            for source_id in unknown_source_ids:
+                if source_id in previous_checks:
+                    regenerated[source_id] = previous_checks[source_id]
+            company_benefits_series.write_jsonl(checks, [regenerated[key] for key in sorted(regenerated)])
         except ValueError:
             # Mutation tests intentionally write invalid population sizes; the verifier must report them.
             pass

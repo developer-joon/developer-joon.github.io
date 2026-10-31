@@ -50,16 +50,16 @@ def _external_directory(path):
     return resolved
 
 
-def _review_urls(kind, target, claim_map, gap_map, source_map):
+def _review_source_ids(kind, target, claim_map, gap_map, source_map):
     record = claim_map[target] if kind == "claim" else gap_map[target]
     source_ids = record.get("source_ids", []) + record.get("searched_source_ids", []) if kind == "claim" else record.get("searched_official_source_ids", [])
-    urls = set(record.get("searched_official_urls", [])) if kind == "gap" else set()
+    if kind == "gap" and record.get("searched_official_urls"):
+        raise ValueError(f"{target}: post-review checks require source_id records; raw searched URLs must be migrated")
     for source_id in source_ids:
         source = source_map.get(source_id)
         if not source or not source.get("url"):
             raise ValueError(f"{target}: unresolved source URL")
-        urls.add(source["url"])
-    return urls
+    return set(source_ids)
 
 
 def promote(candidate_dir, review_dir, output_dir, research_root):
@@ -131,60 +131,34 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
     source_map = {item["source_id"]: item for item in records["sources.jsonl"]}
     claim_map = {item["claim_id"]: item for item in records["claims.jsonl"]}
     gap_map = {item["audit_id"]: item for item in records["gaps.jsonl"]}
-    bound_source_ids = {source_id for claim in claim_map.values()
-                        for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
-    bound_source_ids.update(source_id for gap in gap_map.values()
-                            for source_id in gap.get("searched_official_source_ids", []))
-    sources_by_url = {}
-    for source_id in bound_source_ids:
-        source = source_map[source_id]
-        sources_by_url.setdefault(source["url"], []).append(source)
-    expected_urls = set()
+    expected_source_ids = set()
     latest_review = {}
     for kind, target in targets:
-        for url in _review_urls(kind, target, claim_map, gap_map, source_map):
-            expected_urls.add(url)
-            latest_review[url] = max(latest_review.get(url, review_times[(kind, target)]), review_times[(kind, target)])
-    check_urls = [check.get("url") for check in checks]
-    if len(check_urls) != len(set(check_urls)) or set(check_urls) != expected_urls:
-        raise ValueError("post-review checks must exactly cover every candidate source URL once")
+        for source_id in _review_source_ids(kind, target, claim_map, gap_map, source_map):
+            expected_source_ids.add(source_id)
+            latest_review[source_id] = max(latest_review.get(source_id, review_times[(kind, target)]),
+                                           review_times[(kind, target)])
+    check_source_ids = [check.get("source_id") for check in checks]
+    if len(check_source_ids) != len(set(check_source_ids)) or set(check_source_ids) != expected_source_ids:
+        raise ValueError("post-review checks must exactly cover every candidate source_id once; missing, duplicate, and orphan checks are prohibited")
+    check_contract = verifier.company_benefits_series
     for check in checks:
-        url = check.get("url")
-        bound_sources = sources_by_url.get(url, [])
-        kinds = {source.get("record_type") == "nonpublishable_metadata" for source in bound_sources}
-        if len(kinds) > 1:
-            raise ValueError(f"{url}: check route ambiguously mixes metadata and publishable sources")
-        if True in kinds:
-            expected_fields = {"url", "status", "final_url", "access_wall", "checked_at"}
-            observations = {json.dumps(source["access_observation"], sort_keys=True) for source in bound_sources}
-            actual = {field: check.get(field) for field in ("status", "final_url", "access_wall")}
-            if set(check) != expected_fields or len(observations) != 1 or actual != bound_sources[0]["access_observation"]:
-                raise ValueError(f"{url}: metadata check must exactly match the observed route failure/access semantics")
-        else:
-            expected_fields = {"url", "status", "final_url", "marker", "marker_confirmed", "content_sha256", "checked_at"}
-            expected = {(source["http_verification"]["final_url"], source["http_verification"]["expected_marker"],
-                         source["content_sha256"]) for source in bound_sources}
-            if not bound_sources:
-                expected = {(url, check.get("marker"), check.get("content_sha256"))}
-            actual = (check.get("final_url"), check.get("marker"), check.get("content_sha256"))
-            if (set(check) != expected_fields or not str(url).startswith("https://") or len(expected) != 1
-                    or check.get("status") != 200 or check.get("marker_confirmed") is not True
-                    or actual not in expected or not HASH.fullmatch(str(check.get("content_sha256", "")))):
-                raise ValueError(f"{url}: publishable source check must be a successful exact HTTPS URL/hash/marker check")
+        source_id = check.get("source_id")
+        check_contract.validate_source_check(check, source_map[source_id])
         checked = _timestamp(check.get("checked_at"), "check checked_at")
-        if checked <= latest_review[url]:
-            raise ValueError(f"{url}: post-review check must follow every bound independent review")
+        if checked <= latest_review[source_id]:
+            raise ValueError(f"{source_id}: post-review check must follow every bound independent review")
         if checked >= approved_at:
-            raise ValueError(f"{url}: post-review check must precede promotion approval")
+            raise ValueError(f"{source_id}: post-review check must precede promotion approval")
 
     output_dir = Path(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
-    check_map = {check["url"]: check for check in checks}
+    check_map = {check["source_id"]: check for check in checks}
     promoted_claims = copy.deepcopy(records["claims.jsonl"])
     for claim in promoted_claims:
         if claim.get("status") == "unknown":
             continue
-        bound_checks = [check_map[source_map[source_id]["url"]] for source_id in claim.get("source_ids", [])]
+        bound_checks = [check_map[source_id] for source_id in claim.get("source_ids", [])]
         if not bound_checks:
             raise ValueError(f"{claim.get('claim_id')}: factual claim has no successful post-review source check")
         latest = max(bound_checks, key=lambda check: _timestamp(check["checked_at"], "check checked_at"))

@@ -3,8 +3,8 @@
 
 import hashlib
 import json
+import re
 from pathlib import Path
-from urllib.parse import urlparse
 
 MANIFEST_VERSION = "1"
 SCOPES = ("domestic", "international")
@@ -25,6 +25,11 @@ HISTORICAL_AUDIT_FIELDS = {
     "record_type", "company_id", "selection_status", "old_batch_id",
     "new_batch_id", "publishable", "reason", "record",
 }
+IDENTITY_PROVENANCE = "official_identity_projection"
+IDENTITY_ALGORITHM = "sec-submissions-identity"
+IDENTITY_VERSION = "1"
+IDENTITY_SOURCE_FIELDS = {"entity_identity", "legal_name", "registry_id", "tax_id"}
+HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def json_bytes(value):
@@ -33,6 +38,78 @@ def json_bytes(value):
 
 def jsonl_bytes(values):
     return b"".join(json_bytes(value) + b"\n" for value in values)
+
+
+def identity_projection(official_response_identity):
+    """Return the sole normalized SEC identity projection (CIK/name/EIN)."""
+    if not isinstance(official_response_identity, dict) or set(official_response_identity) != {"cik", "name", "ein"}:
+        raise ValueError("official identity response must contain exactly cik, name, and ein")
+    cik = official_response_identity["cik"]
+    if isinstance(cik, bool) or not isinstance(cik, (int, str)) or not str(cik).isdigit():
+        raise ValueError("official identity CIK must be decimal")
+    cik = str(cik)
+    if len(cik) > 10:
+        raise ValueError("official identity CIK exceeds ten digits")
+    name, ein = official_response_identity["name"], official_response_identity["ein"]
+    if not isinstance(name, str) or not name or not isinstance(ein, str):
+        raise ValueError("official identity name must be nonempty and EIN must be an exact string")
+    return {"cik": cik.zfill(10), "legal_name": name, "ein": ein}
+
+
+def identity_projection_sha256(official_response_identity):
+    return hashlib.sha256(json_bytes(identity_projection(official_response_identity))).hexdigest()
+
+
+def validate_identity_source(source):
+    normalization = source.get("normalization")
+    expected = {"algorithm", "version", "projection_sha256"}
+    if (not isinstance(normalization, dict) or set(normalization) != expected
+            or normalization.get("algorithm") != IDENTITY_ALGORITHM
+            or normalization.get("version") != IDENTITY_VERSION
+            or not HASH_PATTERN.fullmatch(str(normalization.get("projection_sha256", "")))
+            or normalization.get("projection_sha256") != source.get("content_sha256")):
+        raise ValueError("official identity normalization algorithm/version/projection digest mismatch")
+    supported = source.get("supported_fields")
+    if (source.get("source_type") not in {"regulator_filing", "government_register"}
+            or not isinstance(supported, list) or not supported or set(supported) - IDENTITY_SOURCE_FIELDS):
+        raise ValueError("official identity projection is restricted to official entity identity fields")
+
+
+def validate_source_check(check, source):
+    """Validate one post-review check against one exact source_id tuple."""
+    source_id = source.get("source_id")
+    if check.get("source_id") != source_id or check.get("url") != source.get("url"):
+        raise ValueError(f"{source_id}: post-review check source_id/URL binding mismatch")
+    if source.get("record_type") == "nonpublishable_metadata":
+        fields = {"source_id", "url", "status", "final_url", "access_wall", "checked_at"}
+        actual = {field: check.get(field) for field in ("status", "final_url", "access_wall")}
+        if set(check) != fields or actual != source.get("access_observation"):
+            raise ValueError(f"{source_id}: metadata check must exactly match observed route failure/access semantics")
+        return
+    fields = {"source_id", "url", "status", "final_url", "marker", "marker_confirmed",
+              "content_sha256", "checked_at"}
+    if source.get("hash_provenance") == IDENTITY_PROVENANCE:
+        fields.add("normalization")
+    expected = (source.get("http_verification", {}).get("final_url"),
+                source.get("http_verification", {}).get("expected_marker"), source.get("content_sha256"))
+    actual = (check.get("final_url"), check.get("marker"), check.get("content_sha256"))
+    if (set(check) != fields or not str(check.get("url", "")).startswith("https://")
+            or check.get("status") != 200 or check.get("marker_confirmed") is not True or actual != expected
+            or not HASH_PATTERN.fullmatch(str(check.get("content_sha256", "")))):
+        raise ValueError(f"{source_id}: publishable source check must be a successful exact source tuple")
+    if source.get("hash_provenance") == IDENTITY_PROVENANCE:
+        validate_identity_source(source)
+        normalization = check.get("normalization")
+        expected_fields = {"algorithm", "version", "official_response_identity", "projection_sha256"}
+        if (not isinstance(normalization, dict) or set(normalization) != expected_fields
+                or normalization.get("algorithm") != IDENTITY_ALGORITHM
+                or normalization.get("version") != IDENTITY_VERSION):
+            raise ValueError(f"{source_id}: identity normalization check mismatch")
+        recomputed = identity_projection_sha256(normalization.get("official_response_identity"))
+        if (normalization.get("projection_sha256") != recomputed
+                or recomputed != source["normalization"]["projection_sha256"]
+                or recomputed != check.get("content_sha256")):
+            raise ValueError(f"{source_id}: official identity projection drift")
 
 
 def read_jsonl(path):
@@ -243,11 +320,12 @@ def materialize_contract(root, approved_batch_ids, approved_at, reviewer_id, sta
             for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
                 source = sources.get(source_id, {})
                 url = source.get("url")
-                if url:
-                    checks[url] = {"url": url, "status": 200, "final_url": url,
-                                   "marker": source.get("http_verification", {}).get("expected_marker") or source.get("title"),
-                                   "marker_confirmed": True, "content_sha256": source.get("content_sha256"),
-                                   "checked_at": checked_at}
+                if url and source_id:
+                    checks[source_id] = {"source_id": source_id, "url": url, "status": 200,
+                                         "final_url": source.get("http_verification", {}).get("final_url", url),
+                                         "marker": source.get("http_verification", {}).get("expected_marker") or source.get("title"),
+                                         "marker_confirmed": True, "content_sha256": source.get("content_sha256"),
+                                         "checked_at": checked_at}
         write_jsonl(root / "series-prepublication-checks.jsonl", [checks[key] for key in sorted(checks)])
     progress = build_progress(root, batches, set(approved_batch_ids), approved_at, reviewer_id, status)
     (root / "series-progress.json").write_bytes(json_bytes(progress))
@@ -447,9 +525,13 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         errors.append("approved gap/nonclaim outcome review coverage must be exact one-to-one with no missing, duplicate, or orphan targets")
 
     used_source_ids = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
+    for claim in claims:
+        if any(source_map.get(source_id, {}).get("hash_provenance") == IDENTITY_PROVENANCE
+               for source_id in claim.get("source_ids", [])):
+            errors.append(f"{claim.get('claim_id')}: official identity projections cannot support benefit claim prose")
     checks = read_jsonl(root / "series-prepublication-checks.jsonl")
-    check_map = {item.get("url"): item for item in checks}
-    expected_urls = {source_map.get(source_id, {}).get("url") for source_id in used_source_ids}
+    check_map = {item.get("source_id"): item for item in checks}
+    expected_source_ids = set(used_source_ids)
     for gap_id in outcome_targets:
         gap = gap_by_id.get(gap_id, {})
         for source_id in gap.get("searched_official_source_ids", []):
@@ -457,54 +539,48 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
             if not source or not source.get("url"):
                 errors.append(f"{gap.get('audit_id')}: unresolved searched official source {source_id}")
             else:
-                expected_urls.add(source["url"])
-        for url in gap.get("searched_official_urls", []):
-            if not isinstance(url, str) or not url.startswith("https://"):
-                errors.append(f"{gap.get('audit_id')}: searched official URL must use HTTPS")
-            else:
-                expected_urls.add(url)
-    if len(check_map) != len(checks) or set(check_map) != expected_urls:
-        errors.append("series prepublication checks must contain one record per unique used official URL")
-    for url, check in check_map.items():
-        if check.get("status") != 200 or check.get("marker_confirmed") is not True or not check.get("marker"):
-            errors.append(f"prepublication {url}: current official URL or marker check failed")
-        parsed = urlparse(str(check.get("final_url", "")))
-        original_host = str(urlparse(str(url)).hostname or "").casefold().removeprefix("www.")
-        final_host = str(parsed.hostname or "").casefold().removeprefix("www.")
-        owner_hosts = {
-            str(source.get("final_owner_domain", "")).casefold().removeprefix("www.")
-            for source in source_map.values() if source.get("url") == url
-        }
-        if parsed.scheme != "https" or not final_host or final_host not in ({original_host} | owner_hosts):
-            errors.append(f"prepublication {url}: final destination is outside the approved official domain")
-        checked = parse_timestamp(check.get("checked_at"), "checked_at", f"prepublication {url}", errors)
+                expected_source_ids.add(source_id)
+        if gap.get("searched_official_urls"):
+            errors.append(f"{gap.get('audit_id')}: raw searched URLs must be migrated to source_id records")
+    if len(check_map) != len(checks) or set(check_map) != expected_source_ids:
+        errors.append("series prepublication checks must contain one record per used official source_id")
+    for source_id, check in check_map.items():
+        source = source_map.get(source_id)
+        if source is None:
+            errors.append(f"prepublication {source_id}: orphan source_id")
+            continue
+        try:
+            validate_source_check(check, source)
+        except ValueError as exc:
+            errors.append(str(exc))
+        checked = parse_timestamp(check.get("checked_at"), "checked_at", f"prepublication {source_id}", errors)
         if checked and checked.date() > as_of:
-            errors.append(f"prepublication {url}: checked_at is in the future")
-        if not isinstance(check.get("content_sha256"), str) or len(check["content_sha256"]) != 64:
-            errors.append(f"prepublication {url}: invalid content hash")
+            errors.append(f"prepublication {source_id}: checked_at is in the future")
     review_map = {item.get("claim_id"): item for item in reviews}
     for claim in claims:
-        bound = [check_map.get(source_map.get(source_id, {}).get("url"), {})
-                 for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])]
+        bound_ids = claim.get("source_ids", []) + claim.get("searched_source_ids", [])
+        bound = [check_map.get(source_id, {}) for source_id in bound_ids]
         timestamps = [parse_timestamp(item.get("checked_at"), "checked_at", claim.get("claim_id"), errors) for item in bound]
         timestamps = [item for item in timestamps if item]
         reviewed = parse_timestamp(review_map.get(claim.get("claim_id"), {}).get("reviewed_at"), "reviewed_at", claim.get("claim_id"), errors)
         prepub_value = claim.get("prepublication_checked_at")
         prepub = parse_timestamp(prepub_value, "prepublication_checked_at", claim.get("claim_id"), errors) if prepub_value else None
+        positive_times = [parse_timestamp(check_map.get(source_id, {}).get("checked_at"), "checked_at",
+                                          claim.get("claim_id"), errors) for source_id in claim.get("source_ids", [])]
+        positive_times = [item for item in positive_times if item]
         prepub_mismatch = claim.get("status") != "unknown" and (
-            not prepub or not reviewed or prepub <= reviewed or prepub > max(timestamps, default=prepub)
+            not prepub or not reviewed or not positive_times or prepub <= reviewed or prepub != max(positive_times)
         )
-        if not timestamps or not reviewed or min(timestamps) <= reviewed or prepub_mismatch:
-            errors.append(f"{claim.get('claim_id')}: prepublication chronology or URL binding mismatch")
+        if not timestamps or len(timestamps) != len(bound_ids) or not reviewed or min(timestamps) <= reviewed or prepub_mismatch:
+            errors.append(f"{claim.get('claim_id')}: prepublication chronology or source_id binding mismatch")
     for review in outcome_reviews:
         gap = gap_by_id.get(review.get("record_id"), {})
-        urls = set(gap.get("searched_official_urls", []))
-        urls.update(source_map.get(source_id, {}).get("url") for source_id in gap.get("searched_official_source_ids", []))
+        source_ids = set(gap.get("searched_official_source_ids", []))
         reviewed = parse_timestamp(review.get("reviewed_at"), "reviewed_at", review.get("review_id"), errors)
-        checked = [parse_timestamp(check_map.get(url, {}).get("checked_at"), "checked_at", review.get("record_id"), errors)
-                   for url in urls if url]
-        if any(not value or not reviewed or value <= reviewed for value in checked) or len(checked) != len(urls):
-            errors.append(f"{review.get('record_id')}: gap/nonclaim checks must completely follow outcome review")
+        checked = [parse_timestamp(check_map.get(source_id, {}).get("checked_at"), "checked_at",
+                                   review.get("record_id"), errors) for source_id in source_ids]
+        if any(not value or not reviewed or value <= reviewed for value in checked) or len(checked) != len(source_ids):
+            errors.append(f"{review.get('record_id')}: gap/nonclaim source checks must completely follow outcome review")
 
     if progress.get("status") == "complete":
         if len(approved_batches) != 80:

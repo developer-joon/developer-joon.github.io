@@ -450,8 +450,15 @@ def validate_sources(sources, errors, as_of=None, evidence_root=None):
             derived_ids = source.get("derived_artifact_ids")
             if source.get("artifact_manifest_path") != "population/source-artifacts.jsonl" or not isinstance(official_ids, list) or not official_ids or not isinstance(derived_ids, list) or not derived_ids or set(official_ids) & set(derived_ids):
                 errors.append(f"{source_id}: artifact manifest must distinguish official acquisition artifacts from derived artifacts")
+        elif provenance == company_benefits_series.IDENTITY_PROVENANCE:
+            try:
+                company_benefits_series.validate_identity_source(source)
+            except ValueError as exc:
+                errors.append(f"{source_id}: {exc}")
         elif provenance != "observed_response":
             errors.append(f"{source_id}: invalid hash_provenance")
+        if provenance != company_benefits_series.IDENTITY_PROVENANCE and "normalization" in source:
+            errors.append(f"{source_id}: normalization is reserved for official identity projection provenance")
         decisions = source.get("decisions", {})
         for decision in SOURCE_DECISIONS:
             if decision not in decisions:

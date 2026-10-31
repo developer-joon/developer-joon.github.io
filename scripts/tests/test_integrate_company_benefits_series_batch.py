@@ -125,22 +125,23 @@ class SeriesIntegrationTests(unittest.TestCase):
             self.module.load_package(self.input, self.root)
 
     def test_shared_url_check_upsert_accepts_only_newer_compatible_check(self):
-        existing = [{"url": "https://dol.gov/shared", "status": 200, "final_url": "https://dol.gov/shared",
+        existing = [{"source_id": "dol-plan-a", "url": "https://dol.gov/shared", "status": 200,
+                     "final_url": "https://dol.gov/shared",
                      "marker": "Form 5500", "marker_confirmed": True, "content_sha256": "a" * 64,
                      "checked_at": "2026-10-20T05:00:00Z"}]
         newer = [dict(existing[0], checked_at="2026-10-22T05:00:00Z")]
-        merged = self.module.merge_checks(existing, newer, {"https://dol.gov/shared": "2026-10-22T04:00:00Z"})
+        merged = self.module.merge_checks(existing, newer, {"dol-plan-a": "2026-10-22T04:00:00Z"})
         self.assertEqual("2026-10-22T05:00:00Z", merged[0]["checked_at"])
         for mutation, message, reviewed_at in (
             ({"checked_at": "2026-10-20T05:00:00Z"}, "newer", "2026-10-19T04:00:00Z"),
-            ({"checked_at": "2026-10-22T05:00:00Z", "content_sha256": "b" * 64}, "hash", "2026-10-22T04:00:00Z"),
-            ({"checked_at": "2026-10-22T05:00:00Z", "marker": "different"}, "marker", "2026-10-22T04:00:00Z"),
+            ({"checked_at": "2026-10-22T05:00:00Z", "content_sha256": "b" * 64}, "tuple", "2026-10-22T04:00:00Z"),
+            ({"checked_at": "2026-10-22T05:00:00Z", "marker": "different"}, "tuple", "2026-10-22T04:00:00Z"),
             ({"checked_at": "2026-10-22T03:00:00Z"}, "review", "2026-10-22T04:00:00Z"),
         ):
             with self.subTest(mutation=mutation):
                 with self.assertRaisesRegex(ValueError, message):
                     self.module.merge_checks(existing, [dict(existing[0], **mutation)],
-                                             {"https://dol.gov/shared": reviewed_at})
+                                             {"dol-plan-a": reviewed_at})
 
     def test_accepts_metadata_only_gap_source_and_rejects_body_leakage(self):
         source = {
@@ -157,7 +158,7 @@ class SeriesIntegrationTests(unittest.TestCase):
                  "searched_official_source_ids": [source["source_id"]], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
                 for company_id in self.batch["company_ids"]]
-        checks = [{"url": source["url"], **source["access_observation"],
+        checks = [{"source_id": source["source_id"], "url": source["url"], **source["access_observation"],
                    "checked_at": "2026-10-22T05:00:00Z"}]
         self.package(sources=[source], gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
         self.module.load_package(self.input, self.root)
@@ -166,20 +167,24 @@ class SeriesIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema|metadata|additional"):
             self.module.load_package(self.input, self.root)
 
-    def test_check_coverage_unions_93_claims_and_14_gap_urls_and_rejects_extra(self):
-        sources = {f"source-{index}": {"url": f"https://claims.example/{index}"} for index in range(13)}
+    def test_check_coverage_unions_claim_and_gap_source_ids_and_rejects_raw_urls(self):
+        sources = {f"source-{index}": {"url": f"https://official.example/{index}"} for index in range(27)}
         claims = [{"source_ids": [f"source-{index % 13}"], "searched_source_ids": []} for index in range(93)]
-        gaps = [{"searched_official_source_ids": [],
-                 "searched_official_urls": [f"https://gaps.example/{index}"]} for index in range(14)]
-        expected = self.module.expected_check_urls(claims, gaps, sources)
+        gaps = [{"searched_official_source_ids": [f"source-{13 + index}"], "searched_official_urls": []}
+                for index in range(14)]
+        expected = self.module.expected_check_source_ids(claims, gaps, sources)
         self.assertEqual(27, len(expected))
-        checks = [{"url": url, "status": 200, "final_url": url, "marker": "official",
+        checks = [{"source_id": source_id, "url": sources[source_id]["url"], "status": 200,
+                   "final_url": sources[source_id]["url"], "marker": "official",
                    "marker_confirmed": True, "content_sha256": "a" * 64,
-                   "checked_at": "2026-10-22T05:00:00Z"} for url in sorted(expected)]
+                   "checked_at": "2026-10-22T05:00:00Z"} for source_id in sorted(expected)]
         self.assertEqual(27, len(self.module.merge_checks([], checks, {}, expected)))
-        checks.append(dict(checks[0], url="https://unrelated.example/extra"))
+        checks.append(dict(checks[0], source_id="unrelated"))
         with self.assertRaisesRegex(ValueError, "source bindings"):
             self.module.merge_checks([], checks, {}, expected)
+        gaps[0]["searched_official_urls"] = ["https://official.example/raw"]
+        with self.assertRaisesRegex(ValueError, "migrated|source_id"):
+            self.module.expected_check_source_ids(claims, gaps, sources)
 
 
 if __name__ == "__main__":
