@@ -262,6 +262,7 @@ export function CommunityHomePage({ repository, initialSearch, onQueryChange }: 
           <div className="community-wrap">
             <h1 id="community-heading">Where ideas connect</h1>
             <p>질문과 경험이 이어지는 자유로운 공간입니다.</p>
+            <a className="community-benefits-link" href="/community/benefits/">기업 복지 탐색기</a>
           </div>
         </section>
         <CommunityActions />

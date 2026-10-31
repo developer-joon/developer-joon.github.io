@@ -190,12 +190,14 @@
 }
 
 .menu__list__item__link {
-	display: inline;
+	display: flex;
+	align-items: center;
+	min-height: 56px;
 	font-size: $menu-small;
 	font-weight: $menu-weight;
-	line-height: 1;
+	line-height: 1.2;
 	color: $text-dark-color;
-	padding: 10px 0;
+	padding: 8px 0;
 
 	&:hover {
 		color: $accent-color;
@@ -203,8 +205,10 @@
 
 	@include mq(tabletl) {
 		display: block;
+		min-height: 0;
 		padding: 0 0 8px;
 		font-size: $menu-medium;
+		line-height: 1;
 		color: $text-dark-color;
 
 		&:hover {
