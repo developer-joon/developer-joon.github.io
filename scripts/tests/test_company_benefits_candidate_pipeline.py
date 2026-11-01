@@ -66,7 +66,19 @@ class CandidatePipelineTests(unittest.TestCase):
         for name in ("source-registry.jsonl", "benefit-claims.jsonl", "reviews.jsonl",
                      "series-research-gaps.jsonl", "series-prepublication-checks.jsonl"):
             (self.root / name).write_bytes(b"")
-        progress = {"batches": [{"batch_id": self.batch["batch_id"], "status": "pending"}]}
+        progress = {
+            "manifest_version": "1", "progress_version": "1", "status": "in_progress",
+            "company_list_sha256": self.verifier.company_benefits_series.company_list_sha256([
+                company_id for batch in batches for company_id in batch["company_ids"]
+            ]),
+            "total_companies": 2000, "total_batches": 80,
+            "batches": [{
+                "batch_id": batch["batch_id"], "scope": batch["scope"],
+                "batch_number": batch["batch_number"], "status": "pending",
+                "company_list_sha256": batch["company_list_sha256"],
+                "claim_count": 0, "no_claim_count": 0,
+            } for batch in batches],
+        }
         (self.root / "series-progress.json").write_bytes(json_bytes(progress))
         self.sources = [self.metadata_source()]
         self.claims = []

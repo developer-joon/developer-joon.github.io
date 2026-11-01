@@ -10,6 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from scripts import company_benefits_series as series
+from scripts.tests.benefits_v2_batch_fixture import no_public_info_records
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "generate-company-benefits-artifacts.py"
 TAXONOMY = REPO / "docs" / "research" / "company-benefits" / "benefit-taxonomy-v1.json"
@@ -139,6 +142,7 @@ def make_research_fixture(root, v2=True):
         companies.append({
             "company_id": f"KR-CRN-{index:013d}" if domestic else f"US-CIK{index:010d}",
             "legal_name": f"Verified Employer {index:04d}",
+            "selected_reporting_legal_entity": f"Verified Employer {index:04d}",
             "jurisdiction": "KR" if domestic else "US",
             "scope": "domestic" if domestic else "international",
         })
@@ -246,10 +250,7 @@ def make_research_fixture(root, v2=True):
         })
     batches = []
     progress_entries = []
-    cells = []
-    categories = ("leave", "family", "health", "growth", "housing",
-                  "commute", "remote", "retirement", "meals", "inclusion")
-    empty_ledger_hash = hashlib.sha256(b"[]").hexdigest()
+    v2_records = {ledger: [] for ledger in series.V2_LEDGER_FILES}
     for index in range(80):
         ids = [company["company_id"] for company in companies[index * 25:(index + 1) * 25]]
         batch_id = ("domestic" if index < 40 else "international") + f"-{index % 40 + 1:02d}"
@@ -269,26 +270,15 @@ def make_research_fixture(root, v2=True):
             "reviewer_ids": ["reviewer-b"],
         }
         if v2:
-            batch_cells = [
-                {"cell_id": f"cell::{company_id}::{category}", "company_id": company_id,
-                 "category_id": category}
-                for company_id in ids for category in categories
-            ]
-            cells.extend(batch_cells)
+            batch_records = no_public_info_records(batches[-1], companies[index * 25:(index + 1) * 25])
+            for ledger in v2_records:
+                v2_records[ledger].extend(batch_records[ledger])
+            batch_cells = batch_records["cells"]
             identities = sorted((cell["company_id"], cell["category_id"]) for cell in batch_cells)
-            canonical_cells = json.dumps(sorted(batch_cells, key=lambda cell: cell["cell_id"]),
-                                         ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
             entry.update(
                 cell_count=250,
                 cell_set_sha256=hashlib.sha256(compact(identities).encode()).hexdigest(),
-                v2_ledger_sha256={
-                    "company-category-cells.jsonl": hashlib.sha256(canonical_cells).hexdigest(),
-                    "research-attempts.jsonl": empty_ledger_hash,
-                    "official-claims-v2.jsonl": empty_ledger_hash,
-                    "reference-records.jsonl": empty_ledger_hash,
-                    "community-benefit-reports.jsonl": empty_ledger_hash,
-                    "sources-v2.jsonl": empty_ledger_hash,
-                },
+                v2_ledger_sha256=series.v2_ledger_sha256(batch_records),
             )
         progress_entries.append(entry)
 
@@ -320,10 +310,8 @@ def make_research_fixture(root, v2=True):
     }
     if v2:
         progress.update(progress_version="2", total_cells=20000)
-        write_jsonl(root / "company-category-cells.jsonl", cells)
-        for filename in ("research-attempts.jsonl", "official-claims-v2.jsonl", "reference-records.jsonl",
-                         "community-benefit-reports.jsonl", "sources-v2.jsonl"):
-            write_jsonl(root / filename, [])
+        for ledger, filename in series.V2_LEDGER_FILES.items():
+            write_jsonl(root / filename, v2_records[ledger])
     write_json(root / "series-progress.json", progress)
     request, assignment = write_taxonomy_approval(root)
     write_json(root / "population-protocol.json", {
@@ -359,6 +347,19 @@ def snapshot(root):
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in sorted(root.rglob("*")) if path.is_file()
     }
+
+
+def refresh_v2_progress_hashes(root):
+    batches = [json.loads(line) for line in (root / "series-batches.jsonl").read_text().splitlines()]
+    records = series.read_v2_batch_records(root)
+    progress = json.loads((root / "series-progress.json").read_text())
+    entries = {entry["batch_id"]: entry for entry in progress["batches"]}
+    for batch in batches:
+        sliced = series.v2_batch_slice(records, batch)
+        entry = entries[batch["batch_id"]]
+        entry["cell_set_sha256"] = series.v2_cell_set_sha256(sliced["cells"])
+        entry["v2_ledger_sha256"] = series.v2_ledger_sha256(sliced)
+    write_json(root / "series-progress.json", progress)
 
 
 def forbidden_keys(value):
@@ -549,6 +550,88 @@ def test_artifact_publication_verifies_all_six_v2_ledger_hashes_before_writes(tm
 
     assert result.returncode != 0
     assert "hash mismatch" in result.stderr.casefold()
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_80_replays_of_one_progress_batch_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["batches"] = [copy.deepcopy(progress["batches"][0]) for _ in range(80)]
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "duplicate-progress-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_missing_or_substituted_progress_batch_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["batches"][-1]["batch_id"] = "substituted-40"
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "substituted-progress-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_declared_inflated_cell_count_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["batches"][0]["cell_count"] = 251
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "inflated-count-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_empty_actual_ledgers_with_matching_hashes_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    empty_records = {ledger: [] for ledger in series.V2_LEDGER_FILES}
+    empty_hashes = series.v2_ledger_sha256(empty_records)
+    empty_cell_set = series.v2_cell_set_sha256([])
+    for filename in series.V2_LEDGER_FILES.values():
+        write_jsonl(research / filename, [])
+    progress = json.loads((research / "series-progress.json").read_text())
+    for entry in progress["batches"]:
+        entry["cell_set_sha256"] = empty_cell_set
+        entry["v2_ledger_sha256"] = empty_hashes
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "empty-v2-ledgers-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_cross_batch_record_replay_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    attempts = series.read_jsonl(research / series.V2_LEDGER_FILES["attempts"])
+    batches = series.read_jsonl(research / "series-batches.jsonl")
+    first = attempts[0]
+    replay = next(record for record in attempts if record["company_id"] == batches[1]["company_ids"][0])
+    replay.update(cell_id=first["cell_id"], company_id=first["company_id"], category_id=first["category_id"],
+                  jurisdiction=first["jurisdiction"])
+    write_jsonl(research / series.V2_LEDGER_FILES["attempts"], attempts)
+    refresh_v2_progress_hashes(research)
+    output = tmp_path / "cross-batch-replay-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
     assert not output.exists()
 
 

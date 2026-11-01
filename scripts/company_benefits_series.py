@@ -475,7 +475,115 @@ def validate_complete_v2_progress(root, batches=None, progress=None):
         raise ValueError("v2 publication requires explicit progress_version=2")
     if progress.get("status") != "complete":
         raise ValueError("v2 publication requires complete progress")
-    validate_persisted_v2_hashes(root, batches, progress)
+
+    canonical_ids = {f"{scope}-{number:02d}" for scope in SCOPES for number in range(1, BATCHES_PER_SCOPE + 1)}
+    if not isinstance(batches, list) or len(batches) != len(canonical_ids):
+        raise ValueError("authoritative series batch ledger must contain exactly 80 canonical batches")
+    batch_ids = [batch.get("batch_id") for batch in batches if isinstance(batch, dict)]
+    if len(batch_ids) != len(batches) or len(set(batch_ids)) != len(batch_ids) or set(batch_ids) != canonical_ids:
+        raise ValueError("authoritative series batch IDs must exactly equal the canonical 80-batch set")
+
+    batch_map = {}
+    company_owner = {}
+    expected_cell_keys = set()
+    for batch in batches:
+        batch_id = batch["batch_id"]
+        scope, raw_number = batch_id.rsplit("-", 1)
+        company_ids = batch.get("company_ids")
+        if (batch.get("scope") != scope or batch.get("batch_number") != int(raw_number)
+                or not isinstance(company_ids, list) or len(company_ids) != BATCH_SIZE
+                or len(set(company_ids)) != BATCH_SIZE
+                or batch.get("company_list_sha256") != company_list_sha256(company_ids)):
+            raise ValueError(f"{batch_id}: authoritative batch identity or company membership is invalid")
+        for company_id in company_ids:
+            if not isinstance(company_id, str) or not company_id or company_id in company_owner:
+                raise ValueError("authoritative series batches must partition 2,000 unique companies")
+            company_owner[company_id] = batch_id
+            expected_cell_keys.update((company_id, category_id) for category_id in V2_CATEGORIES)
+        batch_map[batch_id] = batch
+    if len(company_owner) != BATCH_SIZE * len(canonical_ids):
+        raise ValueError("authoritative series batches must partition exactly 2,000 unique companies")
+
+    entries = progress.get("batches", [])
+    progress_ids = [entry.get("batch_id") for entry in entries if isinstance(entry, dict)]
+    if (len(progress_ids) != len(entries) or len(set(progress_ids)) != len(progress_ids)
+            or set(progress_ids) != canonical_ids):
+        raise ValueError("v2 progress batch IDs must exactly equal the canonical 80-batch set")
+    entry_map = {entry["batch_id"]: entry for entry in entries}
+
+    records = read_v2_batch_records(root)
+    partitions = {
+        batch_id: {ledger: [] for ledger in V2_LEDGER_FILES}
+        for batch_id in canonical_ids
+    }
+    global_ids = {}
+    for ledger, id_field in V2_ID_FIELDS.items():
+        seen = set()
+        for record in records[ledger]:
+            if not isinstance(record, dict):
+                raise ValueError(f"v2 {ledger} ledger records must be objects")
+            record_id = record.get(id_field)
+            if not isinstance(record_id, str) or not record_id or record_id in seen:
+                raise ValueError(f"v2 {ledger} ledger requires globally unique nonempty {id_field}")
+            seen.add(record_id)
+        global_ids[ledger] = seen
+
+    cells = records["cells"]
+    cell_keys = [(record.get("company_id"), record.get("category_id")) for record in cells]
+    if (len(cells) != BATCH_SIZE * len(V2_CATEGORIES) * len(canonical_ids)
+            or len(set(cell_keys)) != len(cell_keys) or set(cell_keys) != expected_cell_keys):
+        raise ValueError("actual v2 cells must be exactly 20,000 unique canonical company/category records")
+
+    for ledger in V2_LEDGER_FILES:
+        if ledger == "sources":
+            continue
+        for record in records[ledger]:
+            company_id = record.get("company_id")
+            category_id = record.get("category_id")
+            batch_id = company_owner.get(company_id)
+            expected_cell_id = f"cell::{company_id}::{category_id}"
+            if (batch_id is None or category_id not in V2_CATEGORIES
+                    or record.get("cell_id") != expected_cell_id
+                    or (company_id, category_id) not in expected_cell_keys):
+                raise ValueError(f"{record.get(V2_ID_FIELDS[ledger])}: v2 record has no exact canonical batch/cell owner")
+            partitions[batch_id][ledger].append(record)
+
+    source_owners = {source_id: set() for source_id in global_ids["sources"]}
+    source_bindings = (("attempts", "source_ids"), ("official_claims", "source_ids"),
+                       ("references", "source_id"), ("community_reports", "source_id"))
+    for ledger, field in source_bindings:
+        for record in records[ledger]:
+            batch_id = company_owner[record["company_id"]]
+            values = record.get(field, []) if field.endswith("_ids") else [record.get(field)]
+            if not isinstance(values, list):
+                raise ValueError(f"{record.get(V2_ID_FIELDS[ledger])}: invalid v2 source binding")
+            for source_id in values:
+                if source_id not in source_owners:
+                    raise ValueError(f"{record.get(V2_ID_FIELDS[ledger])}: unknown v2 source binding {source_id}")
+                source_owners[source_id].add(batch_id)
+    source_map = {record["source_id"]: record for record in records["sources"]}
+    for source_id, owners in source_owners.items():
+        if len(owners) != 1:
+            raise ValueError(f"{source_id}: v2 source must belong to exactly one canonical batch")
+        partitions[next(iter(owners))]["sources"].append(source_map[source_id])
+
+    for batch_id in sorted(canonical_ids):
+        batch = batch_map[batch_id]
+        entry = entry_map[batch_id]
+        sliced = partitions[batch_id]
+        if (entry.get("scope") != batch.get("scope")
+                or entry.get("batch_number") != batch.get("batch_number")
+                or entry.get("company_list_sha256") != batch.get("company_list_sha256")):
+            raise ValueError(f"{batch_id}: progress identity does not match authoritative batch ledger")
+        if len(sliced["cells"]) != BATCH_SIZE * len(V2_CATEGORIES):
+            raise ValueError(f"{batch_id}: actual v2 partition must contain exactly 250 cells")
+        if entry.get("cell_count") != len(sliced["cells"]):
+            raise ValueError(f"{batch_id}: declared v2 cell count does not match actual partition")
+        if entry.get("cell_set_sha256") != v2_cell_set_sha256(sliced["cells"]):
+            raise ValueError(f"{batch_id}: persisted v2 cell-set hash mismatch")
+        if entry.get("v2_ledger_sha256") != v2_ledger_sha256(sliced):
+            raise ValueError(f"{batch_id}: persisted v2 ledger hash mismatch")
+        validate_v2_package_records(sliced, batch, root)
 
 
 def validate_persisted_v2_hashes(root, batches=None, progress=None, v2_transition=False):
