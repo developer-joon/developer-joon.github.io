@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as api from './benefitCorrectionDraftStore'
-import { createBenefitCorrectionRepository, type BenefitCorrectionRpcClient } from '../data/benefitCorrectionRepository'
+import { createBenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
 
 const draftId = '56000000-0000-4000-8000-000000000020'
 const requestId = '56000000-0000-4000-8000-000000000010'
@@ -100,18 +100,20 @@ describe('account-scoped benefit correction drafts', () => {
     const { accountA, value } = await fixture()
     const storage = memoryStorage()
     expect(api.saveBenefitCorrectionDraft(accountA, value, storage)).toBe(true)
-    const client: BenefitCorrectionRpcClient = { rpc: vi.fn().mockResolvedValue({ data: {
+    const rpc = vi.fn().mockResolvedValue({ data: {
       id: requestId, company_id: successItem.companyId, category_id: successItem.categoryId,
       current_text: successItem.currentText, proposed_text: successItem.proposedText, scope_text: successItem.scopeText,
       source_url: successItem.sourceUrl, observed_data_version: successItem.observedDataVersion, status: successItem.status,
       admin_response: null, applied_data_version: null, applied_at: null,
       created_at: successItem.createdAt, updated_at: successItem.updatedAt,
-    }, error: null }) }
-    const repository = createBenefitCorrectionRepository(client, { getActorId: () => accountBId })
+    }, error: null })
+    const repository = createBenefitCorrectionRepository({
+      getSessionContext: () => ({ actorId: accountBId, sessionFingerprint: 'session-b', rpc }),
+    })
 
     await expect(api.submitBenefitCorrectionDraft(value, repository, storage))
       .resolves.toMatchObject({ ok: false })
-    expect(client.rpc).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
     expect(api.loadBenefitCorrectionDraft(accountA, storage)).toEqual(value)
   })
 
@@ -120,14 +122,17 @@ describe('account-scoped benefit correction drafts', () => {
     const storage = memoryStorage()
     expect(api.saveBenefitCorrectionDraft(accountA, value, storage)).toBe(true)
     let actorReads = 0
-    const client: BenefitCorrectionRpcClient = { rpc: vi.fn() }
-    const repository = createBenefitCorrectionRepository(client, {
-      getActorId: () => ++actorReads < 3 ? accountAId : accountBId,
+    const rpc = vi.fn()
+    const repository = createBenefitCorrectionRepository({
+      getSessionContext: () => {
+        const actorId = ++actorReads < 3 ? accountAId : accountBId
+        return { actorId, sessionFingerprint: `session-${actorId}`, rpc }
+      },
     })
 
     await expect(api.submitBenefitCorrectionDraft(value, repository, storage))
       .resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
-    expect(client.rpc).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
     expect(api.loadBenefitCorrectionDraft(accountA, storage)).toEqual(value)
   })
 

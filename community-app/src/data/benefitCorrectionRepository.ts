@@ -1,4 +1,5 @@
 import { getSupabaseClient } from '../lib/supabase'
+import { parseEnv } from '../config/env'
 import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
 import {
   BENEFIT_CATEGORIES,
@@ -22,6 +23,11 @@ export interface BenefitCorrectionRpcResponse { data: unknown; error: unknown }
 export interface BenefitCorrectionRpcClient {
   rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<BenefitCorrectionRpcResponse>
 }
+export interface BenefitCorrectionSessionContext extends BenefitCorrectionRpcClient {
+  readonly actorId: string
+  readonly sessionFingerprint: string
+}
+export type BenefitCorrectionSessionProvider = () => BenefitCorrectionSessionContext | null | Promise<BenefitCorrectionSessionContext | null>
 
 export interface BenefitCorrectionRepository {
   getCurrentAccountScope(signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionAccountScope>>
@@ -38,6 +44,7 @@ const dataVersionPattern = /^company-benefits-(\d{4})-(\d{2})-(\d{2})-v[1-9][0-9
 const companyPattern = /^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$/
 const accountScopePattern = /^[0-9a-f]{64}$/
 const ACCOUNT_SCOPE_DOMAIN = 'breadlab:benefit-correction:account-scope:v1'
+const SESSION_FINGERPRINT_DOMAIN = 'breadlab:benefit-correction:session-fingerprint:v1'
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]) {
@@ -96,7 +103,7 @@ export function decodeBenefitCorrectionItem(value: unknown, admin = false): Bene
     || (!submitted && value.admin_response === null)
     || (applied !== (value.applied_data_version !== null && value.applied_at !== null))
     || !timestampOrder(value.created_at, value.updated_at)
-    || (value.applied_at !== null && Date.parse(value.applied_at) < Date.parse(value.created_at))) throw new Error('invalid response state')
+    || (value.applied_at !== null && !timestampOrder(value.created_at, value.applied_at, value.updated_at))) throw new Error('invalid response state')
   const item: BenefitCorrectionItem = {
     id: value.id.toLowerCase(), companyId: value.company_id as string, categoryId: value.category_id,
     currentText: value.current_text, proposedText: value.proposed_text, scopeText: value.scope_text,
@@ -107,7 +114,7 @@ export function decodeBenefitCorrectionItem(value: unknown, admin = false): Bene
   if (!admin) return item
   if (value.reviewed_at !== null && !isBenefitCorrectionTimestamp(value.reviewed_at)) throw new Error('invalid reviewed timestamp')
   if ((submitted && value.reviewed_at !== null) || (!submitted && value.reviewed_at === null)
-    || (value.reviewed_at !== null && !timestampOrder(value.created_at, value.reviewed_at, value.applied_at as string | null))) throw new Error('invalid reviewed state')
+    || (value.reviewed_at !== null && !timestampOrder(value.created_at, value.reviewed_at, value.applied_at as string | null, value.updated_at))) throw new Error('invalid reviewed state')
   return { ...item, reviewedAt: value.reviewed_at as string | null }
 }
 
@@ -122,9 +129,24 @@ function decodePage<T extends BenefitCorrectionItem>(value: unknown, admin: bool
 }
 
 function invalidArgument<T>(): BenefitCorrectionResult<T> { return { ok: false, error: { code: 'invalid_argument', message: '입력 내용을 확인해 주세요.' } } }
+function sourceCodeFrom(error: unknown): string | undefined {
+  if (!isRecord(error)) return undefined
+  if (error.code === 'PGRST' && typeof error.message === 'string') {
+    try {
+      const payload: unknown = JSON.parse(error.message)
+      return isRecord(payload) && typeof payload.code === 'string' ? payload.code : 'PGRST'
+    } catch { return 'PGRST' }
+  }
+  return typeof error.code === 'string' ? error.code : undefined
+}
 function mapRpcError(error: unknown): BenefitCorrectionResult<never> {
+  if (error instanceof TypeError) return { ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR', message: '네트워크 요청에 실패했습니다.' } }
   if (!isRecord(error)) return { ok: false, error: { code: 'unknown', message: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' } }
-  const sourceCode = typeof error.code === 'string' ? error.code : undefined
+  if ((error.code === undefined || error.code === 'FETCH_ERROR') && typeof error.message === 'string'
+    && /failed to fetch|networkerror|network request failed/i.test(error.message)) {
+    return { ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR', message: '네트워크 요청에 실패했습니다.' } }
+  }
+  const sourceCode = sourceCodeFrom(error)
   const status = typeof error.status === 'number' ? error.status : undefined
   const code = status === 429 || sourceCode === 'rate_limit_exceeded' ? 'rate_limited'
     : status === 401 || sourceCode === 'PGRST303' ? 'auth_required'
@@ -154,84 +176,143 @@ function validReviewInput(input: ReviewBenefitCorrectionInput) {
     && transitionAllowed && boundedText(input.adminResponse, 2000)
 }
 
+async function sha256Hex(material: string, subtle: SubtleCrypto = globalThis.crypto.subtle): Promise<string> {
+  const digest = new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(material)))
+  return [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
 export async function deriveBenefitCorrectionAccountScope(
   actorId: string,
   subtle: SubtleCrypto = globalThis.crypto.subtle,
 ): Promise<BenefitCorrectionAccountScope> {
   if (!isCanonicalUuid(actorId)) throw new Error('invalid account id')
-  const material = `${ACCOUNT_SCOPE_DOMAIN}\0${actorId.toLowerCase()}`
-  const digest = new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(material)))
-  return [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('') as BenefitCorrectionAccountScope
+  return sha256Hex(`${ACCOUNT_SCOPE_DOMAIN}\0${actorId.toLowerCase()}`, subtle) as Promise<BenefitCorrectionAccountScope>
 }
 
-type ActorProvider = () => string | null | Promise<string | null>
+type SessionResult = { data: { session: { user: { id: string }; access_token: string } | null } }
+type SessionAuthClient = { getSession(): Promise<SessionResult> }
+type SupabasePublicConfig = { supabaseUrl: string; supabasePublishableKey: string }
 
-export function createBenefitCorrectionRepository(client: BenefitCorrectionRpcClient, options: { getActorId: ActorProvider }): BenefitCorrectionRepository {
-  if (!options || typeof options.getActorId !== 'function') throw new Error('actor provider is required')
-  const aborted = <T>(): BenefitCorrectionResult<T> => ({ ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } })
-  const authRequired = <T>(): BenefitCorrectionResult<T> => ({ ok: false, error: { code: 'auth_required', message: '로그인이 필요합니다.' } })
-  async function currentAccountScope(signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionAccountScope>> {
-    if (signal?.aborted) return aborted()
-    try {
-      const actorId = await options.getActorId()
-      if (signal?.aborted) return aborted()
-      if (actorId === null) return authRequired()
-      return { ok: true, data: await deriveBenefitCorrectionAccountScope(actorId) }
-    } catch (error) {
-      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) return aborted()
-      return { ok: false, error: { code: 'unknown', message: '로그인 계정을 확인할 수 없습니다.' } }
+export function createBenefitCorrectionSessionProvider(
+  auth: SessionAuthClient,
+  config: SupabasePublicConfig,
+  fetcher: typeof fetch = globalThis.fetch,
+): BenefitCorrectionSessionProvider {
+  return async () => {
+    const session = (await auth.getSession()).data.session
+    if (!session || !isCanonicalUuid(session.user.id) || typeof session.access_token !== 'string' || session.access_token.length === 0) return null
+    const actorId = session.user.id.toLowerCase()
+    const accessToken = session.access_token
+    const sessionFingerprint = await sha256Hex(`${SESSION_FINGERPRINT_DOMAIN}\0${accessToken}`)
+    return {
+      actorId,
+      sessionFingerprint,
+      async rpc(name, args, signal) {
+        const response = await fetcher(`${config.supabaseUrl}/rest/v1/rpc/${encodeURIComponent(name)}`, {
+          method: 'POST',
+          headers: {
+            apikey: config.supabasePublishableKey,
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(args),
+          signal,
+        })
+        const payload: unknown = await response.json()
+        return response.ok
+          ? { data: payload, error: null }
+          : { data: null, error: isRecord(payload) ? { ...payload, status: response.status } : { status: response.status } }
+      },
     }
   }
-  async function execute<T>(call: () => Promise<BenefitCorrectionRpcResponse>, decode: (value: unknown) => T, signal?: AbortSignal, expectedAccountScope?: BenefitCorrectionAccountScope): Promise<BenefitCorrectionResult<T>> {
-    if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
+}
+
+function validSessionContext(value: unknown): value is BenefitCorrectionSessionContext {
+  return isRecord(value) && isCanonicalUuid(value.actorId)
+    && typeof value.sessionFingerprint === 'string' && value.sessionFingerprint.length > 0 && value.sessionFingerprint.length <= 256
+    && typeof value.rpc === 'function'
+}
+function sameSession(left: BenefitCorrectionSessionContext, right: BenefitCorrectionSessionContext) {
+  return left.actorId.toLowerCase() === right.actorId.toLowerCase() && left.sessionFingerprint === right.sessionFingerprint
+}
+
+export function createBenefitCorrectionRepository(options: { getSessionContext: BenefitCorrectionSessionProvider }): BenefitCorrectionRepository {
+  if (!options || typeof options.getSessionContext !== 'function') throw new Error('session context provider is required')
+  const aborted = <T>(): BenefitCorrectionResult<T> => ({ ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } })
+  const authRequired = <T>(): BenefitCorrectionResult<T> => ({ ok: false, error: { code: 'auth_required', message: '로그인이 필요합니다.' } })
+  const stale = <T>(message: string): BenefitCorrectionResult<T> => ({ ok: false, error: { code: 'stale_response', message } })
+  async function captureSession(signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionSessionContext>> {
+    if (signal?.aborted) return aborted()
     try {
-      const initialScope = await currentAccountScope(signal)
-      if (!initialScope.ok) return initialScope
-      if (expectedAccountScope !== undefined && initialScope.data !== expectedAccountScope) return { ok: false, error: { code: 'stale_response', message: '현재 로그인 계정과 초안 계정이 일치하지 않습니다.' } }
-      const rpcScope = await currentAccountScope(signal)
-      if (!rpcScope.ok) return rpcScope
-      if (rpcScope.data !== initialScope.data || (expectedAccountScope !== undefined && rpcScope.data !== expectedAccountScope)) return { ok: false, error: { code: 'stale_response', message: '로그인 계정이 변경되어 요청을 중단했습니다.' } }
-      const response = await call()
-      if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
-      const responseScope = await currentAccountScope(signal)
-      if (!responseScope.ok) return responseScope
-      if (responseScope.data !== rpcScope.data || (expectedAccountScope !== undefined && responseScope.data !== expectedAccountScope)) return { ok: false, error: { code: 'stale_response', message: '로그인 계정이 변경되어 이전 응답을 폐기했습니다.' } }
-      if (response.error) return mapRpcError(response.error)
-      try { return { ok: true, data: decode(response.data) } }
-      catch { return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } } }
+      const context = await options.getSessionContext()
+      if (signal?.aborted) return aborted()
+      if (context === null) return authRequired()
+      if (!validSessionContext(context)) return { ok: false, error: { code: 'unknown', message: '로그인 세션을 확인할 수 없습니다.' } }
+      return { ok: true, data: context }
     } catch (error) {
-      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
-      return { ok: false, error: { code: 'network', message: '네트워크 요청에 실패했습니다.' } }
+      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) return aborted()
+      return { ok: false, error: { code: 'unknown', message: '로그인 세션을 확인할 수 없습니다.' } }
     }
+  }
+  async function currentAccountScope(signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionAccountScope>> {
+    const captured = await captureSession(signal)
+    if (!captured.ok) return captured
+    try { return { ok: true, data: await deriveBenefitCorrectionAccountScope(captured.data.actorId) } }
+    catch { return { ok: false, error: { code: 'unknown', message: '로그인 계정을 확인할 수 없습니다.' } } }
+  }
+  async function execute<T>(name: string, args: Record<string, unknown>, decode: (value: unknown) => T, signal?: AbortSignal, expectedAccountScope?: BenefitCorrectionAccountScope): Promise<BenefitCorrectionResult<T>> {
+    const initial = await captureSession(signal)
+    if (!initial.ok) return initial
+    const initialScope = await deriveBenefitCorrectionAccountScope(initial.data.actorId)
+    if (expectedAccountScope !== undefined && initialScope !== expectedAccountScope) return stale('현재 로그인 계정과 초안 계정이 일치하지 않습니다.')
+
+    const preflight = await captureSession(signal)
+    if (!preflight.ok) return preflight
+    if (!sameSession(initial.data, preflight.data)) return stale('로그인 세션이 변경되어 요청을 중단했습니다.')
+
+    let response: BenefitCorrectionRpcResponse
+    try { response = await initial.data.rpc(name, args, signal) }
+    catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) return aborted()
+      return mapRpcError(error)
+    }
+    if (signal?.aborted) return aborted()
+
+    const after = await captureSession(signal)
+    if (!after.ok) return after
+    if (!sameSession(initial.data, after.data)) return stale('로그인 세션이 변경되어 이전 응답을 폐기했습니다.')
+    if (response.error) return mapRpcError(response.error)
+    try { return { ok: true, data: decode(response.data) } }
+    catch { return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } } }
   }
   return {
     getCurrentAccountScope: currentAccountScope,
     createRequest(input, expectedAccountScope, signal) {
       if (!validCreateInput(input) || !validAccountScope(expectedAccountScope)) return Promise.resolve(invalidArgument())
-      return execute(() => client.rpc('create_benefit_correction_request_v1', {
+      return execute('create_benefit_correction_request_v1', {
         p_client_key: input.clientKey, p_company_id: input.companyId, p_category_id: input.categoryId,
         p_current_text: input.currentText, p_proposed_text: input.proposedText, p_scope_text: input.scopeText,
         p_source_url: input.sourceUrl, p_observed_data_version: input.observedDataVersion,
-      }, signal), value => decodeBenefitCorrectionItem(value), signal, expectedAccountScope)
+      }, value => decodeBenefitCorrectionItem(value), signal, expectedAccountScope)
     },
     listMyRequests(input, signal) {
       if (!validListInput(input)) return Promise.resolve(invalidArgument())
-      return execute(() => client.rpc('list_my_benefit_correction_requests_v1', {
+      return execute('list_my_benefit_correction_requests_v1', {
         p_limit: input.limit, p_cursor_created_at: input.cursor?.createdAt, p_cursor_id: input.cursor?.id,
-      }, signal), value => decodePage<BenefitCorrectionItem>(value, false), signal)
+      }, value => decodePage<BenefitCorrectionItem>(value, false), signal)
     },
     listAdminQueue(input, signal) {
       if (!validListInput(input) || !(BENEFIT_CORRECTION_QUEUE_FILTERS as readonly string[]).includes(input.status)) return Promise.resolve(invalidArgument())
-      return execute(() => client.rpc('list_benefit_correction_queue_v1', {
+      return execute('list_benefit_correction_queue_v1', {
         p_status: input.status, p_limit: input.limit, p_cursor_created_at: input.cursor?.createdAt, p_cursor_id: input.cursor?.id,
-      }, signal), value => decodePage<AdminBenefitCorrectionItem>(value, true), signal)
+      }, value => decodePage<AdminBenefitCorrectionItem>(value, true), signal)
     },
     reviewRequest(input, signal) {
       if (!validReviewInput(input)) return Promise.resolve(invalidArgument())
-      return execute(() => client.rpc('review_benefit_correction_request_v1', {
+      return execute('review_benefit_correction_request_v1', {
         p_request_id: input.requestId, p_expected_status: input.expectedStatus, p_action: input.action,
         p_admin_response: input.adminResponse, p_client_key: input.clientKey,
-      }, signal), value => decodeBenefitCorrectionItem(value, true) as AdminBenefitCorrectionItem, signal)
+      }, value => decodeBenefitCorrectionItem(value, true) as AdminBenefitCorrectionItem, signal)
     },
   }
 }
@@ -240,12 +321,9 @@ let browserRepository: BenefitCorrectionRepository | undefined
 export function getBenefitCorrectionRepository(): BenefitCorrectionRepository {
   if (browserRepository) return browserRepository
   const supabase = getSupabaseClient()
+  const config = parseEnv(import.meta.env)
   browserRepository = createBenefitCorrectionRepository({
-    async rpc(name, args, signal) {
-      const query = supabase.rpc(name as never, args as never)
-      const response = signal ? await query.abortSignal(signal) : await query
-      return { data: response.data, error: response.error }
-    },
-  }, { getActorId: async () => (await supabase.auth.getSession()).data.session?.user.id ?? null })
+    getSessionContext: createBenefitCorrectionSessionProvider(supabase.auth, config),
+  })
   return browserRepository
 }
