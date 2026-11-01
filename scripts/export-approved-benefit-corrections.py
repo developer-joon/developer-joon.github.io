@@ -80,6 +80,18 @@ CAPABILITY_PROBE_CONTENTS = {
     "source": b"approved-benefit-correction-export-capability-source-v1\n",
     "target": b"approved-benefit-correction-export-capability-target-v1\n",
 }
+PUBLICATION_LOCK_NAME = ".approved-benefit-correction-export.lock"
+STAGING_CANDIDATES_NAME = ".approved-benefit-correction-export.candidates.spool"
+STAGING_MANIFEST_NAME = ".approved-benefit-correction-export.manifest.spool"
+STAGING_DIRECTORY_NAME = ".approved-benefit-correction-export.staging"
+ROOT_KEY_NAME = ".approved-benefit-correction-export.key"
+PERSISTENT_CONTROL_NAMES = (
+    PUBLICATION_LOCK_NAME,
+    STAGING_CANDIDATES_NAME,
+    STAGING_MANIFEST_NAME,
+    ROOT_KEY_NAME,
+)
+MAX_PERSISTENT_CONTROL_BYTES = MAX_SNAPSHOT_BYTES + MAX_MANIFEST_BYTES + 4096
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
@@ -742,6 +754,41 @@ def _preflight_cleanup_hook(_stage, _context):
     """Test hook for deterministic mutation at cleanup trust boundaries."""
 
 
+def _publication_failure_hook(_stage, _context):
+    """Test-only deterministic crash boundary hook."""
+
+
+def _open_fixed_control(root_fd, name, flags=os.O_RDWR, mode=0o600):
+    """Open/create one fixed regular control inode descriptor-relatively."""
+    try:
+        descriptor = os.open(
+            name, flags | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            mode, dir_fd=root_fd,
+        )
+        _fsync_directory_fd(root_fd)
+    except FileExistsError:
+        descriptor = os.open(
+            name, flags | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd
+        )
+    metadata = os.fstat(descriptor)
+    named = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+    if (
+        not _secure_owned_mode(metadata, stat.S_ISREG, mode)
+        or metadata.st_nlink != 1
+        or not _cleanup_metadata_matches(metadata, named)
+    ):
+        os.close(descriptor)
+        raise OSError(errno.EPERM, f"invalid persistent control member {name}")
+    return descriptor
+
+
+def _write_fixed_spool(descriptor, expected):
+    os.ftruncate(descriptor, 0)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    _write_expected_file(descriptor, expected)
+    os.fsync(descriptor)
+
+
 def _cleanup_metadata_matches(current, expected):
     """Match every security-relevant attribute of persistent control state."""
     return (
@@ -856,7 +903,37 @@ def _capability_state(root, root_fd, root_metadata, control_fd, control_metadata
 
 
 def _preflight_publication_platform(output_root):
-    """Prove rename semantics using bounded persistent, non-destructive state."""
+    """Validate Linux support and the preexisting output-root trust anchor."""
+    if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
+        raise OSError(errno.ENOTSUP, "unsupported publication platform")
+    root = Path(output_root).absolute()
+    try:
+        root_fd = os.open(
+            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+    except OSError as exc:
+        raise OSError(
+            errno.ENOENT,
+            "pre-create the output root as an owned exact 0700 directory",
+        ) from exc
+    try:
+        metadata = os.fstat(root_fd)
+        if (
+            not _secure_owned_mode(metadata, stat.S_ISDIR, 0o700)
+            or not _root_path_still_names_fd(root, root_fd)
+        ):
+            raise OSError(
+                errno.EPERM,
+                "pre-create the output root as an owned exact 0700 directory",
+            )
+        _renameat2_function()
+        return
+    finally:
+        os.close(root_fd)
+
+
+def _legacy_preflight_publication_platform(output_root):
+    """Legacy destructive-fixture implementation retained for audit history."""
     if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
         raise OSError(errno.ENOTSUP, "unsupported publication platform")
     root = Path(output_root).absolute()
@@ -987,7 +1064,7 @@ def _preflight_publication_platform(output_root):
 
 
 def _open_secure_output_root(output_root):
-    """Create/open an exact private root and prove its descriptor/name binding."""
+    """Open an operator-provisioned exact private root trust anchor."""
     root = Path(output_root).absolute()
     parent = root.parent
     parent_fd = os.open(
@@ -1002,15 +1079,16 @@ def _open_secure_output_root(output_root):
         ):
             raise OSError(errno.EPERM, "output root parent is not private")
         try:
-            os.mkdir(root.name, 0o700, dir_fd=parent_fd)
-            _fsync_directory_fd(parent_fd)
-        except FileExistsError:
-            pass
-        root_fd = os.open(
-            root.name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=parent_fd,
-        )
+            root_fd = os.open(
+                root.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            raise OSError(
+                errno.ENOENT,
+                "pre-create the output root as an owned exact 0700 directory",
+            ) from exc
         try:
             opened = os.fstat(root_fd)
             named = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
@@ -1173,7 +1251,36 @@ def _tombstone_key_metadata_valid(
 
 
 def _load_tombstone_authentication_key(output_root):
-    """Create or load the private persistent key outside the snapshot root."""
+    """Create/load the fixed private key directly under the trusted root."""
+    root = Path(output_root).absolute()
+    root_fd = os.open(
+        root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        key_fd = _open_fixed_control(root_fd, ROOT_KEY_NAME)
+        try:
+            metadata = os.fstat(key_fd)
+            if metadata.st_size == 0:
+                generated = bytearray(secrets.token_bytes(TOMBSTONE_KEY_BYTES))
+                try:
+                    _write_fixed_spool(key_fd, generated)
+                    _fsync_directory_fd(root_fd)
+                finally:
+                    generated[:] = b"\x00" * len(generated)
+            os.lseek(key_fd, 0, os.SEEK_SET)
+            key = _read_tombstone_key_bytes(key_fd)
+            if len(key) != TOMBSTONE_KEY_BYTES:
+                key[:] = b"\x00" * len(key)
+                raise OSError(errno.EPERM, "invalid tombstone authentication key")
+            return key
+        finally:
+            os.close(key_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _legacy_load_tombstone_authentication_key(output_root):
+    """Legacy parent control-directory implementation retained for audit."""
     root = Path(output_root).absolute()
     parent = root.parent
     parent_fd = os.open(
@@ -1769,12 +1876,25 @@ def publish_snapshot(output_root, snapshot_version, candidates):
     target = root / snapshot_version
     expected = _expected_files(snapshot_version, candidates)
     snapshot_identity = _tombstone_snapshot_identity(expected)
-    staging_name = f".{snapshot_version}-{uuid.uuid4().hex}"
+    staging_name = STAGING_DIRECTORY_NAME
     staging_metadata = None
     staging_files = {}
     tombstone = None
+    lock_fd = None
+    spool_fds = []
     try:
+        lock_fd = _open_fixed_control(root_fd, PUBLICATION_LOCK_NAME)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if not _secure_output_root_binding(root, root_fd, root_metadata):
+            raise OSError(errno.ESTALE, "output root changed while locking")
         authentication_key = _load_tombstone_authentication_key(root)
+        candidate_spool = _open_fixed_control(root_fd, STAGING_CANDIDATES_NAME)
+        manifest_spool = _open_fixed_control(root_fd, STAGING_MANIFEST_NAME)
+        spool_fds.extend((candidate_spool, manifest_spool))
+        _write_fixed_spool(candidate_spool, expected["candidates.jsonl"])
+        _publication_failure_hook("after_candidates_fsync", {"root_fd": root_fd})
+        _write_fixed_spool(manifest_spool, expected["manifest.json"])
+        _publication_failure_hook("after_spool_fsync", {"root_fd": root_fd})
         try:
             os.stat(snapshot_version, dir_fd=root_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -1799,7 +1919,11 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                     return target
                 raise FileExistsError(f"existing snapshot mismatch: {target}")
 
-        os.mkdir(staging_name, mode=0o700, dir_fd=root_fd)
+        try:
+            os.mkdir(staging_name, mode=0o700, dir_fd=root_fd)
+            _fsync_directory_fd(root_fd)
+        except FileExistsError:
+            pass
         staging_fd = os.open(
             staging_name,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -1807,20 +1931,36 @@ def publish_snapshot(output_root, snapshot_version, candidates):
         )
         try:
             staging_metadata = os.fstat(staging_fd)
+            if not _secure_owned_mode(staging_metadata, stat.S_ISDIR, 0o700):
+                raise OSError(errno.EPERM, "invalid fixed staging slot")
+            inventory = set(os.listdir(staging_fd))
+            if not inventory.issubset(expected):
+                raise OSError(
+                    errno.EPERM, "fixed staging slot requires offline recovery"
+                )
             for name, raw in expected.items():
                 file_fd = os.open(
                     name,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
                     0o600,
                     dir_fd=staging_fd,
                 )
                 try:
-                    _write_expected_file(file_fd, raw)
-                    os.fsync(file_fd)
+                    member = os.fstat(file_fd)
+                    if (
+                        not _secure_owned_mode(member, stat.S_ISREG, 0o600)
+                        or member.st_nlink != 1
+                    ):
+                        raise OSError(errno.EPERM, "invalid fixed staging member")
+                    _write_fixed_spool(file_fd, raw)
                     staging_files[name] = os.fstat(file_fd)
                 finally:
                     os.close(file_fd)
+                _publication_failure_hook(
+                    f"after_{name}_fsync", {"root_fd": root_fd}
+                )
             _fsync_directory_fd(staging_fd)
+            _publication_failure_hook("after_staging_fsync", {"root_fd": root_fd})
             if not _secure_output_root_binding(root, root_fd, root_metadata):
                 raise OSError(errno.ESTALE, "output root changed before publication")
             if tombstone is not None:
@@ -1852,9 +1992,11 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                     ):
                         return target
                     raise FileExistsError(f"existing snapshot mismatch: {target}")
+            _publication_failure_hook("after_publish_rename", {"root_fd": root_fd})
         finally:
             os.close(staging_fd)
         _fsync_directory_fd(root_fd)
+        _publication_failure_hook("after_root_fsync", {"root_fd": root_fd})
         if (
             not _secure_output_root_binding(root, root_fd, root_metadata)
             or not _directory_matches(
@@ -1888,6 +2030,10 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                 expected_directory=staging_metadata,
             )
         finally:
+            for descriptor in spool_fds:
+                os.close(descriptor)
+            if lock_fd is not None:
+                os.close(lock_fd)
             os.close(root_fd)
             if isinstance(authentication_key, bytearray):
                 authentication_key[:] = b"\x00" * len(authentication_key)
