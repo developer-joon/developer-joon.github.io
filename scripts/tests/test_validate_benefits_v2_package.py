@@ -85,7 +85,7 @@ def package_for(state="no_public_info"):
         src = source(tier="official_government")
         receipt = attempt("official-government", "source_found", [src["source_id"]])
         claim = {
-            "claim_id": "claim-1",
+            "claim_id": "official::KR-CRN-1101112948086::leave::source::example",
             "cell_id": cell["cell_id"],
             "company_id": cell["company_id"],
             "category_id": cell["category_id"],
@@ -475,6 +475,92 @@ class BenefitsV2PackageTests(unittest.TestCase):
                 package = package_for(state)
                 package[target][0]["conflict_status"] = "contradictory"
                 self.assert_invalid(package, "cell conflict_status none hides backing conflict")
+
+    def test_every_exact_entity_evidence_and_source_names_canonical_legal_entity(self):
+        for state, target in (
+            ("reference", "references"),
+            ("reference", "sources"),
+            ("community_report", "community_reports"),
+            ("community_report", "sources"),
+        ):
+            with self.subTest(state=state, target=target):
+                package = package_for(state)
+                if state == "community_report":
+                    package["community_reports"][0]["scope_status"] = "exact_entity"
+                    package["sources"][0]["scope_status"] = "exact_entity"
+                    package["cells"][0]["scope_status"] = "exact_entity"
+                package[target][0]["scope"]["legal_entities"] = ["Unrelated Holdings Ltd."]
+                self.assert_invalid(package, "legal entity differs from canonical company ledger")
+
+    def test_group_evidence_remains_conservatively_labeled(self):
+        package = package_for("reference")
+        package["references"][0]["scope"]["status"] = "group_only"
+        package["sources"][0]["scope_status"] = "group_only"
+        package["cells"][0]["scope_status"] = "group_only"
+        self.assert_valid(package)
+
+        overstated = copy.deepcopy(package)
+        overstated["cells"][0]["scope_status"] = "exact_entity"
+        self.assert_invalid(overstated, "overstates backing scope")
+
+    def test_official_claim_identity_is_canonical_company_category_source_binding(self):
+        package = package_for("official_verified")
+        self.assert_valid(package)
+
+        forged = "official::KR-CRN-1101112948086::health::source::example"
+        package["official_claims"][0]["claim_id"] = forged
+        package["cells"][0]["official_claim_ids"] = [forged]
+        self.assert_invalid(package, "noncanonical claim_id")
+
+    def test_conflict_status_preserves_maximum_backing_severity_for_all_combinations(self):
+        ranks = {"none": 0, "disclosed": 1, "contradictory": 2}
+        for state, target in (
+            ("official_verified", "official_claims"),
+            ("official_verified", "sources"),
+            ("reference", "references"),
+            ("reference", "sources"),
+            ("community_report", "community_reports"),
+            ("community_report", "sources"),
+        ):
+            for backing_status in ranks:
+                for cell_status in ranks:
+                    with self.subTest(state=state, target=target, backing=backing_status, cell=cell_status):
+                        package = package_for(state)
+                        package[target][0]["conflict_status"] = backing_status
+                        package["cells"][0]["conflict_status"] = cell_status
+                        if ranks[cell_status] >= ranks[backing_status]:
+                            self.assert_valid(package)
+                        else:
+                            self.assert_invalid(package, "understates backing conflict")
+
+    def test_publishable_discovered_source_cannot_be_dropped_from_evidence(self):
+        package = package_for("reference")
+        dropped = source("source::dropped", package["sources"][0]["source_tier"])
+        package["sources"].append(dropped)
+        package["attempts"][0]["source_ids"].append(dropped["source_id"])
+        bind_attempt(package["attempts"][0])
+        self.assert_invalid(package, "publishable discovered source is not linked to evidence")
+
+        for eligibility in ("discovery_only", "ineligible"):
+            with self.subTest(eligibility=eligibility):
+                retained = copy.deepcopy(package)
+                retained["sources"][1]["publication_eligibility"] = eligibility
+                self.assert_valid(retained)
+
+    def test_cell_publication_eligibility_must_match_state(self):
+        expected = {
+            "official_verified": "official_claim",
+            "reference": "reference_only",
+            "community_report": "community_only",
+            "no_public_info": "discovery_only",
+        }
+        for state, eligibility in expected.items():
+            with self.subTest(state=state):
+                package = package_for(state)
+                package["cells"][0]["publication_eligibility"] = eligibility
+                self.assert_valid(package)
+                package["cells"][0]["publication_eligibility"] = "ineligible"
+                self.assert_invalid(package, "publication eligibility")
 
     def test_schema_validation_uses_draft_2020_12_contracts(self):
         package = package_for("reference")

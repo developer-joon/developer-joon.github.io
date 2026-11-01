@@ -31,7 +31,7 @@
         "employment_types": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
       }
     },
-    "conflict_status": {"enum": ["none", "disclosed", "unresolved", "contradictory"]},
+    "conflict_status": {"enum": ["none", "disclosed", "contradictory"]},
     "moderation": {
       "oneOf": [
         {
@@ -72,7 +72,7 @@
         "required": ["frozen_snapshot"],
         "properties": {
           "moderation": {"properties": {"status": {"const": "approved"}}},
-          "conflict_status": {"enum": ["none", "disclosed", "unresolved", "contradictory"]}
+          "conflict_status": {"enum": ["none", "disclosed", "contradictory"]}
         }
       }
     }

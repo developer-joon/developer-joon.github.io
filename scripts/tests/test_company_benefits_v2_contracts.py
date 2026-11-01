@@ -34,6 +34,12 @@ def bind_attempt(record):
 
 
 def base_cell(state="reference"):
+    publication_by_state = {
+        "official_verified": "official_claim",
+        "reference": "reference_only",
+        "community_report": "community_only",
+        "no_public_info": "discovery_only",
+    }
     record = {
         "cell_id": "cell::KR-CRN-1101112948086::leave",
         "company_id": "KR-CRN-1101112948086",
@@ -49,11 +55,13 @@ def base_cell(state="reference"):
         "currentness": "current",
         "scope_status": "exact_entity",
         "conflict_status": "none",
-        "publication_eligibility": "eligible",
+        "publication_eligibility": publication_by_state[state],
         "assessed_at": "2026-11-01T01:02:03Z",
     }
     if state == "official_verified":
-        record["official_claim_ids"] = ["claim-1"]
+        record["official_claim_ids"] = [
+            "official::KR-CRN-1101112948086::leave::source::example"
+        ]
         record["reference_ids"] = []
         record["reliability"] = "high"
     elif state == "community_report":
@@ -67,7 +75,6 @@ def base_cell(state="reference"):
         record["reliability"] = "none"
         record["currentness"] = "unknown"
         record["scope_status"] = "unresolved"
-        record["publication_eligibility"] = "eligible"
         record["coverage_complete"] = True
     return record
 
@@ -211,6 +218,24 @@ class V2ContractTests(unittest.TestCase):
         for state in ("official_verified", "reference", "community_report", "no_public_info"):
             with self.subTest(state=state):
                 self.assert_valid("company-category-cell.schema.json", base_cell(state))
+
+    def test_cell_publication_eligibility_is_state_specific_and_never_generic(self):
+        expected = {
+            "official_verified": "official_claim",
+            "reference": "reference_only",
+            "community_report": "community_only",
+            "no_public_info": "discovery_only",
+        }
+        possible = {*expected.values(), "ineligible"}
+        for state, eligibility in expected.items():
+            with self.subTest(state=state):
+                valid = base_cell(state)
+                valid["publication_eligibility"] = eligibility
+                self.assert_valid("company-category-cell.schema.json", valid)
+                for invalid in possible - {eligibility}:
+                    forged = base_cell(state)
+                    forged["publication_eligibility"] = invalid
+                    self.assert_invalid("company-category-cell.schema.json", forged)
 
     def test_cell_rejects_unknown_fields_and_enums(self):
         unknown = base_cell()

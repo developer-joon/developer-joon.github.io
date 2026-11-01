@@ -35,6 +35,13 @@ OFFICIAL_TIER = "official_government"
 ACCEPTABLE_EMPTY_RESULTS = {"no_result", "ineligible_source"}
 SCOPE_STATUS_BEST_TO_WORST = ("exact_entity", "group_only", "unresolved")
 CURRENTNESS_BEST_TO_WORST = ("current", "historical", "unknown")
+CONFLICT_SEVERITY = {"none": 0, "disclosed": 1, "contradictory": 2}
+CELL_PUBLICATION_ELIGIBILITY = {
+    "official_verified": "official_claim",
+    "reference": "reference_only",
+    "community_report": "community_only",
+    "no_public_info": "discovery_only",
+}
 
 
 def _schema_validators():
@@ -81,6 +88,20 @@ def _same_scope(left, right):
 
 def _canonical_evidence_id(prefix, record):
     return f"{prefix}::{record.get('company_id')}::{record.get('category_id')}::{record.get('source_id')}"
+
+
+def _canonical_official_claim_id(record):
+    source_binding = "::".join(sorted(record.get("source_ids", [])))
+    return f"official::{record.get('company_id')}::{record.get('category_id')}::{source_binding}"
+
+
+def _has_canonical_exact_entity(record, status, canonical_legal_entity):
+    scope = record.get("scope") if isinstance(record, dict) else None
+    return (
+        status != "exact_entity"
+        or canonical_legal_entity is None
+        or (isinstance(scope, dict) and scope.get("legal_entities") == [canonical_legal_entity])
+    )
 
 
 def _covers_jurisdiction(record, jurisdiction):
@@ -218,6 +239,12 @@ def validate_package(package):
             errors.append(f"{cell_id}: noncanonical cell_id; expected {expected_cell_id}")
         if cell.get("coverage_policy_id") != policy_id:
             errors.append(f"{cell_id}: coverage policy binding mismatch")
+        expected_publication = CELL_PUBLICATION_ELIGIBILITY.get(cell.get("state"))
+        if cell.get("publication_eligibility") != expected_publication:
+            errors.append(
+                f"{cell_id}: publication eligibility for {cell.get('state')} must be "
+                f"{expected_publication}"
+            )
 
         bound_attempts = []
         for attempt_id in cell.get("attempt_ids", []):
@@ -255,6 +282,7 @@ def validate_package(package):
         discovered_source_ids = {
             source_id for receipt in bound_attempts for source_id in receipt.get("source_ids", [])
         }
+        linked_source_ids = set()
         backing_conflicts = []
         backing_scope_statuses = []
         backing_currentness = []
@@ -267,16 +295,26 @@ def validate_package(package):
                 continue
             if not _same_cell(claim, cell, include_jurisdiction=True):
                 errors.append(f"{claim_id}: official claim binding mismatch for {cell_id}")
+            expected_claim_id = _canonical_official_claim_id(claim)
+            if claim_id != expected_claim_id:
+                errors.append(f"{claim_id}: noncanonical claim_id; expected {expected_claim_id}")
             if claim.get("source_tier") != OFFICIAL_TIER:
                 errors.append(f"{claim_id}: official claim source tier mismatch")
             if claim.get("publication_eligibility") != "eligible":
                 errors.append(f"{claim_id}: official claim must be publication eligible")
-            if claim.get("conflict_status") != "none":
-                backing_conflicts.append((claim_id, claim.get("conflict_status")))
+            backing_conflicts.append((claim_id, claim.get("conflict_status")))
             backing_scope_statuses.append(claim.get("scope_status"))
+            canonical_legal_entity = (
+                company.get("selected_reporting_legal_entity") if company is not None else None
+            )
+            if not _has_canonical_exact_entity(
+                claim, claim.get("scope_status"), canonical_legal_entity
+            ):
+                errors.append(f"{claim_id}: legal entity differs from canonical company ledger")
             if not _covers_jurisdiction(claim, cell.get("jurisdiction")):
                 errors.append(f"{claim_id}: evidence does not cover cell jurisdiction {cell.get('jurisdiction')}")
             for source_id in claim.get("source_ids", []):
+                linked_source_ids.add(source_id)
                 source_use[source_id] += 1
                 source = indexes["sources"].get(source_id)
                 if source is None:
@@ -291,25 +329,13 @@ def validate_package(package):
                     errors.append(
                         f"{claim_id}: source {source_id} was not discovered by an attempt bound to {cell_id}"
                     )
-                if source is not None and source.get("conflict_status") != "none":
+                if source is not None:
                     backing_conflicts.append((source_id, source.get("conflict_status")))
                 if source is not None:
                     backing_scope_statuses.append(source.get("scope_status"))
                     backing_currentness.append(source.get("currentness"))
-                canonical_legal_entity = (
-                    company.get("selected_reporting_legal_entity") if company is not None else None
-                )
-                if (
-                    canonical_legal_entity is not None
-                    and claim.get("scope_status") == "exact_entity"
-                    and claim.get("scope", {}).get("legal_entities") != [canonical_legal_entity]
-                ):
-                    errors.append(f"{claim_id}: legal entity differs from canonical company ledger")
-                if (
-                    canonical_legal_entity is not None
-                    and source is not None
-                    and source.get("scope_status") == "exact_entity"
-                    and source.get("scope", {}).get("legal_entities") != [canonical_legal_entity]
+                if source is not None and not _has_canonical_exact_entity(
+                    source, source.get("scope_status"), canonical_legal_entity
                 ):
                     errors.append(f"{source_id}: legal entity differs from canonical company ledger")
                 if (
@@ -340,6 +366,7 @@ def validate_package(package):
             if not _covers_jurisdiction(reference, cell.get("jurisdiction")):
                 errors.append(f"{reference_id}: evidence does not cover cell jurisdiction {cell.get('jurisdiction')}")
             source_id = reference.get("source_id")
+            linked_source_ids.add(source_id)
             source_use[source_id] += 1
             source = indexes["sources"].get(source_id)
             if source is None:
@@ -354,12 +381,22 @@ def validate_package(package):
                 errors.append(
                     f"{reference_id}: source {source_id} was not discovered by an attempt bound to {cell_id}"
                 )
-            if reference.get("conflict_status") != "none":
-                backing_conflicts.append((reference_id, reference.get("conflict_status")))
+            backing_conflicts.append((reference_id, reference.get("conflict_status")))
             backing_scope_statuses.append(reference.get("scope", {}).get("status"))
             backing_currentness.append(reference.get("currentness"))
-            if source is not None and source.get("conflict_status") != "none":
+            canonical_legal_entity = (
+                company.get("selected_reporting_legal_entity") if company is not None else None
+            )
+            if not _has_canonical_exact_entity(
+                reference, reference.get("scope", {}).get("status"), canonical_legal_entity
+            ):
+                errors.append(f"{reference_id}: legal entity differs from canonical company ledger")
+            if source is not None:
                 backing_conflicts.append((source_id, source.get("conflict_status")))
+                if not _has_canonical_exact_entity(
+                    source, source.get("scope_status"), canonical_legal_entity
+                ):
+                    errors.append(f"{source_id}: legal entity differs from canonical company ledger")
             if source is not None:
                 backing_scope_statuses.append(source.get("scope_status"))
                 backing_currentness.append(source.get("currentness"))
@@ -392,6 +429,7 @@ def validate_package(package):
             if not isinstance(report.get("frozen_snapshot"), dict):
                 errors.append(f"{report_id}: community report must have a frozen snapshot")
             source_id = report.get("source_id")
+            linked_source_ids.add(source_id)
             source_use[source_id] += 1
             source = indexes["sources"].get(source_id)
             if source is None:
@@ -406,12 +444,22 @@ def validate_package(package):
                 errors.append(
                     f"{report_id}: source {source_id} was not discovered by an attempt bound to {cell_id}"
                 )
-            if report.get("conflict_status") != "none":
-                backing_conflicts.append((report_id, report.get("conflict_status")))
+            backing_conflicts.append((report_id, report.get("conflict_status")))
             backing_scope_statuses.append(report.get("scope_status"))
             backing_currentness.append(report.get("currentness"))
-            if source is not None and source.get("conflict_status") != "none":
+            canonical_legal_entity = (
+                company.get("selected_reporting_legal_entity") if company is not None else None
+            )
+            if not _has_canonical_exact_entity(
+                report, report.get("scope_status"), canonical_legal_entity
+            ):
+                errors.append(f"{report_id}: legal entity differs from canonical company ledger")
+            if source is not None:
                 backing_conflicts.append((source_id, source.get("conflict_status")))
+                if not _has_canonical_exact_entity(
+                    source, source.get("scope_status"), canonical_legal_entity
+                ):
+                    errors.append(f"{source_id}: legal entity differs from canonical company ledger")
             if source is not None:
                 backing_scope_statuses.append(source.get("scope_status"))
                 backing_currentness.append(source.get("currentness"))
@@ -429,12 +477,49 @@ def validate_package(package):
             errors.append(f"{cell_id}: reference state requires eligible reference and source")
         if cell.get("state") == "community_report" and not eligible_community_evidence:
             errors.append(f"{cell_id}: community_report requires eligible report and source")
-        if cell.get("conflict_status") == "none" and backing_conflicts:
-            evidence_id, conflict_status = backing_conflicts[0]
-            errors.append(
-                f"{cell_id}: cell conflict_status none hides backing conflict "
-                f"{conflict_status} on {evidence_id}"
+        ranked_conflicts = [
+            (evidence_id, status)
+            for evidence_id, status in backing_conflicts
+            if status in CONFLICT_SEVERITY
+        ]
+        if ranked_conflicts:
+            evidence_id, maximum_conflict = max(
+                ranked_conflicts, key=lambda item: CONFLICT_SEVERITY[item[1]]
             )
+            cell_conflict = cell.get("conflict_status")
+            if CONFLICT_SEVERITY.get(cell_conflict, -1) < CONFLICT_SEVERITY[maximum_conflict]:
+                if cell_conflict == "none":
+                    errors.append(
+                        f"{cell_id}: cell conflict_status none hides backing conflict; "
+                        f"understates backing conflict {maximum_conflict} on {evidence_id}"
+                    )
+                else:
+                    errors.append(
+                        f"{cell_id}: cell conflict_status {cell_conflict} understates backing "
+                        f"conflict {maximum_conflict} on {evidence_id}"
+                    )
+
+        canonical_legal_entity = (
+            company.get("selected_reporting_legal_entity") if company is not None else None
+        )
+        for source_id in discovered_source_ids:
+            discovered_source = indexes["sources"].get(source_id)
+            if discovered_source is None:
+                continue
+            if not _has_canonical_exact_entity(
+                discovered_source,
+                discovered_source.get("scope_status"),
+                canonical_legal_entity,
+            ):
+                errors.append(f"{source_id}: legal entity differs from canonical company ledger")
+            if (
+                discovered_source.get("publication_eligibility") == "eligible"
+                and source_id not in linked_source_ids
+            ):
+                errors.append(
+                    f"{cell_id}: publishable discovered source is not linked to evidence: "
+                    f"{source_id}"
+                )
 
         if cell.get("state") != "no_public_info":
             conservative_scope = _most_conservative(
