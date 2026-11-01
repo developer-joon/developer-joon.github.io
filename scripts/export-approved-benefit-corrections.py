@@ -411,56 +411,75 @@ def _directory_matches(
     except OSError:
         return False
     try:
-        opened_directory = os.fstat(target_fd)
-        if not stat.S_ISDIR(opened_directory.st_mode):
-            return False
-        if expected_directory is not None and not _same_inode(
-            opened_directory, expected_directory
-        ):
-            return False
-        first_inventory = os.listdir(target_fd)
-        if len(first_inventory) != len(expected) or set(first_inventory) != set(expected):
-            return False
-        if not _directory_binding_matches(
-            root_fd, target_name, target_fd, opened_directory
-        ):
-            return False
-        opened_files = {}
-        for name in first_inventory:
-            try:
-                raw, metadata = _read_regular_file_at(target_fd, name)
-            except OSError:
-                return False
-            if raw != expected[name]:
-                return False
-            if expected_files is not None and not _same_inode(
-                metadata, expected_files[name]
-            ):
-                return False
-            opened_files[name] = metadata
-
-        if not _directory_binding_matches(
-            root_fd, target_name, target_fd, opened_directory
-        ):
-            return False
-
-        # Re-list and re-stat each entry to prove the validated inventory still
-        # names the same inodes after every byte comparison.
-        second_inventory = os.listdir(target_fd)
-        if len(second_inventory) != len(first_inventory) or set(second_inventory) != set(first_inventory):
-            return False
-        for name, opened in opened_files.items():
-            try:
-                current = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
-            except OSError:
-                return False
-            if not stat.S_ISREG(current.st_mode) or not _same_inode(opened, current):
-                return False
-        return _directory_binding_matches(
-            root_fd, target_name, target_fd, opened_directory
+        return _directory_fd_matches(
+            root_fd,
+            target_name,
+            target_fd,
+            expected,
+            expected_directory=expected_directory,
+            expected_files=expected_files,
         )
     finally:
         os.close(target_fd)
+
+
+def _directory_fd_matches(
+    root_fd,
+    target_name,
+    target_fd,
+    expected,
+    expected_directory=None,
+    expected_files=None,
+):
+    """Validate an opened directory and its stable binding under root_fd."""
+    opened_directory = os.fstat(target_fd)
+    if not stat.S_ISDIR(opened_directory.st_mode):
+        return False
+    if expected_directory is not None and not _same_inode(
+        opened_directory, expected_directory
+    ):
+        return False
+    first_inventory = os.listdir(target_fd)
+    if len(first_inventory) != len(expected) or set(first_inventory) != set(expected):
+        return False
+    if not _directory_binding_matches(
+        root_fd, target_name, target_fd, opened_directory
+    ):
+        return False
+    opened_files = {}
+    for name in first_inventory:
+        try:
+            raw, metadata = _read_regular_file_at(target_fd, name)
+        except OSError:
+            return False
+        if raw != expected[name]:
+            return False
+        if expected_files is not None and not _same_inode(
+            metadata, expected_files[name]
+        ):
+            return False
+        opened_files[name] = metadata
+
+    if not _directory_binding_matches(
+        root_fd, target_name, target_fd, opened_directory
+    ):
+        return False
+
+    # Re-list and re-stat each entry to prove the validated inventory still
+    # names the same inodes after every byte comparison.
+    second_inventory = os.listdir(target_fd)
+    if len(second_inventory) != len(first_inventory) or set(second_inventory) != set(first_inventory):
+        return False
+    for name, opened in opened_files.items():
+        try:
+            current = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
+        except OSError:
+            return False
+        if not stat.S_ISREG(current.st_mode) or not _same_inode(opened, current):
+            return False
+    return _directory_binding_matches(
+        root_fd, target_name, target_fd, opened_directory
+    )
 
 
 def _fsync_directory_fd(descriptor):
@@ -488,6 +507,33 @@ def _rename_noreplace(source, target, source_dir_fd=-100, target_dir_fd=-100):
     if error_number == errno.EEXIST:
         raise FileExistsError(error_number, os.strerror(error_number), target)
     raise OSError(error_number, os.strerror(error_number), target)
+
+
+def _publish_staging_noreplace(
+    root_fd,
+    staging_fd,
+    staging_name,
+    target_name,
+    expected,
+    expected_directory,
+    expected_files,
+):
+    """Revalidate the opened staging directory immediately before publication."""
+    if not _directory_fd_matches(
+        root_fd,
+        staging_name,
+        staging_fd,
+        expected,
+        expected_directory=expected_directory,
+        expected_files=expected_files,
+    ):
+        raise OSError(errno.ESTALE, "snapshot staging validation failed")
+    _rename_noreplace(
+        staging_name,
+        target_name,
+        source_dir_fd=root_fd,
+        target_dir_fd=root_fd,
+    )
 
 
 def _root_path_still_names_fd(root, root_fd):
@@ -562,8 +608,80 @@ def _remove_staging(root_fd, staging_name, _expected_names, expected_directory=N
         pass
 
 
+def _rollback_published_directory(root_fd, target_name, expected_directory):
+    """Quarantine and remove only the exact directory this call published."""
+    try:
+        named = os.stat(target_name, dir_fd=root_fd, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise OSError(
+            errno.ESTALE,
+            "published snapshot validation failed; rollback target unavailable",
+        ) from exc
+    if not stat.S_ISDIR(named.st_mode) or not _same_inode(
+        named, expected_directory
+    ):
+        raise OSError(
+            errno.ESTALE,
+            "published snapshot validation failed; rollback refused replacement target",
+        )
+    try:
+        target_fd = os.open(
+            target_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+    except OSError as exc:
+        raise OSError(
+            errno.ESTALE,
+            "published snapshot validation failed; rollback target unavailable",
+        ) from exc
+    try:
+        opened = os.fstat(target_fd)
+        if not _same_inode(opened, expected_directory) or not _directory_binding_matches(
+            root_fd, target_name, target_fd, opened
+        ):
+            raise OSError(
+                errno.ESTALE,
+                "published snapshot validation failed; rollback refused replacement target",
+            )
+    finally:
+        os.close(target_fd)
+
+    quarantine_name = f".{target_name}-quarantine-{uuid.uuid4().hex}"
+    _rename_noreplace(
+        target_name,
+        quarantine_name,
+        source_dir_fd=root_fd,
+        target_dir_fd=root_fd,
+    )
+    try:
+        quarantined = os.stat(
+            quarantine_name, dir_fd=root_fd, follow_symlinks=False
+        )
+    except OSError as exc:
+        raise OSError(
+            errno.ESTALE,
+            "published snapshot validation failed; quarantine identity unavailable",
+        ) from exc
+    if not stat.S_ISDIR(quarantined.st_mode) or not _same_inode(
+        quarantined, expected_directory
+    ):
+        raise OSError(
+            errno.ESTALE,
+            "published snapshot validation failed; quarantine identity changed",
+        )
+    _fsync_directory_fd(root_fd)
+    _remove_staging(
+        root_fd,
+        quarantine_name,
+        (),
+        expected_directory=expected_directory,
+    )
+    _fsync_directory_fd(root_fd)
+
+
 def publish_snapshot(output_root, snapshot_version, candidates):
-    """Atomically publish or idempotently accept one immutable version directory."""
+    """Transactionally publish or idempotently accept an immutable snapshot."""
     if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
         raise ValueError("invalid snapshot version")
     root = Path(output_root)
@@ -614,20 +732,15 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                 finally:
                     os.close(file_fd)
             _fsync_directory_fd(staging_fd)
-            if not _directory_matches(
-                root_fd,
-                staging_name,
-                expected,
-                expected_directory=staging_metadata,
-                expected_files=staging_files,
-            ):
-                raise OSError(errno.ESTALE, "snapshot staging validation failed")
             try:
-                _rename_noreplace(
+                _publish_staging_noreplace(
+                    root_fd,
+                    staging_fd,
                     staging_name,
                     snapshot_version,
-                    source_dir_fd=root_fd,
-                    target_dir_fd=root_fd,
+                    expected,
+                    staging_metadata,
+                    staging_files,
                 )
             except FileExistsError:
                 if _root_path_still_names_fd(root, root_fd) and _directory_matches(
@@ -648,7 +761,13 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                 expected_files=staging_files,
             )
         ):
-            raise OSError(errno.ESTALE, "published snapshot path changed")
+            _rollback_published_directory(
+                root_fd, snapshot_version, staging_metadata
+            )
+            raise OSError(
+                errno.ESTALE,
+                "published snapshot validation failed; rolled back",
+            )
         return target
     finally:
         _remove_staging(

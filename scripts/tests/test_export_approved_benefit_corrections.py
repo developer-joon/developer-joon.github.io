@@ -367,6 +367,101 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             target = self.exporter.publish_snapshot(root, version, candidates)
             self.assertTrue((target / "manifest.json").is_file())
 
+    def test_late_staging_member_at_rename_rolls_back_and_retry_succeeds(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_rename = self.exporter._rename_noreplace
+            mutated = False
+
+            def mutate_at_rename(source, target, source_dir_fd=-100, target_dir_fd=-100):
+                nonlocal mutated
+                if source.startswith(f".{version}-") and not mutated:
+                    mutated = True
+                    staging_fd = os.open(
+                        source,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=source_dir_fd,
+                    )
+                    try:
+                        unexpected = os.open(
+                            "late-member",
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                            0o600,
+                            dir_fd=staging_fd,
+                        )
+                        os.close(unexpected)
+                    finally:
+                        os.close(staging_fd)
+                return original_rename(
+                    source,
+                    target,
+                    source_dir_fd=source_dir_fd,
+                    target_dir_fd=target_dir_fd,
+                )
+
+            self.exporter._rename_noreplace = mutate_at_rename
+            try:
+                with self.assertRaisesRegex(OSError, "published snapshot validation failed; rolled back"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._rename_noreplace = original_rename
+
+            self.assertTrue(mutated)
+            self.assertFalse((root / version).exists())
+            self.assertEqual([], list(root.iterdir()))
+            target = self.exporter.publish_snapshot(root, version, candidates)
+            self.assertTrue((target / "manifest.json").is_file())
+
+    def test_rollback_never_deletes_a_replacement_target(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / version
+            replacement_marker = b"replacement owned by another actor"
+            original_matches = self.exporter._directory_matches
+            replaced = False
+
+            def replace_before_post_publication_validation(root_fd, target_name, expected, **kwargs):
+                nonlocal replaced
+                if target_name == version and kwargs.get("expected_directory") is not None and not replaced:
+                    replaced = True
+                    os.rename(target_name, "displaced-corrupt", src_dir_fd=root_fd, dst_dir_fd=root_fd)
+                    os.mkdir(target_name, dir_fd=root_fd)
+                    replacement_directory_fd = os.open(
+                        target_name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=root_fd,
+                    )
+                    try:
+                        replacement_fd = os.open(
+                            "replacement-marker",
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                            0o600,
+                            dir_fd=replacement_directory_fd,
+                        )
+                        try:
+                            os.write(replacement_fd, replacement_marker)
+                        finally:
+                            os.close(replacement_fd)
+                    finally:
+                        os.close(replacement_directory_fd)
+                return original_matches(root_fd, target_name, expected, **kwargs)
+
+            self.exporter._directory_matches = replace_before_post_publication_validation
+            try:
+                with self.assertRaisesRegex(OSError, "rollback refused replacement target"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._directory_matches = original_matches
+
+            self.assertTrue(replaced)
+            self.assertEqual(replacement_marker, (target / "replacement-marker").read_bytes())
+            self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
+            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+
     def test_cleanup_does_not_delete_a_replaced_staging_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
