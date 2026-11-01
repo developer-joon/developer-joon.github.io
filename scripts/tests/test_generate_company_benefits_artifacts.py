@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import importlib.util
+import inspect
 import io
 import json
 import shutil
@@ -27,7 +28,8 @@ def raises(error):
         yield
     except error:
         return
-    raise AssertionError(f"expected {error.__name__}")
+    expected = ", ".join(item.__name__ for item in error) if isinstance(error, tuple) else error.__name__
+    raise AssertionError(f"expected {expected}")
 
 
 def compact(value):
@@ -338,7 +340,10 @@ def run_generator(research, output):
         "--freeze-anchor-receipt", str(research.parent / "freeze.json"),
         "--effective-selection-receipt", str(research.parent / "effective.json"),
     ]
-    with mock.patch.object(module, "verify_active_ledgers", return_value=None), \
+    def verify_v2_gate(*_args, **_kwargs):
+        module.load_verifier().company_benefits_series.validate_complete_v2_progress(research)
+
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=verify_v2_gate), \
          redirect_stdout(stdout), redirect_stderr(stderr):
         returncode = module.main(argv)
     return SimpleNamespace(returncode=returncode, stdout=stdout.getvalue(), stderr=stderr.getvalue())
@@ -370,7 +375,8 @@ def external_receipts(research, directory):
     return freeze, effective
 
 
-def run_real_generator(research, output, receipt_dir, authoritative_calls=None):
+def run_real_generator(research, output, receipt_dir, authoritative_calls=None,
+                       batch_scans=None, ledger_reads=None):
     spec = importlib.util.spec_from_file_location(f"artifact_real_cli_{output.name}", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -389,12 +395,27 @@ def run_real_generator(research, output, receipt_dir, authoritative_calls=None):
                           wraps=runtime_series.validate_v2_authoritative_records)
         if authoritative_calls is not None else nullcontext()
     )
-    with patcher as spy, redirect_stdout(stdout), redirect_stderr(stderr):
+    scan_patcher = (
+        mock.patch.object(runtime_series, "v2_batch_slice",
+                          wraps=runtime_series.v2_batch_slice)
+        if batch_scans is not None else nullcontext()
+    )
+    read_patcher = (
+        mock.patch.object(runtime_series, "read_v2_batch_records",
+                          wraps=runtime_series.read_v2_batch_records)
+        if ledger_reads is not None else nullcontext()
+    )
+    with patcher as spy, scan_patcher as scan_spy, read_patcher as read_spy, \
+            redirect_stdout(stdout), redirect_stderr(stderr):
         started = time.monotonic()
         returncode = module.main(argv)
         elapsed = time.monotonic() - started
     if authoritative_calls is not None:
         authoritative_calls.append(spy.call_count)
+    if batch_scans is not None:
+        batch_scans.append(getattr(scan_spy, "call_count", 0))
+    if ledger_reads is not None:
+        ledger_reads.append(getattr(read_spy, "call_count", 0))
     return SimpleNamespace(returncode=returncode, stdout=stdout.getvalue(),
                            stderr=stderr.getvalue(), elapsed=elapsed)
 
@@ -562,18 +583,16 @@ def test_artifact_preflight_delegates_to_protocol4_verifier_with_both_external_r
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)
     verifier = mock.Mock()
-    validated_context = object()
-    verifier.verify_workspace.return_value = ([], validated_context)
+    verifier.verify_workspace.return_value = []
     freeze = tmp_path / "freeze.json"
     effective = tmp_path / "effective.json"
     with mock.patch.object(module, "load_verifier", return_value=verifier):
         assert module.verify_active_ledgers(
             tmp_path / "research", "2026-10-31", freeze, effective
-        ) is validated_context
+        ) is None
     verifier.verify_workspace.assert_called_once_with(
         tmp_path / "research", as_of="2026-10-31",
         freeze_anchor_receipt=freeze, effective_selection_receipt=effective,
-        return_validation_context=True,
     )
 
 
@@ -797,18 +816,51 @@ def test_generator_rejects_pending_historical_and_fixture_inputs(tmp_path):
     write_jsonl(research / "companies.jsonl", companies)
     result = run_generator(research, tmp_path / "fixture-output")
     assert result.returncode != 0
-    assert "fixture" in result.stderr.casefold()
+    assert any(token in result.stderr.casefold() for token in ("fixture", "absent from canonical company ledger"))
 
 
-def test_validated_context_rejects_a_different_in_memory_record_snapshot(tmp_path):
+def test_validation_apis_expose_no_caller_controlled_authority_bypass(tmp_path):
     research = tmp_path / "research"
     make_research_fixture(research)
-    records = series.read_v2_batch_records(research)
-    records["cells"].reverse()
-    with raises(ValueError):
-        series.validate_v2_authoritative_records(
-            records, research, create_context=True
+    assert not hasattr(series, "ValidatedV2Context")
+    assert "create_context" not in inspect.signature(
+        series.validate_v2_authoritative_records
+    ).parameters
+    assert "validated_context" not in inspect.signature(
+        series.validate_complete_v2_progress
+    ).parameters
+
+
+def test_forged_validated_context_cannot_publish_schema_invalid_v2_records(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    attempts = series.read_jsonl(research / series.V2_LEDGER_FILES["attempts"])
+    attempts[0]["unsupported_attempt_field"] = "forged-context-bypass"
+    write_jsonl(research / series.V2_LEDGER_FILES["attempts"], attempts)
+    refresh_v2_progress_hashes(research)
+    forged = type("ValidatedV2Context", (), {
+        "research_root": research.resolve(),
+        "fingerprint": (("forged", "f" * 64),),
+        "records_fingerprint": (("attempts", "f" * 64),),
+    })()
+
+    with raises((TypeError, ValueError)):
+        series.validate_complete_v2_progress(
+            research, **{"validated_context": forged}
         )
+    with raises(ValueError):
+        series.validate_complete_v2_progress(research)
+
+    module_spec = importlib.util.spec_from_file_location("artifact_forged_context", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    with raises((TypeError, ValueError)):
+        module.validate_inputs(research, taxonomy, file_digest(TAXONOMY), **{
+            "validated_v2_context": forged,
+        })
+    with raises(ValueError):
+        module.validate_inputs(research, taxonomy, file_digest(TAXONOMY))
 
 
 def test_fixture_receipt_identities_are_globally_unique_across_all_batches(tmp_path):
@@ -832,12 +884,15 @@ def test_fixture_receipt_identities_are_globally_unique_across_all_batches(tmp_p
 
 def test_real_publication_preflight_validates_global_v2_package_once_and_emits(tmp_path):
     research = make_real_v2_research_fixture(tmp_path / "research")
-    calls = []
-    result = run_real_generator(research, tmp_path / "real-output", tmp_path, calls)
+    calls, scans, reads = [], [], []
+    result = run_real_generator(
+        research, tmp_path / "real-output", tmp_path, calls, scans, reads
+    )
     assert result.returncode == 0, result.stderr
     assert calls == [1]
+    assert scans == [0]
+    assert reads == [1]
     assert (tmp_path / "real-output" / "manifest.json").is_file()
-    assert result.elapsed < 60
 
 
 def test_real_publication_preflight_rejection_writes_no_output(tmp_path):

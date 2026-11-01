@@ -7,7 +7,6 @@ import json
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 
 MANIFEST_VERSION = "1"
@@ -54,61 +53,6 @@ V2_ID_FIELDS = {
     "cells": "cell_id", "attempts": "attempt_id", "official_claims": "claim_id",
     "references": "reference_id", "community_reports": "community_report_id", "sources": "source_id",
 }
-
-
-@dataclass(frozen=True)
-class ValidatedV2Context:
-    """Immutable proof that one exact on-disk v2 package passed authority."""
-
-    research_root: Path
-    fingerprint: tuple
-    records_fingerprint: tuple
-
-
-def _v2_records_fingerprint(records):
-    return tuple(
-        (
-            ledger,
-            hashlib.sha256(json.dumps(
-                records[ledger], ensure_ascii=False, separators=(",", ":"),
-                sort_keys=True, allow_nan=False,
-            ).encode("utf-8")).hexdigest(),
-        )
-        for ledger in V2_LEDGER_FILES
-    )
-
-
-def _v2_authority_fingerprint(research_root):
-    research_root = Path(research_root).resolve()
-    repository_root = Path(__file__).resolve().parents[1]
-    canonical_root = repository_root / "docs" / "research" / "company-benefits"
-    schema_root = canonical_root / "schema"
-    policy_path = research_root / "research-coverage-policies.json"
-    if not policy_path.is_file():
-        policy_path = canonical_root / "research-coverage-policies.json"
-    paths = [
-        *(research_root / filename for filename in V2_LEDGER_FILES.values()),
-        research_root / "companies.jsonl",
-        policy_path,
-        *(schema_root / filename for filename in (
-            "company-category-cell.schema.json", "research-attempt.schema.json",
-            "official-claim-v2.schema.json", "reference-record.schema.json",
-            "community-benefit-report.schema.json", "source-v2.schema.json",
-        )),
-    ]
-    return tuple(
-        (str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
-        for path in paths
-    )
-
-
-def _trusted_v2_context(context, research_root, records):
-    return (
-        isinstance(context, ValidatedV2Context)
-        and context.research_root == Path(research_root).resolve()
-        and context.fingerprint == _v2_authority_fingerprint(research_root)
-        and context.records_fingerprint == _v2_records_fingerprint(records)
-    )
 
 
 def validate_v2_batch_records(records, batch):
@@ -216,7 +160,7 @@ def read_v2_batch_records(directory):
     return {ledger: read_jsonl(directory / filename) for ledger, filename in V2_LEDGER_FILES.items()}
 
 
-def validate_v2_authoritative_records(records, research_root, create_context=False):
+def validate_v2_authoritative_records(records, research_root):
     """Run the authoritative cross-ledger validator over an arbitrary complete slice."""
     validator_path = Path(__file__).with_name("validate-benefits-v2-package.py")
     spec = importlib.util.spec_from_file_location("benefits_v2_batch_package_validator", validator_path)
@@ -225,13 +169,7 @@ def validate_v2_authoritative_records(records, research_root, create_context=Fal
     validator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(validator)
     research_root = Path(research_root)
-    initial_fingerprint = (
-        _v2_authority_fingerprint(research_root) if create_context else None
-    )
-    records_fingerprint = _v2_records_fingerprint(records) if create_context else None
-    if (create_context
-            and records_fingerprint != _v2_records_fingerprint(read_v2_batch_records(research_root))):
-        raise ValueError("authoritative benefits-v2 records differ from the on-disk snapshot")
+
     repository_root = Path(__file__).resolve().parents[1]
     canonical_root = repository_root / "docs" / "research" / "company-benefits"
     if research_root.resolve() == canonical_root.resolve():
@@ -255,20 +193,7 @@ def validate_v2_authoritative_records(records, research_root, create_context=Fal
             errors = validator.validate_package({"coverage_policy": policy, **records}, temporary_root)
     if errors:
         raise ValueError("authoritative benefits-v2 validation failed:\n" + "\n".join(errors))
-    if not create_context:
-        return records
-    if records_fingerprint is None:
-        raise RuntimeError("validated v2 context requires a record fingerprint")
-    final_fingerprint = _v2_authority_fingerprint(research_root)
-    final_records_fingerprint = _v2_records_fingerprint(read_v2_batch_records(research_root))
-    if (final_fingerprint != initial_fingerprint
-            or final_records_fingerprint != records_fingerprint):
-        raise ValueError("authoritative benefits-v2 inputs changed during validation")
-    return ValidatedV2Context(
-        research_root=research_root.resolve(),
-        fingerprint=final_fingerprint,
-        records_fingerprint=records_fingerprint,
-    )
+    return records
 
 
 def validate_v2_package_records(records, batch, research_root):
@@ -557,7 +482,7 @@ def progress_contract_version(progress):
     return "2"
 
 
-def validate_complete_v2_progress(root, batches=None, progress=None, validated_context=None):
+def validate_complete_v2_progress(root, batches=None, progress=None):
     """Require and verify the complete v2 partition before publication."""
     root = Path(root)
     batches = batches if batches is not None else read_jsonl(root / "series-batches.jsonl")
@@ -604,10 +529,7 @@ def validate_complete_v2_progress(root, batches=None, progress=None, validated_c
     entry_map = {entry["batch_id"]: entry for entry in entries}
 
     records = read_v2_batch_records(root)
-    if not _trusted_v2_context(validated_context, root, records):
-        validated_context = validate_v2_authoritative_records(
-            records, root, create_context=True
-        )
+    validate_v2_authoritative_records(records, root)
     partitions = {
         batch_id: {ledger: [] for ledger in V2_LEDGER_FILES}
         for batch_id in canonical_ids
@@ -680,7 +602,7 @@ def validate_complete_v2_progress(root, batches=None, progress=None, validated_c
         if entry.get("v2_ledger_sha256") != v2_ledger_sha256(sliced):
             raise ValueError(f"{batch_id}: persisted v2 ledger hash mismatch")
         validate_v2_batch_records(sliced, batch)
-    return validated_context
+    return records, partitions
 
 
 def validate_persisted_v2_hashes(root, batches=None, progress=None, v2_transition=False):
@@ -1040,15 +962,23 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         review_by_claim.setdefault(review.get("claim_id"), []).append(review)
     gaps = read_jsonl(root / "series-research-gaps.jsonl")
     gap_map = _company_gap_map(gaps)
-    v2_records = read_v2_batch_records(root)
-    validated_v2_context = None
-    if any(v2_records.values()):
+    complete_v2 = v2_progress and progress.get("status") == "complete"
+    v2_partitions = None
+    if complete_v2:
         try:
-            validated_v2_context = validate_v2_authoritative_records(
-                v2_records, root, create_context=True
+            v2_records, v2_partitions = validate_complete_v2_progress(
+                root, batches, progress
             )
         except (OSError, ValueError, RuntimeError) as exc:
-            errors.append(f"merged v2 ledgers failed authoritative validation: {exc}")
+            errors.append(f"complete v2 publication validation failed: {exc}")
+            v2_records = {ledger: [] for ledger in V2_LEDGER_FILES}
+    else:
+        v2_records = read_v2_batch_records(root)
+        if any(v2_records.values()):
+            try:
+                validate_v2_authoritative_records(v2_records, root)
+            except (OSError, ValueError, RuntimeError) as exc:
+                errors.append(f"merged v2 ledgers failed authoritative validation: {exc}")
     v2_cells = v2_records["cells"]
     gap_by_id = {item.get("audit_id"): item for item in gaps if str(item.get("audit_id", "")).startswith("company-gap::")}
     outcome_reviews = [item for item in reviews if item.get("record_id") and not item.get("claim_id")]
@@ -1098,13 +1028,17 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
             errors.append(f"{batch['batch_id']}: series progress binding mismatch")
         batch_claims = [claim for company_id in batch["company_ids"] for claim in claims_by_company.get(company_id, [])]
         batch_gaps = [gap for company_id in batch["company_ids"] for gap in gap_map.get(company_id, [])]
-        batch_cells = [cell for cell in v2_cells
-                       if cell.get("company_id") in set(batch["company_ids"])]
-        try:
-            batch_v2_records = v2_batch_slice(v2_records, batch)
-        except ValueError as exc:
-            errors.append(f"{batch['batch_id']}: merged v2 batch validation failed: {exc}")
-            batch_v2_records = {ledger: [] for ledger in V2_LEDGER_FILES}
+        if v2_partitions is not None:
+            batch_v2_records = v2_partitions[batch["batch_id"]]
+            batch_cells = batch_v2_records["cells"]
+        else:
+            batch_cells = [cell for cell in v2_cells
+                           if cell.get("company_id") in set(batch["company_ids"])]
+            try:
+                batch_v2_records = v2_batch_slice(v2_records, batch)
+            except ValueError as exc:
+                errors.append(f"{batch['batch_id']}: merged v2 batch validation failed: {exc}")
+                batch_v2_records = {ledger: [] for ledger in V2_LEDGER_FILES}
         if status == "pending":
             if batch_claims or batch_gaps or any(review_by_claim.get(claim.get("claim_id")) for claim in batch_claims):
                 errors.append(f"{batch['batch_id']}: pending batch must have no published claims, reviews, or company gaps")
@@ -1115,7 +1049,7 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
             continue
         expected_cell_keys = {(company_id, category) for company_id in batch["company_ids"] for category in V2_CATEGORIES}
         actual_cell_keys = [(cell.get("company_id"), cell.get("category_id")) for cell in batch_cells]
-        if batch_cells or entry.get("cell_count", 0):
+        if (batch_cells or entry.get("cell_count", 0)) and not complete_v2:
             if (len(batch_cells) != 250 or len(set(actual_cell_keys)) != 250 or set(actual_cell_keys) != expected_cell_keys
                     or entry.get("cell_count") != 250
                     or entry.get("cell_set_sha256") != v2_cell_set_sha256(batch_cells)
@@ -1232,4 +1166,4 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         for path in (root / "series-batches.jsonl", root / "series-progress.json", root / "series-research-gaps.jsonl", root / "series-prepublication-checks.jsonl"):
             if path.is_file() and any(marker in path.read_text(encoding="utf-8").casefold() for marker in fixture_markers):
                 errors.append(f"complete series prohibits fixture data in {path.name}")
-    return validated_v2_context
+    return None
