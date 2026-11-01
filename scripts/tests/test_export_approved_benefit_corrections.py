@@ -368,7 +368,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             target = self.exporter.publish_snapshot(root, version, candidates)
             self.assertTrue((target / "manifest.json").is_file())
 
-    def test_late_staging_member_at_rename_rolls_back_and_retry_succeeds(self):
+    def test_late_staging_member_rolls_back_to_retryable_tombstone(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
@@ -410,10 +410,211 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 self.exporter._rename_noreplace = original_rename
 
             self.assertTrue(mutated)
-            self.assertFalse((root / version).exists())
-            self.assertEqual([], list(root.iterdir()))
+            self.assertTrue((root / version).is_dir())
+            self.assertEqual(
+                {self.exporter.TOMBSTONE_MARKER_NAME},
+                {path.name for path in (root / version).iterdir()},
+            )
+            marker = json.loads(
+                (root / version / self.exporter.TOMBSTONE_MARKER_NAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(self.exporter.TOMBSTONE_DOMAIN, marker["domain"])
+            self.assertEqual(1, marker["version"])
+            self.assertRegex(marker["nonce"], r"^[0-9a-f]{64}$")
+            self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
             target = self.exporter.publish_snapshot(root, version, candidates)
             self.assertTrue((target / "manifest.json").is_file())
+
+    def test_rollback_never_rmdirs_canonical_target_or_deletes_foreign_replacement(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_rename = self.exporter._rename_noreplace
+            original_rmdir = self.exporter.os.rmdir
+            canonical_rmdirs = 0
+
+            def mutate_at_publish(source, destination, source_dir_fd=-100, target_dir_fd=-100):
+                if source.startswith(f".{version}-"):
+                    staging_fd = os.open(
+                        source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=source_dir_fd,
+                    )
+                    try:
+                        os.mkdir("late-member", dir_fd=staging_fd)
+                    finally:
+                        os.close(staging_fd)
+                return original_rename(
+                    source, destination,
+                    source_dir_fd=source_dir_fd, target_dir_fd=target_dir_fd,
+                )
+
+            def replace_at_old_rmdir_boundary(path, *args, **kwargs):
+                nonlocal canonical_rmdirs
+                if path == version:
+                    canonical_rmdirs += 1
+                    dir_fd = kwargs["dir_fd"]
+                    os.rename(path, "captured-tombstone", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    os.mkdir(path, dir_fd=dir_fd)
+                return original_rmdir(path, *args, **kwargs)
+
+            self.exporter._rename_noreplace = mutate_at_publish
+            self.exporter.os.rmdir = replace_at_old_rmdir_boundary
+            try:
+                with self.assertRaisesRegex(OSError, "rolled back"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._rename_noreplace = original_rename
+                self.exporter.os.rmdir = original_rmdir
+
+            self.assertEqual(0, canonical_rmdirs)
+            self.assertTrue((root / version).is_dir())
+            self.assertEqual(
+                {self.exporter.TOMBSTONE_MARKER_NAME},
+                {path.name for path in (root / version).iterdir()},
+            )
+
+    def test_process_restart_recognizes_tombstone_and_retries_atomically(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_rename = self.exporter._rename_noreplace
+
+            def mutate_once(source, destination, source_dir_fd=-100, target_dir_fd=-100):
+                if source.startswith(f".{version}-"):
+                    staging_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY, dir_fd=source_dir_fd)
+                    try:
+                        os.mkdir("late-member", dir_fd=staging_fd)
+                    finally:
+                        os.close(staging_fd)
+                    self.exporter._rename_noreplace = original_rename
+                return original_rename(
+                    source, destination,
+                    source_dir_fd=source_dir_fd, target_dir_fd=target_dir_fd,
+                )
+
+            self.exporter._rename_noreplace = mutate_once
+            try:
+                with self.assertRaisesRegex(OSError, "rolled back"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._rename_noreplace = original_rename
+
+            restarted = load_exporter()
+            target = restarted.publish_snapshot(root, version, candidates)
+            self.assertEqual(
+                {"candidates.jsonl", "manifest.json"},
+                {path.name for path in target.iterdir()},
+            )
+            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+
+    def test_forged_or_malformed_tombstones_are_mismatches(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        forged_markers = [
+            b"not-json\n",
+            json.dumps({"domain": "foreign", "version": 1, "nonce": "a" * 64}).encode() + b"\n",
+            json.dumps({"domain": self.exporter.TOMBSTONE_DOMAIN, "version": 1, "nonce": "short"}).encode() + b"\n",
+        ]
+        for marker in forged_markers:
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / version
+                target.mkdir()
+                (target / self.exporter.TOMBSTONE_MARKER_NAME).write_bytes(marker)
+                with self.assertRaisesRegex(FileExistsError, "mismatch"):
+                    self.exporter.publish_snapshot(Path(directory), version, candidates)
+                self.assertEqual(marker, (target / self.exporter.TOMBSTONE_MARKER_NAME).read_bytes())
+
+    def test_concurrent_retries_of_tombstone_converge_without_leftovers(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = self.exporter._new_tombstone_marker()
+            target = root / version
+            target.mkdir()
+            (target / self.exporter.TOMBSTONE_MARKER_NAME).write_bytes(marker)
+            barrier = threading.Barrier(3)
+            outcomes = []
+
+            def retry():
+                barrier.wait()
+                try:
+                    outcomes.append(self.exporter.publish_snapshot(root, version, candidates))
+                except Exception as exc:
+                    outcomes.append(exc)
+
+            threads = [threading.Thread(target=retry) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(2, len(outcomes))
+            self.assertTrue(all(outcome == target for outcome in outcomes), outcomes)
+            self.assertEqual(
+                {"candidates.jsonl", "manifest.json"},
+                {path.name for path in target.iterdir()},
+            )
+            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+
+    def test_tombstone_retry_restores_foreign_target_winning_exchange_race(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / version
+            target.mkdir()
+            (target / self.exporter.TOMBSTONE_MARKER_NAME).write_bytes(
+                self.exporter._new_tombstone_marker()
+            )
+            original_exchange = self.exporter._rename_exchange
+            raced = False
+
+            def race_exchange(source, destination, source_dir_fd=-100, target_dir_fd=-100):
+                nonlocal raced
+                if destination == version and source.startswith(f".{version}-") and not raced:
+                    raced = True
+                    os.rename(
+                        destination, "original-tombstone",
+                        src_dir_fd=target_dir_fd, dst_dir_fd=target_dir_fd,
+                    )
+                    os.mkdir(destination, dir_fd=target_dir_fd)
+                    foreign_fd = os.open(
+                        destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=target_dir_fd,
+                    )
+                    try:
+                        marker_fd = os.open(
+                            "foreign-marker", os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                            0o600, dir_fd=foreign_fd,
+                        )
+                        try:
+                            os.write(marker_fd, b"foreign data")
+                        finally:
+                            os.close(marker_fd)
+                    finally:
+                        os.close(foreign_fd)
+                return original_exchange(
+                    source, destination,
+                    source_dir_fd=source_dir_fd, target_dir_fd=target_dir_fd,
+                )
+
+            self.exporter._rename_exchange = race_exchange
+            try:
+                with self.assertRaisesRegex(FileExistsError, "mismatch"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._rename_exchange = original_exchange
+
+            self.assertTrue(raced)
+            self.assertEqual(b"foreign data", (target / "foreign-marker").read_bytes())
+            self.assertTrue((root / "original-tombstone").is_dir())
+            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
 
     def test_rollback_exchange_restores_replacement_arriving_after_validation(self):
         candidates = self.build_snapshot([row()])

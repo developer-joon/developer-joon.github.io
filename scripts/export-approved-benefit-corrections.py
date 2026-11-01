@@ -15,6 +15,7 @@ import json
 import multiprocessing
 import os
 import re
+import secrets
 import signal
 import socket
 import stat
@@ -52,6 +53,9 @@ MAX_DNS_ANSWERS = 64
 DEFAULT_DNS_TIMEOUT_SECONDS = 2.0
 DEFAULT_PSQL_TIMEOUT_SECONDS = 30.0
 DEFAULT_PROCESS_KILL_GRACE_SECONDS = 0.5
+TOMBSTONE_MARKER_NAME = ".approved-benefit-correction-export-tombstone.json"
+TOMBSTONE_DOMAIN = "developer-joon.github.io/approved-benefit-correction-export/rollback-tombstone"
+TOMBSTONE_VERSION = 1
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
@@ -629,8 +633,151 @@ def _remove_staging(root_fd, staging_name, _expected_names, expected_directory=N
         pass
 
 
+def _new_tombstone_marker():
+    return _canonical_json_bytes(
+        {
+            "domain": TOMBSTONE_DOMAIN,
+            "nonce": secrets.token_hex(32),
+            "version": TOMBSTONE_VERSION,
+        }
+    )
+
+
+def _valid_tombstone_marker(raw):
+    try:
+        marker = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(marker, dict)
+        and set(marker) == {"domain", "nonce", "version"}
+        and marker["domain"] == TOMBSTONE_DOMAIN
+        and marker["version"] == TOMBSTONE_VERSION
+        and isinstance(marker["nonce"], str)
+        and HASH_RE.fullmatch(marker["nonce"]) is not None
+        and raw == _canonical_json_bytes(marker)
+    )
+
+
+def _open_verified_tombstone(root_fd, name):
+    """Open and validate a restart-safe tombstone without following names."""
+    try:
+        directory_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+    except OSError:
+        return None
+    accepted = False
+    try:
+        directory = os.fstat(directory_fd)
+        if os.listdir(directory_fd) != [TOMBSTONE_MARKER_NAME]:
+            return None
+        try:
+            raw, marker_file = _read_regular_file_at(
+                directory_fd, TOMBSTONE_MARKER_NAME
+            )
+        except OSError:
+            return None
+        if not _valid_tombstone_marker(raw) or not _directory_fd_matches(
+            root_fd,
+            name,
+            directory_fd,
+            {TOMBSTONE_MARKER_NAME: raw},
+            expected_directory=directory,
+            expected_files={TOMBSTONE_MARKER_NAME: marker_file},
+        ):
+            return None
+        accepted = True
+        return directory_fd, directory, raw, marker_file
+    finally:
+        # Successful callers own the descriptor.
+        if not accepted:
+            os.close(directory_fd)
+
+
+def _prepare_tombstone(root_fd, target_name):
+    name = f".{target_name}-tombstone-{secrets.token_hex(16)}"
+    marker = _new_tombstone_marker()
+    directory = None
+    os.mkdir(name, mode=0o700, dir_fd=root_fd)
+    directory_fd = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=root_fd,
+    )
+    try:
+        directory = os.fstat(directory_fd)
+        marker_fd = os.open(
+            TOMBSTONE_MARKER_NAME,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            view = memoryview(marker)
+            while view:
+                written = os.write(marker_fd, view)
+                view = view[written:]
+            os.fsync(marker_fd)
+            marker_file = os.fstat(marker_fd)
+        finally:
+            os.close(marker_fd)
+        _fsync_directory_fd(directory_fd)
+        if not _directory_fd_matches(
+            root_fd,
+            name,
+            directory_fd,
+            {TOMBSTONE_MARKER_NAME: marker},
+            expected_directory=directory,
+            expected_files={TOMBSTONE_MARKER_NAME: marker_file},
+        ):
+            raise OSError(errno.ESTALE, "rollback tombstone validation failed")
+        _fsync_directory_fd(root_fd)
+        return name, directory_fd, directory, marker, marker_file
+    except Exception:
+        os.close(directory_fd)
+        _remove_staging(root_fd, name, (), expected_directory=directory)
+        raise
+
+
+def _remove_exact_open_directory(
+    root_fd,
+    name,
+    directory_fd,
+    expected_directory,
+    expected,
+    expected_files,
+):
+    """Remove only an exact opened sentinel directory at its verified name."""
+    if not _directory_fd_matches(
+        root_fd,
+        name,
+        directory_fd,
+        expected,
+        expected_directory=expected_directory,
+        expected_files=expected_files,
+    ):
+        raise OSError(errno.ESTALE, "sentinel cleanup identity changed")
+    for member_name, member_metadata in expected_files.items():
+        current = os.stat(
+            member_name, dir_fd=directory_fd, follow_symlinks=False
+        )
+        if not stat.S_ISREG(current.st_mode) or not _same_inode(
+            current, member_metadata
+        ):
+            raise OSError(errno.ESTALE, "sentinel member identity changed")
+        os.unlink(member_name, dir_fd=directory_fd)
+    if os.listdir(directory_fd) or not _directory_binding_matches(
+        root_fd, name, directory_fd, expected_directory
+    ):
+        raise OSError(errno.ESTALE, "sentinel cleanup binding changed")
+    os.rmdir(name, dir_fd=root_fd)
+
+
 def _rollback_published_directory(root_fd, target_name, expected_directory):
-    """Capture the published inode or restore a raced replacement atomically."""
+    """Replace an invalid publication with a durable retry tombstone."""
     try:
         target_fd = os.open(
             target_name,
@@ -652,26 +799,15 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
                 "published snapshot validation failed; rollback refused replacement target",
             )
 
-        quarantine_name = f".{target_name}-quarantine-{uuid.uuid4().hex}"
-        os.mkdir(quarantine_name, mode=0o700, dir_fd=root_fd)
-        placeholder_fd = os.open(
+        (
             quarantine_name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
-        )
-        placeholder_directory = os.fstat(placeholder_fd)
-        placeholder_location = quarantine_name
+            tombstone_fd,
+            tombstone_directory,
+            tombstone_marker,
+            tombstone_marker_file,
+        ) = _prepare_tombstone(root_fd, target_name)
+        tombstone_location = quarantine_name
         try:
-            if os.listdir(placeholder_fd):
-                raise OSError(errno.ESTALE, "rollback placeholder is not empty")
-            if not _directory_binding_matches(
-                root_fd,
-                quarantine_name,
-                placeholder_fd,
-                placeholder_directory,
-            ):
-                raise OSError(errno.ESTALE, "rollback placeholder identity changed")
-            _fsync_directory_fd(root_fd)
             try:
                 _rename_exchange(
                     target_name,
@@ -684,7 +820,7 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
                     exc.errno or errno.ENOTSUP,
                     "published snapshot validation failed; atomic rollback exchange failed",
                 ) from exc
-            placeholder_location = target_name
+            tombstone_location = target_name
 
             try:
                 captured_fd = os.open(
@@ -711,18 +847,18 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
                     )
 
                 if _same_inode(captured_directory, expected_directory):
-                    if os.listdir(placeholder_fd) or not _directory_binding_matches(
+                    if not _directory_fd_matches(
                         root_fd,
                         target_name,
-                        placeholder_fd,
-                        placeholder_directory,
+                        tombstone_fd,
+                        {TOMBSTONE_MARKER_NAME: tombstone_marker},
+                        expected_directory=tombstone_directory,
+                        expected_files={TOMBSTONE_MARKER_NAME: tombstone_marker_file},
                     ):
                         raise OSError(
                             errno.ESTALE,
-                            "published snapshot validation failed; rollback placeholder changed",
+                            "published snapshot validation failed; rollback tombstone changed",
                         )
-                    os.rmdir(target_name, dir_fd=root_fd)
-                    placeholder_location = None
                     _remove_directory_contents(captured_fd)
                     if not _directory_binding_matches(
                         root_fd,
@@ -739,7 +875,7 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
                     return
 
                 # A replacement arrived after target validation. Put the exact
-                # captured replacement back and remove only our placeholder.
+                # captured replacement back and remove only our tombstone.
                 try:
                     _rename_exchange(
                         target_name,
@@ -752,7 +888,7 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
                         exc.errno or errno.ESTALE,
                         "published snapshot validation failed; replacement restoration exchange failed",
                     ) from exc
-                placeholder_location = quarantine_name
+                tombstone_location = quarantine_name
                 if not _directory_binding_matches(
                     root_fd,
                     target_name,
@@ -761,8 +897,8 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
                 ) or not _directory_binding_matches(
                     root_fd,
                     quarantine_name,
-                    placeholder_fd,
-                    placeholder_directory,
+                    tombstone_fd,
+                    tombstone_directory,
                 ):
                     raise OSError(
                         errno.ESTALE,
@@ -771,25 +907,150 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
             finally:
                 os.close(captured_fd)
 
-            os.rmdir(quarantine_name, dir_fd=root_fd)
-            placeholder_location = None
+            _remove_exact_open_directory(
+                root_fd,
+                quarantine_name,
+                tombstone_fd,
+                tombstone_directory,
+                {TOMBSTONE_MARKER_NAME: tombstone_marker},
+                {TOMBSTONE_MARKER_NAME: tombstone_marker_file},
+            )
+            tombstone_location = None
             _fsync_directory_fd(root_fd)
             raise OSError(
                 errno.ESTALE,
                 "published snapshot validation failed; rollback restored replacement target",
             )
         finally:
-            os.close(placeholder_fd)
-            if placeholder_location == quarantine_name:
-                _remove_staging(
-                    root_fd,
-                    quarantine_name,
-                    (),
-                    expected_directory=placeholder_directory,
-                )
+            os.close(tombstone_fd)
+            if tombstone_location == quarantine_name:
+                verified = _open_verified_tombstone(root_fd, quarantine_name)
+                if verified is not None and _same_inode(
+                    verified[1], tombstone_directory
+                ):
+                    try:
+                        _remove_exact_open_directory(
+                            root_fd,
+                            quarantine_name,
+                            verified[0],
+                            verified[1],
+                            {TOMBSTONE_MARKER_NAME: verified[2]},
+                            {TOMBSTONE_MARKER_NAME: verified[3]},
+                        )
+                    finally:
+                        os.close(verified[0])
                 _fsync_directory_fd(root_fd)
     finally:
         os.close(target_fd)
+
+
+def _publish_staging_over_tombstone(
+    root_fd,
+    staging_fd,
+    staging_name,
+    target_name,
+    expected,
+    staging_directory,
+    staging_files,
+    tombstone,
+):
+    """Atomically replace a verified tombstone, restoring any raced occupant."""
+    tombstone_fd, tombstone_directory, marker, marker_file = tombstone
+    tombstone_expected = {TOMBSTONE_MARKER_NAME: marker}
+    tombstone_files = {TOMBSTONE_MARKER_NAME: marker_file}
+    if not _directory_fd_matches(
+        root_fd,
+        target_name,
+        tombstone_fd,
+        tombstone_expected,
+        expected_directory=tombstone_directory,
+        expected_files=tombstone_files,
+    ):
+        if _directory_matches(root_fd, target_name, expected):
+            return False
+        raise FileExistsError(f"existing snapshot mismatch: {target_name}")
+
+    _rename_exchange(
+        staging_name,
+        target_name,
+        source_dir_fd=root_fd,
+        target_dir_fd=root_fd,
+    )
+    published_matches = _directory_fd_matches(
+        root_fd,
+        target_name,
+        staging_fd,
+        expected,
+        expected_directory=staging_directory,
+        expected_files=staging_files,
+    )
+    displaced_is_tombstone = _directory_fd_matches(
+        root_fd,
+        staging_name,
+        tombstone_fd,
+        tombstone_expected,
+        expected_directory=tombstone_directory,
+        expected_files=tombstone_files,
+    )
+    if published_matches and displaced_is_tombstone:
+        _remove_exact_open_directory(
+            root_fd,
+            staging_name,
+            tombstone_fd,
+            tombstone_directory,
+            tombstone_expected,
+            tombstone_files,
+        )
+        _fsync_directory_fd(root_fd)
+        return True
+
+    # The canonical name changed after tombstone validation. Exchange back only
+    # while both post-exchange names still identify the exact captured inodes.
+    try:
+        captured_fd = os.open(
+            staging_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+    except OSError as exc:
+        raise OSError(
+            errno.ESTALE, "tombstone retry could not capture raced target"
+        ) from exc
+    try:
+        captured_directory = os.fstat(captured_fd)
+        if not published_matches or not _directory_binding_matches(
+            root_fd,
+            staging_name,
+            captured_fd,
+            captured_directory,
+        ):
+            raise OSError(
+                errno.ESTALE, "tombstone retry refused changed exchange bindings"
+            )
+        _rename_exchange(
+            target_name,
+            staging_name,
+            source_dir_fd=root_fd,
+            target_dir_fd=root_fd,
+        )
+        if not _directory_binding_matches(
+            root_fd, target_name, captured_fd, captured_directory
+        ) or not _directory_fd_matches(
+            root_fd,
+            staging_name,
+            staging_fd,
+            expected,
+            expected_directory=staging_directory,
+            expected_files=staging_files,
+        ):
+            raise OSError(
+                errno.ESTALE, "tombstone retry restoration changed identity"
+            )
+    finally:
+        os.close(captured_fd)
+    if _directory_matches(root_fd, target_name, expected):
+        return False
+    raise FileExistsError(f"existing snapshot mismatch: {target_name}")
 
 
 def publish_snapshot(output_root, snapshot_version, candidates):
@@ -807,6 +1068,7 @@ def publish_snapshot(output_root, snapshot_version, candidates):
     staging_name = f".{snapshot_version}-{uuid.uuid4().hex}"
     staging_metadata = None
     staging_files = {}
+    tombstone = None
     try:
         try:
             os.stat(snapshot_version, dir_fd=root_fd, follow_symlinks=False)
@@ -817,7 +1079,14 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                 root_fd, snapshot_version, expected
             ):
                 return target
-            raise FileExistsError(f"existing snapshot mismatch: {target}")
+            if _root_path_still_names_fd(root, root_fd):
+                tombstone = _open_verified_tombstone(root_fd, snapshot_version)
+            if tombstone is None:
+                if _root_path_still_names_fd(root, root_fd) and _directory_matches(
+                    root_fd, snapshot_version, expected
+                ):
+                    return target
+                raise FileExistsError(f"existing snapshot mismatch: {target}")
 
         os.mkdir(staging_name, mode=0o700, dir_fd=root_fd)
         staging_fd = os.open(
@@ -844,8 +1113,8 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                 finally:
                     os.close(file_fd)
             _fsync_directory_fd(staging_fd)
-            try:
-                _publish_staging_noreplace(
+            if tombstone is not None:
+                if not _publish_staging_over_tombstone(
                     root_fd,
                     staging_fd,
                     staging_name,
@@ -853,13 +1122,26 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                     expected,
                     staging_metadata,
                     staging_files,
-                )
-            except FileExistsError:
-                if _root_path_still_names_fd(root, root_fd) and _directory_matches(
-                    root_fd, snapshot_version, expected
+                    tombstone,
                 ):
                     return target
-                raise FileExistsError(f"existing snapshot mismatch: {target}")
+            else:
+                try:
+                    _publish_staging_noreplace(
+                        root_fd,
+                        staging_fd,
+                        staging_name,
+                        snapshot_version,
+                        expected,
+                        staging_metadata,
+                        staging_files,
+                    )
+                except FileExistsError:
+                    if _root_path_still_names_fd(root, root_fd) and _directory_matches(
+                        root_fd, snapshot_version, expected
+                    ):
+                        return target
+                    raise FileExistsError(f"existing snapshot mismatch: {target}")
         finally:
             os.close(staging_fd)
         _fsync_directory_fd(root_fd)
@@ -882,6 +1164,8 @@ def publish_snapshot(output_root, snapshot_version, candidates):
             )
         return target
     finally:
+        if tombstone is not None:
+            os.close(tombstone[0])
         _remove_staging(
             root_fd,
             staging_name,
