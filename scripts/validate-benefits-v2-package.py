@@ -16,6 +16,7 @@ SCHEMA_ROOT = RESEARCH / "schema"
 SCHEMAS = {
     "cells": "company-category-cell.schema.json",
     "attempts": "research-attempt.schema.json",
+    "official_claims": "official-claim-v2.schema.json",
     "references": "reference-record.schema.json",
     "community_reports": "community-benefit-report.schema.json",
     "sources": "source-v2.schema.json",
@@ -73,6 +74,16 @@ def _same_scope(left, right):
         and isinstance(right, dict)
         and all(left.get(field) == right.get(field) for field in dimensions)
     )
+
+
+def _canonical_evidence_id(prefix, record):
+    return f"{prefix}::{record.get('company_id')}::{record.get('category_id')}::{record.get('source_id')}"
+
+
+def _covers_jurisdiction(record, jurisdiction):
+    scope = record.get("scope") if isinstance(record, dict) else None
+    countries = scope.get("countries") if isinstance(scope, dict) else None
+    return isinstance(countries, list) and jurisdiction in countries
 
 
 def validate_package(package):
@@ -157,6 +168,7 @@ def validate_package(package):
                 elif source.get("source_tier") != receipt.get("route_kind"):
                     errors.append(f"{attempt_id}: source tier mismatch for {source_id}")
 
+        eligible_official_evidence = False
         for claim_id in cell.get("official_claim_ids", []):
             official_use[claim_id] += 1
             claim = indexes["official_claims"].get(claim_id)
@@ -167,6 +179,10 @@ def validate_package(package):
                 errors.append(f"{claim_id}: official claim binding mismatch for {cell_id}")
             if claim.get("source_tier") != OFFICIAL_TIER:
                 errors.append(f"{claim_id}: official claim source tier mismatch")
+            if claim.get("publication_eligibility") != "eligible":
+                errors.append(f"{claim_id}: official claim must be publication eligible")
+            if not _covers_jurisdiction(claim, cell.get("jurisdiction")):
+                errors.append(f"{claim_id}: evidence does not cover cell jurisdiction {cell.get('jurisdiction')}")
             for source_id in claim.get("source_ids", []):
                 source_use[source_id] += 1
                 source = indexes["sources"].get(source_id)
@@ -176,6 +192,20 @@ def validate_package(package):
                     errors.append(f"{claim_id}: source tier mismatch for {source_id}")
                 elif not _same_scope(claim.get("scope", {}), source.get("scope", {})):
                     errors.append(f"{claim_id}: source scope mismatch for {source_id}")
+                if source is not None and not _covers_jurisdiction(source, cell.get("jurisdiction")):
+                    errors.append(f"{source_id}: source does not cover cell jurisdiction {cell.get('jurisdiction')}")
+                if (
+                    source is not None
+                    and claim.get("publication_eligibility") == "eligible"
+                    and claim.get("source_tier") == OFFICIAL_TIER
+                    and claim.get("scope_status") == "exact_entity"
+                    and _covers_jurisdiction(claim, cell.get("jurisdiction"))
+                    and source.get("publication_eligibility") == "eligible"
+                    and source.get("source_tier") == OFFICIAL_TIER
+                    and source.get("scope_status") == "exact_entity"
+                    and _covers_jurisdiction(source, cell.get("jurisdiction"))
+                ):
+                    eligible_official_evidence = True
 
         for reference_id in cell.get("reference_ids", []):
             reference_use[reference_id] += 1
@@ -185,6 +215,11 @@ def validate_package(package):
                 continue
             if not _same_cell(reference, cell):
                 errors.append(f"{reference_id}: reference binding mismatch for {cell_id}")
+            expected_reference_id = _canonical_evidence_id("reference", reference)
+            if reference_id != expected_reference_id:
+                errors.append(f"{reference_id}: noncanonical reference_id; expected {expected_reference_id}")
+            if not _covers_jurisdiction(reference, cell.get("jurisdiction")):
+                errors.append(f"{reference_id}: evidence does not cover cell jurisdiction {cell.get('jurisdiction')}")
             source_id = reference.get("source_id")
             source_use[source_id] += 1
             source = indexes["sources"].get(source_id)
@@ -194,6 +229,8 @@ def validate_package(package):
                 errors.append(f"{reference_id}: source tier mismatch for {source_id}")
             elif not _same_scope(reference.get("scope", {}), source.get("scope", {})):
                 errors.append(f"{reference_id}: source scope mismatch for {source_id}")
+            if source is not None and not _covers_jurisdiction(source, cell.get("jurisdiction")):
+                errors.append(f"{source_id}: source does not cover cell jurisdiction {cell.get('jurisdiction')}")
 
         for report_id in cell.get("community_report_ids", []):
             community_use[report_id] += 1
@@ -203,6 +240,11 @@ def validate_package(package):
                 continue
             if not _same_cell(report, cell):
                 errors.append(f"{report_id}: community report binding mismatch for {cell_id}")
+            expected_report_id = _canonical_evidence_id("community", report)
+            if report_id != expected_report_id:
+                errors.append(f"{report_id}: noncanonical community_report_id; expected {expected_report_id}")
+            if not _covers_jurisdiction(report, cell.get("jurisdiction")):
+                errors.append(f"{report_id}: evidence does not cover cell jurisdiction {cell.get('jurisdiction')}")
             if report.get("publication_eligibility") != "eligible":
                 errors.append(f"{report_id}: community report must be eligible")
             moderation = report.get("moderation")
@@ -219,8 +261,12 @@ def validate_package(package):
                 errors.append(f"{report_id}: source tier mismatch for {source_id}")
             elif not _same_scope(report.get("scope", {}), source.get("scope", {})):
                 errors.append(f"{report_id}: source scope mismatch for {source_id}")
+            if source is not None and not _covers_jurisdiction(source, cell.get("jurisdiction")):
+                errors.append(f"{source_id}: source does not cover cell jurisdiction {cell.get('jurisdiction')}")
 
         if cell.get("state") == "official_verified":
+            if not eligible_official_evidence:
+                errors.append(f"{cell_id}: official_verified requires eligible official evidence")
             if cell.get("scope_status") != "exact_entity":
                 errors.append(f"{cell_id}: official_verified requires exact_entity cell scope")
             for claim_id in cell.get("official_claim_ids", []):

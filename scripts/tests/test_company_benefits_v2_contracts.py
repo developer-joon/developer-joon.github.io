@@ -12,6 +12,7 @@ SCHEMA = RESEARCH / "schema"
 CONTRACT_FILES = (
     "company-category-cell.schema.json",
     "research-attempt.schema.json",
+    "official-claim-v2.schema.json",
     "reference-record.schema.json",
     "community-benefit-report.schema.json",
     "source-v2.schema.json",
@@ -33,7 +34,7 @@ def base_cell(state="reference"):
         "coverage_policy_id": "coverage-policy-v2",
         "attempt_ids": ["attempt::KR-CRN-1234567890123::leave::official-government"],
         "official_claim_ids": [],
-        "reference_ids": ["reference::KR-CRN-1234567890123::leave::1"],
+        "reference_ids": ["reference::KR-CRN-1234567890123::leave::source::example"],
         "community_report_ids": [],
         "reliability": "medium",
         "currentness": "current",
@@ -48,7 +49,7 @@ def base_cell(state="reference"):
         record["reliability"] = "high"
     elif state == "community_report":
         record["reference_ids"] = []
-        record["community_report_ids"] = ["community::KR-CRN-1234567890123::leave::1"]
+        record["community_report_ids"] = ["community::KR-CRN-1234567890123::leave::source::community-1"]
         record["reliability"] = "low"
     elif state == "no_public_info":
         record["reference_ids"] = []
@@ -83,7 +84,7 @@ def base_attempt(result="source_found"):
 
 def base_reference():
     return {
-        "reference_id": "reference::KR-CRN-1234567890123::leave::1",
+        "reference_id": "reference::KR-CRN-1234567890123::leave::source::example",
         "cell_id": "cell::KR-CRN-1234567890123::leave",
         "company_id": "KR-CRN-1234567890123",
         "category_id": "leave",
@@ -109,7 +110,7 @@ def base_reference():
 
 def base_community():
     return {
-        "community_report_id": "community::KR-CRN-1234567890123::leave::1",
+        "community_report_id": "community::KR-CRN-1234567890123::leave::source::community-1",
         "cell_id": "cell::KR-CRN-1234567890123::leave",
         "company_id": "KR-CRN-1234567890123",
         "category_id": "leave",

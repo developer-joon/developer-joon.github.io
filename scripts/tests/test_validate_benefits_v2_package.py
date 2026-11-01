@@ -216,6 +216,37 @@ class BenefitsV2PackageTests(unittest.TestCase):
                 package[target][0]["scope_status"] = scope_status
                 self.assert_invalid(package, "exact_entity")
 
+    def test_rejects_source_less_official_claim(self):
+        package = package_for("official_verified")
+        package["official_claims"][0]["source_ids"] = []
+        self.assert_invalid(package, "official-claim-v2.schema.json")
+
+    def test_rejects_ineligible_official_claim_and_source(self):
+        package = package_for("official_verified")
+        package["official_claims"][0]["publication_eligibility"] = "ineligible"
+        package["sources"][0]["publication_eligibility"] = "ineligible"
+        self.assert_invalid(package, "official_verified requires eligible official evidence")
+
+    def test_rejects_forged_reference_identity(self):
+        package = package_for("reference")
+        forged = "reference::KR-CRN-1234567890123::health::source::example"
+        package["references"][0]["reference_id"] = forged
+        package["cells"][0]["reference_ids"] = [forged]
+        self.assert_invalid(package, "noncanonical reference_id")
+
+    def test_rejects_forged_community_report_identity(self):
+        package = package_for("community_report")
+        forged = "community::KR-CRN-1234567890123::health::source::community-1"
+        package["community_reports"][0]["community_report_id"] = forged
+        package["cells"][0]["community_report_ids"] = [forged]
+        self.assert_invalid(package, "noncanonical community_report_id")
+
+    def test_rejects_jurisdiction_substitution(self):
+        package = package_for("reference")
+        package["references"][0]["scope"]["countries"] = ["US"]
+        package["sources"][0]["scope"]["countries"] = ["US"]
+        self.assert_invalid(package, "does not cover cell jurisdiction KR")
+
     def test_rejects_scope_substitution_between_evidence_and_source(self):
         package = package_for("reference")
         package["sources"][0]["scope"]["countries"] = ["US"]
