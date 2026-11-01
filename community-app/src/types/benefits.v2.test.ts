@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { claimSchema, manifestSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema } from './benefits'
+import { claimSchema, detailSchema, manifestSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema } from './benefits'
 
 function validManifest() {
   const descriptor = { url: 'community/data/company-benefits/v2/taxonomy.json', sha256: 'a'.repeat(64), record_count: 10, byte_count: 100 }
@@ -22,7 +22,7 @@ function validManifest() {
 }
 
 it('accepts all four explicit cell states and rejects not_researched', () => {
-  const base = { category_id: 'leave', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: [], reference_ids: [], community_report_ids: [], kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z' }
+  const base = { category_id: 'leave', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: [], reference_ids: [], community_report_ids: [], kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [] }
   const outcomes = [
     { ...base, state: 'official_verified', reliability: 'high', publication_eligibility: 'official_claim', official_claim_ids: ['official::' + 'a'.repeat(64)], reference_ids: ['reference::retained'], community_report_ids: ['community::retained'], claim_count: 3 },
     { ...base, state: 'reference', reliability: 'medium', publication_eligibility: 'reference_only', reference_ids: ['reference::record-1'], limitation_codes: ['lower_tier_evidence'] },
@@ -41,9 +41,23 @@ it('requires an explicit protocol and rejects contradictory derived outcome proj
     delete invalid[field]
     expect(manifestSchema.safeParse(invalid).success).toBe(false)
   }
-  const official = { category_id: 'leave', state: 'official_verified', reliability: 'high', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', publication_eligibility: 'official_claim', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: ['official::' + 'a'.repeat(64)], reference_ids: [], community_report_ids: [], kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z' }
+  const official = { category_id: 'leave', state: 'official_verified', reliability: 'high', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', publication_eligibility: 'official_claim', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: ['official::' + 'a'.repeat(64)], reference_ids: [], community_report_ids: [], kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [] }
   expect(categoryOutcomeSchema.safeParse({ ...official, claim_count: 0 }).success).toBe(false)
   expect(categoryOutcomeSchema.safeParse({ ...official, kind: 'insufficient_evidence', reason_code: 'searched_not_found', searched_source_ids: [], searched_at: official.assessed_at }).success).toBe(false)
+  expect(categoryOutcomeSchema.safeParse({ ...official, official_claim_ids: [official.official_claim_ids[0], official.official_claim_ids[0]], claim_count: 2 }).success).toBe(false)
+  expect(categoryOutcomeSchema.safeParse({ ...official, limitation_codes: ['lower_tier_evidence'] }).success).toBe(false)
+  expect(categoryOutcomeSchema.safeParse({ ...official, limitation_codes: ['scope_limit', 'scope_limit'] }).success).toBe(false)
+})
+
+it('requires exact searched-source closure in company details', () => {
+  const insufficient = { category_id: 'leave', state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', conflict_status: 'none', publication_eligibility: 'discovery_only', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: [], reference_ids: [], community_report_ids: [], kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: ['scope_limit', 'currentness_limit'], last_checked_at: '2026-11-01T00:00:00Z', nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_source_ids: ['source::searched'], searched_at: '2026-11-01T00:00:00Z' } as const
+  const detail = {
+    schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'vNext', data_version: 'v2', taxonomy_version: 'benefit-taxonomy-v1',
+    company: { company_id: 'KR-CRN-0000000000001', population_sequence: 1, legal_name: 'Search Co', scope: 'domestic', jurisdiction: 'KR', registry_id: '1', selected_reporting_legal_entity: 'Search Co', incorporation_country: 'KR', registered_head_office_country: 'KR', financial_consolidation_parent: { kind: 'unknown', reason: 'unknown' }, ultimate_parent: { kind: 'unknown', reason: 'unknown' }, benefit_policy_owner: { kind: 'unknown', reason: 'unknown' }, sector: 'non_financial', employment_evidence_scope: '', employment_boundary_note: '' },
+    category_outcomes: Array.from({ length: 10 }, (_, index) => ({ ...insufficient, category_id: ['leave','family','health','growth','housing','commute','remote','retirement','meals','inclusion'][index], searched_source_ids: index ? [] : insufficient.searched_source_ids })),
+    claims: [], official_claims: [], references: [], community_reports: [], sources: [],
+  } as const
+  expect(detailSchema.safeParse(detail).success).toBe(false)
 })
 
 it('accepts schema v2 and rejects ranking semantics', () => {

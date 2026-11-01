@@ -111,12 +111,28 @@ def taxonomy_contract(taxonomy):
     mappings = taxonomy.get("dol_form_5500_mappings")
     if taxonomy.get("taxonomy_version") != "benefit-taxonomy-v1":
         raise ValueError("unsupported taxonomy version")
+    category_fields = {"id", "label_ko", "order"}
+    type_fields = {"id", "category_id", "label_ko"}
+    mapping_fields = {"field", "code", "benefit_type_id", "label_en", "forced_status", "evidence_semantics"}
     if (not isinstance(categories, list) or len(categories) != 10
-            or any(not isinstance(item, dict) for item in categories)
-            or [item.get("order") for item in categories] != list(range(1, 11))):
+            or any(not isinstance(item, dict) or set(item) != category_fields
+                   or not isinstance(item.get("id"), str) or not item["id"]
+                   or not isinstance(item.get("label_ko"), str) or not item["label_ko"]
+                   or isinstance(item.get("order"), bool) or not isinstance(item.get("order"), int)
+                   for item in categories)
+            or [item["order"] for item in categories] != list(range(1, 11))):
         raise ValueError("taxonomy must contain ten canonically ordered categories")
-    if (not isinstance(types, list) or any(not isinstance(item, dict) for item in types)
-            or not isinstance(mappings, list) or any(not isinstance(item, dict) for item in mappings)):
+    if (not isinstance(types, list) or any(
+            not isinstance(item, dict) or set(item) not in (type_fields, type_fields | {"baseline_kind"})
+            or any(not isinstance(item.get(field), str) or not item[field]
+                   for field in type_fields)
+            or ("baseline_kind" in item and (not isinstance(item["baseline_kind"], str) or not item["baseline_kind"]))
+            for item in types)
+            or not isinstance(mappings, list) or any(
+                not isinstance(item, dict) or set(item) != mapping_fields
+                or any(not isinstance(item.get(field), str) or not item[field]
+                       for field in mapping_fields)
+                for item in mappings)):
         raise ValueError("taxonomy types and DOL mappings must be object arrays")
     category_ids = [item.get("id") for item in categories]
     type_ids = [item.get("id") for item in types or []]
@@ -389,6 +405,11 @@ def publication_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
     taxonomy_path = Path(taxonomy_path)
     taxonomy = read_json(taxonomy_path)
     taxonomy_contract(taxonomy)
+    v2_records = {
+        ledger: read_jsonl_bytes(v2_snapshot[ledger], series.V2_LEDGER_FILES[ledger])
+        for ledger in series.V2_LEDGER_FILES
+    }
+    series.validate_complete_v2_progress(root, records=v2_records)
     if any((root / series.V2_LEDGER_FILES[ledger]).read_bytes() != raw
            for ledger, raw in v2_snapshot.items()):
         raise ValueError("v2 source ledger changed during publication validation")
@@ -430,6 +451,18 @@ def public_v2_record(record, timestamp_fields=()):
             projected["frozen_snapshot"]["frozen_at"], "frozen_at"
         )
     return projected
+
+
+def public_v2_source(source):
+    fields = {
+        "source_id", "source_tier", "title", "url", "retrieved_at", "content_sha256",
+        "reliability", "currentness", "scope_status", "scope", "conflict_status",
+        "publication_eligibility",
+    }
+    return {
+        key: (utc_time(value, key) if key == "retrieved_at" else value)
+        for key, value in source.items() if key in fields
+    }
 
 
 def public_legacy_source(source):
@@ -525,6 +558,13 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
         evidence_count = sum(len(cell[field]) for field in (
             "official_claim_ids", "reference_ids", "community_report_ids"
         ))
+        evidence_ids = [*cell["official_claim_ids"], *cell["reference_ids"], *cell["community_report_ids"]]
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError(f"{company['company_id']}:{category_id}: evidence IDs must be unique")
+        attempts = [v2_indexes["attempts"][attempt_id] for attempt_id in cell["attempt_ids"]]
+        searched_source_ids = sorted({
+            source_id for attempt in attempts for source_id in attempt.get("source_ids", [])
+        })
         assessed_at = utc_time(cell["assessed_at"], "cell assessed_at")
         outcome = {
             key: cell[key] for key in (
@@ -554,13 +594,12 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
                                    len({type_id for _, type_ids, _ in category_claims[category_id] for type_id in type_ids})),
             "scope": merged_scope(evidence_records),
             "limitation_codes": limitation_codes, "last_checked_at": assessed_at,
+            "searched_source_ids": searched_source_ids,
         })
         if cell["state"] == "no_public_info":
             outcome["nonabsence_notice"] = NONABSENCE_NOTICE
-            attempts = [v2_indexes["attempts"][attempt_id] for attempt_id in cell["attempt_ids"]]
             outcome.update(
                 reason_code="searched_not_found",
-                searched_source_ids=sorted({source_id for attempt in attempts for source_id in attempt.get("source_ids", [])}),
                 searched_at=assessed_at,
             )
         outcomes.append(outcome)
@@ -610,11 +649,25 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
         source_id for record in [*official_claims, *references, *community_reports]
         for source_id in record.get("source_ids", [record.get("source_id")]) if source_id
     }
+    company_attempts = [
+        attempt for attempt in v2_indexes["attempts"].values()
+        if attempt.get("company_id") == company["company_id"]
+    ]
+    v2_source_ids.update(
+        source_id for attempt in company_attempts for source_id in attempt.get("source_ids", [])
+    )
     public_sources = [public_legacy_source(source_map[item["source_id"]]) for item in projections for item in item["source_evidence"]]
     public_sources.extend(
-        public_v2_record(v2_indexes["sources"][source_id], ("retrieved_at",))
+        public_v2_source(v2_indexes["sources"][source_id])
         for source_id in sorted(v2_source_ids)
     )
+    source_inventory = {}
+    for source in public_sources:
+        source_id = source["source_id"]
+        if source_id in source_inventory and source_inventory[source_id] != source:
+            raise ValueError(f"conflicting company source projection: {source_id}")
+        source_inventory[source_id] = source
+    public_sources = [source_inventory[source_id] for source_id in sorted(source_inventory)]
     return {
         "listing": listing, "company": detail_company, "category_outcomes": outcomes,
         "claims": projections, "official_claims": official_claims, "references": references,

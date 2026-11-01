@@ -521,6 +521,34 @@ def test_taxonomy_contract_rejects_malformed_collection_members_with_controlled_
         module.taxonomy_contract(taxonomy)
 
 
+def test_taxonomy_contract_rejects_malformed_containers_strings_and_internal_fields():
+    module_spec = importlib.util.spec_from_file_location("artifact_strict_taxonomy", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    original = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    for field, value in (("categories", None), ("benefit_types", {}),
+                         ("dol_form_5500_mappings", [None])):
+        taxonomy = copy.deepcopy(original)
+        taxonomy[field] = value
+        with raises(ValueError):
+            module.taxonomy_contract(taxonomy)
+    for collection, field, value in (
+        ("categories", "id", None), ("categories", "label_ko", []),
+        ("benefit_types", "category_id", {}), ("benefit_types", "label_ko", None),
+        ("dol_form_5500_mappings", "field", []), ("dol_form_5500_mappings", "code", None),
+    ):
+        taxonomy = copy.deepcopy(original)
+        taxonomy[collection][0][field] = value
+        with raises(ValueError):
+            module.taxonomy_contract(taxonomy)
+    for collection, leaked in (("categories", "reviewer_id"), ("benefit_types", "internal_notes"),
+                               ("dol_form_5500_mappings", "reviewer_id")):
+        taxonomy = copy.deepcopy(original)
+        taxonomy[collection][0][leaked] = "secret"
+        with raises(ValueError):
+            module.taxonomy_contract(taxonomy)
+
+
 def test_build_company_preserves_v1_claims_and_projects_v2_evidence():
     module_spec = importlib.util.spec_from_file_location("artifact_evidence_projection", SCRIPT)
     module = importlib.util.module_from_spec(module_spec)
@@ -556,6 +584,41 @@ def test_build_company_preserves_v1_claims_and_projects_v2_evidence():
     assert leave["reference_ids"] == [reference_id] and leave["community_report_ids"] == [community_id]
     assert leave["claim_count"] == 3 and leave["last_checked_at"] == "2026-11-01T01:02:03Z"
     assert "reason_code" not in leave
+
+
+def test_build_company_projects_all_searched_sources_and_exact_derived_metadata():
+    module_spec = importlib.util.spec_from_file_location("artifact_search_projection", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    company = {"company_id": "KR-CRN-0000000000001", "legal_name": "Search Co", "scope": "domestic", "jurisdiction": "KR"}
+    categories = [item["id"] for item in taxonomy["categories"]]
+    attempts, sources, cells = {}, {}, {}
+    for category in categories:
+        attempt_id, source_id = f"attempt::{category}", f"source::{category}"
+        attempts[attempt_id] = {"attempt_id": attempt_id, "company_id": company["company_id"], "category_id": category,
+                                "source_ids": [source_id], "completed_at": "2026-11-01T00:00:00Z"}
+        sources[source_id] = {"source_id": source_id, "source_tier": "other_public_web", "title": f"Search {category}",
+                              "url": f"https://search.example/{category}", "retrieved_at": "2026-11-01T00:00:00Z",
+                              "content_sha256": "a" * 64, "reliability": "unrated", "currentness": "unknown",
+                              "scope_status": "unresolved", "scope": {"countries": ["KR"], "legal_entities": [], "roles": [], "employment_types": []},
+                              "conflict_status": "none", "publication_eligibility": "discovery_only",
+                              "internal_notes": "must not leak", "reviewer_id": "secret"}
+        cells[category] = {"category_id": category, "state": "no_public_info", "reliability": "none", "currentness": "unknown",
+                           "scope_status": "unresolved", "conflict_status": "none", "publication_eligibility": "discovery_only",
+                           "assessed_at": "2026-11-01T00:00:00Z", "official_claim_ids": [], "reference_ids": [],
+                           "community_report_ids": [], "attempt_ids": [attempt_id]}
+    detail = module.build_company(company, 1, [], None, taxonomy, {}, {}, cells, {
+        "attempts": attempts, "official_claims": {}, "references": {}, "community_reports": {}, "sources": sources,
+    })
+    projected_ids = [source["source_id"] for source in detail["sources"]]
+    searched_ids = [source_id for outcome in detail["category_outcomes"] for source_id in outcome["searched_source_ids"]]
+    assert set(projected_ids) == set(sources) == set(searched_ids)
+    assert len(projected_ids) == len(set(projected_ids))
+    assert not internal_review_keys(detail["sources"])
+    assert all(set(outcome["limitation_codes"]) == {"scope_limit", "currentness_limit"}
+               and len(outcome["limitation_codes"]) == 2 for outcome in detail["category_outcomes"])
 
 
 def test_assignment_validator_requires_hash_bound_independent_approval(tmp_path):
@@ -952,14 +1015,14 @@ def test_fixture_receipt_identities_are_globally_unique_across_all_batches(tmp_p
     assert all(item["route_id"] in item["capture_locator"] for item in attempts)
 
 
-def test_real_publication_preflight_validates_global_v2_package_once_and_emits(tmp_path):
+def test_real_publication_preflight_validates_global_v2_package_and_exact_snapshot(tmp_path):
     research = make_real_v2_research_fixture(tmp_path / "research")
     calls, scans, reads = [], [], []
     result = run_real_generator(
         research, tmp_path / "real-output", tmp_path, calls, scans, reads
     )
     assert result.returncode == 0, result.stderr
-    assert calls == [1]
+    assert calls == [2]
     assert scans == [0]
     assert reads == [1]
     assert (tmp_path / "real-output" / "manifest.json").is_file()
@@ -1020,6 +1083,44 @@ def test_publication_gate_rejects_v2_ledger_mutation_during_verification(tmp_pat
         module.publication_gate(
             research, TAXONOMY, "2026-10-31", tmp_path / "freeze.json", tmp_path / "effective.json"
         )
+
+
+def test_publication_gate_validates_exact_snapshot_across_malformed_valid_malformed_swap(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    spec = importlib.util.spec_from_file_location("artifact_snapshot_authority", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    runtime_series = module.load_verifier().company_benefits_series
+    target = research / series.V2_LEDGER_FILES["attempts"]
+    valid = target.read_bytes()
+    malformed_rows = series.read_jsonl(target)
+    malformed_rows[0]["unsupported_attempt_field"] = "must-fail"
+    malformed = b"".join((compact(row) + "\n").encode() for row in malformed_rows)
+    target.write_bytes(malformed)
+    output = tmp_path / "snapshot-race-output"
+
+    def validate_reopened_paths(*_args, **_kwargs):
+        target.write_bytes(valid)
+        try:
+            runtime_series.validate_complete_v2_progress(research)
+        finally:
+            target.write_bytes(malformed)
+
+    stderr = io.StringIO()
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=validate_reopened_paths), redirect_stderr(stderr):
+        code = module.main([
+            "--research-root", str(research), "--output-root", str(output),
+            "--taxonomy", str(TAXONOMY), "--data-version", "snapshot-race-v2",
+            "--generated-at", "2026-10-31T04:00:00Z", "--as-of", "2026-10-31",
+            "--freeze-anchor-receipt", str(tmp_path / "freeze.json"),
+            "--effective-selection-receipt", str(tmp_path / "effective.json"),
+        ])
+    assert code == 1
+    assert "authoritative" in stderr.getvalue().casefold() or "additional properties" in stderr.getvalue().casefold()
+    assert "traceback" not in stderr.getvalue().casefold()
+    assert not output.exists()
 
 
 def load_tests(loader, tests, pattern):

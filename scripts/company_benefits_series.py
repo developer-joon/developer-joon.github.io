@@ -542,8 +542,8 @@ def progress_contract_version(progress):
     return "2"
 
 
-def validate_complete_v2_progress(root, batches=None, progress=None):
-    """Require and verify the complete v2 partition before publication."""
+def validate_complete_v2_progress(root, batches=None, progress=None, records=None):
+    """Require and verify an exact complete v2 record snapshot and its canonical partition."""
     root = Path(root)
     batches = batches if batches is not None else read_jsonl(root / "series-batches.jsonl")
     if progress is None:
@@ -588,7 +588,7 @@ def validate_complete_v2_progress(root, batches=None, progress=None):
         raise ValueError("v2 progress batch IDs must exactly equal the canonical 80-batch set")
     entry_map = {entry["batch_id"]: entry for entry in entries}
 
-    records = read_v2_batch_records(root)
+    records = read_v2_batch_records(root) if records is None else records
     validate_v2_authoritative_records(records, root)
     partitions = {
         batch_id: {ledger: [] for ledger in V2_LEDGER_FILES}

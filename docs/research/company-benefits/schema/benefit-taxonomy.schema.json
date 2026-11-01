@@ -3,17 +3,20 @@
   "$id": "benefit-taxonomy.schema.json",
   "title": "Versioned non-ranking benefit taxonomy",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": ["artifact_kind", "taxonomy_version", "categories", "benefit_types", "dol_form_5500_mappings"],
   "properties": {
+    "data_version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
     "artifact_kind": {"const": "benefit_taxonomy"},
     "taxonomy_version": {"const": "benefit-taxonomy-v1"},
+    "language": {"type": "string", "minLength": 1},
     "categories": {
       "type": "array",
       "minItems": 10,
       "maxItems": 10,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": ["id", "label_ko", "order"],
         "properties": {
           "id": {"type": "string", "pattern": "^[a-z][a-z-]+$"},
@@ -28,11 +31,13 @@
       "maxItems": 45,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": ["id", "category_id", "label_ko"],
         "properties": {
           "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"},
           "category_id": {"type": "string"},
-          "label_ko": {"type": "string", "minLength": 1}
+          "label_ko": {"type": "string", "minLength": 1},
+          "baseline_kind": {"type": "string", "minLength": 1}
         }
       }
     },
@@ -42,8 +47,13 @@
       "maxItems": 9,
       "items": {
         "type": "object",
-        "required": ["field", "code", "benefit_type_id", "forced_status", "evidence_semantics"],
+        "additionalProperties": false,
+        "required": ["field", "code", "benefit_type_id", "label_en", "forced_status", "evidence_semantics"],
         "properties": {
+          "field": {"type": "string", "minLength": 1},
+          "code": {"type": "string", "minLength": 1},
+          "benefit_type_id": {"type": "string", "minLength": 1},
+          "label_en": {"type": "string", "minLength": 1},
           "forced_status": {"const": "bounded"},
           "evidence_semantics": {"const": "historical_named_plan_feature_only"}
         }
