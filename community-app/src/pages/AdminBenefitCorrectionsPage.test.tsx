@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import type { CommunityRepository } from '../data/communityRepository'
@@ -169,6 +169,82 @@ describe('AdminBenefitCorrectionsPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('요청 상태가 변경')
     await waitFor(() => expect(listAdminQueue).toHaveBeenCalledTimes(2))
     expect(screen.getByRole('alert')).toHaveTextContent('요청 상태가 변경')
+  })
+
+  it('attributes a successful review completion to its submitted request after selection changes', async () => {
+    const second = {
+      ...submitted,
+      id: '10000000-0000-4000-8000-000000000002',
+      companyId: 'KR-CRN-9999999999999',
+      currentText: 'B 기존 내용',
+      proposedText: 'B 제안 내용',
+    }
+    const reviewing = { ...submitted, status: 'reviewing' as const, adminResponse: 'A 검토 시작', reviewedAt: '2026-11-01T02:00:00Z', updatedAt: '2026-11-01T02:00:00Z' }
+    let finishReview!: (value: unknown) => void
+    const reviewRequest = vi.fn().mockReturnValue(new Promise(resolve => { finishReview = resolve }))
+    const listAdminQueue = vi.fn().mockResolvedValue({ ok: true, data: { items: [submitted, second], hasMore: false, nextCursor: null } })
+    const listAdminAudit = vi.fn().mockResolvedValue({ ok: true, data: { items: [], hasMore: false, nextCursor: null } })
+    page(corrections({ listAdminQueue, listAdminAudit, reviewRequest }))
+
+    const rows = await screen.findAllByRole('button', { name: /복지 정정.*선택/ })
+    fireEvent.click(rows[0])
+    fireEvent.change(screen.getByLabelText('관리자 응답'), { target: { value: 'A 검토 시작' } })
+    fireEvent.click(screen.getByRole('button', { name: '검토 시작' }))
+    fireEvent.click(rows[1])
+    const secondResponse = screen.getByLabelText('관리자 응답')
+    expect(secondResponse).toBeEnabled()
+    fireEvent.change(secondResponse, { target: { value: 'B 작성 중 응답' } })
+    await waitFor(() => expect(listAdminAudit).toHaveBeenCalledTimes(2))
+
+    finishReview({ ok: true, data: reviewing })
+
+    await waitFor(() => expect(within(rows[0]).getByText('검토 중')).toBeInTheDocument())
+    const secondInspector = screen.getByRole('complementary', { name: '선택한 복지 정정 검토' })
+    expect(rows[1]).toHaveAttribute('aria-pressed', 'true')
+    expect(within(secondInspector).getByText('B 기존 내용')).toBeInTheDocument()
+    expect(within(secondInspector).getByText('B 제안 내용')).toBeInTheDocument()
+    expect(secondResponse).toHaveValue('B 작성 중 응답')
+    expect(screen.queryByText('검토 결과가 저장되었습니다.')).not.toBeInTheDocument()
+    expect(listAdminAudit).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    ['failure', { ok: false, error: { code: 'network', message: 'A 검토 실패' } }],
+    ['conflict', { ok: false, error: { code: 'conflict', message: 'A 상태 충돌' } }],
+  ])('suppresses stale %s review callbacks after selection changes', async (_kind, result) => {
+    const second = {
+      ...submitted,
+      id: '10000000-0000-4000-8000-000000000002',
+      companyId: 'KR-CRN-9999999999999',
+      currentText: 'B 기존 내용',
+      proposedText: 'B 제안 내용',
+    }
+    let finishReview!: (value: unknown) => void
+    const reviewRequest = vi.fn().mockReturnValue(new Promise(resolve => { finishReview = resolve }))
+    const listAdminQueue = vi.fn().mockResolvedValue({ ok: true, data: { items: [submitted, second], hasMore: false, nextCursor: null } })
+    const listAdminAudit = vi.fn().mockResolvedValue({ ok: true, data: { items: [], hasMore: false, nextCursor: null } })
+    page(corrections({ listAdminQueue, listAdminAudit, reviewRequest }))
+
+    const rows = await screen.findAllByRole('button', { name: /복지 정정.*선택/ })
+    fireEvent.click(rows[0])
+    fireEvent.change(screen.getByLabelText('관리자 응답'), { target: { value: 'A 검토 시작' } })
+    fireEvent.click(screen.getByRole('button', { name: '검토 시작' }))
+    fireEvent.click(rows[1])
+    const secondResponse = screen.getByLabelText('관리자 응답')
+    expect(secondResponse).toBeEnabled()
+    fireEvent.change(secondResponse, { target: { value: 'B 작성 중 응답' } })
+    await waitFor(() => expect(listAdminAudit).toHaveBeenCalledTimes(2))
+
+    await act(async () => { finishReview(result) })
+
+    const secondInspector = screen.getByRole('complementary', { name: '선택한 복지 정정 검토' })
+    expect(rows[1]).toHaveAttribute('aria-pressed', 'true')
+    expect(within(secondInspector).getByText('B 기존 내용')).toBeInTheDocument()
+    expect(within(secondInspector).getByText('B 제안 내용')).toBeInTheDocument()
+    expect(secondResponse).toHaveValue('B 작성 중 응답')
+    expect(screen.queryByText(/A 검토 실패|A 상태 충돌/)).not.toBeInTheDocument()
+    expect(listAdminQueue).toHaveBeenCalledTimes(1)
+    expect(listAdminAudit).toHaveBeenCalledTimes(2)
   })
 
   it('does not imply approval was applied and only shows a server-projected applied version', async () => {

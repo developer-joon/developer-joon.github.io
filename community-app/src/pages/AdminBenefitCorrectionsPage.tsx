@@ -34,6 +34,7 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
   const authorizationGeneration = useRef(0)
   const queueGeneration = useRef(0)
   const auditGeneration = useRef(0)
+  const selectionGeneration = useRef(0)
   const queueController = useRef<AbortController | null>(null)
   const moreController = useRef<AbortController | null>(null)
   const auditController = useRef<AbortController | null>(null)
@@ -51,6 +52,12 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
   const itemsRef = useRef(items); itemsRef.current = items
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selectedIdRef = useRef(selectedId); selectedIdRef.current = selectedId
+  const changeSelection = useCallback((id: string | null) => {
+    if (selectedIdRef.current === id) return
+    selectionGeneration.current += 1
+    selectedIdRef.current = id
+    setSelectedId(id)
+  }, [])
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [queueError, setQueueError] = useState<string | null>(null)
@@ -61,7 +68,7 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
   const [adminResponse, setAdminResponse] = useState('')
   const [reviewError, setReviewError] = useState<string | null>(null)
   const [reviewMessage, setReviewMessage] = useState('')
-  const [reviewing, setReviewing] = useState(false)
+  const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(null)
   const [auditEvents, setAuditEvents] = useState<BenefitCorrectionAuditEvent[]>([])
   const auditEventsRef = useRef(auditEvents); auditEventsRef.current = auditEvents
   const [auditRequestId, setAuditRequestId] = useState<string | null>(null)
@@ -78,7 +85,7 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
     setAuthorizedActor(null); setAdminState('checking'); setAdminError('')
     queueController.current?.abort(); moreController.current?.abort(); auditController.current?.abort(); auditMoreController.current?.abort(); reviewController.current?.abort()
     queueController.current = null; moreController.current = null; auditController.current = null; auditMoreController.current = null; reviewController.current = null; reviewOperation.current = null; reviewKey.current = null
-    setItems([]); setSelectedId(null); setAuditEvents([]); setAuditRequestId(null)
+    setItems([]); changeSelection(null); setAuditEvents([]); setAuditRequestId(null); setReviewingRequestId(null)
     if (auth.loading || !actorId) return
     void authorizationRepository.isAdmin().then(result => {
       if (generation !== authorizationGeneration.current || identity.current.actorId !== actorId || identity.current.authorizationRepository !== authorizationRepository || identity.current.currentPath !== currentPath) return
@@ -87,7 +94,7 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
       else { setAuthorizedActor(actorId); setAdminState('allowed') }
     })
     return () => { if (authorizationGeneration.current === generation) authorizationGeneration.current += 1 }
-  }, [actorId, adminAttempt, auth.loading, authorizationRepository, correctionRepository, currentPath])
+  }, [actorId, adminAttempt, auth.loading, authorizationRepository, changeSelection, correctionRepository, currentPath])
 
   const authorized = adminState === 'allowed' && authorizedActor === actorId
 
@@ -97,7 +104,7 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
     queueController.current?.abort(); moreController.current?.abort()
     moreController.current = null
     const controller = new AbortController(); queueController.current = controller
-    setLoading(true); setLoadingMore(false); setQueueError(null); setItems([]); setSelectedId(null); setHasMore(false); setNextCursor(null); setAnnouncement('')
+    setLoading(true); setLoadingMore(false); setQueueError(null); setItems([]); changeSelection(null); setHasMore(false); setNextCursor(null); setAnnouncement('')
     void correctionRepository.listAdminQueue({ status: filter, limit: pageSize }, controller.signal).then(result => {
       if (controller.signal.aborted || generation !== queueGeneration.current || identity.current.actorId !== actorId || identity.current.correctionRepository !== correctionRepository || filterRef.current !== filter) return
       setLoading(false)
@@ -108,7 +115,7 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
       setAnnouncement(`정정 요청 ${unique.length}건을 불러왔습니다.`)
     })
     return () => { controller.abort(); if (queueGeneration.current === generation) queueGeneration.current += 1 }
-  }, [actorId, authorized, correctionRepository, filter, queueAttempt])
+  }, [actorId, authorized, changeSelection, correctionRepository, filter, queueAttempt])
 
   useEffect(() => () => { queueController.current?.abort(); moreController.current?.abort(); auditController.current?.abort(); auditMoreController.current?.abort(); reviewController.current?.abort() }, [])
 
@@ -181,7 +188,7 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
       ? itemsRef.current.map(item => item.id === updated.id ? updated : item)
       : itemsRef.current.filter(item => item.id !== updated.id)
     itemsRef.current = next; setItems(next)
-    if (!remainsInFilter(updated, filterRef.current)) setSelectedId(null)
+    if (!remainsInFilter(updated, filterRef.current) && selectedIdRef.current === updated.id) changeSelection(null)
   }
 
   function submitReview(action: BenefitCorrectionReviewAction) {
@@ -189,21 +196,29 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
     const response = adminResponse.trim()
     if (response.length === 0 || Array.from(response).length > 2000) { setReviewError('관리자 응답은 1자 이상 2,000자 이하로 입력해 주세요.'); return }
     const expectedStatus = selected.status
-    const signature = JSON.stringify([selected.id, expectedStatus, action, response])
+    const operation = { requestId: selected.id, selectionGeneration: selectionGeneration.current }
+    const signature = JSON.stringify([operation.requestId, expectedStatus, action, response])
     if (reviewKey.current?.signature !== signature) reviewKey.current = { signature, value: crypto.randomUUID() }
-    const operation = {}; const controller = new AbortController()
+    const controller = new AbortController()
     reviewOperation.current = operation; reviewController.current = controller
-    setReviewing(true); setReviewError(null); setReviewMessage('')
-    void correctionRepository.reviewRequest({ requestId: selected.id, expectedStatus, action, adminResponse: response, clientKey: reviewKey.current.value }, controller.signal).then(result => {
+    setReviewingRequestId(operation.requestId); setReviewError(null); setReviewMessage('')
+    void correctionRepository.reviewRequest({ requestId: operation.requestId, expectedStatus, action, adminResponse: response, clientKey: reviewKey.current.value }, controller.signal).then(result => {
       if (controller.signal.aborted || reviewOperation.current !== operation || identity.current.actorId !== actorId || identity.current.correctionRepository !== correctionRepository) return
-      reviewOperation.current = null; reviewController.current = null; setReviewing(false)
+      reviewOperation.current = null; reviewController.current = null; setReviewingRequestId(null)
+      const selectionUnchanged = selectionGeneration.current === operation.selectionGeneration && selectedIdRef.current === operation.requestId
       if (!result.ok) {
+        if (!selectionUnchanged) {
+          if (result.error.code === 'conflict' || result.error.code === 'stale_response') reviewKey.current = null
+          return
+        }
         setReviewError(result.error.message)
         if (result.error.code === 'conflict' || result.error.code === 'stale_response') { reviewKey.current = null; reloadQueue() }
         return
       }
       reviewKey.current = null
-      applyAuthoritativeItem(result.data); setAdminResponse(''); setReviewMessage('검토 결과가 저장되었습니다.'); refreshAudit()
+      applyAuthoritativeItem(result.data)
+      if (!selectionUnchanged) return
+      setAdminResponse(''); setReviewMessage('검토 결과가 저장되었습니다.'); refreshAudit()
     })
   }
 
@@ -220,9 +235,9 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
     <nav className="admin-local-nav" aria-label="관리자 도구"><a href="/community/admin/reports/">신고 관리</a><a href="/community/admin/benefit-corrections/" aria-current="page">복지 정정</a></nav>
     {reviewError && !selected && <p className="admin-operation-error" role="alert">{reviewError}</p>}
     <div className="admin-workspace">
-      <BenefitCorrectionQueue items={items} selectedId={selectedId} filter={filter} loading={loading} loadingMore={loadingMore} error={queueError} hasMore={hasMore} announcement={announcement} onSelect={setSelectedId} onFilterChange={setFilter} onRetry={reloadQueue} onLoadMore={loadMoreItems} />
+      <BenefitCorrectionQueue items={items} selectedId={selectedId} filter={filter} loading={loading} loadingMore={loadingMore} error={queueError} hasMore={hasMore} announcement={announcement} onSelect={changeSelection} onFilterChange={setFilter} onRetry={reloadQueue} onLoadMore={loadMoreItems} />
       <aside ref={inspectorRef} tabIndex={-1} className="admin-inspector correction-inspector" aria-label="선택한 복지 정정 검토">
-        {selected ? <CorrectionDetail item={selected} response={adminResponse} reviewing={reviewing} error={reviewError} message={reviewMessage}
+        {selected ? <CorrectionDetail item={selected} response={adminResponse} reviewing={reviewingRequestId === selected.id} error={reviewError} message={reviewMessage}
           auditEvents={auditRequestId === selected.id ? auditEvents : []} auditLoading={auditRequestId !== selected.id || auditLoading} auditLoadingMore={auditLoadingMore}
           auditError={auditRequestId === selected.id ? auditError : null} auditHasMore={auditRequestId === selected.id && auditHasMore}
           onResponse={setAdminResponse} onReview={submitReview} onAuditRetry={refreshAudit} onAuditLoadMore={loadMoreAudit} />
