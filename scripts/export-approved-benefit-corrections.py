@@ -10,6 +10,7 @@ import argparse
 import ctypes
 import errno
 import hashlib
+import hmac
 import ipaddress
 import json
 import multiprocessing
@@ -55,7 +56,11 @@ DEFAULT_PSQL_TIMEOUT_SECONDS = 30.0
 DEFAULT_PROCESS_KILL_GRACE_SECONDS = 0.5
 TOMBSTONE_MARKER_NAME = ".approved-benefit-correction-export-tombstone.json"
 TOMBSTONE_DOMAIN = "developer-joon.github.io/approved-benefit-correction-export/rollback-tombstone"
-TOMBSTONE_VERSION = 1
+TOMBSTONE_HMAC_DOMAIN = b"developer-joon.github.io/approved-benefit-correction-export/tombstone-hmac-v1"
+TOMBSTONE_VERSION = 2
+TOMBSTONE_CONTROL_DIRECTORY_NAME = ".approved-benefit-correction-export-control"
+TOMBSTONE_KEY_NAME = "tombstone-authentication.key"
+TOMBSTONE_KEY_BYTES = 32
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
@@ -633,33 +638,187 @@ def _remove_staging(root_fd, staging_name, _expected_names, expected_directory=N
         pass
 
 
-def _new_tombstone_marker():
-    return _canonical_json_bytes(
-        {
-            "domain": TOMBSTONE_DOMAIN,
-            "nonce": secrets.token_hex(32),
-            "version": TOMBSTONE_VERSION,
-        }
+def _read_tombstone_key_bytes(descriptor):
+    chunks = []
+    remaining = TOMBSTONE_KEY_BYTES + 1
+    while remaining:
+        chunk = os.read(descriptor, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _secure_owned_mode(metadata, file_type, mode):
+    return (
+        file_type(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == mode
     )
 
 
-def _valid_tombstone_marker(raw):
+def _load_tombstone_authentication_key(output_root):
+    """Create or load the private persistent key outside the snapshot root."""
+    root = Path(output_root).absolute()
+    parent = root.parent
+    parent_fd = os.open(
+        parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        parent_metadata = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent_metadata.st_mode)
+            or parent_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(parent_metadata.st_mode) & 0o022
+            or not _root_path_still_names_fd(parent, parent_fd)
+        ):
+            raise OSError(errno.EPERM, "tombstone control parent is not private")
+        try:
+            os.mkdir(TOMBSTONE_CONTROL_DIRECTORY_NAME, 0o700, dir_fd=parent_fd)
+            _fsync_directory_fd(parent_fd)
+        except FileExistsError:
+            pass
+        control_fd = os.open(
+            TOMBSTONE_CONTROL_DIRECTORY_NAME,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        try:
+            control_metadata = os.fstat(control_fd)
+            named_control = os.stat(
+                TOMBSTONE_CONTROL_DIRECTORY_NAME,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not _secure_owned_mode(control_metadata, stat.S_ISDIR, 0o700)
+                or not _same_inode(control_metadata, named_control)
+            ):
+                raise OSError(errno.EPERM, "invalid tombstone control directory")
+            created = False
+            try:
+                key_fd = os.open(
+                    TOMBSTONE_KEY_NAME,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=control_fd,
+                )
+                created = True
+            except FileExistsError:
+                key_fd = os.open(
+                    TOMBSTONE_KEY_NAME,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=control_fd,
+                )
+            try:
+                if created:
+                    key = secrets.token_bytes(TOMBSTONE_KEY_BYTES)
+                    view = memoryview(key)
+                    while view:
+                        written = os.write(key_fd, view)
+                        view = view[written:]
+                    os.fsync(key_fd)
+                    _fsync_directory_fd(control_fd)
+                    os.lseek(key_fd, 0, os.SEEK_SET)
+                key_metadata = os.fstat(key_fd)
+                if (
+                    not _secure_owned_mode(key_metadata, stat.S_ISREG, 0o600)
+                    or key_metadata.st_nlink != 1
+                ):
+                    raise OSError(errno.EPERM, "invalid tombstone authentication key")
+                key = _read_tombstone_key_bytes(key_fd)
+                named_key = os.stat(
+                    TOMBSTONE_KEY_NAME, dir_fd=control_fd, follow_symlinks=False
+                )
+                current_control = os.stat(
+                    TOMBSTONE_CONTROL_DIRECTORY_NAME,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    len(key) != TOMBSTONE_KEY_BYTES
+                    or not stat.S_ISREG(named_key.st_mode)
+                    or not _same_inode(key_metadata, named_key)
+                    or not _same_inode(control_metadata, current_control)
+                    or not _root_path_still_names_fd(parent, parent_fd)
+                ):
+                    raise OSError(errno.ESTALE, "tombstone authentication key changed")
+                return key
+            finally:
+                os.close(key_fd)
+        finally:
+            os.close(control_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _tombstone_snapshot_identity(expected):
+    inventory = {
+        name: hashlib.sha256(raw).hexdigest() for name, raw in expected.items()
+    }
+    return hashlib.sha256(_canonical_json_bytes(inventory)).hexdigest()
+
+
+def _tombstone_unsigned_fields(nonce, snapshot_version, snapshot_identity):
+    return {
+        "domain": TOMBSTONE_DOMAIN,
+        "nonce": nonce,
+        "snapshot_sha256": snapshot_identity,
+        "snapshot_version": snapshot_version,
+        "version": TOMBSTONE_VERSION,
+    }
+
+
+def _tombstone_hmac(key, fields):
+    payload = TOMBSTONE_HMAC_DOMAIN + b"\x00" + _canonical_json_bytes(fields)
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def _new_tombstone_marker(key, snapshot_version, snapshot_identity):
+    fields = _tombstone_unsigned_fields(
+        secrets.token_hex(32), snapshot_version, snapshot_identity
+    )
+    marker = dict(fields)
+    marker["hmac_sha256"] = _tombstone_hmac(key, fields)
+    return _canonical_json_bytes(marker)
+
+
+def _valid_tombstone_marker(raw, key, snapshot_version, snapshot_identity):
     try:
         marker = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
         return False
     return (
         isinstance(marker, dict)
-        and set(marker) == {"domain", "nonce", "version"}
+        and set(marker) == {
+            "domain", "hmac_sha256", "nonce", "snapshot_sha256",
+            "snapshot_version", "version",
+        }
         and marker["domain"] == TOMBSTONE_DOMAIN
         and marker["version"] == TOMBSTONE_VERSION
+        and marker["snapshot_version"] == snapshot_version
+        and marker["snapshot_sha256"] == snapshot_identity
         and isinstance(marker["nonce"], str)
         and HASH_RE.fullmatch(marker["nonce"]) is not None
+        and isinstance(marker["hmac_sha256"], str)
+        and HASH_RE.fullmatch(marker["hmac_sha256"]) is not None
         and raw == _canonical_json_bytes(marker)
+        and hmac.compare_digest(
+            marker["hmac_sha256"],
+            _tombstone_hmac(
+                key,
+                _tombstone_unsigned_fields(
+                    marker["nonce"], marker["snapshot_version"], marker["snapshot_sha256"]
+                ),
+            ),
+        )
     )
 
 
-def _open_verified_tombstone(root_fd, name):
+def _open_verified_tombstone(
+    root_fd, name, key, snapshot_version, snapshot_identity
+):
     """Open and validate a restart-safe tombstone without following names."""
     try:
         directory_fd = os.open(
@@ -672,6 +831,8 @@ def _open_verified_tombstone(root_fd, name):
     accepted = False
     try:
         directory = os.fstat(directory_fd)
+        if not _secure_owned_mode(directory, stat.S_ISDIR, 0o700):
+            return None
         if os.listdir(directory_fd) != [TOMBSTONE_MARKER_NAME]:
             return None
         try:
@@ -680,7 +841,14 @@ def _open_verified_tombstone(root_fd, name):
             )
         except OSError:
             return None
-        if not _valid_tombstone_marker(raw) or not _directory_fd_matches(
+        if (
+            not _secure_owned_mode(marker_file, stat.S_ISREG, 0o600)
+            or marker_file.st_nlink != 1
+        ):
+            return None
+        if not _valid_tombstone_marker(
+            raw, key, snapshot_version, snapshot_identity
+        ) or not _directory_fd_matches(
             root_fd,
             name,
             directory_fd,
@@ -697,9 +865,9 @@ def _open_verified_tombstone(root_fd, name):
             os.close(directory_fd)
 
 
-def _prepare_tombstone(root_fd, target_name):
+def _prepare_tombstone(root_fd, target_name, key, snapshot_identity):
     name = f".{target_name}-tombstone-{secrets.token_hex(16)}"
-    marker = _new_tombstone_marker()
+    marker = _new_tombstone_marker(key, target_name, snapshot_identity)
     directory = None
     os.mkdir(name, mode=0o700, dir_fd=root_fd)
     directory_fd = os.open(
@@ -709,6 +877,8 @@ def _prepare_tombstone(root_fd, target_name):
     )
     try:
         directory = os.fstat(directory_fd)
+        if not _secure_owned_mode(directory, stat.S_ISDIR, 0o700):
+            raise OSError(errno.EPERM, "invalid rollback tombstone directory")
         marker_fd = os.open(
             TOMBSTONE_MARKER_NAME,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -722,6 +892,11 @@ def _prepare_tombstone(root_fd, target_name):
                 view = view[written:]
             os.fsync(marker_fd)
             marker_file = os.fstat(marker_fd)
+            if (
+                not _secure_owned_mode(marker_file, stat.S_ISREG, 0o600)
+                or marker_file.st_nlink != 1
+            ):
+                raise OSError(errno.EPERM, "invalid rollback tombstone marker")
         finally:
             os.close(marker_fd)
         _fsync_directory_fd(directory_fd)
@@ -776,7 +951,9 @@ def _remove_exact_open_directory(
     os.rmdir(name, dir_fd=root_fd)
 
 
-def _rollback_published_directory(root_fd, target_name, expected_directory):
+def _rollback_published_directory(
+    root_fd, target_name, expected_directory, key, snapshot_identity
+):
     """Replace an invalid publication with a durable retry tombstone."""
     try:
         target_fd = os.open(
@@ -805,7 +982,7 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
             tombstone_directory,
             tombstone_marker,
             tombstone_marker_file,
-        ) = _prepare_tombstone(root_fd, target_name)
+        ) = _prepare_tombstone(root_fd, target_name, key, snapshot_identity)
         tombstone_location = quarantine_name
         try:
             try:
@@ -924,7 +1101,9 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
         finally:
             os.close(tombstone_fd)
             if tombstone_location == quarantine_name:
-                verified = _open_verified_tombstone(root_fd, quarantine_name)
+                verified = _open_verified_tombstone(
+                    root_fd, quarantine_name, key, target_name, snapshot_identity
+                )
                 if verified is not None and _same_inode(
                     verified[1], tombstone_directory
                 ):
@@ -1004,6 +1183,23 @@ def _publish_staging_over_tombstone(
         _fsync_directory_fd(root_fd)
         return True
 
+    # A foreign actor replaced the newly published snapshot after exchange.
+    # Preserve its canonical target and remove only the exact displaced,
+    # descriptor-verified tombstone now bound at our hidden staging name.
+    if not published_matches and displaced_is_tombstone:
+        _remove_exact_open_directory(
+            root_fd,
+            staging_name,
+            tombstone_fd,
+            tombstone_directory,
+            tombstone_expected,
+            tombstone_files,
+        )
+        _fsync_directory_fd(root_fd)
+        if _directory_matches(root_fd, target_name, expected):
+            return False
+        raise FileExistsError(f"existing snapshot mismatch: {target_name}")
+
     # The canonical name changed after tombstone validation. Exchange back only
     # while both post-exchange names still identify the exact captured inodes.
     try:
@@ -1059,8 +1255,10 @@ def publish_snapshot(output_root, snapshot_version, candidates):
         raise ValueError("invalid snapshot version")
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
+    authentication_key = _load_tombstone_authentication_key(root)
     target = root / snapshot_version
     expected = _expected_files(snapshot_version, candidates)
+    snapshot_identity = _tombstone_snapshot_identity(expected)
     root_fd = os.open(
         root,
         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -1080,7 +1278,13 @@ def publish_snapshot(output_root, snapshot_version, candidates):
             ):
                 return target
             if _root_path_still_names_fd(root, root_fd):
-                tombstone = _open_verified_tombstone(root_fd, snapshot_version)
+                tombstone = _open_verified_tombstone(
+                    root_fd,
+                    snapshot_version,
+                    authentication_key,
+                    snapshot_version,
+                    snapshot_identity,
+                )
             if tombstone is None:
                 if _root_path_still_names_fd(root, root_fd) and _directory_matches(
                     root_fd, snapshot_version, expected
@@ -1156,7 +1360,11 @@ def publish_snapshot(output_root, snapshot_version, candidates):
             )
         ):
             _rollback_published_directory(
-                root_fd, snapshot_version, staging_metadata
+                root_fd,
+                snapshot_version,
+                staging_metadata,
+                authentication_key,
+                snapshot_identity,
             )
             raise OSError(
                 errno.ESTALE,

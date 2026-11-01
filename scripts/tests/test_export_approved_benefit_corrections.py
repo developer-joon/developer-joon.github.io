@@ -55,6 +55,22 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         kwargs.setdefault("resolver", self.public_resolver)
         return self.exporter.build_snapshot(rows, **kwargs)
 
+    @staticmethod
+    def snapshot_root(directory):
+        root = Path(directory) / "snapshots"
+        root.mkdir()
+        return root
+
+    def authenticated_marker(self, root, version, key=None, candidates=None):
+        if key is None:
+            key = self.exporter._load_tombstone_authentication_key(root)
+        if candidates is None:
+            candidates = self.build_snapshot([row()])
+        identity = self.exporter._tombstone_snapshot_identity(
+            self.exporter._expected_files(version, candidates)
+        )
+        return self.exporter._new_tombstone_marker(key, version, identity)
+
     def test_exports_only_approved_rows_with_a_strict_candidate_allowlist(self):
         snapshot = self.build_snapshot([
             row(),
@@ -224,7 +240,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
     def test_publish_is_atomic_idempotent_and_refuses_existing_mismatch(self):
         candidates = self.build_snapshot([row()])
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             target = self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
             first_manifest = (target / "manifest.json").read_bytes()
             self.assertEqual(target, self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates))
@@ -237,7 +253,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
 
     def test_atomic_noreplace_rename_refuses_even_an_empty_existing_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             source = root / "source"
             target = root / "target"
             source.mkdir()
@@ -252,7 +268,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             target = self.exporter.publish_snapshot(root, version, candidates)
             attacker = root / "attacker-copy"
             attacker.mkdir()
@@ -283,7 +299,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             target = self.exporter.publish_snapshot(root, version, candidates)
             attacker = root / "attacker-copy"
             attacker.mkdir()
@@ -314,7 +330,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             original_fsync = self.exporter._fsync_directory_fd
             replaced = False
 
@@ -322,11 +338,14 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 nonlocal replaced
                 original_fsync(descriptor)
                 if not replaced:
+                    try:
+                        raw = os.open(
+                            "candidates.jsonl", os.O_RDONLY | os.O_NOFOLLOW,
+                            dir_fd=descriptor,
+                        )
+                    except FileNotFoundError:
+                        return
                     replaced = True
-                    raw = os.open(
-                        "candidates.jsonl", os.O_RDONLY | os.O_NOFOLLOW,
-                        dir_fd=descriptor,
-                    )
                     try:
                         contents = b""
                         while True:
@@ -372,7 +391,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             original_rename = self.exporter._rename_noreplace
             mutated = False
 
@@ -421,7 +440,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 )
             )
             self.assertEqual(self.exporter.TOMBSTONE_DOMAIN, marker["domain"])
-            self.assertEqual(1, marker["version"])
+            self.assertEqual(self.exporter.TOMBSTONE_VERSION, marker["version"])
             self.assertRegex(marker["nonce"], r"^[0-9a-f]{64}$")
             self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
             target = self.exporter.publish_snapshot(root, version, candidates)
@@ -431,7 +450,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             original_rename = self.exporter._rename_noreplace
             original_rmdir = self.exporter.os.rmdir
             canonical_rmdirs = 0
@@ -480,7 +499,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             original_rename = self.exporter._rename_noreplace
 
             def mutate_once(source, destination, source_dir_fd=-100, target_dir_fd=-100):
@@ -521,22 +540,148 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         ]
         for marker in forged_markers:
             with self.subTest(marker=marker), tempfile.TemporaryDirectory() as directory:
-                target = Path(directory) / version
+                root = self.snapshot_root(directory)
+                target = root / version
                 target.mkdir()
                 (target / self.exporter.TOMBSTONE_MARKER_NAME).write_bytes(marker)
                 with self.assertRaisesRegex(FileExistsError, "mismatch"):
-                    self.exporter.publish_snapshot(Path(directory), version, candidates)
+                    self.exporter.publish_snapshot(root, version, candidates)
                 self.assertEqual(marker, (target / self.exporter.TOMBSTONE_MARKER_NAME).read_bytes())
+
+    def test_public_marker_fields_cannot_forge_an_authenticated_tombstone(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.snapshot_root(directory)
+            self.exporter._load_tombstone_authentication_key(root)
+            target = root / version
+            target.mkdir(mode=0o700)
+            forged = self.exporter._canonical_json_bytes({
+                "domain": self.exporter.TOMBSTONE_DOMAIN,
+                "hmac_sha256": "0" * 64,
+                "nonce": "a" * 64,
+                "snapshot_sha256": "b" * 64,
+                "snapshot_version": version,
+                "version": self.exporter.TOMBSTONE_VERSION,
+            })
+            marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
+            marker_path.write_bytes(forged)
+            marker_path.chmod(0o600)
+            with self.assertRaisesRegex(FileExistsError, "mismatch"):
+                self.exporter.publish_snapshot(root, version, candidates)
+            self.assertEqual(forged, (target / self.exporter.TOMBSTONE_MARKER_NAME).read_bytes())
+
+    def test_wrong_key_and_tampered_identity_tombstones_remain_untouched(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.snapshot_root(directory)
+            key = self.exporter._load_tombstone_authentication_key(root)
+            tampered = json.loads(self.authenticated_marker(root, version, key=key))
+            tampered["nonce"] = "f" * 64
+            markers = [
+                self.authenticated_marker(root, version, key=b"x" * 32),
+                self.authenticated_marker(root, "approved-2026-11-01-v2", key=key),
+                self.exporter._canonical_json_bytes(tampered),
+                self.authenticated_marker(
+                    root,
+                    version,
+                    key=key,
+                    candidates=self.build_snapshot([row(proposed_text="different snapshot")]),
+                ),
+            ]
+            for index, marker in enumerate(markers):
+                with self.subTest(index=index):
+                    target = root / version
+                    target.mkdir(mode=0o700)
+                    marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
+                    marker_path.write_bytes(marker)
+                    marker_path.chmod(0o600)
+                    with self.assertRaisesRegex(FileExistsError, "mismatch"):
+                        self.exporter.publish_snapshot(root, version, candidates)
+                    self.assertEqual(marker, marker_path.read_bytes())
+                    marker_path.unlink()
+                    target.rmdir()
+
+    def test_tombstone_key_rejects_symlink_permissive_mode_and_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.snapshot_root(directory)
+            control = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME
+            control.mkdir(mode=0o755)
+            with self.assertRaises(OSError):
+                self.exporter._load_tombstone_authentication_key(root)
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.snapshot_root(directory)
+            control = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME
+            control.mkdir(mode=0o700)
+            (control / self.exporter.TOMBSTONE_KEY_NAME).mkdir(mode=0o700)
+            with self.assertRaises(OSError):
+                self.exporter._load_tombstone_authentication_key(root)
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.snapshot_root(directory)
+            control = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME
+            control.mkdir(mode=0o700)
+            os.symlink("foreign-key", control / self.exporter.TOMBSTONE_KEY_NAME)
+            with self.assertRaises(OSError):
+                self.exporter._load_tombstone_authentication_key(root)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.snapshot_root(directory)
+            self.exporter._load_tombstone_authentication_key(root)
+            original_geteuid = self.exporter.os.geteuid
+            self.exporter.os.geteuid = lambda: original_geteuid() + 1
+            try:
+                with self.assertRaises(OSError):
+                    self.exporter._load_tombstone_authentication_key(root)
+            finally:
+                self.exporter.os.geteuid = original_geteuid
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.snapshot_root(directory)
+            self.exporter._load_tombstone_authentication_key(root)
+            key_path = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME / self.exporter.TOMBSTONE_KEY_NAME
+            key_path.chmod(0o644)
+            with self.assertRaises(OSError):
+                self.exporter._load_tombstone_authentication_key(root)
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = self.snapshot_root(directory)
+            self.exporter._load_tombstone_authentication_key(root)
+            key_path = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME / self.exporter.TOMBSTONE_KEY_NAME
+            original_read = self.exporter._read_tombstone_key_bytes
+
+            def replace_after_read(descriptor):
+                raw = original_read(descriptor)
+                key_path.rename(key_path.with_name("displaced-key"))
+                key_path.write_bytes(b"z" * 32)
+                key_path.chmod(0o600)
+                return raw
+
+            self.exporter._read_tombstone_key_bytes = replace_after_read
+            try:
+                with self.assertRaises(OSError):
+                    self.exporter._load_tombstone_authentication_key(root)
+            finally:
+                self.exporter._read_tombstone_key_bytes = original_read
 
     def test_concurrent_retries_of_tombstone_converge_without_leftovers(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            marker = self.exporter._new_tombstone_marker()
+            root = self.snapshot_root(directory)
+            marker = self.authenticated_marker(root, version)
             target = root / version
-            target.mkdir()
-            (target / self.exporter.TOMBSTONE_MARKER_NAME).write_bytes(marker)
+            target.mkdir(mode=0o700)
+            marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
+            marker_path.write_bytes(marker)
+            marker_path.chmod(0o600)
             barrier = threading.Barrier(3)
             outcomes = []
 
@@ -566,12 +711,14 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             target = root / version
-            target.mkdir()
-            (target / self.exporter.TOMBSTONE_MARKER_NAME).write_bytes(
-                self.exporter._new_tombstone_marker()
+            target.mkdir(mode=0o700)
+            marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
+            marker_path.write_bytes(
+                self.authenticated_marker(root, version)
             )
+            marker_path.chmod(0o600)
             original_exchange = self.exporter._rename_exchange
             raced = False
 
@@ -616,11 +763,66 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             self.assertTrue((root / "original-tombstone").is_dir())
             self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
 
+    def test_retry_exchange_removes_displaced_owned_tombstone_after_foreign_replacement(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.snapshot_root(directory)
+            target = root / version
+            target.mkdir(mode=0o700)
+            marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
+            marker_path.write_bytes(
+                self.authenticated_marker(root, version)
+            )
+            marker_path.chmod(0o600)
+            original_exchange = self.exporter._rename_exchange
+            replaced = False
+
+            def replace_new_snapshot(source, destination, source_dir_fd=-100, target_dir_fd=-100):
+                nonlocal replaced
+                original_exchange(
+                    source, destination,
+                    source_dir_fd=source_dir_fd, target_dir_fd=target_dir_fd,
+                )
+                if destination == version and source.startswith(f".{version}-") and not replaced:
+                    replaced = True
+                    os.rename(
+                        destination, "displaced-new-snapshot",
+                        src_dir_fd=target_dir_fd, dst_dir_fd=target_dir_fd,
+                    )
+                    os.mkdir(destination, dir_fd=target_dir_fd)
+                    foreign_fd = os.open(
+                        destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=target_dir_fd,
+                    )
+                    try:
+                        member = os.open(
+                            "foreign-marker", os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                            0o600, dir_fd=foreign_fd,
+                        )
+                        try:
+                            os.write(member, b"foreign data")
+                        finally:
+                            os.close(member)
+                    finally:
+                        os.close(foreign_fd)
+
+            self.exporter._rename_exchange = replace_new_snapshot
+            try:
+                with self.assertRaisesRegex(FileExistsError, "mismatch"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._rename_exchange = original_exchange
+
+            self.assertTrue(replaced)
+            self.assertEqual(b"foreign data", (target / "foreign-marker").read_bytes())
+            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+
     def test_rollback_exchange_restores_replacement_arriving_after_validation(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             target = root / version
             replacement_marker = b"replacement owned by another actor"
             original_rename = self.exporter._rename_noreplace
@@ -711,7 +913,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             target = root / version
             original_rename = self.exporter._rename_noreplace
             original_exchange = self.exporter._rename_exchange
@@ -756,7 +958,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
 
     def test_cleanup_does_not_delete_a_replaced_staging_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             staging = root / ".snapshot-staging"
             staging.mkdir()
             (staging / "manifest.json").write_text("ours", encoding="utf-8")
@@ -908,7 +1110,7 @@ while True:
 
     def test_fixture_backed_cli_exports_without_credentials_or_network(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = self.snapshot_root(directory)
             fixture = root / "rows.json"
             resolver_fixture = root / "resolver.json"
             fixture.write_text(json.dumps([row()]), encoding="utf-8")
