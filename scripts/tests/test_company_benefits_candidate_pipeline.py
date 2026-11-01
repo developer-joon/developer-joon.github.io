@@ -2,6 +2,8 @@ import copy
 import hashlib
 import importlib.util
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -243,6 +245,24 @@ class CandidatePipelineTests(unittest.TestCase):
     def test_accepts_exact_entity_route_only_as_nonpublishable_metadata(self):
         package = self.validator.validate_candidate(self.candidate, self.root)
         self.assertEqual("nonpublishable_metadata", package["records"]["sources.jsonl"][0]["record_type"])
+
+    def test_candidate_cli_fails_closed_on_unhashable_v2_binding_without_writes(self):
+        self.v2_records["cells"][0]["attempt_ids"] = [["unhashable"]]
+        self.write_candidate()
+        before = {path.relative_to(self.candidate): path.read_bytes()
+                  for path in self.candidate.iterdir() if path.is_file()}
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(self.candidate), "--research-root", str(self.root)],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        output = result.stdout + result.stderr
+        after = {path.relative_to(self.candidate): path.read_bytes()
+                 for path in self.candidate.iterdir() if path.is_file()}
+        self.assertEqual(1, result.returncode, output)
+        self.assertIn("invalid v2 record structure", output)
+        self.assertNotIn("Traceback", output)
+        self.assertEqual("", result.stdout)
+        self.assertEqual(before, after)
 
     def test_every_gap_requires_a_nonempty_official_source_id_route(self):
         self.gaps[0]["searched_official_source_ids"] = []

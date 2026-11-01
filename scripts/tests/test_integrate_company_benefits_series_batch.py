@@ -2,6 +2,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -134,6 +136,25 @@ class SeriesIntegrationTests(unittest.TestCase):
         self.package(status="review_pending")
         with self.assertRaisesRegex(ValueError, "approved"):
             self.module.load_package(self.input, self.root)
+
+    def test_batch_cli_fails_closed_on_unhashable_v2_binding_without_writes(self):
+        self.v2_records["cells"][0]["attempt_ids"] = [{"unhashable": True}]
+        self.package()
+        before = {path.relative_to(self.root): path.read_bytes()
+                  for path in self.root.rglob("*") if path.is_file()}
+        result = subprocess.run(
+            [sys.executable, str(MODULE), str(self.input), "--research-root", str(self.root),
+             "--freeze-anchor-receipt", str(Path(self.tmp.name) / "unused-receipt.json")],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        output = result.stdout + result.stderr
+        after = {path.relative_to(self.root): path.read_bytes()
+                 for path in self.root.rglob("*") if path.is_file()}
+        self.assertEqual(1, result.returncode, output)
+        self.assertIn("invalid v2 record structure", output)
+        self.assertNotIn("Traceback", output)
+        self.assertEqual("", result.stdout)
+        self.assertEqual(before, after)
 
     def test_rejects_v2_package_without_review_audit(self):
         self.package(include_review_audit=False)

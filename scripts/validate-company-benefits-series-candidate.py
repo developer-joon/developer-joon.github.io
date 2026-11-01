@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
 
 CANDIDATE_FILES = ("sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl")
@@ -233,7 +234,11 @@ def main(argv=None):
     parser.add_argument("candidate_dir", type=Path)
     parser.add_argument("--research-root", type=Path, default=Path("docs/research/company-benefits"))
     args = parser.parse_args(argv)
-    package = validate_candidate(args.candidate_dir, args.research_root)
+    try:
+        package = validate_candidate(args.candidate_dir, args.research_root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"candidate validation failed: {exc}", file=sys.stderr)
+        return 1
     print(f"valid review-pending candidate {package['manifest']['batch_id']}: {len(package['targets'])} outcomes")
     return 0
 

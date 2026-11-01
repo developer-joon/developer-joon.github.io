@@ -53,17 +53,77 @@ V2_ID_FIELDS = {
     "cells": "cell_id", "attempts": "attempt_id", "official_claims": "claim_id",
     "references": "reference_id", "community_reports": "community_report_id", "sources": "source_id",
 }
+V2_STRUCTURAL_ID_FIELDS = {
+    "cells": ("cell_id", "company_id", "category_id", "jurisdiction"),
+    "attempts": ("attempt_id", "cell_id", "company_id", "category_id", "jurisdiction", "route_id"),
+    "official_claims": ("claim_id", "cell_id", "company_id", "category_id", "jurisdiction"),
+    "references": ("reference_id", "cell_id", "company_id", "category_id", "source_id"),
+    "community_reports": ("community_report_id", "cell_id", "company_id", "category_id", "source_id"),
+    "sources": ("source_id",),
+}
+V2_STRUCTURAL_BINDING_FIELDS = {
+    "cells": ("attempt_ids", "official_claim_ids", "reference_ids", "community_report_ids"),
+    "attempts": ("source_ids",),
+    "official_claims": ("source_ids",),
+}
+
+
+def validate_v2_record_structure(records, batch):
+    """Reject malformed v2 identifiers before any value is indexed or hashed."""
+    if not isinstance(records, dict) or set(records) != set(V2_LEDGER_FILES):
+        raise ValueError("v2 records must contain the six exact canonical ledgers")
+    for ledger in V2_LEDGER_FILES:
+        rows = records[ledger]
+        if not isinstance(rows, list):
+            raise ValueError(f"invalid v2 record structure: {ledger} must be an array")
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise ValueError(f"invalid v2 record structure: {ledger}[{index}] must be an object")
+            for field in V2_STRUCTURAL_ID_FIELDS[ledger]:
+                value = row.get(field)
+                if not isinstance(value, str) or not value:
+                    raise ValueError(
+                        f"invalid v2 record structure: {ledger}[{index}].{field} must be a nonempty string"
+                    )
+            for field in V2_STRUCTURAL_BINDING_FIELDS.get(ledger, ()):
+                values = row.get(field)
+                if not isinstance(values, list):
+                    raise ValueError(
+                        f"invalid v2 record structure: {ledger}[{index}].{field} must be an array"
+                    )
+                for binding_index, value in enumerate(values):
+                    if not isinstance(value, str) or not value:
+                        raise ValueError(
+                            f"invalid v2 record structure: {ledger}[{index}].{field}"
+                            f"[{binding_index}] must be a nonempty string"
+                        )
+            if ledger == "attempts" and "shared_bulk_result_binding" in row:
+                shared = row["shared_bulk_result_binding"]
+                if not isinstance(shared, dict):
+                    raise ValueError(
+                        f"invalid v2 record structure: {ledger}[{index}].shared_bulk_result_binding must be an object"
+                    )
+                for field in ("source_id", "company_id", "category_id"):
+                    value = shared.get(field)
+                    if not isinstance(value, str) or not value:
+                        raise ValueError(
+                            f"invalid v2 record structure: {ledger}[{index}].shared_bulk_result_binding."
+                            f"{field} must be a nonempty string"
+                        )
+
+    company_ids = batch.get("company_ids") if isinstance(batch, dict) else None
+    if (not isinstance(company_ids, list) or len(company_ids) != BATCH_SIZE
+            or any(not isinstance(value, str) or not value for value in company_ids)):
+        raise ValueError("canonical batch company_ids must be an array of exactly 25 nonempty strings")
+    if len(set(company_ids)) != BATCH_SIZE:
+        raise ValueError("canonical batch must contain exactly 25 unique companies")
+    return records
 
 
 def validate_v2_batch_records(records, batch):
     """Validate the batch-specific envelope before the authoritative v2 validator."""
-    if not isinstance(records, dict) or set(records) != set(V2_LEDGER_FILES):
-        raise ValueError("v2 records must contain the six exact canonical ledgers")
-    if any(not isinstance(records[name], list) for name in V2_LEDGER_FILES):
-        raise ValueError("v2 ledgers must be arrays")
-    company_ids = batch.get("company_ids", []) if isinstance(batch, dict) else []
-    if len(company_ids) != BATCH_SIZE or len(set(company_ids)) != BATCH_SIZE:
-        raise ValueError("canonical batch must contain exactly 25 unique companies")
+    validate_v2_record_structure(records, batch)
+    company_ids = batch["company_ids"]
 
     errors = []
     expected_keys = {(company_id, category_id) for company_id in company_ids for category_id in V2_CATEGORIES}

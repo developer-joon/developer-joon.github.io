@@ -56,8 +56,11 @@ def parse_timestamp(value, label):
 
 
 def _unique_map(records, field, label):
+    if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+        raise ValueError(f"{label} records must be objects")
     values = [item.get(field) for item in records]
-    if any(value in (None, "") for value in values) or len(values) != len(set(values)):
+    if (any(not isinstance(value, str) or not value for value in values)
+            or len(values) != len(set(values))):
         raise ValueError(f"{label} requires unique nonempty {field} values")
     return dict(zip(values, records))
 
@@ -228,6 +231,10 @@ def load_package(input_dir, research_root):
         if artifacts.get(name) != sha256(raw):
             raise ValueError(f"artifact hash mismatch: {name}")
         records[name] = series.read_jsonl(input_dir / name)
+
+    v2_records = {ledger: records[filename] for ledger, filename in series.V2_LEDGER_FILES.items()}
+    series.validate_v2_record_structure(v2_records, batch)
+    for name in FILES:
         _unique_map(records[name], ID_FIELDS[name], name)
         serialized = json.dumps(records[name], ensure_ascii=False)
         if "evidence_path" in serialized or "evidence_file" in serialized or any(item.get("hash_provenance") == "retained_file" for item in records[name]):
@@ -238,7 +245,6 @@ def load_package(input_dir, research_root):
     verifier.validate_sources(records["sources.jsonl"], source_errors)
     if source_errors:
         raise ValueError("incoming source schema validation failed:\n" + "\n".join(source_errors))
-    v2_records = {ledger: records[filename] for ledger, filename in series.V2_LEDGER_FILES.items()}
     series.validate_v2_package_records(v2_records, batch, research_root)
     validate_review_audit(manifest, batch, records, research_root)
 
@@ -710,8 +716,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.freeze_anchor_receipt is None:
         parser.error("--freeze-anchor-receipt or COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT is required")
-    progress = integrate_batch(args.input_dir, args.research_root, args.freeze_anchor_receipt,
-                               args.effective_selection_receipt, args.as_of, args.dry_run)
+    try:
+        progress = integrate_batch(args.input_dir, args.research_root, args.freeze_anchor_receipt,
+                                   args.effective_selection_receipt, args.as_of, args.dry_run)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"batch integration failed: {exc}", file=sys.stderr)
+        return 1
     approved = sum(item["status"] == "approved" for item in progress["batches"])
     print(f"validated {approved}/80 approved batches" + (" (dry run)" if args.dry_run else ""))
     return 0
