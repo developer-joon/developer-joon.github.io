@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import importlib.util
 import json
 import unittest
 from pathlib import Path
@@ -209,6 +210,14 @@ class V2ContractTests(unittest.TestCase):
                 schema = json.loads(path.read_text(encoding="utf-8"))
                 Draft202012Validator.check_schema(schema)
                 cls.schemas[name] = schema
+        spec = importlib.util.spec_from_file_location(
+            "company_benefits_series_progress_contract",
+            ROOT / "scripts" / "company_benefits_series.py",
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("cannot load company benefits series contract")
+        cls.series = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.series)
 
     def validate(self, name, instance):
         if name not in self.schemas:
@@ -314,6 +323,64 @@ class V2ContractTests(unittest.TestCase):
                 invalid["status"] = "complete"
             with self.subTest(mutation=mutation):
                 self.assert_invalid("series-progress.schema.json", invalid)
+
+    def test_progress_schema_and_runtime_parser_have_identical_version_decisions(self):
+        legacy = self.progress()
+        explicit_legacy = self.progress("1")
+        v2_pending = self.progress("2")
+        v2_pending["total_cells"] = 20000
+        for entry in v2_pending["batches"]:
+            entry["cell_count"] = 0
+        v2_approved = copy.deepcopy(v2_pending)
+        v2_approved["batches"][0] = self.progress_entry("domestic-01", "approved")
+        v2_approved["batches"][0].update(
+            cell_count=250,
+            cell_set_sha256=HASH,
+            v2_ledger_sha256={name: HASH for name in (
+                "company-category-cells.jsonl", "research-attempts.jsonl",
+                "official-claims-v2.jsonl", "reference-records.jsonl",
+                "community-benefit-reports.jsonl", "sources-v2.jsonl",
+            )},
+        )
+
+        cases = {
+            "valid markerless legacy": (legacy, True),
+            "valid explicit legacy": (explicit_legacy, True),
+            "valid v2 pending": (v2_pending, True),
+            "valid v2 approved": (v2_approved, True),
+            "markerless total_cells": (dict(legacy, total_cells=20000), False),
+            "markerless hashes": (copy.deepcopy(legacy), False),
+            "mixed legacy and v2": (copy.deepcopy(v2_approved), False),
+            "wrong version": (dict(legacy, progress_version="3"), False),
+            "extra top field": (dict(legacy, unexpected=True), False),
+            "extra entry field": (copy.deepcopy(legacy), False),
+            "legacy completion": (dict(legacy, status="complete"), True),
+        }
+        cases["markerless hashes"][0]["batches"][0].update(
+            cell_count=250,
+            cell_set_sha256=HASH,
+            v2_ledger_sha256={name: HASH for name in (
+                "company-category-cells.jsonl", "research-attempts.jsonl",
+                "official-claims-v2.jsonl", "reference-records.jsonl",
+                "community-benefit-reports.jsonl", "sources-v2.jsonl",
+            )},
+        )
+        cases["mixed legacy and v2"][0]["batches"][1].pop("cell_count")
+        cases["extra entry field"][0]["batches"][0]["unexpected"] = True
+
+        validator = Draft202012Validator(
+            self.schemas["series-progress.schema.json"], format_checker=FormatChecker()
+        )
+        for label, (progress, expected) in cases.items():
+            with self.subTest(label=label):
+                schema_accepts = not list(validator.iter_errors(progress))
+                try:
+                    self.series.progress_contract_version(progress)
+                    runtime_accepts = True
+                except ValueError:
+                    runtime_accepts = False
+                self.assertEqual(expected, schema_accepts, "schema decision")
+                self.assertEqual(schema_accepts, runtime_accepts, "schema/runtime mismatch")
 
     def test_all_cell_states_are_representable(self):
         for state in ("official_verified", "reference", "community_report", "no_public_info"):

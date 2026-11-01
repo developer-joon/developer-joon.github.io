@@ -149,7 +149,8 @@ def fixture_marker(value):
 def validate_inputs(root, taxonomy, taxonomy_sha256):
     series = load_verifier().company_benefits_series
     progress = read_json(root / "series-progress.json")
-    series.progress_contract_version(progress)
+    if series.progress_contract_version(progress) != "2":
+        raise ValueError("v2 artifact publication requires explicit progress_version=2")
     entries = progress.get("batches")
     if progress.get("status") != "complete" or progress.get("total_companies") != 2000 or progress.get("total_batches") != 80:
         raise ValueError("series progress must be complete for exactly 2,000 companies and 80 batches")
@@ -175,6 +176,7 @@ def validate_inputs(root, taxonomy, taxonomy_sha256):
     batch_ids = [company_id for batch in batches for company_id in batch.get("company_ids", [])]
     if len(batch_ids) != 2000 or len(set(batch_ids)) != 2000 or batch_ids != list(company_map):
         raise ValueError("series batches must bind the exact canonical 2,000-company sequence")
+    series.validate_complete_v2_progress(root, batches, progress)
 
     claims = read_jsonl(root / "benefit-claims.jsonl")
     if any(row.get("publishable") is False or "record_type" in row or "record" in row for row in claims):

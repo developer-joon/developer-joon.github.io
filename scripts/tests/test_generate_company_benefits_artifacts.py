@@ -132,7 +132,7 @@ def assignment_validation_args(module, root, taxonomy):
     )
 
 
-def make_research_fixture(root):
+def make_research_fixture(root, v2=True):
     companies = []
     for index in range(2000):
         domestic = index < 1000
@@ -246,18 +246,51 @@ def make_research_fixture(root):
         })
     batches = []
     progress_entries = []
+    cells = []
+    categories = ("leave", "family", "health", "growth", "housing",
+                  "commute", "remote", "retirement", "meals", "inclusion")
+    empty_ledger_hash = hashlib.sha256(b"[]").hexdigest()
     for index in range(80):
         ids = [company["company_id"] for company in companies[index * 25:(index + 1) * 25]]
         batch_id = ("domestic" if index < 40 else "international") + f"-{index % 40 + 1:02d}"
-        batches.append({"batch_id": batch_id, "company_ids": ids})
-        progress_entries.append({
+        scope = "domestic" if index < 40 else "international"
+        batch_hash = hashlib.sha256(compact(ids).encode()).hexdigest()
+        batches.append({"batch_id": batch_id, "scope": scope, "batch_number": index % 40 + 1,
+                        "company_list_sha256": batch_hash, "company_ids": ids})
+        entry = {
             "batch_id": batch_id,
+            "scope": scope,
+            "batch_number": index % 40 + 1,
             "status": "approved",
+            "company_list_sha256": batch_hash,
             "claim_count": 1 if index == 0 else 0,
             "no_claim_count": 24 if index == 0 else 25,
             "approved_at": "2026-10-30T03:00:00Z",
             "reviewer_ids": ["reviewer-b"],
-        })
+        }
+        if v2:
+            batch_cells = [
+                {"cell_id": f"cell::{company_id}::{category}", "company_id": company_id,
+                 "category_id": category}
+                for company_id in ids for category in categories
+            ]
+            cells.extend(batch_cells)
+            identities = sorted((cell["company_id"], cell["category_id"]) for cell in batch_cells)
+            canonical_cells = json.dumps(sorted(batch_cells, key=lambda cell: cell["cell_id"]),
+                                         ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            entry.update(
+                cell_count=250,
+                cell_set_sha256=hashlib.sha256(compact(identities).encode()).hexdigest(),
+                v2_ledger_sha256={
+                    "company-category-cells.jsonl": hashlib.sha256(canonical_cells).hexdigest(),
+                    "research-attempts.jsonl": empty_ledger_hash,
+                    "official-claims-v2.jsonl": empty_ledger_hash,
+                    "reference-records.jsonl": empty_ledger_hash,
+                    "community-benefit-reports.jsonl": empty_ledger_hash,
+                    "sources-v2.jsonl": empty_ledger_hash,
+                },
+            )
+        progress_entries.append(entry)
 
     write_jsonl(root / "companies.jsonl", companies)
     write_jsonl(root / "benefit-claims.jsonl", [claim])
@@ -277,13 +310,21 @@ def make_research_fixture(root):
         **gap_source["access_observation"], "checked_at": "2026-10-30T02:00:00Z",
     }])
     write_jsonl(root / "series-batches.jsonl", batches)
-    write_json(root / "series-progress.json", {
+    progress = {
         "manifest_version": "1",
         "status": "complete",
+        "company_list_sha256": hashlib.sha256(compact([company["company_id"] for company in companies]).encode()).hexdigest(),
         "total_companies": 2000,
         "total_batches": 80,
         "batches": progress_entries,
-    })
+    }
+    if v2:
+        progress.update(progress_version="2", total_cells=20000)
+        write_jsonl(root / "company-category-cells.jsonl", cells)
+        for filename in ("research-attempts.jsonl", "official-claims-v2.jsonl", "reference-records.jsonl",
+                         "community-benefit-reports.jsonl", "sources-v2.jsonl"):
+            write_jsonl(root / filename, [])
+    write_json(root / "series-progress.json", progress)
     request, assignment = write_taxonomy_approval(root)
     write_json(root / "population-protocol.json", {
         "protocol_id": "company-benefits-population-v4", "version": "4.0.0",
@@ -461,7 +502,7 @@ def test_artifact_generation_rejects_gap_without_preserved_official_source_id_ro
 
 def test_artifact_publication_rejects_mixed_legacy_and_v2_approved_progress_before_writes(tmp_path):
     research = tmp_path / "research"
-    make_research_fixture(research)
+    make_research_fixture(research, v2=False)
     progress = json.loads((research / "series-progress.json").read_text())
     progress["progress_version"] = "2"
     progress["total_cells"] = 20000
@@ -480,7 +521,34 @@ def test_artifact_publication_rejects_mixed_legacy_and_v2_approved_progress_befo
     result = run_generator(research, output)
 
     assert result.returncode != 0
-    assert "legacy" in result.stderr.casefold() or "250" in result.stderr
+    assert any(token in result.stderr.casefold() for token in ("legacy", "250", "v2 progress"))
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_wholly_legacy_complete_progress_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research, v2=False)
+    output = tmp_path / "legacy-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert "progress_version" in result.stderr or "v2" in result.stderr.casefold()
+    assert not output.exists()
+
+
+def test_artifact_publication_verifies_all_six_v2_ledger_hashes_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["batches"][0]["v2_ledger_sha256"]["sources-v2.jsonl"] = "0" * 64
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "hash-mismatch-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert "hash mismatch" in result.stderr.casefold()
     assert not output.exists()
 
 
@@ -543,7 +611,7 @@ def test_generator_rejects_pending_historical_and_fixture_inputs(tmp_path):
     write_json(research / "series-progress.json", progress)
     result = run_generator(research, tmp_path / "pending-output")
     assert result.returncode != 0
-    assert "approved" in result.stderr.casefold() or "complete" in result.stderr.casefold()
+    assert any(token in result.stderr.casefold() for token in ("approved", "complete", "v2 progress"))
 
     make_research_fixture(research)
     historical = {"record_type": "claim", "publishable": False, "record": fixture["claim"]}

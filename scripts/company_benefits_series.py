@@ -368,20 +368,56 @@ def v2_ledger_sha256(records):
 
 
 def progress_contract_version(progress):
-    """Return the active progress contract and reject ambiguous v1/v2 mixtures."""
+    """Parse the strict legacy/v2 progress union without inferring a v2 marker."""
     if not isinstance(progress, dict) or not isinstance(progress.get("batches"), list):
         raise ValueError("series progress must be an object with batch entries")
     entries = progress["batches"]
+    legacy_top = {"manifest_version", "status", "company_list_sha256", "total_companies", "total_batches", "batches"}
+    legacy_entry = {"batch_id", "scope", "batch_number", "status", "company_list_sha256", "claim_count", "no_claim_count"}
+    approval_fields = {"approved_at", "reviewer_ids"}
     v2_entry_fields = {"cell_count", "cell_set_sha256", "v2_ledger_sha256"}
-    has_v2_signal = (progress.get("progress_version") == "2" or "total_cells" in progress
-                     or any(isinstance(entry, dict) and set(entry) & v2_entry_fields for entry in entries))
     version = progress.get("progress_version")
     if version not in {None, "1", "2"}:
         raise ValueError("series progress version must be 1 or 2")
-    if version == "1" and has_v2_signal:
-        raise ValueError("legacy v1 progress cannot contain or mix with v2 cell contracts")
-    if not has_v2_signal:
+    if (version != "2" and ("total_cells" in progress
+            or any(isinstance(entry, dict) and set(entry) & v2_entry_fields for entry in entries))):
+        raise ValueError("v2 progress fields require explicit progress_version=2")
+    if version in {None, "1"}:
+        expected_top = legacy_top | ({"progress_version"} if version == "1" else set())
+        if (set(progress) != expected_top or progress.get("manifest_version") != MANIFEST_VERSION
+                or progress.get("status") not in {"in_progress", "complete"}
+                or progress.get("total_companies") != 2000 or progress.get("total_batches") != 80
+                or not HASH_PATTERN.fullmatch(str(progress.get("company_list_sha256", "")))
+                or len(entries) != 80):
+            raise ValueError("legacy v1 progress schema is invalid")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("legacy progress batch entries must be objects")
+            status = entry.get("status")
+            expected = legacy_entry | (approval_fields if status == "approved" else set())
+            reviewers = entry.get("reviewer_ids")
+            invalid_approval = status == "approved" and (
+                not isinstance(entry.get("approved_at"), str)
+                or not isinstance(reviewers, list) or not reviewers
+                or any(not isinstance(item, str) or not item for item in reviewers)
+                or len(reviewers) != len(set(reviewers))
+            )
+            if (set(entry) != expected or status not in {"pending", "approved"}
+                    or entry.get("scope") not in SCOPES
+                    or not isinstance(entry.get("batch_number"), int) or isinstance(entry.get("batch_number"), bool)
+                    or not 1 <= entry["batch_number"] <= 40
+                    or not HASH_PATTERN.fullmatch(str(entry.get("company_list_sha256", "")))
+                    or any(not isinstance(entry.get(field), int) or isinstance(entry.get(field), bool)
+                           or entry[field] < 0 for field in ("claim_count", "no_claim_count"))
+                    or invalid_approval):
+                raise ValueError("legacy progress batch entry schema is invalid")
         return "1"
+    expected_top = legacy_top | {"progress_version", "total_cells"}
+    if (set(progress) != expected_top or progress.get("manifest_version") != MANIFEST_VERSION
+            or progress.get("status") not in {"in_progress", "complete"}
+            or progress.get("total_companies") != 2000 or progress.get("total_batches") != 80
+            or not HASH_PATTERN.fullmatch(str(progress.get("company_list_sha256", "")))):
+        raise ValueError("v2 progress schema is invalid")
     if progress.get("total_cells") != 20000:
         raise ValueError("v2 progress requires total_cells=20000")
     if len(entries) != 80:
@@ -395,6 +431,15 @@ def progress_contract_version(progress):
             raise ValueError("v2 progress batch entries must be objects")
         batch_id = entry.get("batch_id", "unknown-batch")
         status = entry.get("status")
+        expected = legacy_entry | {"cell_count"} | (approval_fields | {"cell_set_sha256", "v2_ledger_sha256"}
+                                                    if status == "approved" else set())
+        if (set(entry) != expected or entry.get("scope") not in SCOPES
+                or not isinstance(entry.get("batch_number"), int) or isinstance(entry.get("batch_number"), bool)
+                or not 1 <= entry["batch_number"] <= 40
+                or not HASH_PATTERN.fullmatch(str(entry.get("company_list_sha256", "")))
+                or any(not isinstance(entry.get(field), int) or isinstance(entry.get(field), bool)
+                       or entry[field] < 0 for field in ("claim_count", "no_claim_count"))):
+            raise ValueError(f"{batch_id}: v2 progress batch entry schema is invalid")
         if status == "approved":
             approved_count += 1
             count = entry.get("cell_count")
@@ -403,7 +448,11 @@ def progress_contract_version(progress):
             if (count != 250 or isinstance(count, bool)
                     or not HASH_PATTERN.fullmatch(str(entry.get("cell_set_sha256", "")))
                     or not isinstance(hashes, dict) or set(hashes) != ledger_names
-                    or any(not HASH_PATTERN.fullmatch(str(value)) for value in hashes.values())):
+                    or any(not HASH_PATTERN.fullmatch(str(value)) for value in hashes.values())
+                    or not isinstance(entry.get("approved_at"), str)
+                    or not isinstance(entry.get("reviewer_ids"), list) or not entry["reviewer_ids"]
+                    or any(not isinstance(item, str) or not item for item in entry["reviewer_ids"])
+                    or len(entry["reviewer_ids"]) != len(set(entry["reviewer_ids"]))):
                 raise ValueError(f"{batch_id}: v2 approved batch requires exactly 250 cells and all six ledger hashes; legacy approved entries cannot coexist")
         elif status == "pending":
             if (entry.get("cell_count") != 0 or "cell_set_sha256" in entry
@@ -414,6 +463,19 @@ def progress_contract_version(progress):
     if progress.get("status") == "complete" and (approved_count != 80 or cell_count != 20000):
         raise ValueError("v2 completion requires exactly 80 approved batches and 20,000 cells")
     return "2"
+
+
+def validate_complete_v2_progress(root, batches=None, progress=None):
+    """Require and verify the complete v2 partition before publication."""
+    root = Path(root)
+    batches = batches if batches is not None else read_jsonl(root / "series-batches.jsonl")
+    if progress is None:
+        progress = json.loads((root / "series-progress.json").read_text(encoding="utf-8"))
+    if progress_contract_version(progress) != "2":
+        raise ValueError("v2 publication requires explicit progress_version=2")
+    if progress.get("status") != "complete":
+        raise ValueError("v2 publication requires complete progress")
+    validate_persisted_v2_hashes(root, batches, progress)
 
 
 def validate_persisted_v2_hashes(root, batches=None, progress=None, v2_transition=False):
