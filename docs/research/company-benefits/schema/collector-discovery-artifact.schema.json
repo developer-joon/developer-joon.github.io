@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "collector-discovery-artifact.schema.json",
+  "title": "Company benefits collector discovery artifact",
+  "description": "Pre-review collector output. It is not an authoritative v2 package and cannot be validated as one until independent cell decisions bind every attempt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "format_version",
+    "input_sha256",
+    "coverage_policy_id",
+    "coverage_policy",
+    "attempts",
+    "sources",
+    "artifact_content_sha256"
+  ],
+  "properties": {
+    "artifact_type": {"const": "company-benefits-collector-discovery"},
+    "format_version": {"const": 1},
+    "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "coverage_policy_id": {"const": "coverage-policy-v2"},
+    "coverage_policy": {"type": "object"},
+    "attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["attempt_id", "cell_id", "receipt_content_sha256"],
+        "properties": {
+          "attempt_id": {"type": "string", "pattern": "^attempt::"},
+          "cell_id": {"type": "string", "pattern": "^cell::"},
+          "receipt_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_id", "content_sha256"],
+        "properties": {
+          "source_id": {"type": "string", "pattern": "^source::"},
+          "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "artifact_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

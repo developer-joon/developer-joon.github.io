@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect bounded company-benefits v2 route attempts into a review package."""
+"""Collect bounded route attempts into a discovery artifact for independent review."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def _expand_requests(requests, companies: dict[str, dict[str, object]], max_item
     for index, request in enumerate(requests):
         if not isinstance(request, dict):
             raise CollectorError(f"input[{index}] must be an object")
-        allowed = {"company_id", "category_id", "route_ids", "locators", "official_domain"}
+        allowed = {"company_id", "category_id", "route_ids", "locators"}
         unknown = sorted(set(request) - allowed)
         if unknown:
             raise CollectorError(f"input[{index}] has unknown fields: {unknown}")
@@ -101,7 +101,7 @@ def _expand_requests(requests, companies: dict[str, dict[str, object]], max_item
             jurisdiction=jurisdiction,
             legal_name=legal_name,
             canonical_legal_entity=legal_entity,
-            official_domain=request.get("official_domain") if isinstance(request.get("official_domain"), str) else None,
+            official_domain=canonical.get("official_domain") if isinstance(canonical.get("official_domain"), str) else None,
         )
         for route_id in route_ids:
             key = (company_id, category_id, canonical_route_id(route_id))
@@ -126,7 +126,7 @@ def _now() -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="JSON array of canonical company/category/route requests")
-    parser.add_argument("output", type=Path, help="review package JSON to write atomically")
+    parser.add_argument("output", type=Path, help="collector discovery artifact JSON to write atomically")
     parser.add_argument("--companies", type=Path, default=RESEARCH / "companies.jsonl")
     parser.add_argument("--coverage-policy", type=Path, default=RESEARCH / "research-coverage-policies.json")
     parser.add_argument("--capture-root", type=Path, default=DEFAULT_CAPTURE_ROOT,
@@ -139,6 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-decoded-bytes", type=int, default=4_000_000)
     parser.add_argument("--connect-timeout", type=float, default=5.0)
     parser.add_argument("--read-timeout", type=float, default=10.0)
+    parser.add_argument("--dns-timeout", type=float, default=3.0)
+    parser.add_argument("--total-timeout", type=float, default=30.0)
     parser.add_argument("--retries", type=int, default=2)
     return parser
 
@@ -157,7 +159,7 @@ def main(argv=None) -> int:
         package = collect_batch(
             items,
             transport=SecureHTTPTransport(),
-            capture_store=CaptureStore(args.capture_root, args.capture_base_url),
+            capture_store=CaptureStore(args.capture_root, args.capture_base_url, repository_root=ROOT),
             checkpoint=checkpoint,
             policy=FetchPolicy(
                 max_redirects=args.max_redirects,
@@ -165,6 +167,8 @@ def main(argv=None) -> int:
                 max_decoded_bytes=args.max_decoded_bytes,
                 connect_timeout=args.connect_timeout,
                 read_timeout=args.read_timeout,
+                dns_timeout=args.dns_timeout,
+                total_timeout=args.total_timeout,
                 retries=args.retries,
             ),
             now=_now,
@@ -178,7 +182,10 @@ def main(argv=None) -> int:
     sources = package.get("sources")
     attempt_count = len(attempts) if isinstance(attempts, list) else 0
     source_count = len(sources) if isinstance(sources, list) else 0
-    print(f"wrote {attempt_count} attempt receipts and {source_count} discovered sources to {args.output}")
+    print(
+        f"wrote discovery artifact with {attempt_count} attempt receipts and "
+        f"{source_count} discovered sources to {args.output}; independent cell review is required"
+    )
     return 0
 
 
