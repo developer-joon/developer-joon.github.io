@@ -52,6 +52,20 @@ it('uses the authenticated local correction route instead of public issue creati
 })
 
 describe('authenticated benefit correction', () => {
+  it('continues without persistence when the localStorage getter is blocked', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    Object.defineProperty(window, 'localStorage', { configurable: true, get: () => { throw new DOMException('blocked', 'SecurityError') } })
+    try {
+      wrap(<BenefitCorrectionPage repository={repository()} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+      expect(await screen.findByLabelText('기업')).toHaveValue(company.company_id)
+      expect(screen.getByLabelText('복지 분야')).toHaveValue('health')
+      fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: '저장 없이 작성' } })
+      expect(screen.getByLabelText('제안 내용')).toHaveValue('저장 없이 작성')
+    } finally {
+      if (descriptor) Object.defineProperty(window, 'localStorage', descriptor)
+    }
+  })
+
   it('gates anonymous users and uses a canonical correction return path', () => {
     const value = auth(null)
     wrap(<BenefitCorrectionPage repository={repository()} storage={storage()} search={`?company=${company.company_id}&category=health&returnTo=https://evil.example/`} currentPath={`/community/benefits/correction/?company=${company.company_id}&category=health&returnTo=https://evil.example/`} />, value)
@@ -219,6 +233,69 @@ describe('authenticated benefit correction', () => {
 })
 
 describe('my benefit corrections', () => {
+  it('loads more than 50 requests with the cursor and appends stable deduplicated rows', async () => {
+    const firstItems = Array.from({ length: 50 }, (_, index) => ({
+      ...item,
+      id: `request-${index}`,
+      proposedText: `제안 ${index}`,
+    }))
+    const cursor = { createdAt: item.createdAt, id: '76000000-0000-4000-8000-000000000050' }
+    const finalItem = { ...item, id: 'request-50', proposedText: '제안 50' }
+    const listMyRequests = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: firstItems, hasMore: true, nextCursor: cursor } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [firstItems[49], finalItem], hasMore: false, nextCursor: null } })
+
+    wrap(<MyBenefitCorrectionsPage repository={repository({ listMyRequests })} />, auth(actor))
+    expect(await screen.findByText('제안 0')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '더 보기' }))
+
+    expect(await screen.findByText('제안 50')).toBeVisible()
+    expect(screen.getAllByRole('article')).toHaveLength(51)
+    expect(screen.getAllByText('제안 49')).toHaveLength(1)
+    expect(listMyRequests).toHaveBeenNthCalledWith(2, { limit: 50, cursor }, expect.any(AbortSignal))
+    expect(screen.queryByRole('button', { name: '더 보기' })).not.toBeInTheDocument()
+  })
+
+  it('keeps existing rows while load-more rejects and retries successfully', async () => {
+    const cursor = { createdAt: item.createdAt, id: item.id }
+    const next = { ...item, id: '76000000-0000-4000-8000-0000000000b2', proposedText: '재시도 성공' }
+    let rejectMore!: (reason: Error) => void
+    const listMyRequests = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [item], hasMore: true, nextCursor: cursor } })
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectMore = reject }))
+      .mockResolvedValueOnce({ ok: true, data: { items: [next], hasMore: false, nextCursor: null } })
+
+    wrap(<MyBenefitCorrectionsPage repository={repository({ listMyRequests })} />, auth(actor))
+    fireEvent.click(await screen.findByRole('button', { name: '더 보기' }))
+    expect(screen.getByRole('button', { name: '불러오는 중…' })).toBeDisabled()
+    rejectMore(new Error('offline'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('요청 내역을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.')
+    expect(screen.getByText(item.proposedText)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
+    expect(await screen.findByText('재시도 성공')).toBeVisible()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('discards an out-of-order page after the authenticated account changes', async () => {
+    const firstPage = (value: BenefitCorrectionItem) => ({ ok: true as const, data: { items: [value], hasMore: false, nextCursor: null } })
+    let resolveA!: (value: ReturnType<typeof firstPage>) => void
+    let resolveB!: (value: ReturnType<typeof firstPage>) => void
+    const listMyRequests = vi.fn()
+      .mockImplementationOnce(() => new Promise<ReturnType<typeof firstPage>>(resolve => { resolveA = resolve }))
+      .mockImplementationOnce(() => new Promise<ReturnType<typeof firstPage>>(resolve => { resolveB = resolve }))
+    const repo = repository({ listMyRequests })
+    const view = wrap(<MyBenefitCorrectionsPage repository={repo} />, auth(actor))
+    const actorB = '56000000-0000-4000-8000-0000000000b2'
+
+    view.rerender(<AuthContext.Provider value={auth(actorB)}><MyBenefitCorrectionsPage repository={repo} /></AuthContext.Provider>)
+    const itemB = { ...item, id: '76000000-0000-4000-8000-0000000000b2', proposedText: 'B 계정 요청' }
+    resolveB(firstPage(itemB))
+    expect(await screen.findByText('B 계정 요청')).toBeVisible()
+    resolveA(firstPage({ ...item, proposedText: 'A 계정 지연 응답' }))
+    await waitFor(() => expect(screen.queryByText('A 계정 지연 응답')).not.toBeInTheDocument())
+    expect(screen.getByText('B 계정 요청')).toBeVisible()
+  })
+
   it('shows safe own status fields, timestamps and applied artifact version', async () => {
     const applied = { ...item, status: 'applied' as const, adminResponse: '공식 자료를 확인해 반영했습니다.', appliedDataVersion: 'company-benefits-2026-11-02-v1', appliedAt: '2026-11-02T00:00:00Z', updatedAt: '2026-11-02T00:00:00Z' }
     const listMyRequests = vi.fn(async () => ({ ok: true as const, data: { items: [applied], hasMore: false, nextCursor: null } }))
@@ -245,6 +322,18 @@ describe('my benefit corrections', () => {
     wrap(<MyBenefitCorrectionsPage repository={repository({ listMyRequests })} />, auth(actor))
     expect(screen.getByRole('status')).toHaveTextContent('요청 내역을 불러오고 있습니다')
     expect(await screen.findByRole('alert')).toHaveTextContent('네트워크 요청에 실패했습니다')
+    fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
+    expect(await screen.findByText('아직 제출한 수정 요청이 없습니다.')).toBeVisible()
+  })
+
+  it('maps a rejected initial list promise to a retryable Korean error and clears loading', async () => {
+    const listMyRequests = vi.fn()
+      .mockRejectedValueOnce(new Error('transport failed'))
+      .mockResolvedValueOnce({ ok: true, data: { items: [], hasMore: false, nextCursor: null } })
+    wrap(<MyBenefitCorrectionsPage repository={repository({ listMyRequests })} />, auth(actor))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('요청 내역을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.')
+    expect(screen.queryByText('요청 내역을 불러오고 있습니다.')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
     expect(await screen.findByText('아직 제출한 수정 요청이 없습니다.')).toBeVisible()
   })

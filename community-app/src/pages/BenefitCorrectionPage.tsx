@@ -42,7 +42,12 @@ function safeCorrectionPath(path: string) {
   } catch { return correctionBasePath }
 }
 
-export function BenefitCorrectionPage({ repository = getBenefitCorrectionRepository(), storage = window.localStorage, search = window.location.search, currentPath = `${window.location.pathname}${window.location.search}` }: Props) {
+function resolveDraftStorage(storage?: BenefitCorrectionDraftStorage): BenefitCorrectionDraftStorage | undefined {
+  if (storage) return storage
+  try { return typeof window === 'undefined' ? undefined : window.localStorage } catch { return undefined }
+}
+
+export function BenefitCorrectionPage({ repository = getBenefitCorrectionRepository(), storage, search = window.location.search, currentPath = `${window.location.pathname}${window.location.search}` }: Props) {
   const auth = useAuth()
   const [draft, setDraft] = useState<BenefitCorrectionDraft | null>(null)
   const [companies, setCompanies] = useState<CompanyListing[] | null>(null)
@@ -53,6 +58,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
   const lifecycle = useRef(0)
   const submitController = useRef<AbortController | null>(null)
   const params = useMemo(() => new URLSearchParams(search), [search])
+  const draftStorage = useMemo(() => resolveDraftStorage(storage), [storage])
 
   useEffect(() => {
     submitController.current?.abort()
@@ -71,7 +77,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
         if (generation !== lifecycle.current || controller.signal.aborted) return
         if (!scopeResult.ok) { setLoadError(scopeResult.error.message); return }
         const accountScope = scopeResult.data
-        const saved = loadBenefitCorrectionDraft(accountScope, storage)
+        const saved = loadBenefitCorrectionDraft(accountScope, draftStorage)
         const companyParam = singleParam(params, 'company')
         const categoryParam = singleParam(params, 'category')
         const company = companyParam && canonicalCompany.test(companyParam) ? artifacts.companies.find(value => value.company_id === companyParam) : undefined
@@ -87,7 +93,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
           currentText: base.currentText || (selectedCompany ? displayedValue(selectedCompany, categoryId) : ''),
           observedDataVersion: base.observedDataVersion || artifacts.manifest.data_version,
         }
-        saveBenefitCorrectionDraft(accountScope, next, storage)
+        saveBenefitCorrectionDraft(accountScope, next, draftStorage)
         setCompanies(artifacts.companies)
         setDraft(next)
       })
@@ -98,7 +104,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
       submitController.current = null
       lifecycle.current += 1
     }
-  }, [auth.user?.id, params, repository, storage])
+  }, [auth.user?.id, draftStorage, params, repository])
 
   function update(patch: Partial<BenefitCorrectionDraft>) {
     if (!draft) return
@@ -107,7 +113,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
       const company = companies?.find(value => value.company_id === next.companyId)
       next = { ...next, currentText: company ? displayedValue(company, next.categoryId) : '' }
     }
-    saveBenefitCorrectionDraft(next.accountScope, next, storage)
+    saveBenefitCorrectionDraft(next.accountScope, next, draftStorage)
     setDraft(next)
     setSubmitError(null)
   }
@@ -122,7 +128,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
     const generation = lifecycle.current
     let result
     try {
-      result = await submitBenefitCorrectionDraft(draft, repository, storage, controller.signal)
+      result = await submitBenefitCorrectionDraft(draft, repository, draftStorage, controller.signal)
     } catch {
       if (generation === lifecycle.current && !controller.signal.aborted && submitController.current === controller) {
         submitController.current = null

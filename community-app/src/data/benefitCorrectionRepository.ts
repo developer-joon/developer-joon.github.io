@@ -257,13 +257,23 @@ export function createBenefitCorrectionRepository(options: { getSessionContext: 
   async function currentAccountScope(signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionAccountScope>> {
     const captured = await captureSession(signal)
     if (!captured.ok) return captured
-    try { return { ok: true, data: await deriveBenefitCorrectionAccountScope(captured.data.actorId) } }
-    catch { return { ok: false, error: { code: 'unknown', message: '로그인 계정을 확인할 수 없습니다.' } } }
+    try {
+      const scope = await deriveBenefitCorrectionAccountScope(captured.data.actorId)
+      return signal?.aborted ? aborted() : { ok: true, data: scope }
+    } catch {
+      return signal?.aborted ? aborted() : { ok: false, error: { code: 'unknown', message: '로그인 계정을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.' } }
+    }
   }
   async function execute<T>(name: string, args: Record<string, unknown>, decode: (value: unknown) => T, signal?: AbortSignal, expectedAccountScope?: BenefitCorrectionAccountScope): Promise<BenefitCorrectionResult<T>> {
     const initial = await captureSession(signal)
     if (!initial.ok) return initial
-    const initialScope = await deriveBenefitCorrectionAccountScope(initial.data.actorId)
+    let initialScope: BenefitCorrectionAccountScope
+    try { initialScope = await deriveBenefitCorrectionAccountScope(initial.data.actorId) }
+    catch {
+      if (signal?.aborted) return aborted()
+      return { ok: false, error: { code: 'unknown', message: '로그인 계정을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.' } }
+    }
+    if (signal?.aborted) return aborted()
     if (expectedAccountScope !== undefined && initialScope !== expectedAccountScope) return stale('현재 로그인 계정과 초안 계정이 일치하지 않습니다.')
 
     const preflight = await captureSession(signal)

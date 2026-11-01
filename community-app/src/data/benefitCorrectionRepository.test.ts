@@ -139,6 +139,35 @@ describe('benefit correction repository RPC contract', () => {
     expect(rpc).not.toHaveBeenCalled()
   })
 
+  it('maps account-scope hashing rejection to a resolved retryable result', async () => {
+    const digest = vi.spyOn(globalThis.crypto.subtle, 'digest').mockRejectedValueOnce(new Error('crypto unavailable'))
+    const repository = createBenefitCorrectionRepository({
+      getSessionContext: () => ({ actorId: accountAId, sessionFingerprint: 'session-a-1', rpc: vi.fn() }),
+    })
+
+    await expect(repository.listMyRequests({ limit: 25 })).resolves.toEqual({
+      ok: false,
+      error: { code: 'unknown', message: '로그인 계정을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.' },
+    })
+    digest.mockRestore()
+  })
+
+  it('returns aborted when account-scope hashing settles after cancellation', async () => {
+    let finish!: (value: ArrayBuffer) => void
+    const digest = vi.spyOn(globalThis.crypto.subtle, 'digest').mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const repository = createBenefitCorrectionRepository({
+      getSessionContext: () => ({ actorId: accountAId, sessionFingerprint: 'session-a-1', rpc: vi.fn() }),
+    })
+    const controller = new AbortController()
+    const pending = repository.getCurrentAccountScope(controller.signal)
+    await vi.waitFor(() => expect(digest).toHaveBeenCalledOnce())
+    controller.abort()
+    finish(new Uint8Array(32).buffer)
+
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
+    digest.mockRestore()
+  })
+
   it('calls authenticated create with only the approved RPC arguments', async () => {
     const value = setup()
     expect(await createFor(value.repository, createInput)).toEqual({ ok: true, data: {
