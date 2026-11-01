@@ -147,6 +147,13 @@ class FetchResult:
     status: int
     headers: Mapping[str, str]
     body: bytes
+    network_bindings: tuple[Mapping[str, object], ...] = dataclasses.field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class _ValidatedTarget:
+    url: str
+    resolved_ips: frozenset[str]
 
 
 class Transport(Protocol):
@@ -273,13 +280,13 @@ def _sensitive_key(value: str) -> bool:
     )
 
 
-def validate_public_https_url(
+def _validated_public_https_target(
     url: str,
     *,
     resolver: Callable[[str, int], Sequence[str]] = _default_resolver,
     dns_timeout: float = 3.0,
-) -> str:
-    """Canonicalize a URL and reject credentials, secrets, or non-public targets."""
+) -> _ValidatedTarget:
+    """Canonicalize a URL and bind it to public DNS answers."""
     if not isinstance(url, str) or len(url) > 4000:
         raise SecurityError("URL must be a bounded string")
     try:
@@ -309,19 +316,31 @@ def validate_public_https_url(
     try:
         literal = ipaddress.ip_address(ascii_host)
     except ValueError:
-        answers = _resolve_bounded(resolver, ascii_host, port, dns_timeout)
-        if not answers:
+        raw_answers = _resolve_bounded(resolver, ascii_host, port, dns_timeout)
+        if not raw_answers:
             raise TransientFetchError(f"DNS returned no addresses for {ascii_host}")
-        for answer in answers:
-            _public_ip(answer)
+        answers = frozenset(str(_public_ip(answer)) for answer in raw_answers)
         netloc_host = ascii_host
     else:
-        _public_ip(str(literal))
-        answers = [str(literal)]
-        netloc_host = f"[{literal}]" if literal.version == 6 else str(literal)
+        address = str(_public_ip(str(literal)))
+        answers = frozenset({address})
+        netloc_host = f"[{literal}]" if literal.version == 6 else address
     netloc = netloc_host if port == 443 else f"{netloc_host}:{port}"
     path = parsed.path or "/"
-    return urllib.parse.urlunsplit(("https", netloc, path, parsed.query, parsed.fragment))
+    canonical = urllib.parse.urlunsplit(("https", netloc, path, parsed.query, parsed.fragment))
+    return _ValidatedTarget(canonical, answers)
+
+
+def validate_public_https_url(
+    url: str,
+    *,
+    resolver: Callable[[str, int], Sequence[str]] = _default_resolver,
+    dns_timeout: float = 3.0,
+) -> str:
+    """Canonicalize a URL and reject credentials, secrets, or non-public targets."""
+    return _validated_public_https_target(
+        url, resolver=resolver, dns_timeout=dns_timeout
+    ).url
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -495,6 +514,81 @@ def _safe_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return safe
 
 
+_CONTENT_TYPE_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_SAFE_TEXT_CHARSETS = {
+    "utf-8": "utf-8", "utf8": "utf-8",
+    "ascii": "ascii", "us-ascii": "ascii",
+    "utf-16le": "utf-16le", "utf-16-le": "utf-16le",
+    "utf-16be": "utf-16be", "utf-16-be": "utf-16be",
+    "utf-16": "utf-16",
+}
+
+
+def _content_type_and_charset(headers: Mapping[str, str]) -> tuple[str, str | None]:
+    raw = next(
+        (str(value) for key, value in headers.items() if str(key).lower() == "content-type"),
+        "",
+    )
+    if len(raw) > 1024:
+        raise FetchError("Content-Type header exceeds byte limit")
+    parts = raw.split(";")
+    media_type = parts[0].strip().lower()
+    charset: str | None = None
+    for raw_parameter in parts[1:]:
+        parameter = raw_parameter.strip()
+        if not parameter or "=" not in parameter:
+            raise FetchError("malformed Content-Type parameter")
+        name, value = (part.strip() for part in parameter.split("=", 1))
+        if _CONTENT_TYPE_TOKEN.fullmatch(name) is None:
+            raise FetchError("malformed Content-Type parameter")
+        if value.startswith('"'):
+            if len(value) < 2 or not value.endswith('"') or '"' in value[1:-1]:
+                raise FetchError("malformed Content-Type parameter")
+            value = value[1:-1]
+        elif _CONTENT_TYPE_TOKEN.fullmatch(value) is None:
+            raise FetchError("malformed Content-Type parameter")
+        if name.lower() == "charset":
+            if charset is not None or not value:
+                raise FetchError("malformed Content-Type charset")
+            charset = value.lower()
+    return media_type, charset
+
+
+def _decoded_text_for_secret_scan(body: bytes, headers: Mapping[str, str]) -> str | None:
+    media_type, charset = _content_type_and_charset(headers)
+    if media_type == "application/pdf" or media_type not in ALLOWED_CONTENT_TYPES:
+        return None
+    if charset is None:
+        codec = "utf-16" if body.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8"
+    else:
+        codec = _SAFE_TEXT_CHARSETS.get(charset)
+        if codec is None:
+            raise FetchError(f"unsupported textual charset: {charset}")
+    try:
+        return body.decode(codec, errors="strict")
+    except UnicodeError as exc:
+        raise FetchError(f"text body is invalid for declared charset: {exc}") from exc
+
+
+def _assert_body_has_no_secrets(body: bytes, headers: Mapping[str, str]) -> str | None:
+    text = _decoded_text_for_secret_scan(body, headers)
+    if text is not None:
+        _assert_no_secrets(text)
+    return text
+
+
+def _assert_wire_body_has_no_secrets(body: bytes) -> None:
+    # Latin-1 is a bounded one-byte projection that preserves every ASCII
+    # secret even when unrelated bytes make the wire body invalid UTF-8.
+    _assert_no_secrets(body.decode("latin-1", errors="strict"))
+    for codec in ("utf-16le", "utf-16be"):
+        try:
+            text = body.decode(codec, errors="strict")
+        except UnicodeError:
+            continue
+        _assert_no_secrets(text)
+
+
 def _bounded_decompress(data: bytes, *, wbits: int, limit: int) -> bytes:
     decoder = zlib.decompressobj(wbits)
     decoded = decoder.decompress(data, limit + 1)
@@ -512,7 +606,7 @@ def _bounded_decompress(data: bytes, *, wbits: int, limit: int) -> bytes:
 def _decode_body(response: TransportResponse, policy: FetchPolicy) -> bytes:
     if len(response.body) > policy.max_wire_bytes:
         raise FetchError("response exceeds wire byte limit")
-    _assert_no_secrets(response.body.decode("utf-8", errors="ignore"))
+    _assert_wire_body_has_no_secrets(response.body)
     headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
     encoding = headers.get("content-encoding", "").strip().lower()
     try:
@@ -532,6 +626,7 @@ def _decode_body(response: TransportResponse, policy: FetchPolicy) -> bytes:
         raise FetchError(f"invalid compressed response: {exc}") from exc
     if len(decoded) > policy.max_decoded_bytes:
         raise FetchError("decoded response exceeds byte limit")
+    _assert_body_has_no_secrets(decoded, headers)
     return decoded
 
 
@@ -585,30 +680,33 @@ def fetch_bounded(
     policy: FetchPolicy = FetchPolicy(),
     resolver: Callable[[str, int], Sequence[str]] = _default_resolver,
     monotonic: Callable[[], float] = time.monotonic,
+    _initial_target: _ValidatedTarget | None = None,
+    _deadline: float | None = None,
 ) -> FetchResult:
-    deadline = monotonic() + policy.total_timeout
-    requested = url
+    deadline = _deadline if _deadline is not None else monotonic() + policy.total_timeout
     chain: list[str] = []
+    bindings: list[Mapping[str, object]] = []
     current = url
     for redirect_count in range(policy.max_redirects + 1):
         remaining = deadline - monotonic()
         if remaining <= 0:
             raise FetchError("total fetch deadline exceeded")
-        current = validate_public_https_url(
-            current, resolver=resolver, dns_timeout=min(policy.dns_timeout, remaining)
-        )
-        parsed = urllib.parse.urlsplit(current)
-        remaining = deadline - monotonic()
-        answers = {
-            str(_public_ip(value)) for value in _resolve_bounded(
-                resolver, parsed.hostname or "", parsed.port or 443,
-                min(policy.dns_timeout, max(0.001, remaining)),
+        if redirect_count == 0 and _initial_target is not None:
+            target = _initial_target
+        else:
+            target = _validated_public_https_target(
+                current, resolver=resolver, dns_timeout=min(policy.dns_timeout, remaining)
             )
-        }
+        current = target.url
+        answers = set(target.resolved_ips)
         response = _request_with_retries(current, transport, policy, answers, deadline, monotonic)
         _safe_headers(response.headers)
-        _assert_no_secrets(response.body.decode("utf-8", errors="ignore"))
         chain.append(current)
+        bindings.append({
+            "url": current,
+            "resolved_ips": sorted(answers),
+            "peer_ip": str(_public_ip(response.peer_ip)),
+        })
         if response.status in REDIRECT_STATUSES:
             location = next(
                 (str(value) for key, value in response.headers.items() if str(key).lower() == "location"),
@@ -621,25 +719,19 @@ def fetch_bounded(
             current = urllib.parse.urljoin(current, location)
             continue
         body = _decode_body(response, policy)
-        content_type = next(
-            (str(value).split(";", 1)[0].strip().lower() for key, value in response.headers.items()
-             if str(key).lower() == "content-type"),
-            "",
-        )
+        content_type, _ = _content_type_and_charset(response.headers)
         if content_type not in ALLOWED_CONTENT_TYPES:
             raise FetchError(f"content type is not allowed: {content_type or 'missing'}")
         if monotonic() > deadline:
             raise FetchError("total fetch deadline exceeded")
         return FetchResult(
-            requested_url=validate_public_https_url(
-                requested, resolver=resolver,
-                dns_timeout=min(policy.dns_timeout, max(0.001, deadline - monotonic())),
-            ),
+            requested_url=_initial_target.url if _initial_target is not None else chain[0],
             final_url=current,
             url_chain=chain,
             status=response.status,
             headers=_safe_headers(response.headers),
             body=body,
+            network_bindings=tuple(bindings),
         )
     raise FetchError("redirect limit exceeded")
 
@@ -921,14 +1013,14 @@ def _capture_envelope(
         "url_chain": result.url_chain,
         "headers": dict(result.headers),
     })
-    body_text = result.body.decode("utf-8", errors="ignore")
-    _assert_no_secrets(body_text)
-    try:
-        structured_body = json.loads(body_text)
-    except json.JSONDecodeError:
-        pass
-    else:
-        _assert_no_secrets(structured_body)
+    body_text = _assert_body_has_no_secrets(result.body, result.headers)
+    if body_text is not None:
+        try:
+            structured_body = json.loads(body_text)
+        except json.JSONDecodeError:
+            pass
+        else:
+            _assert_no_secrets(structured_body)
     return {
         "capture_version": 1,
         "scope": {
@@ -939,7 +1031,11 @@ def _capture_envelope(
             "canonical_legal_entity": company.canonical_legal_entity,
         },
         "query_or_locator": query,
-        "request": {"url": result.requested_url, "redirect_chain": result.url_chain},
+        "request": {
+            "url": result.requested_url,
+            "redirect_chain": result.url_chain,
+            "network_bindings": [dict(value) for value in result.network_bindings],
+        },
         "response": {
             "status": result.status,
             "final_url": result.final_url,
@@ -1197,9 +1293,12 @@ def _validate_resumed_entry(
         raise CheckpointError("checkpoint receipt capture binding mismatch")
     try:
         capture = capture_store.read(digest)
-        canonical_locator = validate_public_https_url(
-            locator, resolver=resolver, dns_timeout=policy.dns_timeout
+        validation_deadline = time.monotonic() + policy.total_timeout
+        locator_target = _validated_public_https_target(
+            locator, resolver=resolver,
+            dns_timeout=min(policy.dns_timeout, max(0.001, validation_deadline - time.monotonic())),
         )
+        canonical_locator = locator_target.url
     except CollectorError as exc:
         raise CheckpointError(f"checkpoint capture cannot be validated: {exc}") from exc
     expected_scope = {
@@ -1223,15 +1322,73 @@ def _validate_resumed_entry(
         or not isinstance(response, dict)
     ):
         raise CheckpointError("checkpoint capture request or scope binding mismatch")
+    chain = request["redirect_chain"]
+    bindings = request.get("network_bindings")
+    final_url = response.get("final_url")
+    if (
+        len(chain) > policy.max_redirects + 1
+        or not isinstance(final_url, str)
+        or chain[-1] != final_url
+        or not isinstance(bindings, list)
+        or len(bindings) != len(chain)
+    ):
+        raise CheckpointError("checkpoint redirect or final URL binding mismatch")
     try:
-        body = base64.b64decode(str(response.get("body_base64", "")), validate=True)
+        validated_chain: list[_ValidatedTarget] = []
+        for index, value in enumerate(chain):
+            if not isinstance(value, str):
+                raise SecurityError("redirect URL is malformed")
+            if index == 0:
+                target = locator_target
+            else:
+                remaining = validation_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise FetchError("checkpoint URL validation deadline exceeded")
+                target = _validated_public_https_target(
+                    value, resolver=resolver,
+                    dns_timeout=min(policy.dns_timeout, remaining),
+                )
+            if target.url != value:
+                raise SecurityError("redirect URL is not canonical")
+            validated_chain.append(target)
+        for target, binding in zip(validated_chain, bindings):
+            if not isinstance(binding, dict) or binding.get("url") != target.url:
+                raise SecurityError("network binding URL mismatch")
+            stored_ips = binding.get("resolved_ips")
+            if not isinstance(stored_ips, list) or not stored_ips:
+                raise SecurityError("network binding has no DNS answers")
+            canonical_ips = {str(_public_ip(str(value))) for value in stored_ips}
+            if len(canonical_ips) != len(stored_ips):
+                raise SecurityError("network binding has duplicate DNS answers")
+            if canonical_ips != set(target.resolved_ips):
+                raise SecurityError("recorded DNS answers differ from validated resolution")
+            peer = binding.get("peer_ip")
+            if peer is None and response.get("status") == 599:
+                continue
+            if not isinstance(peer, str) or str(_public_ip(peer)) not in canonical_ips:
+                raise SecurityError("network peer differs from recorded DNS answers")
+    except CollectorError as exc:
+        raise CheckpointError(f"checkpoint network binding cannot be validated: {exc}") from exc
+    encoded_body = response.get("body_base64")
+    max_base64_length = 4 * ((policy.max_decoded_bytes + 2) // 3)
+    if not isinstance(encoded_body, str) or len(encoded_body) > max_base64_length:
+        raise CheckpointError("checkpoint capture body encoding exceeds byte limit")
+    try:
+        body = base64.b64decode(encoded_body, validate=True)
     except (ValueError, TypeError) as exc:
         raise CheckpointError("checkpoint capture body encoding is invalid") from exc
-    _assert_no_secrets(body.decode("utf-8", errors="ignore"))
+    if len(body) > policy.max_decoded_bytes:
+        raise CheckpointError("checkpoint capture body exceeds byte limit")
+    headers = response.get("headers")
+    if not isinstance(headers, dict):
+        raise CheckpointError("checkpoint capture headers are malformed")
+    try:
+        _assert_body_has_no_secrets(body, headers)
+    except CollectorError as exc:
+        raise CheckpointError(f"checkpoint capture body cannot be validated: {exc}") from exc
     if response.get("body_sha256") != hashlib.sha256(body).hexdigest():
         raise CheckpointError("checkpoint capture body hash mismatch")
     status = response.get("status")
-    final_url = response.get("final_url")
     found = isinstance(status, int) and 200 <= status < 300 and bool(body)
     expected_result = "source_found" if found else "no_result" if status in {404, 410} else "access_failed"
     if receipt.get("result") != expected_result:
@@ -1323,18 +1480,34 @@ def collect_batch(
             if source is not None:
                 sources.append(source)
             continue
+        attempt_deadline = time.monotonic() + policy.total_timeout
         started = now()
+        remaining = attempt_deadline - time.monotonic()
+        if remaining <= 0:
+            raise FetchError("total collect deadline exceeded")
+        initial_target = _validated_public_https_target(
+            locator, resolver=resolver,
+            dns_timeout=min(policy.dns_timeout, remaining),
+        )
         try:
-            fetched = fetch_bounded(locator, transport=transport, policy=policy, resolver=resolver)
+            fetched = fetch_bounded(
+                initial_target.url, transport=transport, policy=policy, resolver=resolver,
+                _initial_target=initial_target, _deadline=attempt_deadline,
+            )
         except (FetchError, SecurityError) as exc:
             completed = now()
             synthetic = FetchResult(
-                requested_url=validate_public_https_url(locator, resolver=resolver),
-                final_url=validate_public_https_url(locator, resolver=resolver),
-                url_chain=[validate_public_https_url(locator, resolver=resolver)],
+                requested_url=initial_target.url,
+                final_url=initial_target.url,
+                url_chain=[initial_target.url],
                 status=599,
-                headers={"content-type": "text/plain"},
-                body=str(exc).encode("utf-8")[:policy.max_decoded_bytes],
+                headers={"content-type": "text/plain; charset=ascii"},
+                body=str(exc).encode("ascii", errors="backslashreplace")[:policy.max_decoded_bytes],
+                network_bindings=({
+                    "url": initial_target.url,
+                    "resolved_ips": sorted(initial_target.resolved_ips),
+                    "peer_ip": None,
+                },),
             )
             receipt, source = build_records(
                 company, category_id, route_id, query, synthetic, capture_store,

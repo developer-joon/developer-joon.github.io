@@ -1,8 +1,10 @@
+import base64
 import copy
 import gzip
 import hashlib
 import importlib.util
 import json
+import multiprocessing
 import os
 import signal
 import stat
@@ -327,6 +329,40 @@ class CollectorTests(unittest.TestCase):
                         started_at="2026-11-01T01:00:00Z", completed_at="2026-11-01T01:00:01Z",
                     )
 
+    def test_fresh_text_bodies_reject_utf16_secrets_and_unsafe_charsets(self):
+        url = "https://example.com/"
+        resolver = lambda host, port: ["93.184.216.34"]
+        secret = '{"api_key":"super-secret-value","authorization":"Bearer abc.def.ghi"}'
+        cases = (
+            (secret.encode("utf-16le"), "application/json; charset=utf-16le"),
+            (secret.encode("utf-16be"), "application/json; charset=utf-16be"),
+            (secret.encode("utf-16"), "application/json; charset=utf-16"),
+        )
+        for body, content_type in cases:
+            with self.subTest(content_type=content_type), self.assertRaises(collectors.SecurityError):
+                collectors.fetch_bounded(
+                    url,
+                    transport=FakeTransport({url: [response(
+                        200, body, {"content-type": content_type},
+                    )]}),
+                    policy=collectors.FetchPolicy(retries=0),
+                    resolver=resolver,
+                )
+        for content_type in (
+            "application/json; charset=iso-8859-1",
+            "text/plain; charset=utf-8; charset=ascii",
+            'text/plain; charset="unterminated',
+        ):
+            with self.subTest(content_type=content_type), self.assertRaises(collectors.FetchError):
+                collectors.fetch_bounded(
+                    url,
+                    transport=FakeTransport({url: [response(
+                        200, b"safe", {"content-type": content_type},
+                    )]}),
+                    policy=collectors.FetchPolicy(retries=0),
+                    resolver=resolver,
+                )
+
     def test_capture_rejects_bearer_secrets_in_headers_and_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = collectors.CaptureStore(Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT)
@@ -529,6 +565,83 @@ class CollectorTests(unittest.TestCase):
                 with self.subTest(binding=label), self.assertRaises(collectors.CheckpointError):
                     validate(prior)
 
+    def test_resume_rejects_utf16_secrets_in_rehashed_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            store = collectors.CaptureStore(Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT)
+            checkpoint = collectors.BatchCheckpoint(Path(tmp) / "checkpoint.json", collectors.batch_input_sha256(items))
+            collectors.collect_batch(
+                items, transport=FakeTransport({url: [response(404, b"safe")]}),
+                capture_store=store, checkpoint=checkpoint,
+                resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+            )
+            key = collectors.attempt_id(self.company.company_id, "leave", "official-company")
+            prior = copy.deepcopy(checkpoint.completed[key])
+            capture = store.read(prior["receipt"]["raw_response_sha256"])
+            body = '{"api_key":"super-secret-value"}'.encode("utf-16le")
+            capture["response"]["headers"]["content-type"] = "application/json; charset=utf-16le"
+            capture["response"]["body_base64"] = base64.b64encode(body).decode("ascii")
+            capture["response"]["body_sha256"] = hashlib.sha256(body).hexdigest()
+            digest, locator = store.put(capture)
+            prior["receipt"]["raw_response_sha256"] = digest
+            prior["receipt"]["capture_locator"] = locator
+            prior["receipt"]["receipt_content_sha256"] = hashlib.sha256(collectors._canonical_json({
+                name: value for name, value in prior["receipt"].items() if name != "receipt_content_sha256"
+            })).hexdigest()
+            with self.assertRaises(collectors.CheckpointError):
+                collectors._validate_resumed_entry(
+                    prior, company=self.company, category_id="leave", route_id="official-company",
+                    locator=url, query=collectors.canonical_query(self.company, "leave", "official-company"),
+                    capture_store=store, resolver=lambda h, p: ["93.184.216.34"],
+                    policy=collectors.FetchPolicy(),
+                )
+
+    def test_resume_rejects_rehashed_private_or_mismatched_final_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            store = collectors.CaptureStore(Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT)
+            checkpoint = collectors.BatchCheckpoint(Path(tmp) / "checkpoint.json", collectors.batch_input_sha256(items))
+            collectors.collect_batch(
+                items, transport=FakeTransport({url: [response(404, b"missing")]}),
+                capture_store=store, checkpoint=checkpoint,
+                resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+            )
+            key = collectors.attempt_id(self.company.company_id, "leave", "official-company")
+            original = checkpoint.completed[key]
+
+            for label, final_url, chain, binding_override in (
+                (
+                    "private", "https://127.0.0.1/admin", [url, "https://127.0.0.1/admin"],
+                    {"url": "https://127.0.0.1/admin", "resolved_ips": ["127.0.0.1"], "peer_ip": "127.0.0.1"},
+                ),
+                ("mismatch", "https://example.org/final", [url], None),
+                ("peer mismatch", url, [url], {"url": url, "resolved_ips": ["93.184.216.34"], "peer_ip": "93.184.216.35"}),
+                ("resolution mismatch", url, [url], {"url": url, "resolved_ips": ["93.184.216.35"], "peer_ip": "93.184.216.35"}),
+            ):
+                prior = copy.deepcopy(original)
+                capture = store.read(prior["receipt"]["raw_response_sha256"])
+                capture["response"]["final_url"] = final_url
+                capture["request"]["redirect_chain"] = chain
+                if label == "private":
+                    capture["request"]["network_bindings"].append(binding_override)
+                elif binding_override is not None:
+                    capture["request"]["network_bindings"][0] = binding_override
+                digest, capture_locator = store.put(capture)
+                prior["receipt"]["raw_response_sha256"] = digest
+                prior["receipt"]["capture_locator"] = capture_locator
+                prior["receipt"]["receipt_content_sha256"] = hashlib.sha256(collectors._canonical_json({
+                    name: value for name, value in prior["receipt"].items() if name != "receipt_content_sha256"
+                })).hexdigest()
+                with self.subTest(label=label), self.assertRaises(collectors.CheckpointError):
+                    collectors._validate_resumed_entry(
+                        prior, company=self.company, category_id="leave", route_id="official-company",
+                        locator=url, query=collectors.canonical_query(self.company, "leave", "official-company"),
+                        capture_store=store, resolver=lambda h, p: ["93.184.216.34"],
+                        policy=collectors.FetchPolicy(),
+                    )
+
     def test_batch_emits_only_actual_attempts_and_never_synthesizes_no_public_info(self):
         with tempfile.TemporaryDirectory() as tmp:
             url = "https://example.com/benefits"
@@ -674,6 +787,45 @@ class CollectorTests(unittest.TestCase):
                     "https://example.com/", connect_timeout=1, read_timeout=1,
                     max_wire_bytes=100, total_timeout=0.1, resolved_ip="93.184.216.34",
                 ))
+
+    def test_collect_failure_receipt_never_restarts_dns_after_total_deadline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pid_path = Path(tmp) / "dns.pid"
+            calls = multiprocessing_calls = multiprocessing.Value("i", 0)
+
+            def resolver(host, port):
+                with calls.get_lock():
+                    calls.value += 1
+                    call = calls.value
+                if call == 1:
+                    return ["93.184.216.34"]
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                pid_path.write_text(str(os.getpid()))
+                time.sleep(10)
+                return ["93.184.216.34"]
+
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            store = collectors.CaptureStore(Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT)
+            checkpoint = collectors.BatchCheckpoint(Path(tmp) / "checkpoint.json", collectors.batch_input_sha256(items))
+            started = time.monotonic()
+            with mock.patch.object(
+                store, "put", return_value=("a" * 64, "https://captures.invalid/sha256/" + "a" * 64)
+            ), mock.patch.object(checkpoint, "record"):
+                artifact = collectors.collect_batch(
+                    items,
+                    transport=FakeTransport({url: [collectors.TransientFetchError("request failed")]}),
+                    capture_store=store,
+                    checkpoint=checkpoint,
+                    policy=collectors.FetchPolicy(retries=0, total_timeout=0.04, dns_timeout=0.02),
+                    resolver=resolver, now=lambda: "2026-11-01T01:00:00Z",
+                )
+            self.assertLess(time.monotonic() - started, 0.15)
+            self.assertEqual("access_failed", artifact["attempts"][0]["result"])
+            self.assertLessEqual(multiprocessing_calls.value, 2)
+            if pid_path.exists():
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(pid_path.read_text()), 0)
 
     def test_batch_rejects_adapters_that_alias_the_same_policy_route(self):
         with tempfile.TemporaryDirectory() as tmp:
