@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as api from './benefitCorrectionDraftStore'
+import { createBenefitCorrectionRepository, type BenefitCorrectionRpcClient } from '../data/benefitCorrectionRepository'
 
 const draftId = '56000000-0000-4000-8000-000000000020'
 const requestId = '56000000-0000-4000-8000-000000000010'
@@ -14,6 +15,10 @@ function memoryStorage() {
     removeItem: vi.fn((key: string) => { values.delete(key) }),
     values,
   }
+}
+
+function repositoryFor(scope: Awaited<ReturnType<typeof api.deriveBenefitCorrectionAccountScope>>, createRequest: ReturnType<typeof vi.fn>) {
+  return { getCurrentAccountScope: vi.fn().mockResolvedValue({ ok: true, data: scope }), createRequest } as unknown as Parameters<typeof api.submitBenefitCorrectionDraft>[1] & { createRequest: typeof createRequest }
 }
 
 async function fixture() {
@@ -76,11 +81,54 @@ describe('account-scoped benefit correction drafts', () => {
     expect(await api.deriveBenefitCorrectionClientKey(accountA, value)).toMatch(/^[0-9a-f-]{36}$/)
   })
 
+  it('keeps idempotency stable for one actor and separates it across actor and domain-scoped drafts', async () => {
+    const { accountA, accountB, value } = await fixture()
+    const first = await api.deriveBenefitCorrectionClientKey(accountA, value)
+    expect(await api.deriveBenefitCorrectionClientKey(accountA, value)).toBe(first)
+    const accountBValue = { ...value, accountScope: accountB }
+    expect(await api.deriveBenefitCorrectionClientKey(accountB, accountBValue)).not.toBe(first)
+  })
+
   it('cannot submit an in-memory draft after the authenticated account switches', async () => {
     const { accountB, value } = await fixture()
-    const repository = { createRequest: vi.fn().mockResolvedValue({ ok: true, data: successItem }) }
-    await expect(api.submitBenefitCorrectionDraft(accountB, value, repository)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    const repository = repositoryFor(accountB, vi.fn().mockResolvedValue({ ok: true, data: successItem }))
+    await expect(api.submitBenefitCorrectionDraft(value, repository)).resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
     expect(repository.createRequest).not.toHaveBeenCalled()
+  })
+
+  it('makes zero RPC calls and retains account A snapshot when account B repository receives account A draft', async () => {
+    const { accountA, value } = await fixture()
+    const storage = memoryStorage()
+    expect(api.saveBenefitCorrectionDraft(accountA, value, storage)).toBe(true)
+    const client: BenefitCorrectionRpcClient = { rpc: vi.fn().mockResolvedValue({ data: {
+      id: requestId, company_id: successItem.companyId, category_id: successItem.categoryId,
+      current_text: successItem.currentText, proposed_text: successItem.proposedText, scope_text: successItem.scopeText,
+      source_url: successItem.sourceUrl, observed_data_version: successItem.observedDataVersion, status: successItem.status,
+      admin_response: null, applied_data_version: null, applied_at: null,
+      created_at: successItem.createdAt, updated_at: successItem.updatedAt,
+    }, error: null }) }
+    const repository = createBenefitCorrectionRepository(client, { getActorId: () => accountBId })
+
+    await expect(api.submitBenefitCorrectionDraft(value, repository, storage))
+      .resolves.toMatchObject({ ok: false })
+    expect(client.rpc).not.toHaveBeenCalled()
+    expect(api.loadBenefitCorrectionDraft(accountA, storage)).toEqual(value)
+  })
+
+  it('rechecks actor scope immediately before RPC and retains the snapshot when the account switches', async () => {
+    const { accountA, value } = await fixture()
+    const storage = memoryStorage()
+    expect(api.saveBenefitCorrectionDraft(accountA, value, storage)).toBe(true)
+    let actorReads = 0
+    const client: BenefitCorrectionRpcClient = { rpc: vi.fn() }
+    const repository = createBenefitCorrectionRepository(client, {
+      getActorId: () => ++actorReads < 3 ? accountAId : accountBId,
+    })
+
+    await expect(api.submitBenefitCorrectionDraft(value, repository, storage))
+      .resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
+    expect(client.rpc).not.toHaveBeenCalled()
+    expect(api.loadBenefitCorrectionDraft(accountA, storage)).toEqual(value)
   })
 
   it('enforces PostgreSQL char_length bounds by Unicode code points in drafts and submissions', async () => {
@@ -95,13 +143,13 @@ describe('account-scoped benefit correction drafts', () => {
     const { accountA, value } = await fixture()
     const storage = memoryStorage()
     expect(api.saveBenefitCorrectionDraft(accountA, value, storage)).toBe(true)
-    const repository = { createRequest: vi.fn()
+    const repository = repositoryFor(accountA, vi.fn()
       .mockResolvedValueOnce({ ok: false, error: { code: 'network', message: 'retry' } })
-      .mockResolvedValueOnce({ ok: true, data: successItem }) }
+      .mockResolvedValueOnce({ ok: true, data: successItem }))
 
-    await expect(api.submitBenefitCorrectionDraft(accountA, value, repository, storage)).resolves.toMatchObject({ ok: false })
+    await expect(api.submitBenefitCorrectionDraft(value, repository, storage)).resolves.toMatchObject({ ok: false })
     expect(api.loadBenefitCorrectionDraft(accountA, storage)).toEqual(value)
-    await expect(api.submitBenefitCorrectionDraft(accountA, value, repository, storage)).resolves.toEqual({ ok: true, data: successItem })
+    await expect(api.submitBenefitCorrectionDraft(value, repository, storage)).resolves.toEqual({ ok: true, data: successItem })
     expect(api.loadBenefitCorrectionDraft(accountA, storage)).toBeNull()
     expect(repository.createRequest.mock.calls[0][0]).toMatchObject({ clientKey: await api.deriveBenefitCorrectionClientKey(accountA, value) })
   })
@@ -113,11 +161,11 @@ describe('account-scoped benefit correction drafts', () => {
     expect(api.saveBenefitCorrectionDraft(accountA, value, storage)).toBe(true)
     expect(api.saveBenefitCorrectionDraft(accountB, accountBDraft, storage)).toBe(true)
     const newer = { ...value, proposedText: '로그인 중 변경됨', updatedAt: '2026-11-01T00:01:00.000Z' }
-    const repository = { createRequest: vi.fn(async () => {
+    const repository = repositoryFor(accountA, vi.fn(async () => {
       api.saveBenefitCorrectionDraft(accountA, newer, storage)
       return { ok: true as const, data: successItem }
-    }) }
-    await api.submitBenefitCorrectionDraft(accountA, value, repository, storage)
+    }))
+    await api.submitBenefitCorrectionDraft(value, repository, storage)
     expect(api.loadBenefitCorrectionDraft(accountA, storage)).toEqual(newer)
     expect(api.loadBenefitCorrectionDraft(accountB, storage)).toEqual(accountBDraft)
   })
@@ -126,12 +174,12 @@ describe('account-scoped benefit correction drafts', () => {
     const { accountA, value } = await fixture()
     const storage = memoryStorage()
     expect(api.saveBenefitCorrectionDraft(accountA, value, storage)).toBe(true)
-    const malformed = { createRequest: vi.fn().mockResolvedValue({ ok: true, data: { ...successItem, leak: true } }) }
-    await expect(api.submitBenefitCorrectionDraft(accountA, value, malformed as never, storage)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    const malformed = repositoryFor(accountA, vi.fn().mockResolvedValue({ ok: true, data: { ...successItem, leak: true } }))
+    await expect(api.submitBenefitCorrectionDraft(value, malformed as never, storage)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
     expect(api.loadBenefitCorrectionDraft(accountA, storage)).toEqual(value)
 
-    const mismatched = { createRequest: vi.fn().mockResolvedValue({ ok: true, data: { ...successItem, proposedText: '다른 요청' } }) }
-    await expect(api.submitBenefitCorrectionDraft(accountA, value, mismatched, storage)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    const mismatched = repositoryFor(accountA, vi.fn().mockResolvedValue({ ok: true, data: { ...successItem, proposedText: '다른 요청' } }))
+    await expect(api.submitBenefitCorrectionDraft(value, mismatched, storage)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
     expect(api.loadBenefitCorrectionDraft(accountA, storage)).toEqual(value)
   })
 

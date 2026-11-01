@@ -8,6 +8,7 @@ import {
   type AdminBenefitCorrectionItem,
   type BenefitCategory,
   type BenefitCorrectionCursor,
+  type BenefitCorrectionAccountScope,
   type BenefitCorrectionItem,
   type BenefitCorrectionListInput,
   type BenefitCorrectionPage,
@@ -23,7 +24,9 @@ export interface BenefitCorrectionRpcClient {
 }
 
 export interface BenefitCorrectionRepository {
+  getCurrentAccountScope(signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionAccountScope>>
   createRequest(input: CreateBenefitCorrectionInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionItem>>
+  createRequest(input: CreateBenefitCorrectionInput, expectedAccountScope: BenefitCorrectionAccountScope, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionItem>>
   listMyRequests(input: BenefitCorrectionListInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionPage<BenefitCorrectionItem>>>
   listAdminQueue(input: BenefitCorrectionQueueInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionPage<AdminBenefitCorrectionItem>>>
   reviewRequest(input: ReviewBenefitCorrectionInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<AdminBenefitCorrectionItem>>
@@ -34,6 +37,7 @@ const adminKeys = [...ownerKeys, 'reviewed_at'] as const
 const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2}):(\d{2}))$/
 const dataVersionPattern = /^company-benefits-(\d{4})-(\d{2})-(\d{2})-v[1-9][0-9]*$/
 const companyPattern = /^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$/
+const ACCOUNT_SCOPE_DOMAIN = 'breadlab:benefit-correction:account-scope:v1'
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]) {
@@ -147,16 +151,48 @@ function validReviewInput(input: ReviewBenefitCorrectionInput) {
     && transitionAllowed && boundedText(input.adminResponse, 2000)
 }
 
-export function createBenefitCorrectionRepository(client: BenefitCorrectionRpcClient, options: { getActorScope?: () => string | null | Promise<string | null> } = {}): BenefitCorrectionRepository {
-  const getActorScope = options.getActorScope ?? (() => 'unscoped')
-  async function execute<T>(call: () => Promise<BenefitCorrectionRpcResponse>, decode: (value: unknown) => T, signal?: AbortSignal): Promise<BenefitCorrectionResult<T>> {
+export async function deriveBenefitCorrectionAccountScope(
+  actorId: string,
+  subtle: SubtleCrypto = globalThis.crypto.subtle,
+): Promise<BenefitCorrectionAccountScope> {
+  if (!isCanonicalUuid(actorId)) throw new Error('invalid account id')
+  const material = `${ACCOUNT_SCOPE_DOMAIN}\0${actorId.toLowerCase()}`
+  const digest = new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(material)))
+  return [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('') as BenefitCorrectionAccountScope
+}
+
+type ActorProvider = () => string | null | Promise<string | null>
+
+export function createBenefitCorrectionRepository(client: BenefitCorrectionRpcClient, options: { getActorId: ActorProvider }): BenefitCorrectionRepository {
+  if (!options || typeof options.getActorId !== 'function') throw new Error('actor provider is required')
+  const aborted = <T>(): BenefitCorrectionResult<T> => ({ ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } })
+  const authRequired = <T>(): BenefitCorrectionResult<T> => ({ ok: false, error: { code: 'auth_required', message: '로그인이 필요합니다.' } })
+  async function currentAccountScope(signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionAccountScope>> {
+    if (signal?.aborted) return aborted()
+    try {
+      const actorId = await options.getActorId()
+      if (signal?.aborted) return aborted()
+      if (actorId === null) return authRequired()
+      return { ok: true, data: await deriveBenefitCorrectionAccountScope(actorId) }
+    } catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) return aborted()
+      return { ok: false, error: { code: 'unknown', message: '로그인 계정을 확인할 수 없습니다.' } }
+    }
+  }
+  async function execute<T>(call: () => Promise<BenefitCorrectionRpcResponse>, decode: (value: unknown) => T, signal?: AbortSignal, expectedAccountScope?: BenefitCorrectionAccountScope): Promise<BenefitCorrectionResult<T>> {
     if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
     try {
-      const actorScope = await getActorScope()
-      if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
+      const initialScope = await currentAccountScope(signal)
+      if (!initialScope.ok) return initialScope
+      if (expectedAccountScope !== undefined && initialScope.data !== expectedAccountScope) return { ok: false, error: { code: 'stale_response', message: '현재 로그인 계정과 초안 계정이 일치하지 않습니다.' } }
+      const rpcScope = await currentAccountScope(signal)
+      if (!rpcScope.ok) return rpcScope
+      if (rpcScope.data !== initialScope.data || (expectedAccountScope !== undefined && rpcScope.data !== expectedAccountScope)) return { ok: false, error: { code: 'stale_response', message: '로그인 계정이 변경되어 요청을 중단했습니다.' } }
       const response = await call()
       if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
-      if (await getActorScope() !== actorScope) return { ok: false, error: { code: 'stale_response', message: '로그인 계정이 변경되어 이전 응답을 폐기했습니다.' } }
+      const responseScope = await currentAccountScope(signal)
+      if (!responseScope.ok) return responseScope
+      if (responseScope.data !== rpcScope.data) return { ok: false, error: { code: 'stale_response', message: '로그인 계정이 변경되어 이전 응답을 폐기했습니다.' } }
       if (response.error) return mapRpcError(response.error)
       try { return { ok: true, data: decode(response.data) } }
       catch { return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } } }
@@ -166,13 +202,16 @@ export function createBenefitCorrectionRepository(client: BenefitCorrectionRpcCl
     }
   }
   return {
-    createRequest(input, signal) {
+    getCurrentAccountScope: currentAccountScope,
+    createRequest(input, expectedAccountScopeOrSignal?: BenefitCorrectionAccountScope | AbortSignal, signal?: AbortSignal) {
       if (!validCreateInput(input)) return Promise.resolve(invalidArgument())
+      const expectedAccountScope = typeof expectedAccountScopeOrSignal === 'string' ? expectedAccountScopeOrSignal : undefined
+      const requestSignal = expectedAccountScopeOrSignal instanceof AbortSignal ? expectedAccountScopeOrSignal : signal
       return execute(() => client.rpc('create_benefit_correction_request_v1', {
         p_client_key: input.clientKey, p_company_id: input.companyId, p_category_id: input.categoryId,
         p_current_text: input.currentText, p_proposed_text: input.proposedText, p_scope_text: input.scopeText,
         p_source_url: input.sourceUrl, p_observed_data_version: input.observedDataVersion,
-      }, signal), value => decodeBenefitCorrectionItem(value), signal)
+      }, requestSignal), value => decodeBenefitCorrectionItem(value), requestSignal, expectedAccountScope)
     },
     listMyRequests(input, signal) {
       if (!validListInput(input)) return Promise.resolve(invalidArgument())
@@ -206,6 +245,6 @@ export function getBenefitCorrectionRepository(): BenefitCorrectionRepository {
       const response = signal ? await query.abortSignal(signal) : await query
       return { data: response.data, error: response.error }
     },
-  }, { getActorScope: async () => (await supabase.auth.getSession()).data.session?.user.id ?? null })
+  }, { getActorId: async () => (await supabase.auth.getSession()).data.session?.user.id ?? null })
   return browserRepository
 }

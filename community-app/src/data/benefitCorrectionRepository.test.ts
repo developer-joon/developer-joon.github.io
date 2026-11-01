@@ -5,6 +5,8 @@ import type { CreateBenefitCorrectionInput } from '../types/benefitCorrections'
 const requestId = '56000000-0000-4000-8000-000000000010'
 const clientKey = '56000000-0000-4000-8000-000000000011'
 const createdAt = '2026-11-01T00:00:00.000Z'
+const accountAId = '56000000-0000-4000-8000-0000000000a1'
+const accountBId = '56000000-0000-4000-8000-0000000000b2'
 
 const ownerItem = {
   id: requestId,
@@ -37,7 +39,7 @@ const createInput: CreateBenefitCorrectionInput = {
 function setup(initial = { data: ownerItem as unknown, error: null as unknown }) {
   const calls: Array<{ name: string; args: Record<string, unknown>; signal?: AbortSignal }> = []
   let response = initial
-  let actorScope = 'session-a'
+  let actorScope = accountAId
   const client: BenefitCorrectionRpcClient = {
     rpc(name, args, signal) {
       calls.push({ name, args, signal })
@@ -45,14 +47,38 @@ function setup(initial = { data: ownerItem as unknown, error: null as unknown })
     },
   }
   return {
-    repository: createBenefitCorrectionRepository(client, { getActorScope: () => actorScope }),
+    repository: createBenefitCorrectionRepository(client, { getActorId: () => actorScope }),
     calls,
     setResponse(next: typeof response) { response = next },
-    switchActor() { actorScope = 'session-b' },
+    switchActor() { actorScope = accountBId },
   }
 }
 
 describe('benefit correction repository RPC contract', () => {
+  it('requires an authenticated actor provider at construction', () => {
+    const client: BenefitCorrectionRpcClient = { rpc: vi.fn() }
+    expect(() => createBenefitCorrectionRepository(client, undefined as never)).toThrow('actor provider is required')
+    expect(() => createBenefitCorrectionRepository(client, {} as never)).toThrow('actor provider is required')
+  })
+
+  it('exposes only a stable domain-separated opaque scope for the current actor', async () => {
+    const client: BenefitCorrectionRpcClient = { rpc: vi.fn() }
+    const repository = createBenefitCorrectionRepository(client, { getActorId: () => accountAId })
+    const first = await repository.getCurrentAccountScope()
+    expect(first).toEqual({ ok: true, data: 'c3cdc743da03b5bc2025a7bb9adc8db87bdec1a629fcc84a3d3b3b9ad66d0d0e' })
+    expect(await repository.getCurrentAccountScope()).toEqual(first)
+    expect(JSON.stringify(first)).not.toContain(accountAId)
+    expect(client.rpc).not.toHaveBeenCalled()
+  })
+
+  it('fails closed before RPC when the mandatory actor provider has no authenticated actor', async () => {
+    const client: BenefitCorrectionRpcClient = { rpc: vi.fn() }
+    const repository = createBenefitCorrectionRepository(client, { getActorId: () => null })
+    await expect(repository.createRequest(createInput)).resolves.toMatchObject({ ok: false, error: { code: 'auth_required' } })
+    await expect(repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'auth_required' } })
+    expect(client.rpc).not.toHaveBeenCalled()
+  })
+
   it('calls authenticated create with only the approved RPC arguments', async () => {
     const value = setup()
     expect(await value.repository.createRequest(createInput)).toEqual({ ok: true, data: {
@@ -143,14 +169,13 @@ describe('benefit correction repository RPC contract', () => {
 
   it('forwards abort signals and rejects responses after the authenticated actor scope changes', async () => {
     let finish!: (value: { data: unknown; error: unknown }) => void
-    let actorScope = 'session-a'
+    let actorScope = accountAId
     const client: BenefitCorrectionRpcClient = { rpc: vi.fn(() => new Promise<BenefitCorrectionRpcResponse>(resolve => { finish = resolve })) }
-    const repository = createBenefitCorrectionRepository(client, { getActorScope: () => actorScope })
+    const repository = createBenefitCorrectionRepository(client, { getActorId: () => actorScope })
     const controller = new AbortController()
     const pending = repository.createRequest(createInput, controller.signal)
-    await Promise.resolve()
-    expect(client.rpc).toHaveBeenCalledWith('create_benefit_correction_request_v1', expect.any(Object), controller.signal)
-    actorScope = 'session-b'
+    await vi.waitFor(() => expect(client.rpc).toHaveBeenCalledWith('create_benefit_correction_request_v1', expect.any(Object), controller.signal))
+    actorScope = accountBId
     finish({ data: ownerItem, error: null })
     await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
 
@@ -163,11 +188,11 @@ describe('benefit correction repository RPC contract', () => {
     let releaseActor!: (value: string) => void
     const client: BenefitCorrectionRpcClient = { rpc: vi.fn().mockResolvedValue({ data: ownerItem, error: null }) }
     const repository = createBenefitCorrectionRepository(client, {
-      getActorScope: () => new Promise<string>(resolve => { releaseActor = resolve }),
+      getActorId: () => new Promise<string>(resolve => { releaseActor = resolve }),
     })
     const pending = repository.createRequest(createInput, controller.signal)
     controller.abort()
-    releaseActor('session-a')
+    releaseActor(accountAId)
     await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
     expect(client.rpc).not.toHaveBeenCalled()
   })

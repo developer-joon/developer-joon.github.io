@@ -1,5 +1,5 @@
-import { decodeBenefitCorrectionItem, isBenefitCorrectionDataVersion, isBenefitCorrectionSourceUrl, isBenefitCorrectionTimestamp, type BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
-import { isCanonicalUuid, isStrictUuid } from './uuid'
+import { decodeBenefitCorrectionItem, deriveBenefitCorrectionAccountScope, isBenefitCorrectionDataVersion, isBenefitCorrectionSourceUrl, isBenefitCorrectionTimestamp, type BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
+import { isStrictUuid } from './uuid'
 import { BENEFIT_CATEGORIES, type BenefitCorrectionAccountScope, type BenefitCorrectionDraft, type BenefitCorrectionItem, type BenefitCorrectionResult } from '../types/benefitCorrections'
 
 const BENEFIT_CORRECTION_DRAFT_PREFIX = 'breadlab:benefit-correction:draft:v2'
@@ -9,7 +9,7 @@ const draftKeys = ['version', 'accountScope', 'draftId', 'companyId', 'categoryI
 const itemKeys = ['id', 'companyId', 'categoryId', 'currentText', 'proposedText', 'scopeText', 'sourceUrl', 'observedDataVersion', 'status', 'adminResponse', 'appliedDataVersion', 'appliedAt', 'createdAt', 'updatedAt'] as const
 
 export type BenefitCorrectionDraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
-type DraftRepository = Pick<BenefitCorrectionRepository, 'createRequest'>
+type DraftRepository = Pick<BenefitCorrectionRepository, 'createRequest' | 'getCurrentAccountScope'>
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]) {
@@ -34,15 +34,7 @@ function draftTimestamp(value: unknown): value is string {
   return isBenefitCorrectionTimestamp(value) && Date.parse(value) <= Date.now() + 5 * 60 * 1000
 }
 
-export async function deriveBenefitCorrectionAccountScope(
-  accountId: string,
-  subtle: SubtleCrypto = globalThis.crypto.subtle,
-): Promise<BenefitCorrectionAccountScope> {
-  if (!isCanonicalUuid(accountId)) throw new Error('invalid account id')
-  const material = `breadlab:benefit-correction:account-scope:v1\0${accountId.toLowerCase()}`
-  const digest = new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(material)))
-  return [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('') as BenefitCorrectionAccountScope
-}
+export { deriveBenefitCorrectionAccountScope }
 
 export function benefitCorrectionDraftKey(scope: BenefitCorrectionAccountScope): string {
   if (!isAccountScope(scope)) throw new Error('invalid account scope')
@@ -153,12 +145,15 @@ function validateMappedItem(value: unknown): BenefitCorrectionItem | null {
 }
 
 export async function submitBenefitCorrectionDraft(
-  scope: BenefitCorrectionAccountScope,
   draft: BenefitCorrectionDraft,
   repository: DraftRepository,
   storage: BenefitCorrectionDraftStorage | undefined = defaultStorage(),
   signal?: AbortSignal,
 ): Promise<BenefitCorrectionResult<BenefitCorrectionItem>> {
+  const currentScope = await repository.getCurrentAccountScope(signal)
+  if (!currentScope.ok) return currentScope
+  const scope = currentScope.data
+  if (scope !== draft.accountScope) return { ok: false, error: { code: 'stale_response', message: '현재 로그인 계정과 초안 계정이 일치하지 않습니다.' } }
   const canonical = parseDraft(scope, draft)
   if (!canonical || !submissionReady(canonical)) return { ok: false, error: { code: 'invalid_argument', message: '입력 내용을 확인해 주세요.' } }
   const submittedRaw = serializeDraft(scope, canonical)
@@ -169,7 +164,7 @@ export async function submitBenefitCorrectionDraft(
     clientKey, companyId: canonical.companyId, categoryId: canonical.categoryId as Exclude<BenefitCorrectionDraft['categoryId'], ''>,
     currentText: canonical.currentText, proposedText: canonical.proposedText, scopeText: canonical.scopeText,
     sourceUrl: canonical.sourceUrl, observedDataVersion: canonical.observedDataVersion,
-  }, signal)
+  }, scope, signal)
   if (!result.ok) return result
   const validated = validateMappedItem(result.data)
   if (!validated
