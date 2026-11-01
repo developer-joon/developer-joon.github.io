@@ -5,14 +5,16 @@ import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { benefitsClient } from '../data/benefitsArtifactClient'
 import type { BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
-import type { BenefitCorrectionAccountScope, BenefitCorrectionItem } from '../types/benefitCorrections'
+import type { BenefitCorrectionAccountScope, BenefitCorrectionDraft, BenefitCorrectionItem } from '../types/benefitCorrections'
 import { categories, type CompanyListing, type Manifest } from '../types/benefits'
 import { BenefitCorrectionPage } from './BenefitCorrectionPage'
 import { MyBenefitCorrectionsPage } from './MyBenefitCorrectionsPage'
 import { benefitsCorrectionUrl } from '../components/benefits/BenefitsCorrectionLink'
+import { createBenefitCorrectionDraft, saveBenefitCorrectionDraft } from '../lib/benefitCorrectionDraftStore'
 
 const actor = '56000000-0000-4000-8000-0000000000a1'
 const scope = 'a'.repeat(64) as BenefitCorrectionAccountScope
+const scopeB = 'b'.repeat(64) as BenefitCorrectionAccountScope
 const company: CompanyListing = {
   company_id: 'KR-CRN-1101112948086', population_sequence: 1, legal_name: '테스트 주식회사', display_name: '테스트 기업', scope: 'domestic', jurisdiction: 'KR', incorporation_country: 'KR', registered_head_office_country: 'KR', selected_reporting_legal_entity: '테스트 주식회사', sector: 'non_financial',
   category_outcomes: categories.map(category_id => ({ kind: 'insufficient_evidence', category_id, reason_code: 'not_researched', nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', searched_source_ids: [], searched_at: null })),
@@ -75,6 +77,43 @@ describe('authenticated benefit correction', () => {
     expect(screen.getByDisplayValue('대한민국 정규직')).toBeVisible()
   })
 
+  it('merges valid URL prefills into empty fields of an account-scoped saved draft', async () => {
+    const local = storage()
+    const emptyDraft = createBenefitCorrectionDraft(scope, () => '56000000-0000-4000-8000-0000000000d1', () => '2026-11-01T00:00:00Z')
+    expect(saveBenefitCorrectionDraft(scope, emptyDraft, local)).toBe(true)
+
+    wrap(<BenefitCorrectionPage repository={repository()} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+
+    expect(await screen.findByLabelText('기업')).toHaveValue(company.company_id)
+    expect(screen.getByLabelText('복지 분야')).toHaveValue('health')
+    expect(screen.getByLabelText('현재 표시 내용')).toHaveValue('근거 부족')
+    expect(screen.getByText(manifest.data_version)).toBeVisible()
+  })
+
+  it('preserves each non-empty saved draft field over explicit URL prefills', async () => {
+    const local = storage()
+    const saved: BenefitCorrectionDraft = {
+      ...createBenefitCorrectionDraft(scope, () => '56000000-0000-4000-8000-0000000000d2', () => '2026-11-01T00:00:00Z'),
+      companyId: company.company_id,
+      categoryId: 'family',
+      currentText: '사용자가 저장한 현재 내용',
+      proposedText: '사용자가 저장한 제안',
+      scopeText: '사용자가 저장한 범위',
+      sourceUrl: 'https://example.com/saved',
+      observedDataVersion: 'company-benefits-2026-10-30-v1',
+    }
+    expect(saveBenefitCorrectionDraft(scope, saved, local)).toBe(true)
+
+    wrap(<BenefitCorrectionPage repository={repository()} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+
+    expect(await screen.findByLabelText('복지 분야')).toHaveValue('family')
+    expect(screen.getByLabelText('현재 표시 내용')).toHaveValue('사용자가 저장한 현재 내용')
+    expect(screen.getByLabelText('제안 내용')).toHaveValue('사용자가 저장한 제안')
+    expect(screen.getByLabelText('적용 범위')).toHaveValue('사용자가 저장한 범위')
+    expect(screen.getByLabelText('공개 HTTPS 근거 URL')).toHaveValue('https://example.com/saved')
+    expect(screen.getByText('company-benefits-2026-10-30-v1')).toBeVisible()
+  })
+
   it('locks duplicate submission and clears only after a matching validated success', async () => {
     let resolve!: (value: { ok: true; data: BenefitCorrectionItem }) => void
     const createRequest = vi.fn(() => new Promise<{ ok: true; data: BenefitCorrectionItem }>(done => { resolve = done }))
@@ -92,6 +131,90 @@ describe('authenticated benefit correction', () => {
     resolve({ ok: true, data: item })
     expect(await screen.findByRole('status')).toHaveTextContent('수정 요청이 접수되었습니다')
     expect(local.values.size).toBe(0)
+  })
+
+  it('aborts the exact submission on unmount and retains its draft after a late success', async () => {
+    let resolve!: (value: { ok: true; data: BenefitCorrectionItem }) => void
+    let submittedSignal: AbortSignal | undefined
+    const createRequest = vi.fn((_input, _expectedScope, signal?: AbortSignal) => {
+      submittedSignal = signal
+      return new Promise<{ ok: true; data: BenefitCorrectionItem }>(done => { resolve = done })
+    })
+    const local = storage()
+    const view = wrap(<BenefitCorrectionPage repository={repository({ createRequest })} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+    await waitFor(() => expect(screen.getByLabelText('기업')).toHaveValue(company.company_id))
+    fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: item.proposedText } })
+    fireEvent.change(screen.getByLabelText('적용 범위'), { target: { value: item.scopeText } })
+    fireEvent.change(screen.getByLabelText('공개 HTTPS 근거 URL'), { target: { value: item.sourceUrl } })
+    fireEvent.click(screen.getByRole('button', { name: '수정 요청 제출' }))
+    await waitFor(() => expect(createRequest).toHaveBeenCalledTimes(1))
+    expect(submittedSignal).toBeInstanceOf(AbortSignal)
+    expect(submittedSignal?.aborted).toBe(false)
+
+    view.unmount()
+
+    expect(submittedSignal?.aborted).toBe(true)
+    resolve({ ok: true, data: item })
+    await waitFor(() => expect(local.values.size).toBe(1))
+  })
+
+  it.each(['resolve', 'reject', 'hang'] as const)('releases the submit lock for account B when account A submission will %s', async outcome => {
+    const local = storage()
+    const draftB: BenefitCorrectionDraft = {
+      ...createBenefitCorrectionDraft(scopeB, () => '56000000-0000-4000-8000-0000000000b2', () => '2026-11-01T00:00:00Z'),
+      companyId: company.company_id,
+      categoryId: 'health',
+      currentText: item.currentText,
+      proposedText: 'B 계정 제안',
+      scopeText: item.scopeText,
+      sourceUrl: item.sourceUrl,
+      observedDataVersion: manifest.data_version,
+    }
+    expect(saveBenefitCorrectionDraft(scopeB, draftB, local)).toBe(true)
+    let currentScope = scope
+    let finishA!: (value: Awaited<ReturnType<BenefitCorrectionRepository['createRequest']>>) => void
+    const pendingA = new Promise<Awaited<ReturnType<BenefitCorrectionRepository['createRequest']>>>(resolve => { finishA = resolve })
+    const createRequest = vi.fn<BenefitCorrectionRepository['createRequest']>((input, expectedScope) => {
+      if (expectedScope === scope) return pendingA
+      return Promise.resolve({ ok: true as const, data: {
+        ...item,
+        companyId: input.companyId,
+        categoryId: input.categoryId,
+        currentText: input.currentText,
+        proposedText: input.proposedText,
+        scopeText: input.scopeText,
+        sourceUrl: input.sourceUrl,
+        observedDataVersion: input.observedDataVersion,
+      } })
+    })
+    const repo = repository({
+      getCurrentAccountScope: vi.fn(async () => ({ ok: true as const, data: currentScope })),
+      createRequest,
+    })
+    const view = wrap(<BenefitCorrectionPage repository={repo} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+    await waitFor(() => expect(screen.getByLabelText('기업')).toHaveValue(company.company_id))
+    fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: item.proposedText } })
+    fireEvent.change(screen.getByLabelText('적용 범위'), { target: { value: item.scopeText } })
+    fireEvent.change(screen.getByLabelText('공개 HTTPS 근거 URL'), { target: { value: item.sourceUrl } })
+    fireEvent.click(screen.getByRole('button', { name: '수정 요청 제출' }))
+    await waitFor(() => expect(createRequest).toHaveBeenCalledTimes(1))
+
+    currentScope = scopeB
+    view.rerender(<AuthContext.Provider value={auth('56000000-0000-4000-8000-0000000000b2')}><BenefitCorrectionPage repository={repo} storage={local} search={`?company=${company.company_id}&category=health`} /></AuthContext.Provider>)
+
+    expect(await screen.findByDisplayValue('B 계정 제안')).toBeVisible()
+    const submitB = screen.getByRole('button', { name: '수정 요청 제출' })
+    expect(submitB).toBeEnabled()
+    fireEvent.click(submitB)
+    expect(await screen.findByRole('status')).toHaveTextContent('수정 요청이 접수되었습니다')
+
+    if (outcome === 'resolve') finishA({ ok: true, data: item })
+    if (outcome === 'reject') finishA({ ok: false, error: { code: 'network', message: '이전 요청 실패' } })
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent('수정 요청이 접수되었습니다')
+      expect(createRequest).toHaveBeenCalledTimes(2)
+      expect(local.values.size).toBe(1)
+    })
   })
 })
 

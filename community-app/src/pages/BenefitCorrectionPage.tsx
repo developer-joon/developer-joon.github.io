@@ -51,17 +51,21 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
   const [submitted, setSubmitted] = useState(false)
   const [pending, setPending] = useState(false)
   const lifecycle = useRef(0)
+  const submitController = useRef<AbortController | null>(null)
   const params = useMemo(() => new URLSearchParams(search), [search])
 
   useEffect(() => {
+    submitController.current?.abort()
+    submitController.current = null
     setDraft(null)
     setCompanies(null)
     setSubmitted(false)
     setSubmitError(null)
+    setPending(false)
+    setLoadError(null)
     if (!auth.user) return
     const generation = ++lifecycle.current
     const controller = new AbortController()
-    setLoadError(null)
     void Promise.all([repository.getCurrentAccountScope(controller.signal), benefitsClient.loadManifest(controller.signal).then(async manifest => ({ manifest, companies: await benefitsClient.loadListingChunks(manifest, controller.signal) }))])
       .then(([scopeResult, artifacts]) => {
         if (generation !== lifecycle.current || controller.signal.aborted) return
@@ -72,19 +76,28 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
         const categoryParam = singleParam(params, 'category')
         const company = companyParam && canonicalCompany.test(companyParam) ? artifacts.companies.find(value => value.company_id === companyParam) : undefined
         const category = categoryParam && (BENEFIT_CATEGORIES as readonly string[]).includes(categoryParam) ? categoryParam as BenefitCorrectionDraft['categoryId'] : ''
-        const next = saved ?? {
-          ...createBenefitCorrectionDraft(accountScope),
-          companyId: company?.company_id ?? '',
-          categoryId: category,
-          currentText: company ? displayedValue(company, category) : '',
-          observedDataVersion: artifacts.manifest.data_version,
+        const base = saved ?? createBenefitCorrectionDraft(accountScope)
+        const companyId = base.companyId || company?.company_id || ''
+        const categoryId = base.categoryId || category
+        const selectedCompany = artifacts.companies.find(value => value.company_id === companyId)
+        const next: BenefitCorrectionDraft = {
+          ...base,
+          companyId,
+          categoryId,
+          currentText: base.currentText || (selectedCompany ? displayedValue(selectedCompany, categoryId) : ''),
+          observedDataVersion: base.observedDataVersion || artifacts.manifest.data_version,
         }
         saveBenefitCorrectionDraft(accountScope, next, storage)
         setCompanies(artifacts.companies)
         setDraft(next)
       })
       .catch(error => { if (generation === lifecycle.current && !controller.signal.aborted) setLoadError(error instanceof Error ? '기업 복지 기준 정보를 불러오지 못했습니다.' : '요청 화면을 준비하지 못했습니다.') })
-    return () => { controller.abort(); lifecycle.current += 1 }
+    return () => {
+      controller.abort()
+      submitController.current?.abort()
+      submitController.current = null
+      lifecycle.current += 1
+    }
   }, [auth.user?.id, params, repository, storage])
 
   function update(patch: Partial<BenefitCorrectionDraft>) {
@@ -102,10 +115,24 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     if (!draft || pending) return
+    submitController.current?.abort()
+    const controller = new AbortController()
+    submitController.current = controller
     setPending(true); setSubmitError(null)
     const generation = lifecycle.current
-    const result = await submitBenefitCorrectionDraft(draft, repository, storage)
-    if (generation !== lifecycle.current) return
+    let result
+    try {
+      result = await submitBenefitCorrectionDraft(draft, repository, storage, controller.signal)
+    } catch {
+      if (generation === lifecycle.current && !controller.signal.aborted && submitController.current === controller) {
+        submitController.current = null
+        setPending(false)
+        setSubmitError('요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.')
+      }
+      return
+    }
+    if (generation !== lifecycle.current || controller.signal.aborted || submitController.current !== controller) return
+    submitController.current = null
     setPending(false)
     if (!result.ok) { setSubmitError(result.error.message); return }
     setSubmitted(true)

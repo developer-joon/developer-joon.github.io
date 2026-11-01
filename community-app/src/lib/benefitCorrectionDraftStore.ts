@@ -150,7 +150,10 @@ export async function submitBenefitCorrectionDraft(
   storage: BenefitCorrectionDraftStorage | undefined = defaultStorage(),
   signal?: AbortSignal,
 ): Promise<BenefitCorrectionResult<BenefitCorrectionItem>> {
+  const aborted = (): BenefitCorrectionResult<BenefitCorrectionItem> => ({ ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } })
+  if (signal?.aborted) return aborted()
   const currentScope = await repository.getCurrentAccountScope(signal)
+  if (signal?.aborted) return aborted()
   if (!currentScope.ok) return currentScope
   const scope = currentScope.data
   if (scope !== draft.accountScope) return { ok: false, error: { code: 'stale_response', message: '현재 로그인 계정과 초안 계정이 일치하지 않습니다.' } }
@@ -160,11 +163,13 @@ export async function submitBenefitCorrectionDraft(
   let clientKey: string
   try { clientKey = await deriveBenefitCorrectionClientKey(scope, canonical) }
   catch { return { ok: false, error: { code: 'unknown', message: '안전한 제출 키를 만들 수 없습니다.' } } }
+  if (signal?.aborted) return aborted()
   const result = await repository.createRequest({
     clientKey, companyId: canonical.companyId, categoryId: canonical.categoryId as Exclude<BenefitCorrectionDraft['categoryId'], ''>,
     currentText: canonical.currentText, proposedText: canonical.proposedText, scopeText: canonical.scopeText,
     sourceUrl: canonical.sourceUrl, observedDataVersion: canonical.observedDataVersion,
   }, scope, signal)
+  if (signal?.aborted) return aborted()
   if (!result.ok) return result
   const validated = validateMappedItem(result.data)
   if (!validated
@@ -174,6 +179,7 @@ export async function submitBenefitCorrectionDraft(
     || validated.observedDataVersion !== canonical.observedDataVersion) {
     return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } }
   }
+  if (signal?.aborted) return aborted()
   if (storage && submittedRaw !== null) {
     try {
       const key = benefitCorrectionDraftKey(scope)
