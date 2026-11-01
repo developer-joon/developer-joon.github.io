@@ -31,7 +31,7 @@ function repository(overrides: Partial<BenefitCorrectionRepository> = {}): Benef
     getCurrentAccountScope: vi.fn(async () => ({ ok: true as const, data: scope })),
     createRequest: vi.fn(async () => ({ ok: true as const, data: item })),
     listMyRequests: vi.fn(async () => ({ ok: true as const, data: { items: [item], hasMore: false, nextCursor: null } })),
-    listAdminQueue: vi.fn(), reviewRequest: vi.fn(), ...overrides,
+    listAdminQueue: vi.fn(), listAdminAudit: vi.fn(), reviewRequest: vi.fn(), ...overrides,
   }
 }
 function storage() {
