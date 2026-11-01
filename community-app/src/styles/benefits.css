@@ -238,6 +238,76 @@
   background: #1d293a;
   border-left: 3px solid #7c8ba0;
 }
+.benefits-status.status-official_verified {
+  color: #88f0d3 !important;
+  background: #10362f;
+  border-color: #88f0d3;
+}
+.benefits-status.status-reference {
+  color: #b1d9ff !important;
+  background: #153051;
+  border-color: #89c3ff;
+}
+.benefits-status.status-community_report {
+  color: #ffe1a8 !important;
+  background: #3b3020;
+  border-color: #ffcf75;
+}
+.benefits-status.status-no_public_info {
+  color: #c2cbd8 !important;
+  background: #252d39;
+  border-color: #7c8ba0;
+}
+.benefits-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.benefits-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 24px;
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+  padding: 2px 7px;
+  color: #dce9f8;
+  background: #15243a;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.benefits-badge.badge-official_verified { color: #88f0d3; background: #10362f; }
+.benefits-badge.badge-reference { color: #b1d9ff; background: #153051; }
+.benefits-badge.badge-community_report { color: #ffe1a8; background: #3b3020; }
+.benefits-badge.badge-no_public_info { color: #c2cbd8; background: #252d39; }
+.benefits-badge.badge-warning { color: #ffb6bf; background: #402534; }
+.benefits-evidence-counts {
+  display: grid;
+  gap: 2px;
+}
+.benefits-result-evidence {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.benefits-result-evidence section {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #30425c;
+}
+.benefits-result-evidence h4 { margin: 0 0 8px; }
+.benefits-evidence a,
+.benefits-evidence dd,
+.benefits-status,
+.benefits-result {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .benefits-status.status-0 {
   color: #88f0d3 !important;
   background: #10362f;
@@ -360,7 +430,23 @@
     font-size: 12px;
   }
   .benefits-tabs a {
+    min-height: 56px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
     padding: 12px;
+  }
+  .benefits-status,
+  .benefits-heatmap th:first-child label,
+  .benefits-compare button,
+  .benefits-result h3 a {
+    min-height: 56px;
+    box-sizing: border-box;
+  }
+  .benefits-heatmap th:first-child label,
+  .benefits-result h3 a {
+    display: inline-flex;
+    align-items: center;
   }
   .benefits-workspace dl {
     grid-template-columns: 1fr;

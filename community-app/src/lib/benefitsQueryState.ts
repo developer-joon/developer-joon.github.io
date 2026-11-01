@@ -1,4 +1,4 @@
-import { categories, outcomeFor, type Category, type CompanyListing } from '../types/benefits'
+import { categories, hasOutcomeScope, isResearchedOutcome, outcomeFor, researchStateFor, researchStatePrecedence, type Category, type CompanyListing } from '../types/benefits'
 
 export const presets = ['parenting','growth','housing','health','remote','custom'] as const
 export const presetLabels = ['육아 중','커리어 성장','주거·이동','건강 관리','원격·유연근무','직접 설정']
@@ -74,24 +74,27 @@ export function presetCategories(preset: QueryState['preset']): Category[] {
 
 export function filterBenefitsCompanies(companies: CompanyListing[], state: QueryState) {
   const visibleCategories = state.categories.length ? state.categories : categories
-  return companies.filter((company) =>
+  const filtered = companies.filter((company) =>
     (state.scope === 'all' || company.scope === state.scope) &&
     `${company.display_name} ${company.legal_name}`.toLocaleLowerCase().includes(state.q.toLocaleLowerCase()) &&
     (!state.country || company.registered_head_office_country === state.country || company.incorporation_country === state.country) &&
-    (state.evidence === 'all' || visibleCategories.some((category) => outcomeFor(company, category).kind === 'evidenced')) &&
+    (state.evidence === 'all' || visibleCategories.some((category) => researchStateFor(outcomeFor(company, category)) === 'official_verified')) &&
     (!state.statuses.length || visibleCategories.some((category) => {
       const outcome = outcomeFor(company, category)
+      if (isResearchedOutcome(outcome)) return state.statuses.includes(outcome.state === 'official_verified' ? 'confirmed' : outcome.state === 'reference' ? 'bounded' : 'insufficient_evidence')
       return state.statuses.includes(outcome.kind === 'evidenced' ? outcome.status : 'insufficient_evidence')
     })),
   )
+  const rank = (company: CompanyListing) => Math.min(...visibleCategories.map((category) => researchStatePrecedence[researchStateFor(outcomeFor(company, category))]))
+  return filtered.sort((left, right) => rank(left) - rank(right) || left.population_sequence - right.population_sequence)
 }
 
 export type ConditionGroup = 'matches_visible_scope'|'scope_mismatch'|'scope_unknown'|'insufficient_evidence'
 export function conditionGroup(company: CompanyListing, state: QueryState): { group: ConditionGroup; reasons: string[] } {
   const wanted = state.preferred_categories.length ? state.preferred_categories : presetCategories(state.preset)
   const outcomes = wanted.map((category) => outcomeFor(company, category))
-  if (!outcomes.length || outcomes.every((outcome) => outcome.kind === 'insufficient_evidence')) return { group: 'insufficient_evidence', reasons: wanted.map((category) => `${category}: 게시 가능한 근거 부족`) }
-  const evidenced = outcomes.filter((outcome): outcome is Extract<typeof outcome, { scope: unknown }> => outcome.kind === 'evidenced' && 'scope' in outcome)
+  if (!outcomes.length || outcomes.every((outcome) => researchStateFor(outcome) === 'no_public_info')) return { group: 'insufficient_evidence', reasons: wanted.map((category) => `${category}: 게시 가능한 근거 부족`) }
+  const evidenced = outcomes.filter(hasOutcomeScope).filter((outcome) => researchStateFor(outcome) !== 'no_public_info')
   const mismatch = evidenced.some((outcome) => (state.country && outcome.scope.countries.length > 0 && !outcome.scope.countries.includes(state.country)) || (state.role && outcome.scope.roles.length > 0 && !outcome.scope.roles.includes(state.role)) || (state.employment_type && outcome.scope.employment_types.length > 0 && !outcome.scope.employment_types.includes(state.employment_type)))
   if (mismatch) return { group: 'scope_mismatch', reasons: ['선택한 국가·직군·고용형태가 공개 적용 범위와 다릅니다.'] }
   const unknown = evidenced.some((outcome) => (state.country && outcome.scope.countries.length === 0) || (state.role && outcome.scope.roles.length === 0) || (state.employment_type && outcome.scope.employment_types.length === 0))

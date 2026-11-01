@@ -7,7 +7,7 @@ import { benefitsClient } from '../data/benefitsArtifactClient'
 import { getBenefitCorrectionRepository, type BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
 import { createBenefitCorrectionDraft, loadBenefitCorrectionDraft, saveBenefitCorrectionDraft, submitBenefitCorrectionDraft, type BenefitCorrectionDraftStorage } from '../lib/benefitCorrectionDraftStore'
 import { BENEFIT_CATEGORIES, type BenefitCorrectionDraft } from '../types/benefitCorrections'
-import { categoryLabels, type CompanyListing } from '../types/benefits'
+import { categoryLabels, isResearchedOutcome, researchStateLabels, type CompanyListing } from '../types/benefits'
 
 interface Props {
   repository?: BenefitCorrectionRepository
@@ -26,7 +26,9 @@ function singleParam(params: URLSearchParams, name: string) {
 function displayedValue(company: CompanyListing, category: BenefitCorrectionDraft['categoryId']) {
   if (!category) return ''
   const outcome = company.category_outcomes.find(value => value.category_id === category)
-  return outcome?.kind === 'evidenced' ? (outcome.status === 'confirmed' ? '공식 확인' : '범위 제한 확인') : '근거 부족'
+  if (!outcome) return '근거 부족'
+  if (isResearchedOutcome(outcome)) return researchStateLabels[outcome.state]
+  return outcome.kind === 'evidenced' ? (outcome.status === 'confirmed' ? '공식 확인' : '범위 제한 확인') : '근거 부족'
 }
 function safeCorrectionPath(path: string) {
   try {
