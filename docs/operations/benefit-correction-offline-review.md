@@ -15,15 +15,24 @@ The database source is `public.benefit_correction_requests` from `202611010001_b
 
 Choose a new version name and an external operator-controlled output directory. Do not export into a public artifact tree.
 
-The exporter is supported only on Linux with `fork` and `renameat2`. The output root is an explicit trust anchor: the operator **must pre-create the exact path**, owned by the exporter UID with mode `0700`. The exporter opens it with `O_DIRECTORY|O_NOFOLLOW`, retains that descriptor, and rejects a missing, replaced, permissive, or wrong-owner root; it never creates the root or a control subdirectory. All control and publication operations are descriptor-relative to that retained root.
+The exporter is supported only on Linux with `fork` and `renameat2(RENAME_EXCHANGE)`. Publication has no runtime bootstrap path. Before reading the database, the runtime opens the exact output root with `O_DIRECTORY|O_NOFOLLOW`, requires exporter-UID ownership and mode `0700`, and retains the descriptor. It then opens every fixed child descriptor-relatively and retains those descriptors for the operation. The exact root inventory is:
 
-One advisory lock serializes publication. The lock, authentication key, candidate spool, and manifest spool are fixed mode-`0600`, single-link regular files directly under the trusted root. Candidate and manifest spools are opened no-follow, verified with `fstat`, truncated through the held descriptor, streamed, and fsynced. Their exact names are `.approved-benefit-correction-export.lock`, `.approved-benefit-correction-export.key`, `.approved-benefit-correction-export.candidates.spool`, and `.approved-benefit-correction-export.manifest.spool`. There is only one fixed staging slot, `.approved-benefit-correction-export.staging`; failed attempts reuse it and concurrent exporters cannot allocate duplicate slots. Persistent unpublished bytes are bounded by one 64 MiB candidate spool, one small manifest spool, and fixed control metadata (less than `MAX_PERSISTENT_CONTROL_BYTES`). No retry uses a UUID/nonce staging pathname and cleanup never uses pathname `unlink` or `rmdir`.
+- `.approved-benefit-correction-export.lock`: regular, exporter-owned, mode `0600`, link count 1, empty;
+- `.approved-benefit-correction-export.key`: regular, exporter-owned, mode `0600`, link count 1, exactly 32 random bytes;
+- `.approved-benefit-correction-export.staging`: directory, exporter-owned, mode `0700`, containing exactly pre-created `candidates.jsonl` and `manifest.json`, each regular, exporter-owned, mode `0600`, link count 1;
+- the requested snapshot-version name: an exporter-owned mode-`0700` empty directory before first publication, or the exact two-file immutable snapshot after publication.
 
-Provision the trust anchor before export:
+The runtime creates none of those paths, never opens a trust anchor with `O_CREAT`, and never calls `mkdir`, `unlink`, or `rmdir`. It records each opened inode and checks owner, mode, type, link count, exact inventory, and pathname-to-inode binding before every transition. It acquires an exclusive advisory lock on the already-verified lock descriptor before touching staging. The complete 32-byte key is validation-only control material for this architecture; an empty, short, permissive, linked, replaced, or wrong-owner key fails closed. There is no runtime first initialization, partial-key promotion, legacy capability probe, tombstone, UUID staging, quarantine, or transparent migration path.
+
+Provision one new root for one snapshot version with the separate offline helper. This command is destructive setup only in the sense that it creates a new private tree; it refuses if the output-root path already exists, including a partial prior attempt. Stop all exporters, ensure no same-UID process can access the parent, and run it only with exclusive operator access:
 
 ```bash
-install -d -m 0700 /approved/operator/path/benefit-correction-snapshots
+python3 scripts/export-approved-benefit-corrections.py prepare \
+  --output-root /approved/operator/path/benefit-correction-snapshots \
+  --snapshot-version approved-corrections-YYYY-MM-DD-v1
 ```
+
+If setup is interrupted, move the partial root aside for inspection while still under exclusive access and prepare a different new path. The exporter does not repair or migrate old capability/tombstone layouts. Existing deployments must copy completed snapshots to archival storage and provision a new root offline; never point the runtime at the old layout and expect conversion.
 
 ```bash
 export CORRECTION_SNAPSHOT_ROOT=/approved/operator/path/benefit-correction-snapshots
@@ -37,11 +46,16 @@ python3 scripts/export-approved-benefit-corrections.py export \
 
 The version directory contains canonical `candidates.jsonl` and canonical `manifest.json`. The manifest binds the candidate count and SHA-256 of the exact JSONL bytes. Candidate ordering is by correction request UUID. Identical duplicate rows collapse; conflicting duplicate IDs fail. Re-running the same version with identical bytes is idempotent. If any existing file, bytes, type, or inventory differs, the exporter refuses to overwrite it.
 
-Crash recovery is bounded. A crash before publication leaves only the four fixed control files and, if materialization had begun, the single fixed staging slot. On restart the exporter takes the same lock, verifies owner/type/mode/link-count for every opened inode, rewrites recognized staging members through held descriptors (`ftruncate`, stream, `fsync`), and retries. An extra member, symlink, special file, hardlink, wrong mode/owner, or changed root binding fails deterministically with `fixed staging slot requires offline recovery`; nothing is deleted automatically. Recovery runbook: stop every exporter, make the root inaccessible to all other same-UID processes, inspect the reported fixed slot and control names against this exact inventory, preserve any unrecognized inode for forensics, then move the entire suspect root offline and provision a new owned `0700` root. Do not use `stat` followed by `unlink`/`rmdir`, and do not claim an online pathname cleanup is atomic.
+Crash recovery remains bounded by the two pre-created staging members. Before exchange, a crash can leave at most one 64 MiB candidate file and one bounded manifest in the fixed staging directory. The next invocation takes the same verified lock, revalidates every pathname binding, truncates and rewrites those same held file descriptors, fsyncs them, and retries. Publication is one atomic `RENAME_EXCHANGE` between the fixed staging directory and the pre-created empty snapshot-version placeholder. After exchange, the published snapshot is at the version name and the fixed staging name is the exact empty placeholder; a crash at that point is recognized idempotently on restart. One hundred failed retries retain the exact four-entry root inventory and stay below `MAX_PERSISTENT_CONTROL_BYTES`.
+
+An extra member, symlink, special file, hardlink, wrong mode/owner, changed inode, incomplete key, non-empty target placeholder, or changed root binding fails closed before exchange. The runtime never deletes or repairs the suspect state. Recovery runbook: stop every exporter, make the parent inaccessible to all other same-UID processes, preserve the whole suspect root for forensics, and use `prepare` with a different absent output-root path. Do not use online pathname cleanup or mutate a prepared root in place.
 
 For a credential-free rehearsal only, supply a private synthetic DB-response fixture:
 
 ```bash
+python3 scripts/export-approved-benefit-corrections.py prepare \
+  --output-root /private/rehearsal-snapshots \
+  --snapshot-version rehearsal-approved-corrections-v1
 python3 scripts/export-approved-benefit-corrections.py export \
   --input-json /private/synthetic-approved-rows.json \
   --resolver-json /private/synthetic-resolver.json \

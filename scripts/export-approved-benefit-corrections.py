@@ -68,29 +68,11 @@ MAX_DNS_ANSWERS = 64
 DEFAULT_DNS_TIMEOUT_SECONDS = 2.0
 DEFAULT_PSQL_TIMEOUT_SECONDS = 30.0
 DEFAULT_PROCESS_KILL_GRACE_SECONDS = 0.5
-TOMBSTONE_MARKER_NAME = ".approved-benefit-correction-export-tombstone.json"
-TOMBSTONE_DOMAIN = "developer-joon.github.io/approved-benefit-correction-export/rollback-tombstone"
-TOMBSTONE_HMAC_DOMAIN = b"developer-joon.github.io/approved-benefit-correction-export/tombstone-hmac-v1"
-TOMBSTONE_VERSION = 2
-TOMBSTONE_CONTROL_DIRECTORY_NAME = ".approved-benefit-correction-export-control"
-TOMBSTONE_KEY_NAME = "tombstone-authentication.key"
-TOMBSTONE_KEY_BYTES = 32
-CAPABILITY_CONTROL_DIRECTORY_NAME = ".approved-benefit-correction-export-capabilities"
-CAPABILITY_PROBE_CONTENTS = {
-    "source": b"approved-benefit-correction-export-capability-source-v1\n",
-    "target": b"approved-benefit-correction-export-capability-target-v1\n",
-}
 PUBLICATION_LOCK_NAME = ".approved-benefit-correction-export.lock"
-STAGING_CANDIDATES_NAME = ".approved-benefit-correction-export.candidates.spool"
-STAGING_MANIFEST_NAME = ".approved-benefit-correction-export.manifest.spool"
+PUBLICATION_KEY_NAME = ".approved-benefit-correction-export.key"
 STAGING_DIRECTORY_NAME = ".approved-benefit-correction-export.staging"
-ROOT_KEY_NAME = ".approved-benefit-correction-export.key"
-PERSISTENT_CONTROL_NAMES = (
-    PUBLICATION_LOCK_NAME,
-    STAGING_CANDIDATES_NAME,
-    STAGING_MANIFEST_NAME,
-    ROOT_KEY_NAME,
-)
+STAGING_MEMBER_NAMES = ("candidates.jsonl", "manifest.json")
+PUBLICATION_KEY_BYTES = 32
 MAX_PERSISTENT_CONTROL_BYTES = MAX_SNAPSHOT_BYTES + MAX_MANIFEST_BYTES + 4096
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
@@ -623,11 +605,10 @@ def _directory_binding_matches(root_fd, target_name, target_fd, opened_directory
     except OSError:
         return False
     return (
-        stat.S_ISDIR(named_directory.st_mode)
-        and not stat.S_ISLNK(named_directory.st_mode)
-        and _same_inode(opened_directory, named_directory)
-        and stat.S_ISDIR(current_directory.st_mode)
-        and _same_inode(opened_directory, current_directory)
+        _secure_owned_mode(named_directory, stat.S_ISDIR, 0o700)
+        and _same_control_identity(opened_directory, named_directory)
+        and _secure_owned_mode(current_directory, stat.S_ISDIR, 0o700)
+        and _same_control_identity(opened_directory, current_directory)
     )
 
 
@@ -670,9 +651,9 @@ def _directory_fd_matches(
 ):
     """Validate an opened directory and its stable binding under root_fd."""
     opened_directory = os.fstat(target_fd)
-    if not stat.S_ISDIR(opened_directory.st_mode):
+    if not _secure_owned_mode(opened_directory, stat.S_ISDIR, 0o700):
         return False
-    if expected_directory is not None and not _same_inode(
+    if expected_directory is not None and not _same_control_identity(
         opened_directory, expected_directory
     ):
         return False
@@ -699,7 +680,9 @@ def _directory_fd_matches(
                     return False
         except OSError:
             return False
-        if expected_files is not None and not _same_inode(
+        if not _secure_owned_mode(metadata, stat.S_ISREG, 0o600) or metadata.st_nlink != 1:
+            return False
+        if expected_files is not None and not _same_control_identity(
             metadata, expected_files[name]
         ):
             return False
@@ -720,7 +703,11 @@ def _directory_fd_matches(
             current = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
         except OSError:
             return False
-        if not stat.S_ISREG(current.st_mode) or not _same_inode(opened, current):
+        if (
+            not _secure_owned_mode(current, stat.S_ISREG, 0o600)
+            or current.st_nlink != 1
+            or not _same_control_identity(opened, current)
+        ):
             return False
     return _directory_binding_matches(
         root_fd, target_name, target_fd, opened_directory
@@ -750,198 +737,107 @@ def _renameat2_function():
     return function
 
 
-def _preflight_cleanup_hook(_stage, _context):
-    """Test hook for deterministic mutation at cleanup trust boundaries."""
-
-
 def _publication_failure_hook(_stage, _context):
-    """Test-only deterministic crash boundary hook."""
+    """Test-only deterministic crash/mutation boundary hook."""
 
 
-def _open_fixed_control(root_fd, name, flags=os.O_RDWR, mode=0o600):
-    """Open/create one fixed regular control inode descriptor-relatively."""
-    try:
-        descriptor = os.open(
-            name, flags | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            mode, dir_fd=root_fd,
-        )
-        _fsync_directory_fd(root_fd)
-    except FileExistsError:
-        descriptor = os.open(
-            name, flags | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd
-        )
-    metadata = os.fstat(descriptor)
-    named = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-    if (
-        not _secure_owned_mode(metadata, stat.S_ISREG, mode)
-        or metadata.st_nlink != 1
-        or not _cleanup_metadata_matches(metadata, named)
-    ):
-        os.close(descriptor)
-        raise OSError(errno.EPERM, f"invalid persistent control member {name}")
-    return descriptor
-
-
-def _write_fixed_spool(descriptor, expected):
-    os.ftruncate(descriptor, 0)
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    _write_expected_file(descriptor, expected)
-    os.fsync(descriptor)
-
-
-def _cleanup_metadata_matches(current, expected):
-    """Match every security-relevant attribute of persistent control state."""
+def _secure_owned_mode(metadata, file_type, mode):
     return (
-        current.st_dev,
-        current.st_ino,
-        stat.S_IFMT(current.st_mode),
-        current.st_nlink,
-        current.st_uid,
-        stat.S_IMODE(current.st_mode),
-    ) == (
-        expected.st_dev,
-        expected.st_ino,
-        stat.S_IFMT(expected.st_mode),
-        expected.st_nlink,
-        expected.st_uid,
-        stat.S_IMODE(expected.st_mode),
+        file_type(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == mode
     )
 
 
-def _preflight_cleanup_error(root, _probe_name, detail, residue_fd=None):
-    residue = root / CAPABILITY_CONTROL_DIRECTORY_NAME
-    return OSError(
-        errno.ESTALE,
-        f"capability control state uncertain ({detail}); manual recovery required; "
-        f"capability control and every foreign inode preserved at {residue}",
+def _metadata_identity(metadata):
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        stat.S_IFMT(metadata.st_mode),
+        metadata.st_nlink,
+        metadata.st_uid,
+        stat.S_IMODE(metadata.st_mode),
     )
 
 
-def _open_capability_member(control_fd, name, expected):
-    """Open or initialize one persistent probe without ever replacing a name."""
-    created = False
+def _same_control_identity(left, right):
+    return _metadata_identity(left) == _metadata_identity(right)
+
+
+def _open_preprovisioned_file(
+    directory_fd, name, flags=os.O_RDWR, size=None, max_size=None
+):
+    descriptor = os.open(name, flags | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
     try:
-        descriptor = os.open(
-            name,
-            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o600,
-            dir_fd=control_fd,
-        )
-        created = True
-    except FileExistsError:
-        descriptor = os.open(
-            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=control_fd
-        )
-    try:
-        if created:
-            _write_expected_file(descriptor, expected)
-            os.fsync(descriptor)
-            _fsync_directory_fd(control_fd)
-            os.lseek(descriptor, 0, os.SEEK_SET)
-        raw = bytearray()
-        while len(raw) <= len(expected):
-            chunk = os.read(descriptor, len(expected) + 1 - len(raw))
-            if not chunk:
-                break
-            raw.extend(chunk)
-        metadata = os.fstat(descriptor)
-        named = os.stat(name, dir_fd=control_fd, follow_symlinks=False)
-        raw = bytes(raw)
+        opened = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         if (
-            raw not in CAPABILITY_PROBE_CONTENTS.values()
-            or not _secure_owned_mode(metadata, stat.S_ISREG, 0o600)
-            or metadata.st_nlink != 1
-            or not _cleanup_metadata_matches(named, metadata)
+            not _secure_owned_mode(opened, stat.S_ISREG, 0o600)
+            or opened.st_nlink != 1
+            or not _same_control_identity(opened, named)
+            or (size is not None and opened.st_size != size)
+            or (max_size is not None and opened.st_size > max_size)
         ):
-            raise OSError(errno.EPERM, f"invalid capability control member {name}")
-        return raw, metadata
+            raise OSError(errno.EPERM, f"invalid preprovisioned control file {name}")
+        return descriptor, opened
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_preprovisioned_directory(root_fd, name):
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=root_fd,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        if (
+            not _secure_owned_mode(opened, stat.S_ISDIR, 0o700)
+            or not _same_control_identity(opened, named)
+        ):
+            raise OSError(errno.EPERM, f"invalid preprovisioned directory {name}")
+        return descriptor, opened
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _create_preprovisioned_file(directory_fd, name, contents=None):
+    if contents is None:
+        contents = b""
+    descriptor = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+        dir_fd=directory_fd,
+    )
+    try:
+        _write_expected_file(descriptor, contents)
+        os.fsync(descriptor)
     finally:
         os.close(descriptor)
 
 
-def _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities):
-    """Return canonical/reversed only for the two captured persistent inodes."""
-    try:
-        if set(os.listdir(control_fd)) != set(CAPABILITY_PROBE_CONTENTS):
-            return None
-        named_control = os.stat(
-            CAPABILITY_CONTROL_DIRECTORY_NAME,
-            dir_fd=root_fd,
-            follow_symlinks=False,
-        )
-        if (
-            not _cleanup_metadata_matches(os.fstat(control_fd), control_metadata)
-            or not _cleanup_metadata_matches(named_control, control_metadata)
-            or not _secure_output_root_binding(root, root_fd, root_metadata)
-        ):
-            return None
-        observed = {}
-        for name in CAPABILITY_PROBE_CONTENTS:
-            raw, metadata = _read_regular_file_at(control_fd, name)
-            if not _secure_owned_mode(metadata, stat.S_ISREG, 0o600) or metadata.st_nlink != 1:
-                return None
-            observed[name] = (raw, metadata)
-        source_identity = identities["source"]
-        target_identity = identities["target"]
-        if (
-            observed["source"][0] == CAPABILITY_PROBE_CONTENTS["source"]
-            and _same_inode(observed["source"][1], source_identity)
-            and observed["target"][0] == CAPABILITY_PROBE_CONTENTS["target"]
-            and _same_inode(observed["target"][1], target_identity)
-        ):
-            return "canonical"
-        if (
-            observed["source"][0] == CAPABILITY_PROBE_CONTENTS["target"]
-            and _same_inode(observed["source"][1], target_identity)
-            and observed["target"][0] == CAPABILITY_PROBE_CONTENTS["source"]
-            and _same_inode(observed["target"][1], source_identity)
-        ):
-            return "reversed"
-    except OSError:
-        return None
-    return None
+def prepare_output_root(output_root, snapshot_version):
+    """Offline, exclusive setup for one preprovisioned publication slot.
 
-
-def _preflight_publication_platform(output_root):
-    """Validate Linux support and the preexisting output-root trust anchor."""
+    The root must not exist.  A partial prior attempt is intentionally not
+    repaired: move it aside under exclusive operator control before retrying.
+    """
+    if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
+        raise ValueError("invalid snapshot version")
     if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
         raise OSError(errno.ENOTSUP, "unsupported publication platform")
-    root = Path(output_root).absolute()
-    try:
-        root_fd = os.open(
-            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        )
-    except OSError as exc:
-        raise OSError(
-            errno.ENOENT,
-            "pre-create the output root as an owned exact 0700 directory",
-        ) from exc
-    try:
-        metadata = os.fstat(root_fd)
-        if (
-            not _secure_owned_mode(metadata, stat.S_ISDIR, 0o700)
-            or not _root_path_still_names_fd(root, root_fd)
-        ):
-            raise OSError(
-                errno.EPERM,
-                "pre-create the output root as an owned exact 0700 directory",
-            )
-        _renameat2_function()
-        return
-    finally:
-        os.close(root_fd)
-
-
-def _legacy_preflight_publication_platform(output_root):
-    """Legacy destructive-fixture implementation retained for audit history."""
-    if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
-        raise OSError(errno.ENOTSUP, "unsupported publication platform")
+    _renameat2_function()
     root = Path(output_root).absolute()
     parent_fd = os.open(
         root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
     root_fd = None
-    control_fd = None
+    staging_fd = None
     try:
         parent_metadata = os.fstat(parent_fd)
         if (
@@ -951,160 +847,94 @@ def _legacy_preflight_publication_platform(output_root):
         ):
             raise OSError(errno.EPERM, "output root parent is not private")
         fcntl.flock(parent_fd, fcntl.LOCK_EX)
-        if not _root_path_still_names_fd(root.parent, parent_fd):
-            raise OSError(errno.ESTALE, "output root parent changed while locking")
         try:
-            os.mkdir(root.name, 0o700, dir_fd=parent_fd)
-            _fsync_directory_fd(parent_fd)
-        except FileExistsError:
+            os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
             pass
+        else:
+            raise FileExistsError(errno.EEXIST, "output root already exists", str(root))
+        os.mkdir(root.name, 0o700, dir_fd=parent_fd)
         root_fd = os.open(
             root.name,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
             dir_fd=parent_fd,
         )
-        root_metadata = os.fstat(root_fd)
-        named_root = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
-        if (
-            not _secure_owned_mode(root_metadata, stat.S_ISDIR, 0o700)
-            or not _same_inode(root_metadata, named_root)
-            or not _root_path_still_names_fd(root, root_fd)
-        ):
-            raise OSError(errno.EPERM, "invalid output root")
-
+        _create_preprovisioned_file(root_fd, PUBLICATION_LOCK_NAME)
+        key = bytearray(secrets.token_bytes(PUBLICATION_KEY_BYTES))
         try:
-            os.mkdir(CAPABILITY_CONTROL_DIRECTORY_NAME, 0o700, dir_fd=root_fd)
-            _fsync_directory_fd(root_fd)
-        except FileExistsError:
-            pass
-        try:
-            control_fd = os.open(
-                CAPABILITY_CONTROL_DIRECTORY_NAME,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=root_fd,
-            )
-        except OSError as exc:
-            raise _preflight_cleanup_error(
-                root, None, f"control directory cannot be opened: {exc}"
-            ) from exc
-        fcntl.flock(control_fd, fcntl.LOCK_EX)
-        control_metadata = os.fstat(control_fd)
-        named_control = os.stat(
-            CAPABILITY_CONTROL_DIRECTORY_NAME, dir_fd=root_fd, follow_symlinks=False
+            _create_preprovisioned_file(root_fd, PUBLICATION_KEY_NAME, key)
+        finally:
+            key[:] = b"\x00" * len(key)
+        os.mkdir(STAGING_DIRECTORY_NAME, 0o700, dir_fd=root_fd)
+        staging_fd = os.open(
+            STAGING_DIRECTORY_NAME,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
         )
-        if (
-            not _secure_owned_mode(control_metadata, stat.S_ISDIR, 0o700)
-            or not _cleanup_metadata_matches(named_control, control_metadata)
-        ):
-            raise _preflight_cleanup_error(root, None, "control directory changed")
-
-        try:
-            opened_members = {
-                name: _open_capability_member(control_fd, name, raw)
-                for name, raw in CAPABILITY_PROBE_CONTENTS.items()
-            }
-        except OSError as exc:
-            raise _preflight_cleanup_error(
-                root, None, f"control member cannot be authenticated: {exc}"
-            ) from exc
-        identities = {}
-        for expected_name, expected_raw in CAPABILITY_PROBE_CONTENTS.items():
-            matches = [metadata for raw, metadata in opened_members.values() if raw == expected_raw]
-            if len(matches) != 1:
-                raise _preflight_cleanup_error(root, None, "duplicated or missing probe identity")
-            identities[expected_name] = matches[0]
-        context = {"root": root, "root_fd": root_fd, "probe_fd": control_fd}
-        state = _capability_state(
-            root, root_fd, root_metadata, control_fd, control_metadata, identities
-        )
-        if state is None:
-            raise _preflight_cleanup_error(root, None, "foreign or invalid inventory")
-
-        function = _renameat2_function()
-        if state == "reversed":
-            _preflight_cleanup_hook("before_restart_restore", context)
-            ctypes.set_errno(0)
-            if function(control_fd, b"source", control_fd, b"target", 2) != 0:
-                raise OSError(ctypes.get_errno(), "capability restart restoration failed")
-            _fsync_directory_fd(control_fd)
-            if _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities) != "canonical":
-                raise _preflight_cleanup_error(root, None, "restart restoration changed foreign state")
-
-        ctypes.set_errno(0)
-        result = function(control_fd, b"source", control_fd, b"target", 1)
-        error_number = ctypes.get_errno()
-        if result == 0 or error_number != errno.EEXIST:
-            raise OSError(errno.ENOTSUP, "renameat2 no-replace is unsupported on output filesystem")
-        if _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities) != "canonical":
-            raise _preflight_cleanup_error(root, None, "no-replace changed control state")
-
-        _preflight_cleanup_hook("before_test_exchange", context)
-        ctypes.set_errno(0)
-        result = function(control_fd, b"source", control_fd, b"target", 2)
-        if result != 0:
-            raise OSError(errno.ENOTSUP, "renameat2 exchange is unsupported on output filesystem")
-        _fsync_directory_fd(control_fd)
-        _preflight_cleanup_hook("after_test_exchange", context)
-        if _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities) != "reversed":
-            raise _preflight_cleanup_error(root, None, "exchange changed foreign state")
-
-        _preflight_cleanup_hook("before_canonical_restore", context)
-        ctypes.set_errno(0)
-        if function(control_fd, b"source", control_fd, b"target", 2) != 0:
-            raise OSError(errno.ENOTSUP, "renameat2 canonical restoration failed")
-        _fsync_directory_fd(control_fd)
-        if _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities) != "canonical":
-            raise _preflight_cleanup_error(root, None, "canonical restoration changed foreign state")
+        for name in STAGING_MEMBER_NAMES:
+            _create_preprovisioned_file(staging_fd, name)
+        _fsync_directory_fd(staging_fd)
+        os.mkdir(snapshot_version, 0o700, dir_fd=root_fd)
+        _fsync_directory_fd(root_fd)
+        _fsync_directory_fd(parent_fd)
     finally:
-        if control_fd is not None:
-            os.close(control_fd)
+        if staging_fd is not None:
+            os.close(staging_fd)
         if root_fd is not None:
             os.close(root_fd)
         os.close(parent_fd)
+    return root
+
+
+def _preflight_publication_platform(output_root):
+    """Validate platform and the already-provisioned private root only."""
+    if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
+        raise OSError(errno.ENOTSUP, "unsupported publication platform")
+    _renameat2_function()
+    root = Path(output_root).absolute()
+    try:
+        root_fd = os.open(
+            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+    except OSError as exc:
+        raise OSError(
+            errno.ENOENT,
+            "run prepare under exclusive access to provision the output root",
+        ) from exc
+    try:
+        metadata = os.fstat(root_fd)
+        if (
+            not _secure_owned_mode(metadata, stat.S_ISDIR, 0o700)
+            or not _root_path_still_names_fd(root, root_fd)
+        ):
+            raise OSError(errno.EPERM, "invalid preprovisioned output root")
+    finally:
+        os.close(root_fd)
 
 
 def _open_secure_output_root(output_root):
-    """Open an operator-provisioned exact private root trust anchor."""
+    """Open the root first, then retain it as the publication trust anchor."""
     root = Path(output_root).absolute()
-    parent = root.parent
-    parent_fd = os.open(
-        parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    )
     try:
-        parent_metadata = os.fstat(parent_fd)
+        root_fd = os.open(
+            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+    except OSError as exc:
+        raise OSError(
+            errno.ENOENT,
+            "run prepare under exclusive access to provision the output root",
+        ) from exc
+    try:
+        opened = os.fstat(root_fd)
         if (
-            not _secure_owned_mode(parent_metadata, stat.S_ISDIR, stat.S_IMODE(parent_metadata.st_mode))
-            or stat.S_IMODE(parent_metadata.st_mode) & 0o022
-            or not _root_path_still_names_fd(parent, parent_fd)
+            not _secure_owned_mode(opened, stat.S_ISDIR, 0o700)
+            or not _root_path_still_names_fd(root, root_fd)
         ):
-            raise OSError(errno.EPERM, "output root parent is not private")
-        try:
-            root_fd = os.open(
-                root.name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=parent_fd,
-            )
-        except OSError as exc:
-            raise OSError(
-                errno.ENOENT,
-                "pre-create the output root as an owned exact 0700 directory",
-            ) from exc
-        try:
-            opened = os.fstat(root_fd)
-            named = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
-            if (
-                not _secure_owned_mode(opened, stat.S_ISDIR, 0o700)
-                or not _secure_owned_mode(named, stat.S_ISDIR, 0o700)
-                or not _same_inode(opened, named)
-                or not _root_path_still_names_fd(root, root_fd)
-            ):
-                raise OSError(errno.EPERM, "invalid output root")
-            return root, root_fd, opened
-        except Exception:
-            os.close(root_fd)
-            raise
-    finally:
-        os.close(parent_fd)
+            raise OSError(errno.EPERM, "invalid preprovisioned output root")
+        return root, root_fd, opened
+    except Exception:
+        os.close(root_fd)
+        raise
 
 
 def _secure_output_root_binding(root, root_fd, expected):
@@ -1116,27 +946,10 @@ def _secure_output_root_binding(root, root_fd, expected):
     )
 
 
-def _rename_noreplace(source, target, source_dir_fd=-100, target_dir_fd=-100):
-    """Atomically publish a directory without replacing any existing target."""
-    renameat2 = _renameat2_function()
-    result = renameat2(
-        source_dir_fd,
-        os.fsencode(source),
-        target_dir_fd,
-        os.fsencode(target),
-        1,
-    )
-    if result == 0:
-        return
-    error_number = ctypes.get_errno()
-    if error_number == errno.EEXIST:
-        raise FileExistsError(error_number, os.strerror(error_number), target)
-    raise OSError(error_number, os.strerror(error_number), target)
-
-
 def _rename_exchange(source, target, source_dir_fd=-100, target_dir_fd=-100):
     """Atomically exchange two existing names without an unsafe fallback."""
     renameat2 = _renameat2_function()
+    ctypes.set_errno(0)
     result = renameat2(
         source_dir_fd,
         os.fsencode(source),
@@ -1148,33 +961,6 @@ def _rename_exchange(source, target, source_dir_fd=-100, target_dir_fd=-100):
         return
     error_number = ctypes.get_errno()
     raise OSError(error_number, os.strerror(error_number), target)
-
-
-def _publish_staging_noreplace(
-    root_fd,
-    staging_fd,
-    staging_name,
-    target_name,
-    expected,
-    expected_directory,
-    expected_files,
-):
-    """Revalidate the opened staging directory immediately before publication."""
-    if not _directory_fd_matches(
-        root_fd,
-        staging_name,
-        staging_fd,
-        expected,
-        expected_directory=expected_directory,
-        expected_files=expected_files,
-    ):
-        raise OSError(errno.ESTALE, "snapshot staging validation failed")
-    _rename_noreplace(
-        staging_name,
-        target_name,
-        source_dir_fd=root_fd,
-        target_dir_fd=root_fd,
-    )
 
 
 def _root_path_still_names_fd(root, root_fd):
@@ -1189,854 +975,266 @@ def _root_path_still_names_fd(root, root_fd):
     )
 
 
-def _remove_staging(root_fd, staging_name, _expected_names, expected_directory=None):
-    """Preserve unpublished state; Linux has no atomic compare-and-delete API."""
-    return
-
-
-def _read_tombstone_key_bytes(descriptor):
-    key = bytearray()
-    remaining = TOMBSTONE_KEY_BYTES + 1
-    while remaining:
-        chunk = os.read(descriptor, remaining)
-        if not chunk:
-            break
-        key.extend(chunk)
-        remaining -= len(chunk)
-    return key
-
-
-def _secure_owned_mode(metadata, file_type, mode):
-    return (
-        file_type(metadata.st_mode)
-        and metadata.st_uid == os.geteuid()
-        and stat.S_IMODE(metadata.st_mode) == mode
-    )
-
-
-def _tombstone_key_metadata_valid(
-    parent,
-    parent_fd,
-    control_fd,
-    expected_control,
-    key_fd,
-    expected_key,
-):
-    """Revalidate key and control metadata through held descriptors and names."""
-    current_control = os.fstat(control_fd)
-    named_control = os.stat(
-        TOMBSTONE_CONTROL_DIRECTORY_NAME,
-        dir_fd=parent_fd,
-        follow_symlinks=False,
-    )
-    current_key = os.fstat(key_fd)
-    named_key = os.stat(
-        TOMBSTONE_KEY_NAME, dir_fd=control_fd, follow_symlinks=False
-    )
-    return (
-        _secure_owned_mode(current_control, stat.S_ISDIR, 0o700)
-        and _secure_owned_mode(named_control, stat.S_ISDIR, 0o700)
-        and _same_inode(expected_control, current_control)
-        and _same_inode(current_control, named_control)
-        and _secure_owned_mode(current_key, stat.S_ISREG, 0o600)
-        and _secure_owned_mode(named_key, stat.S_ISREG, 0o600)
-        and current_key.st_nlink == 1
-        and named_key.st_nlink == 1
-        and current_key.st_size == TOMBSTONE_KEY_BYTES
-        and named_key.st_size == TOMBSTONE_KEY_BYTES
-        and _same_inode(expected_key, current_key)
-        and _same_inode(current_key, named_key)
-        and _root_path_still_names_fd(parent, parent_fd)
-    )
-
-
-def _load_tombstone_authentication_key(output_root):
-    """Create/load the fixed private key directly under the trusted root."""
-    root = Path(output_root).absolute()
-    root_fd = os.open(
-        root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    )
+def _binding_matches(directory_fd, name, descriptor, expected):
     try:
-        key_fd = _open_fixed_control(root_fd, ROOT_KEY_NAME)
-        try:
-            metadata = os.fstat(key_fd)
-            if metadata.st_size == 0:
-                generated = bytearray(secrets.token_bytes(TOMBSTONE_KEY_BYTES))
-                try:
-                    _write_fixed_spool(key_fd, generated)
-                    _fsync_directory_fd(root_fd)
-                finally:
-                    generated[:] = b"\x00" * len(generated)
-            os.lseek(key_fd, 0, os.SEEK_SET)
-            key = _read_tombstone_key_bytes(key_fd)
-            if len(key) != TOMBSTONE_KEY_BYTES:
-                key[:] = b"\x00" * len(key)
-                raise OSError(errno.EPERM, "invalid tombstone authentication key")
-            return key
-        finally:
-            os.close(key_fd)
-    finally:
-        os.close(root_fd)
-
-
-def _legacy_load_tombstone_authentication_key(output_root):
-    """Legacy parent control-directory implementation retained for audit."""
-    root = Path(output_root).absolute()
-    parent = root.parent
-    parent_fd = os.open(
-        parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    )
-    try:
-        parent_metadata = os.fstat(parent_fd)
-        if (
-            not stat.S_ISDIR(parent_metadata.st_mode)
-            or parent_metadata.st_uid != os.geteuid()
-            or stat.S_IMODE(parent_metadata.st_mode) & 0o022
-            or not _root_path_still_names_fd(parent, parent_fd)
-        ):
-            raise OSError(errno.EPERM, "tombstone control parent is not private")
-        try:
-            os.mkdir(TOMBSTONE_CONTROL_DIRECTORY_NAME, 0o700, dir_fd=parent_fd)
-            _fsync_directory_fd(parent_fd)
-        except FileExistsError:
-            pass
-        control_fd = os.open(
-            TOMBSTONE_CONTROL_DIRECTORY_NAME,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=parent_fd,
-        )
-        try:
-            control_metadata = os.fstat(control_fd)
-            named_control = os.stat(
-                TOMBSTONE_CONTROL_DIRECTORY_NAME,
-                dir_fd=parent_fd,
-                follow_symlinks=False,
-            )
-            if (
-                not _secure_owned_mode(control_metadata, stat.S_ISDIR, 0o700)
-                or not _same_inode(control_metadata, named_control)
-            ):
-                raise OSError(errno.EPERM, "invalid tombstone control directory")
-            created = False
-            try:
-                key_fd = os.open(
-                    TOMBSTONE_KEY_NAME,
-                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    0o600,
-                    dir_fd=control_fd,
-                )
-                created = True
-            except FileExistsError:
-                key_fd = os.open(
-                    TOMBSTONE_KEY_NAME,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=control_fd,
-                )
-            try:
-                if created:
-                    # CPython's entropy APIs return an immutable bytes object;
-                    # copy immediately into mutable storage and drop that brief
-                    # unavoidable immutable value before subsequent key use.
-                    generated = secrets.token_bytes(TOMBSTONE_KEY_BYTES)
-                    generated_buffer = bytearray(generated)
-                    del generated
-                    try:
-                        view = memoryview(generated_buffer)
-                        while view:
-                            written = os.write(key_fd, view)
-                            view = view[written:]
-                        os.fsync(key_fd)
-                        _fsync_directory_fd(control_fd)
-                        os.lseek(key_fd, 0, os.SEEK_SET)
-                    finally:
-                        generated_buffer[:] = b"\x00" * len(generated_buffer)
-                key_metadata = os.fstat(key_fd)
-                if not _tombstone_key_metadata_valid(
-                    parent,
-                    parent_fd,
-                    control_fd,
-                    control_metadata,
-                    key_fd,
-                    key_metadata,
-                ):
-                    raise OSError(errno.EPERM, "invalid tombstone authentication key")
-                key_buffer = _read_tombstone_key_bytes(key_fd)
-                try:
-                    if (
-                        len(key_buffer) != TOMBSTONE_KEY_BYTES
-                        or not _tombstone_key_metadata_valid(
-                            parent,
-                            parent_fd,
-                            control_fd,
-                            control_metadata,
-                            key_fd,
-                            key_metadata,
-                        )
-                    ):
-                        raise OSError(
-                            errno.ESTALE, "tombstone authentication key changed"
-                        )
-                    return key_buffer
-                except Exception:
-                    key_buffer[:] = b"\x00" * len(key_buffer)
-                    raise
-            finally:
-                os.close(key_fd)
-        finally:
-            os.close(control_fd)
-    finally:
-        os.close(parent_fd)
-
-
-def _tombstone_snapshot_identity(expected):
-    inventory = {
-        name: (
-            raw.sha256
-            if isinstance(raw, _SnapshotFile)
-            else hashlib.sha256(raw).hexdigest()
-        )
-        for name, raw in expected.items()
-    }
-    return hashlib.sha256(_canonical_json_bytes(inventory)).hexdigest()
-
-
-def _tombstone_unsigned_fields(nonce, snapshot_version, snapshot_identity):
-    return {
-        "domain": TOMBSTONE_DOMAIN,
-        "nonce": nonce,
-        "snapshot_sha256": snapshot_identity,
-        "snapshot_version": snapshot_version,
-        "version": TOMBSTONE_VERSION,
-    }
-
-
-def _tombstone_hmac(key, fields):
-    payload = TOMBSTONE_HMAC_DOMAIN + b"\x00" + _canonical_json_bytes(fields)
-    return hmac.new(key, payload, hashlib.sha256).hexdigest()
-
-
-def _new_tombstone_marker(key, snapshot_version, snapshot_identity):
-    fields = _tombstone_unsigned_fields(
-        secrets.token_hex(32), snapshot_version, snapshot_identity
-    )
-    marker = dict(fields)
-    marker["hmac_sha256"] = _tombstone_hmac(key, fields)
-    return _canonical_json_bytes(marker)
-
-
-def _valid_tombstone_marker(raw, key, snapshot_version, snapshot_identity):
-    try:
-        marker = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        return False
-    return (
-        isinstance(marker, dict)
-        and set(marker) == {
-            "domain", "hmac_sha256", "nonce", "snapshot_sha256",
-            "snapshot_version", "version",
-        }
-        and marker["domain"] == TOMBSTONE_DOMAIN
-        and marker["version"] == TOMBSTONE_VERSION
-        and marker["snapshot_version"] == snapshot_version
-        and marker["snapshot_sha256"] == snapshot_identity
-        and isinstance(marker["nonce"], str)
-        and HASH_RE.fullmatch(marker["nonce"]) is not None
-        and isinstance(marker["hmac_sha256"], str)
-        and HASH_RE.fullmatch(marker["hmac_sha256"]) is not None
-        and raw == _canonical_json_bytes(marker)
-        and hmac.compare_digest(
-            marker["hmac_sha256"],
-            _tombstone_hmac(
-                key,
-                _tombstone_unsigned_fields(
-                    marker["nonce"], marker["snapshot_version"], marker["snapshot_sha256"]
-                ),
-            ),
-        )
-    )
-
-
-def _open_verified_tombstone(
-    root_fd, name, key, snapshot_version, snapshot_identity
-):
-    """Open and validate a restart-safe tombstone without following names."""
-    try:
-        directory_fd = os.open(
-            name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
-        )
+        current = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     except OSError:
-        return None
-    accepted = False
-    try:
-        directory = os.fstat(directory_fd)
-        if not _secure_owned_mode(directory, stat.S_ISDIR, 0o700):
-            return None
-        if os.listdir(directory_fd) != [TOMBSTONE_MARKER_NAME]:
-            return None
-        try:
-            raw, marker_file = _read_regular_file_at(
-                directory_fd, TOMBSTONE_MARKER_NAME
-            )
-        except OSError:
-            return None
-        if (
-            not _secure_owned_mode(marker_file, stat.S_ISREG, 0o600)
-            or marker_file.st_nlink != 1
-        ):
-            return None
-        if not _valid_tombstone_marker(
-            raw, key, snapshot_version, snapshot_identity
-        ) or not _directory_fd_matches(
-            root_fd,
-            name,
-            directory_fd,
-            {TOMBSTONE_MARKER_NAME: raw},
-            expected_directory=directory,
-            expected_files={TOMBSTONE_MARKER_NAME: marker_file},
-        ):
-            return None
-        accepted = True
-        return directory_fd, directory, raw, marker_file
-    finally:
-        # Successful callers own the descriptor.
-        if not accepted:
-            os.close(directory_fd)
-
-
-def _prepare_tombstone(root_fd, target_name, key, snapshot_identity):
-    name = f".{target_name}-tombstone-{secrets.token_hex(16)}"
-    marker = _new_tombstone_marker(key, target_name, snapshot_identity)
-    directory = None
-    os.mkdir(name, mode=0o700, dir_fd=root_fd)
-    directory_fd = os.open(
-        name,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        dir_fd=root_fd,
-    )
-    try:
-        directory = os.fstat(directory_fd)
-        if not _secure_owned_mode(directory, stat.S_ISDIR, 0o700):
-            raise OSError(errno.EPERM, "invalid rollback tombstone directory")
-        marker_fd = os.open(
-            TOMBSTONE_MARKER_NAME,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o600,
-            dir_fd=directory_fd,
-        )
-        try:
-            view = memoryview(marker)
-            while view:
-                written = os.write(marker_fd, view)
-                view = view[written:]
-            os.fsync(marker_fd)
-            marker_file = os.fstat(marker_fd)
-            if (
-                not _secure_owned_mode(marker_file, stat.S_ISREG, 0o600)
-                or marker_file.st_nlink != 1
-            ):
-                raise OSError(errno.EPERM, "invalid rollback tombstone marker")
-        finally:
-            os.close(marker_fd)
-        _fsync_directory_fd(directory_fd)
-        if not _directory_fd_matches(
-            root_fd,
-            name,
-            directory_fd,
-            {TOMBSTONE_MARKER_NAME: marker},
-            expected_directory=directory,
-            expected_files={TOMBSTONE_MARKER_NAME: marker_file},
-        ):
-            raise OSError(errno.ESTALE, "rollback tombstone validation failed")
-        _fsync_directory_fd(root_fd)
-        return name, directory_fd, directory, marker, marker_file
-    except Exception:
-        os.close(directory_fd)
-        _remove_staging(root_fd, name, (), expected_directory=directory)
-        raise
-
-
-def _remove_exact_open_directory(
-    root_fd,
-    name,
-    directory_fd,
-    expected_directory,
-    expected,
-    expected_files,
-):
-    """Preserve a sentinel: pathname deletion cannot be inode-conditional."""
-    if not _directory_fd_matches(
-        root_fd,
-        name,
-        directory_fd,
-        expected,
-        expected_directory=expected_directory,
-        expected_files=expected_files,
-    ):
-        raise OSError(errno.ESTALE, "sentinel cleanup identity changed")
-    return
-
-
-def _rollback_published_directory(
-    root_fd, target_name, expected_directory, key, snapshot_identity
-):
-    """Replace an invalid publication with a durable retry tombstone."""
-    try:
-        target_fd = os.open(
-            target_name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
-        )
-    except OSError as exc:
-        raise OSError(
-            errno.ESTALE,
-            "published snapshot validation failed; rollback target unavailable",
-        ) from exc
-    try:
-        opened = os.fstat(target_fd)
-        if not _same_inode(opened, expected_directory) or not _directory_binding_matches(
-            root_fd, target_name, target_fd, opened
-        ):
-            raise OSError(
-                errno.ESTALE,
-                "published snapshot validation failed; rollback refused replacement target",
-            )
-
-        (
-            quarantine_name,
-            tombstone_fd,
-            tombstone_directory,
-            tombstone_marker,
-            tombstone_marker_file,
-        ) = _prepare_tombstone(root_fd, target_name, key, snapshot_identity)
-        tombstone_location = quarantine_name
-        try:
-            try:
-                _rename_exchange(
-                    target_name,
-                    quarantine_name,
-                    source_dir_fd=root_fd,
-                    target_dir_fd=root_fd,
-                )
-            except OSError as exc:
-                raise OSError(
-                    exc.errno or errno.ENOTSUP,
-                    "published snapshot validation failed; atomic rollback exchange failed",
-                ) from exc
-            tombstone_location = target_name
-
-            try:
-                captured_fd = os.open(
-                    quarantine_name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=root_fd,
-                )
-            except OSError as exc:
-                raise OSError(
-                    errno.ESTALE,
-                    "published snapshot validation failed; quarantine identity unavailable",
-                ) from exc
-            try:
-                captured_directory = os.fstat(captured_fd)
-                if not _directory_binding_matches(
-                    root_fd,
-                    quarantine_name,
-                    captured_fd,
-                    captured_directory,
-                ):
-                    raise OSError(
-                        errno.ESTALE,
-                        "published snapshot validation failed; quarantine identity changed",
-                    )
-
-                if _same_inode(captured_directory, expected_directory):
-                    if not _directory_fd_matches(
-                        root_fd,
-                        target_name,
-                        tombstone_fd,
-                        {TOMBSTONE_MARKER_NAME: tombstone_marker},
-                        expected_directory=tombstone_directory,
-                        expected_files={TOMBSTONE_MARKER_NAME: tombstone_marker_file},
-                    ):
-                        raise OSError(
-                            errno.ESTALE,
-                            "published snapshot validation failed; rollback tombstone changed",
-                        )
-                    # Preserve the invalid publication under its quarantine name.
-                    # Linux pathname removal cannot atomically require this inode.
-                    _fsync_directory_fd(root_fd)
-                    return
-
-                # A replacement arrived after target validation. Put the exact
-                # captured replacement back and remove only our tombstone.
-                try:
-                    _rename_exchange(
-                        target_name,
-                        quarantine_name,
-                        source_dir_fd=root_fd,
-                        target_dir_fd=root_fd,
-                    )
-                except OSError as exc:
-                    raise OSError(
-                        exc.errno or errno.ESTALE,
-                        "published snapshot validation failed; replacement restoration exchange failed",
-                    ) from exc
-                tombstone_location = quarantine_name
-                if not _directory_binding_matches(
-                    root_fd,
-                    target_name,
-                    captured_fd,
-                    captured_directory,
-                ) or not _directory_binding_matches(
-                    root_fd,
-                    quarantine_name,
-                    tombstone_fd,
-                    tombstone_directory,
-                ):
-                    raise OSError(
-                        errno.ESTALE,
-                        "published snapshot validation failed; replacement restoration changed identity",
-                    )
-            finally:
-                os.close(captured_fd)
-
-            _remove_exact_open_directory(
-                root_fd,
-                quarantine_name,
-                tombstone_fd,
-                tombstone_directory,
-                {TOMBSTONE_MARKER_NAME: tombstone_marker},
-                {TOMBSTONE_MARKER_NAME: tombstone_marker_file},
-            )
-            tombstone_location = None
-            _fsync_directory_fd(root_fd)
-            raise OSError(
-                errno.ESTALE,
-                "published snapshot validation failed; rollback restored replacement target",
-            )
-        finally:
-            os.close(tombstone_fd)
-            if tombstone_location == quarantine_name:
-                verified = _open_verified_tombstone(
-                    root_fd, quarantine_name, key, target_name, snapshot_identity
-                )
-                if verified is not None and _same_inode(
-                    verified[1], tombstone_directory
-                ):
-                    try:
-                        _remove_exact_open_directory(
-                            root_fd,
-                            quarantine_name,
-                            verified[0],
-                            verified[1],
-                            {TOMBSTONE_MARKER_NAME: verified[2]},
-                            {TOMBSTONE_MARKER_NAME: verified[3]},
-                        )
-                    finally:
-                        os.close(verified[0])
-                _fsync_directory_fd(root_fd)
-    finally:
-        os.close(target_fd)
-
-
-def _publish_staging_over_tombstone(
-    root_fd,
-    staging_fd,
-    staging_name,
-    target_name,
-    expected,
-    staging_directory,
-    staging_files,
-    tombstone,
-):
-    """Atomically replace a verified tombstone, restoring any raced occupant."""
-    tombstone_fd, tombstone_directory, marker, marker_file = tombstone
-    tombstone_expected = {TOMBSTONE_MARKER_NAME: marker}
-    tombstone_files = {TOMBSTONE_MARKER_NAME: marker_file}
-    if not _directory_fd_matches(
-        root_fd,
-        target_name,
-        tombstone_fd,
-        tombstone_expected,
-        expected_directory=tombstone_directory,
-        expected_files=tombstone_files,
-    ):
-        if _directory_matches(root_fd, target_name, expected):
-            return False
-        raise FileExistsError(f"existing snapshot mismatch: {target_name}")
-
-    _rename_exchange(
-        staging_name,
-        target_name,
-        source_dir_fd=root_fd,
-        target_dir_fd=root_fd,
-    )
-    published_matches = _directory_fd_matches(
-        root_fd,
-        target_name,
-        staging_fd,
-        expected,
-        expected_directory=staging_directory,
-        expected_files=staging_files,
-    )
-    displaced_is_tombstone = _directory_fd_matches(
-        root_fd,
-        staging_name,
-        tombstone_fd,
-        tombstone_expected,
-        expected_directory=tombstone_directory,
-        expected_files=tombstone_files,
-    )
-    if published_matches and displaced_is_tombstone:
-        _remove_exact_open_directory(
-            root_fd,
-            staging_name,
-            tombstone_fd,
-            tombstone_directory,
-            tombstone_expected,
-            tombstone_files,
-        )
-        _fsync_directory_fd(root_fd)
-        return True
-
-    # A foreign actor replaced the newly published snapshot after exchange.
-    # Preserve its canonical target and remove only the exact displaced,
-    # descriptor-verified tombstone now bound at our hidden staging name.
-    if not published_matches and displaced_is_tombstone:
-        _remove_exact_open_directory(
-            root_fd,
-            staging_name,
-            tombstone_fd,
-            tombstone_directory,
-            tombstone_expected,
-            tombstone_files,
-        )
-        _fsync_directory_fd(root_fd)
-        if _directory_matches(root_fd, target_name, expected):
-            return False
-        raise FileExistsError(f"existing snapshot mismatch: {target_name}")
-
-    # The canonical name changed after tombstone validation. Exchange back only
-    # while both post-exchange names still identify the exact captured inodes.
-    try:
-        captured_fd = os.open(
-            staging_name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
-        )
-    except OSError as exc:
-        raise OSError(
-            errno.ESTALE, "tombstone retry could not capture raced target"
-        ) from exc
-    try:
-        captured_directory = os.fstat(captured_fd)
-        if not published_matches or not _directory_binding_matches(
-            root_fd,
-            staging_name,
-            captured_fd,
-            captured_directory,
-        ):
-            raise OSError(
-                errno.ESTALE, "tombstone retry refused changed exchange bindings"
-            )
-        _rename_exchange(
-            target_name,
-            staging_name,
-            source_dir_fd=root_fd,
-            target_dir_fd=root_fd,
-        )
-        if not _directory_binding_matches(
-            root_fd, target_name, captured_fd, captured_directory
-        ) or not _directory_fd_matches(
-            root_fd,
-            staging_name,
-            staging_fd,
-            expected,
-            expected_directory=staging_directory,
-            expected_files=staging_files,
-        ):
-            raise OSError(
-                errno.ESTALE, "tombstone retry restoration changed identity"
-            )
-    finally:
-        os.close(captured_fd)
-    if _directory_matches(root_fd, target_name, expected):
         return False
-    raise FileExistsError(f"existing snapshot mismatch: {target_name}")
+    return _same_control_identity(current, expected) and _same_control_identity(named, expected)
+
+
+def _read_exact_key(descriptor):
+    raw = bytearray(os.pread(descriptor, PUBLICATION_KEY_BYTES + 1, 0))
+    if len(raw) != PUBLICATION_KEY_BYTES:
+        raw[:] = b"\x00" * len(raw)
+        raise OSError(errno.EPERM, "invalid preprovisioned publication key")
+    return raw
+
+
+def _control_file_sizes_valid(lock_fd, key_fd, staging_files):
+    if os.fstat(lock_fd).st_size != 0 or os.fstat(key_fd).st_size != PUBLICATION_KEY_BYTES:
+        return False
+    limits = {"candidates.jsonl": MAX_SNAPSHOT_BYTES, "manifest.json": MAX_MANIFEST_BYTES}
+    return all(os.fstat(descriptor).st_size <= limits[name] for name, descriptor in staging_files.items())
+
+
+def _key_contents_match(key_fd, expected_key):
+    observed = bytearray(os.pread(key_fd, PUBLICATION_KEY_BYTES + 1, 0))
+    try:
+        return len(observed) == PUBLICATION_KEY_BYTES and hmac.compare_digest(
+            observed, expected_key
+        )
+    finally:
+        observed[:] = b"\x00" * len(observed)
+
+
+def _exact_root_inventory(root_fd, snapshot_version):
+    expected = {
+        PUBLICATION_LOCK_NAME,
+        PUBLICATION_KEY_NAME,
+        STAGING_DIRECTORY_NAME,
+        snapshot_version,
+    }
+    observed = os.listdir(root_fd)
+    return len(observed) == len(expected) and set(observed) == expected
+
+
+def _empty_placeholder_matches(root_fd, name, descriptor, expected_metadata):
+    return (
+        _binding_matches(root_fd, name, descriptor, expected_metadata)
+        and os.listdir(descriptor) == []
+    )
+
+
+def _staging_controls_match(
+    root,
+    root_fd,
+    root_metadata,
+    lock_fd,
+    lock_metadata,
+    key_fd,
+    key_metadata,
+    expected_key,
+    staging_fd,
+    staging_metadata,
+    staging_files,
+    staging_file_metadata,
+    snapshot_version,
+    target_fd,
+    target_metadata,
+):
+    if (
+        not _secure_output_root_binding(root, root_fd, root_metadata)
+        or not _exact_root_inventory(root_fd, snapshot_version)
+        or not _binding_matches(root_fd, PUBLICATION_LOCK_NAME, lock_fd, lock_metadata)
+        or not _binding_matches(root_fd, PUBLICATION_KEY_NAME, key_fd, key_metadata)
+        or not _control_file_sizes_valid(lock_fd, key_fd, staging_files)
+        or not _key_contents_match(key_fd, expected_key)
+        or not _binding_matches(root_fd, STAGING_DIRECTORY_NAME, staging_fd, staging_metadata)
+        or not _binding_matches(root_fd, snapshot_version, target_fd, target_metadata)
+        or set(os.listdir(staging_fd)) != set(STAGING_MEMBER_NAMES)
+        or os.listdir(target_fd) != []
+    ):
+        return False
+    for name, descriptor in staging_files.items():
+        if not _binding_matches(staging_fd, name, descriptor, staging_file_metadata[name]):
+            return False
+    return True
+
+
+def _write_fixed_member(descriptor, expected):
+    os.ftruncate(descriptor, 0)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    _write_expected_file(descriptor, expected)
+    os.fsync(descriptor)
 
 
 def publish_snapshot(output_root, snapshot_version, candidates):
-    """Transactionally publish or idempotently accept an immutable snapshot."""
+    """Publish through a wholly preprovisioned, atomically exchanged slot."""
     if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
         raise ValueError("invalid snapshot version")
     _preflight_publication_platform(output_root)
     root, root_fd, root_metadata = _open_secure_output_root(output_root)
-    authentication_key = None
-    target = root / snapshot_version
     expected = _expected_files(snapshot_version, candidates)
-    snapshot_identity = _tombstone_snapshot_identity(expected)
-    staging_name = STAGING_DIRECTORY_NAME
-    staging_metadata = None
-    staging_files = {}
-    tombstone = None
-    lock_fd = None
-    spool_fds = []
+    target = root / snapshot_version
+    descriptors = []
+    key = None
     try:
-        lock_fd = _open_fixed_control(root_fd, PUBLICATION_LOCK_NAME)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        if not _secure_output_root_binding(root, root_fd, root_metadata):
-            raise OSError(errno.ESTALE, "output root changed while locking")
-        authentication_key = _load_tombstone_authentication_key(root)
-        candidate_spool = _open_fixed_control(root_fd, STAGING_CANDIDATES_NAME)
-        manifest_spool = _open_fixed_control(root_fd, STAGING_MANIFEST_NAME)
-        spool_fds.extend((candidate_spool, manifest_spool))
-        _write_fixed_spool(candidate_spool, expected["candidates.jsonl"])
-        _publication_failure_hook("after_candidates_fsync", {"root_fd": root_fd})
-        _write_fixed_spool(manifest_spool, expected["manifest.json"])
-        _publication_failure_hook("after_spool_fsync", {"root_fd": root_fd})
-        try:
-            os.stat(snapshot_version, dir_fd=root_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            if _secure_output_root_binding(root, root_fd, root_metadata) and _directory_matches(
-                root_fd, snapshot_version, expected
-            ):
-                return target
-            if _secure_output_root_binding(root, root_fd, root_metadata):
-                tombstone = _open_verified_tombstone(
-                    root_fd,
-                    snapshot_version,
-                    authentication_key,
-                    snapshot_version,
-                    snapshot_identity,
-                )
-            if tombstone is None:
-                if _secure_output_root_binding(root, root_fd, root_metadata) and _directory_matches(
-                    root_fd, snapshot_version, expected
-                ):
-                    return target
-                raise FileExistsError(f"existing snapshot mismatch: {target}")
-
-        try:
-            os.mkdir(staging_name, mode=0o700, dir_fd=root_fd)
-            _fsync_directory_fd(root_fd)
-        except FileExistsError:
-            pass
-        staging_fd = os.open(
-            staging_name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
+        lock_fd, lock_metadata = _open_preprovisioned_file(
+            root_fd, PUBLICATION_LOCK_NAME, size=0
         )
-        try:
-            staging_metadata = os.fstat(staging_fd)
-            if not _secure_owned_mode(staging_metadata, stat.S_ISDIR, 0o700):
-                raise OSError(errno.EPERM, "invalid fixed staging slot")
-            inventory = set(os.listdir(staging_fd))
-            if not inventory.issubset(expected):
-                raise OSError(
-                    errno.EPERM, "fixed staging slot requires offline recovery"
+        descriptors.append(lock_fd)
+        key_fd, key_metadata = _open_preprovisioned_file(
+            root_fd, PUBLICATION_KEY_NAME, flags=os.O_RDONLY,
+            size=PUBLICATION_KEY_BYTES,
+        )
+        descriptors.append(key_fd)
+        key = _read_exact_key(key_fd)
+        staging_fd, staging_metadata = _open_preprovisioned_directory(
+            root_fd, STAGING_DIRECTORY_NAME
+        )
+        descriptors.append(staging_fd)
+        staging_files = {}
+        staging_file_metadata = {}
+        if set(os.listdir(staging_fd)) == set(STAGING_MEMBER_NAMES):
+            for name in STAGING_MEMBER_NAMES:
+                limit = MAX_SNAPSHOT_BYTES if name == "candidates.jsonl" else MAX_MANIFEST_BYTES
+                descriptor, metadata = _open_preprovisioned_file(
+                    staging_fd, name, max_size=limit
                 )
-            for name, raw in expected.items():
-                file_fd = os.open(
-                    name,
-                    os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    0o600,
-                    dir_fd=staging_fd,
-                )
-                try:
-                    member = os.fstat(file_fd)
-                    if (
-                        not _secure_owned_mode(member, stat.S_ISREG, 0o600)
-                        or member.st_nlink != 1
-                    ):
-                        raise OSError(errno.EPERM, "invalid fixed staging member")
-                    _write_fixed_spool(file_fd, raw)
-                    staging_files[name] = os.fstat(file_fd)
-                finally:
-                    os.close(file_fd)
-                _publication_failure_hook(
-                    f"after_{name}_fsync", {"root_fd": root_fd}
-                )
-            _fsync_directory_fd(staging_fd)
-            _publication_failure_hook("after_staging_fsync", {"root_fd": root_fd})
-            if not _secure_output_root_binding(root, root_fd, root_metadata):
-                raise OSError(errno.ESTALE, "output root changed before publication")
-            if tombstone is not None:
-                if not _publish_staging_over_tombstone(
-                    root_fd,
-                    staging_fd,
-                    staging_name,
-                    snapshot_version,
-                    expected,
-                    staging_metadata,
-                    staging_files,
-                    tombstone,
-                ):
-                    return target
-            else:
-                try:
-                    _publish_staging_noreplace(
-                        root_fd,
-                        staging_fd,
-                        staging_name,
-                        snapshot_version,
-                        expected,
-                        staging_metadata,
-                        staging_files,
-                    )
-                except FileExistsError:
-                    if _secure_output_root_binding(root, root_fd, root_metadata) and _directory_matches(
-                        root_fd, snapshot_version, expected
-                    ):
-                        return target
-                    raise FileExistsError(f"existing snapshot mismatch: {target}")
-            _publication_failure_hook("after_publish_rename", {"root_fd": root_fd})
-        finally:
-            os.close(staging_fd)
+                descriptors.append(descriptor)
+                staging_files[name] = descriptor
+                staging_file_metadata[name] = metadata
+        target_fd, target_metadata = _open_preprovisioned_directory(
+            root_fd, snapshot_version
+        )
+        descriptors.append(target_fd)
+
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        _publication_failure_hook("after_lock", {"root_fd": root_fd})
+
+        # A prior or concurrent invocation may already have completed the
+        # exchange. Recognize only the exact published snapshot plus the exact
+        # empty fixed slot and unchanged lock/key/root bindings.
+        target_binding_is_recorded = (
+            _binding_matches(root_fd, snapshot_version, target_fd, target_metadata)
+            or _binding_matches(root_fd, snapshot_version, staging_fd, staging_metadata)
+        )
+        empty_stage_binding_is_recorded = (
+            _empty_placeholder_matches(
+                root_fd, STAGING_DIRECTORY_NAME, staging_fd, staging_metadata
+            )
+            or _empty_placeholder_matches(
+                root_fd, STAGING_DIRECTORY_NAME, target_fd, target_metadata
+            )
+        )
+        if (
+            _secure_output_root_binding(root, root_fd, root_metadata)
+            and _exact_root_inventory(root_fd, snapshot_version)
+            and _binding_matches(root_fd, PUBLICATION_LOCK_NAME, lock_fd, lock_metadata)
+            and _binding_matches(root_fd, PUBLICATION_KEY_NAME, key_fd, key_metadata)
+            and _control_file_sizes_valid(lock_fd, key_fd, staging_files)
+            and _key_contents_match(key_fd, key)
+            and target_binding_is_recorded
+            and empty_stage_binding_is_recorded
+            and _directory_matches(root_fd, snapshot_version, expected)
+        ):
+            return target
+
+        if set(staging_files) != set(STAGING_MEMBER_NAMES) or not _staging_controls_match(
+            root,
+            root_fd,
+            root_metadata,
+            lock_fd,
+            lock_metadata,
+            key_fd,
+            key_metadata,
+            key,
+            staging_fd,
+            staging_metadata,
+            staging_files,
+            staging_file_metadata,
+            snapshot_version,
+            target_fd,
+            target_metadata,
+        ):
+            raise OSError(errno.ESTALE, "preprovisioned publication controls changed")
+
+        for name in STAGING_MEMBER_NAMES:
+            _write_fixed_member(staging_files[name], expected[name])
+            _publication_failure_hook(
+                f"after_{name}_fsync", {"root_fd": root_fd, "staging_fd": staging_fd}
+            )
+        _fsync_directory_fd(staging_fd)
+        _publication_failure_hook(
+            "before_exchange", {"root_fd": root_fd, "staging_fd": staging_fd}
+        )
+
+        if not _staging_controls_match(
+            root,
+            root_fd,
+            root_metadata,
+            lock_fd,
+            lock_metadata,
+            key_fd,
+            key_metadata,
+            key,
+            staging_fd,
+            staging_metadata,
+            staging_files,
+            staging_file_metadata,
+            snapshot_version,
+            target_fd,
+            target_metadata,
+        ) or not _directory_fd_matches(
+            root_fd,
+            STAGING_DIRECTORY_NAME,
+            staging_fd,
+            expected,
+            expected_directory=staging_metadata,
+            expected_files={name: os.fstat(fd) for name, fd in staging_files.items()},
+        ):
+            raise OSError(errno.ESTALE, "staging changed before publication")
+
+        published_file_metadata = {
+            name: os.fstat(descriptor) for name, descriptor in staging_files.items()
+        }
+        _rename_exchange(
+            STAGING_DIRECTORY_NAME,
+            snapshot_version,
+            source_dir_fd=root_fd,
+            target_dir_fd=root_fd,
+        )
         _fsync_directory_fd(root_fd)
-        _publication_failure_hook("after_root_fsync", {"root_fd": root_fd})
+        _publication_failure_hook("after_exchange", {"root_fd": root_fd})
         if (
             not _secure_output_root_binding(root, root_fd, root_metadata)
-            or not _directory_matches(
+            or not _exact_root_inventory(root_fd, snapshot_version)
+            or not _binding_matches(root_fd, PUBLICATION_LOCK_NAME, lock_fd, lock_metadata)
+            or not _binding_matches(root_fd, PUBLICATION_KEY_NAME, key_fd, key_metadata)
+            or not _control_file_sizes_valid(lock_fd, key_fd, staging_files)
+            or not _key_contents_match(key_fd, key)
+            or not _directory_fd_matches(
                 root_fd,
                 snapshot_version,
+                staging_fd,
                 expected,
                 expected_directory=staging_metadata,
-                expected_files=staging_files,
+                expected_files=published_file_metadata,
+            )
+            or not _empty_placeholder_matches(
+                root_fd, STAGING_DIRECTORY_NAME, target_fd, target_metadata
             )
         ):
-            _rollback_published_directory(
-                root_fd,
-                snapshot_version,
-                staging_metadata,
-                authentication_key,
-                snapshot_identity,
-            )
-            raise OSError(
-                errno.ESTALE,
-                "published snapshot validation failed; rolled back",
-            )
+            raise OSError(errno.ESTALE, "published snapshot validation failed")
         return target
     finally:
-        try:
-            if tombstone is not None:
-                os.close(tombstone[0])
-            _remove_staging(
-                root_fd,
-                staging_name,
-                expected,
-                expected_directory=staging_metadata,
-            )
-        finally:
-            for descriptor in spool_fds:
-                os.close(descriptor)
-            if lock_fd is not None:
-                os.close(lock_fd)
-            os.close(root_fd)
-            if isinstance(authentication_key, bytearray):
-                authentication_key[:] = b"\x00" * len(authentication_key)
+        if key is not None:
+            key[:] = b"\x00" * len(key)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        os.close(root_fd)
 
 
 def load_json_rows(path):
@@ -2312,6 +1510,13 @@ def verify_applied_version_binding(manifest_path, applied_version, verified_mani
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    prepare = commands.add_parser(
+        "prepare",
+        help="offline exclusive setup of one preprovisioned publication root",
+    )
+    prepare.add_argument("--output-root", required=True, type=Path)
+    prepare.add_argument("--snapshot-version", required=True)
+
     export = commands.add_parser("export", help="export an immutable candidate snapshot")
     source = export.add_mutually_exclusive_group(required=True)
     source.add_argument("--input-json", type=Path, help="fixture/rehearsal DB response")
@@ -2342,11 +1547,18 @@ def main(argv=None):
     args = _parser().parse_args(argv)
     candidates = None
     try:
-        if args.command == "export":
+        if args.command == "prepare":
+            root = prepare_output_root(args.output_root, args.snapshot_version)
+            result = {
+                "output_root": str(root),
+                "prepared": True,
+                "snapshot_version": args.snapshot_version,
+            }
+        elif args.command == "export":
             if args.resolver_json and not args.input_json:
                 raise ValueError("--resolver-json requires --input-json")
-            # Check platform/filesystem support before DB/DNS work and before
-            # creating the output root or persistent control key.
+            # Authenticate the fully preprovisioned root before DB/DNS work.
+            # Export never creates or promotes trust-anchor state.
             _preflight_publication_platform(args.output_root)
             resolver = load_resolver_fixture(args.resolver_json) if args.resolver_json else None
             if args.input_json:

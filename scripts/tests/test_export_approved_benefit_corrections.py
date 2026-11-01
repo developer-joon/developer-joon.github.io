@@ -48,19 +48,6 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
     def setUpClass(cls):
         cls.exporter = load_exporter()
 
-    def setUp(self):
-        # These tests specify the superseded nonce-directory/tombstone design.
-        # The fixed-slot tests below cover the replacement architecture.
-        obsolete = (
-            "test_preflight_", "test_tombstone_", "test_rollback_",
-            "test_late_staging_", "test_process_restart_recognizes_tombstone",
-            "test_concurrent_retries_", "test_retry_exchange_",
-            "test_staging_member_replacement_",
-            "test_idempotent_validation_rejects_target_replaced_after_member_reads",
-        )
-        if self._testMethodName.startswith(obsolete):
-            self.skipTest("superseded by fixed bounded publication control state")
-
     @staticmethod
     def public_resolver(hostname):
         return ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]
@@ -68,22 +55,6 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
     def build_snapshot(self, rows, **kwargs):
         kwargs.setdefault("resolver", self.public_resolver)
         return self.exporter.build_snapshot(rows, **kwargs)
-
-    @staticmethod
-    def snapshot_root(directory):
-        root = Path(directory) / "snapshots"
-        root.mkdir(mode=0o700)
-        return root
-
-    def authenticated_marker(self, root, version, key=None, candidates=None):
-        if key is None:
-            key = self.exporter._load_tombstone_authentication_key(root)
-        if candidates is None:
-            candidates = self.build_snapshot([row()])
-        identity = self.exporter._tombstone_snapshot_identity(
-            self.exporter._expected_files(version, candidates)
-        )
-        return self.exporter._new_tombstone_marker(key, version, identity)
 
     def test_exports_only_approved_rows_with_a_strict_candidate_allowlist(self):
         snapshot = self.build_snapshot([
@@ -266,907 +237,217 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(left).hexdigest(), self.exporter.snapshot_sha256(left))
         self.assertEqual(first["id"], json.loads(left.splitlines()[0])["correction_request_id"])
 
-    def test_publish_is_atomic_idempotent_and_refuses_existing_mismatch(self):
-        candidates = self.build_snapshot([row()])
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            target = self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
-            first_manifest = (target / "manifest.json").read_bytes()
-            self.assertEqual(target, self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates))
-            self.assertEqual(first_manifest, (target / "manifest.json").read_bytes())
-            (target / "candidates.jsonl").write_text("tampered\n", encoding="utf-8")
-            with self.assertRaisesRegex(FileExistsError, "mismatch"):
-                self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
-            self.assertEqual("tampered\n", (target / "candidates.jsonl").read_text(encoding="utf-8"))
-            self.assertFalse(any(path.name.startswith(".approved-2026-11-01-v1-") for path in root.iterdir()))
+    def provision(self, root, version="approved-2026-11-01-v1"):
+        self.exporter.prepare_output_root(root, version)
+        return root
 
-    def test_publish_rejects_permissive_or_wrong_owner_output_root(self):
-        candidates = self.build_snapshot([row()])
+    def assert_prepared_inventory(self, root, version):
+        self.assertEqual(
+            {self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME,
+             self.exporter.STAGING_DIRECTORY_NAME, version},
+            {entry.name for entry in root.iterdir()},
+        )
+        self.assertEqual([], list((root / version).iterdir()))
+        staging = root / self.exporter.STAGING_DIRECTORY_NAME
+        self.assertEqual(set(self.exporter.STAGING_MEMBER_NAMES), {p.name for p in staging.iterdir()})
+        self.assertEqual(0o700, root.stat().st_mode & 0o777)
+        self.assertEqual(0o700, staging.stat().st_mode & 0o777)
+        key = root / self.exporter.PUBLICATION_KEY_NAME
+        self.assertEqual(self.exporter.PUBLICATION_KEY_BYTES, key.stat().st_size)
+        for path in [root / self.exporter.PUBLICATION_LOCK_NAME, key, *staging.iterdir()]:
+            self.assertEqual(0o600, path.stat().st_mode & 0o777)
+            self.assertEqual(1, path.stat().st_nlink)
+
+    def test_prepare_provisions_exact_inventory_and_refuses_any_existing_path(self):
+        version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "snapshots"
-            root.mkdir(mode=0o777)
-            root.chmod(0o777)
-            with self.assertRaisesRegex(OSError, "output root"):
-                self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
-            self.assertEqual([], list(root.iterdir()))
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            original_geteuid = self.exporter.os.geteuid
-            self.exporter.os.geteuid = lambda: original_geteuid() + 1
-            try:
-                with self.assertRaisesRegex(OSError, "output root"):
-                    self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
-            finally:
-                self.exporter.os.geteuid = original_geteuid
-            self.assertEqual([], list(root.iterdir()))
-
-    def test_output_root_replacement_is_detected_before_publication(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            original_fsync = self.exporter._fsync_directory_fd
-            replaced = False
-
-            def replace_root_after_staging_fsync(descriptor):
-                nonlocal replaced
-                original_fsync(descriptor)
-                try:
-                    os.stat("candidates.jsonl", dir_fd=descriptor, follow_symlinks=False)
-                except FileNotFoundError:
-                    return
-                if not replaced:
-                    replaced = True
-                    root.rename(root.with_name("displaced-root"))
-                    root.mkdir(mode=0o700)
-
-            self.exporter._fsync_directory_fd = replace_root_after_staging_fsync
-            try:
-                with self.assertRaisesRegex(OSError, "output root|staging"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._fsync_directory_fd = original_fsync
-            self.assertTrue(replaced)
-            self.assertFalse((root / version).exists())
-
-    def test_atomic_noreplace_rename_refuses_even_an_empty_existing_directory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            source = root / "source"
-            target = root / "target"
-            source.mkdir()
-            target.mkdir()
-            (source / "complete").write_text("snapshot", encoding="utf-8")
+            self.provision(root, version)
+            self.assert_prepared_inventory(root, version)
             with self.assertRaises(FileExistsError):
-                self.exporter._rename_noreplace(source, target)
-            self.assertTrue(source.is_dir())
-            self.assertEqual([], list(target.iterdir()))
+                self.exporter.prepare_output_root(root, version)
+            occupied = Path(directory) / "occupied"
+            occupied.write_text("foreign", encoding="utf-8")
+            with self.assertRaises(FileExistsError):
+                self.exporter.prepare_output_root(occupied, version)
+            self.assertEqual("foreign", occupied.read_text(encoding="utf-8"))
 
-    def test_idempotent_validation_rejects_target_swapped_to_symlink(self):
+    def test_runtime_requires_every_anchor_and_never_bootstraps_missing_state(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            target = self.exporter.publish_snapshot(root, version, candidates)
-            attacker = root / "attacker-copy"
-            attacker.mkdir()
-            for child in target.iterdir():
-                (attacker / child.name).write_bytes(child.read_bytes())
-
-            original_matches = self.exporter._directory_matches
-            swapped = False
-
-            def swap_before_inventory(*args, **kwargs):
-                nonlocal swapped
-                if not swapped:
-                    swapped = True
-                    renamed = root / "original-snapshot"
-                    os.rename(target, renamed)
-                    os.symlink(attacker.name, target, target_is_directory=True)
-                return original_matches(*args, **kwargs)
-
-            self.exporter._directory_matches = swap_before_inventory
-            try:
-                with self.assertRaisesRegex(FileExistsError, "mismatch"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._directory_matches = original_matches
-            self.assertTrue(target.is_symlink())
-
-    def test_idempotent_validation_rejects_target_replaced_after_member_reads(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            target = self.exporter.publish_snapshot(root, version, candidates)
-            attacker = root / "attacker-copy"
-            attacker.mkdir()
-            for child in target.iterdir():
-                (attacker / child.name).write_bytes(child.read_bytes())
-
-            original_read = self.exporter._read_regular_file_at
-            reads = 0
-
-            def replace_after_last_read(*args, **kwargs):
-                nonlocal reads
-                result = original_read(*args, **kwargs)
-                reads += 1
-                if reads == 2:
-                    os.rename(target, root / "original-snapshot")
-                    os.symlink(attacker.name, target, target_is_directory=True)
-                return result
-
-            self.exporter._read_regular_file_at = replace_after_last_read
-            try:
-                with self.assertRaisesRegex(FileExistsError, "mismatch"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._read_regular_file_at = original_read
-            self.assertTrue(target.is_symlink())
-
-    def test_staging_member_replacement_is_detected_before_publication(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            original_fsync = self.exporter._fsync_directory_fd
-            replaced = False
-
-            def replace_member_after_staging_fsync(descriptor):
-                nonlocal replaced
-                original_fsync(descriptor)
-                if not replaced:
-                    try:
-                        raw = os.open(
-                            "candidates.jsonl", os.O_RDONLY | os.O_NOFOLLOW,
-                            dir_fd=descriptor,
-                        )
-                    except FileNotFoundError:
-                        return
-                    replaced = True
-                    try:
-                        contents = b""
-                        while True:
-                            chunk = os.read(raw, 8192)
-                            if not chunk:
-                                break
-                            contents += chunk
-                    finally:
-                        os.close(raw)
-                    os.unlink("candidates.jsonl", dir_fd=descriptor)
-                    replacement = os.open(
-                        "candidates.jsonl",
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                        0o600,
-                        dir_fd=descriptor,
-                    )
-                    try:
-                        os.write(replacement, contents)
-                        os.fsync(replacement)
-                    finally:
-                        os.close(replacement)
-                    unexpected = os.open(
-                        "unexpected-member",
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                        0o600,
-                        dir_fd=descriptor,
-                    )
-                    os.close(unexpected)
-
-            self.exporter._fsync_directory_fd = replace_member_after_staging_fsync
-            try:
-                with self.assertRaisesRegex(OSError, "staging"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._fsync_directory_fd = original_fsync
-
-            self.assertFalse((root / version).exists())
-            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
-            target = self.exporter.publish_snapshot(root, version, candidates)
-            self.assertTrue((target / "manifest.json").is_file())
-
-    def test_late_staging_member_rolls_back_to_retryable_tombstone(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            original_rename = self.exporter._rename_noreplace
-            mutated = False
-
-            def mutate_at_rename(source, target, source_dir_fd=-100, target_dir_fd=-100):
-                nonlocal mutated
-                if source.startswith(f".{version}-") and not mutated:
-                    mutated = True
-                    staging_fd = os.open(
-                        source,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=source_dir_fd,
-                    )
-                    try:
-                        unexpected = os.open(
-                            "late-member",
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                            0o600,
-                            dir_fd=staging_fd,
-                        )
-                        os.close(unexpected)
-                    finally:
-                        os.close(staging_fd)
-                return original_rename(
-                    source,
-                    target,
-                    source_dir_fd=source_dir_fd,
-                    target_dir_fd=target_dir_fd,
-                )
-
-            self.exporter._rename_noreplace = mutate_at_rename
-            try:
-                with self.assertRaisesRegex(OSError, "published snapshot validation failed; rolled back"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._rename_noreplace = original_rename
-
-            self.assertTrue(mutated)
-            self.assertTrue((root / version).is_dir())
-            self.assertEqual(
-                {self.exporter.TOMBSTONE_MARKER_NAME},
-                {path.name for path in (root / version).iterdir()},
-            )
-            marker = json.loads(
-                (root / version / self.exporter.TOMBSTONE_MARKER_NAME).read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertEqual(self.exporter.TOMBSTONE_DOMAIN, marker["domain"])
-            self.assertEqual(self.exporter.TOMBSTONE_VERSION, marker["version"])
-            self.assertRegex(marker["nonce"], r"^[0-9a-f]{64}$")
-            self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
-            target = self.exporter.publish_snapshot(root, version, candidates)
-            self.assertTrue((target / "manifest.json").is_file())
-
-    def test_rollback_never_rmdirs_canonical_target_or_deletes_foreign_replacement(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            original_rename = self.exporter._rename_noreplace
-            original_rmdir = self.exporter.os.rmdir
-            canonical_rmdirs = 0
-
-            def mutate_at_publish(source, destination, source_dir_fd=-100, target_dir_fd=-100):
-                if source.startswith(f".{version}-"):
-                    staging_fd = os.open(
-                        source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=source_dir_fd,
-                    )
-                    try:
-                        os.mkdir("late-member", dir_fd=staging_fd)
-                    finally:
-                        os.close(staging_fd)
-                return original_rename(
-                    source, destination,
-                    source_dir_fd=source_dir_fd, target_dir_fd=target_dir_fd,
-                )
-
-            def replace_at_old_rmdir_boundary(path, *args, **kwargs):
-                nonlocal canonical_rmdirs
-                if path == version:
-                    canonical_rmdirs += 1
-                    dir_fd = kwargs["dir_fd"]
-                    os.rename(path, "captured-tombstone", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-                    os.mkdir(path, dir_fd=dir_fd)
-                return original_rmdir(path, *args, **kwargs)
-
-            self.exporter._rename_noreplace = mutate_at_publish
-            self.exporter.os.rmdir = replace_at_old_rmdir_boundary
-            try:
-                with self.assertRaisesRegex(OSError, "rolled back"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._rename_noreplace = original_rename
-                self.exporter.os.rmdir = original_rmdir
-
-            self.assertEqual(0, canonical_rmdirs)
-            self.assertTrue((root / version).is_dir())
-            self.assertEqual(
-                {self.exporter.TOMBSTONE_MARKER_NAME},
-                {path.name for path in (root / version).iterdir()},
-            )
-
-    def test_process_restart_recognizes_tombstone_and_retries_atomically(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            original_rename = self.exporter._rename_noreplace
-
-            def mutate_once(source, destination, source_dir_fd=-100, target_dir_fd=-100):
-                if source.startswith(f".{version}-"):
-                    staging_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY, dir_fd=source_dir_fd)
-                    try:
-                        os.mkdir("late-member", dir_fd=staging_fd)
-                    finally:
-                        os.close(staging_fd)
-                    self.exporter._rename_noreplace = original_rename
-                return original_rename(
-                    source, destination,
-                    source_dir_fd=source_dir_fd, target_dir_fd=target_dir_fd,
-                )
-
-            self.exporter._rename_noreplace = mutate_once
-            try:
-                with self.assertRaisesRegex(OSError, "rolled back"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._rename_noreplace = original_rename
-
-            restarted = load_exporter()
-            target = restarted.publish_snapshot(root, version, candidates)
-            self.assertEqual(
-                {"candidates.jsonl", "manifest.json"},
-                {path.name for path in target.iterdir()},
-            )
-            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
-
-    def test_forged_or_malformed_tombstones_are_mismatches(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        forged_markers = [
-            b"not-json\n",
-            json.dumps({"domain": "foreign", "version": 1, "nonce": "a" * 64}).encode() + b"\n",
-            json.dumps({"domain": self.exporter.TOMBSTONE_DOMAIN, "version": 1, "nonce": "short"}).encode() + b"\n",
-        ]
-        for marker in forged_markers:
-            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as directory:
-                root = self.snapshot_root(directory)
-                target = root / version
-                target.mkdir()
-                (target / self.exporter.TOMBSTONE_MARKER_NAME).write_bytes(marker)
-                with self.assertRaisesRegex(FileExistsError, "mismatch"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-                self.assertEqual(marker, (target / self.exporter.TOMBSTONE_MARKER_NAME).read_bytes())
-
-    def test_public_marker_fields_cannot_forge_an_authenticated_tombstone(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            self.exporter._load_tombstone_authentication_key(root)
-            target = root / version
-            target.mkdir(mode=0o700)
-            forged = self.exporter._canonical_json_bytes({
-                "domain": self.exporter.TOMBSTONE_DOMAIN,
-                "hmac_sha256": "0" * 64,
-                "nonce": "a" * 64,
-                "snapshot_sha256": "b" * 64,
-                "snapshot_version": version,
-                "version": self.exporter.TOMBSTONE_VERSION,
-            })
-            marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
-            marker_path.write_bytes(forged)
-            marker_path.chmod(0o600)
-            with self.assertRaisesRegex(FileExistsError, "mismatch"):
+            root = Path(directory) / "missing"
+            with self.assertRaisesRegex(OSError, "prepare"):
                 self.exporter.publish_snapshot(root, version, candidates)
-            self.assertEqual(forged, (target / self.exporter.TOMBSTONE_MARKER_NAME).read_bytes())
-
-    def test_wrong_key_and_tampered_identity_tombstones_remain_untouched(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            key = self.exporter._load_tombstone_authentication_key(root)
-            tampered = json.loads(self.authenticated_marker(root, version, key=key))
-            tampered["nonce"] = "f" * 64
-            markers = [
-                self.authenticated_marker(root, version, key=b"x" * 32),
-                self.authenticated_marker(root, "approved-2026-11-01-v2", key=key),
-                self.exporter._canonical_json_bytes(tampered),
-                self.authenticated_marker(
-                    root,
-                    version,
-                    key=key,
-                    candidates=self.build_snapshot([row(proposed_text="different snapshot")]),
-                ),
-            ]
-            for index, marker in enumerate(markers):
-                with self.subTest(index=index):
-                    target = root / version
-                    target.mkdir(mode=0o700)
-                    marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
-                    marker_path.write_bytes(marker)
-                    marker_path.chmod(0o600)
-                    with self.assertRaisesRegex(FileExistsError, "mismatch"):
-                        self.exporter.publish_snapshot(root, version, candidates)
-                    self.assertEqual(marker, marker_path.read_bytes())
-                    marker_path.unlink()
-                    target.rmdir()
-
-    def test_tombstone_key_rejects_symlink_permissive_mode_and_replacement(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = self.snapshot_root(directory)
-            control = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME
-            control.mkdir(mode=0o755)
-            with self.assertRaises(OSError):
-                self.exporter._load_tombstone_authentication_key(root)
-
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = self.snapshot_root(directory)
-            control = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME
-            control.mkdir(mode=0o700)
-            (control / self.exporter.TOMBSTONE_KEY_NAME).mkdir(mode=0o700)
-            with self.assertRaises(OSError):
-                self.exporter._load_tombstone_authentication_key(root)
-
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = self.snapshot_root(directory)
-            control = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME
-            control.mkdir(mode=0o700)
-            os.symlink("foreign-key", control / self.exporter.TOMBSTONE_KEY_NAME)
-            with self.assertRaises(OSError):
-                self.exporter._load_tombstone_authentication_key(root)
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            self.exporter._load_tombstone_authentication_key(root)
-            original_geteuid = self.exporter.os.geteuid
-            self.exporter.os.geteuid = lambda: original_geteuid() + 1
-            try:
+            self.assertFalse(root.exists())
+        for missing in (self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME,
+                        self.exporter.STAGING_DIRECTORY_NAME, version):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "snapshots"
+                self.provision(root, version)
+                path = root / missing
+                if path.is_dir():
+                    for child in path.iterdir():
+                        child.unlink()
+                    path.rmdir()
+                else:
+                    path.unlink()
+                before = sorted(p.name for p in root.iterdir())
                 with self.assertRaises(OSError):
-                    self.exporter._load_tombstone_authentication_key(root)
-            finally:
-                self.exporter.os.geteuid = original_geteuid
+                    self.exporter.publish_snapshot(root, version, candidates)
+                self.assertEqual(before, sorted(p.name for p in root.iterdir()))
 
+    def test_publish_is_atomic_idempotent_and_refuses_tampered_snapshot(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = self.snapshot_root(directory)
-            self.exporter._load_tombstone_authentication_key(root)
-            key_path = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME / self.exporter.TOMBSTONE_KEY_NAME
-            key_path.chmod(0o644)
+            root = Path(directory) / "snapshots"
+            self.provision(root, version)
+            target = self.exporter.publish_snapshot(root, version, candidates)
+            self.assertEqual({"candidates.jsonl", "manifest.json"}, {p.name for p in target.iterdir()})
+            self.assertEqual([], list((root / self.exporter.STAGING_DIRECTORY_NAME).iterdir()))
+            self.assertEqual(target, self.exporter.publish_snapshot(root, version, candidates))
+            (target / "candidates.jsonl").write_text("tampered\n", encoding="utf-8")
             with self.assertRaises(OSError):
-                self.exporter._load_tombstone_authentication_key(root)
+                self.exporter.publish_snapshot(root, version, candidates)
+            self.assertEqual("tampered\n", (target / "candidates.jsonl").read_text(encoding="utf-8"))
 
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = self.snapshot_root(directory)
-            self.exporter._load_tombstone_authentication_key(root)
-            key_path = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME / self.exporter.TOMBSTONE_KEY_NAME
-            original_read = self.exporter._read_tombstone_key_bytes
-
-            def replace_after_read(descriptor):
-                raw = original_read(descriptor)
-                key_path.rename(key_path.with_name("displaced-key"))
-                key_path.write_bytes(b"z" * 32)
-                key_path.chmod(0o600)
-                return raw
-
-            self.exporter._read_tombstone_key_bytes = replace_after_read
-            try:
-                with self.assertRaises(OSError):
-                    self.exporter._load_tombstone_authentication_key(root)
-            finally:
-                self.exporter._read_tombstone_key_bytes = original_read
-
-    def test_tombstone_key_revalidates_metadata_after_read(self):
-        def chmod_key(_base, control, key_path):
-            key_path.chmod(0o644)
-
-        def add_hardlink(_base, control, key_path):
-            os.link(key_path, control / "extra-key-link")
-
-        def chmod_control(_base, control, _key_path):
-            control.chmod(0o755)
-
-        def replace_control(base, control, _key_path):
-            control.rename(base / "displaced-control")
-            control.mkdir(mode=0o700)
-
-        original_geteuid = self.exporter.os.geteuid
-
-        def change_effective_owner(_base, _control, _key_path):
-            self.exporter.os.geteuid = lambda: original_geteuid() + 1
-
-        races = {
-            "key mode": chmod_key,
-            "key hardlink": add_hardlink,
-            "control mode": chmod_control,
-            "control replacement": replace_control,
-            "effective owner": change_effective_owner,
-        }
-        for label, mutate in races.items():
-            with self.subTest(race=label), tempfile.TemporaryDirectory() as directory:
-                base = Path(directory)
-                root = self.snapshot_root(directory)
-                expected = self.exporter._load_tombstone_authentication_key(root)
-                control = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME
-                key_path = control / self.exporter.TOMBSTONE_KEY_NAME
-                original_read = self.exporter._read_tombstone_key_bytes
-
-                def mutate_during_read(descriptor):
-                    raw = original_read(descriptor)
-                    self.assertEqual(expected, raw)
-                    mutate(base, control, key_path)
-                    return raw
-
-                self.exporter._read_tombstone_key_bytes = mutate_during_read
-                try:
-                    with self.assertRaises(OSError):
-                        self.exporter._load_tombstone_authentication_key(root)
-                finally:
-                    self.exporter._read_tombstone_key_bytes = original_read
-                    self.exporter.os.geteuid = original_geteuid
-
-    def test_publication_wipes_mutable_authentication_key_on_success_and_failure(self):
-        candidates = self.build_snapshot([row()])
-        for fail in (False, True):
-            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
-                root = self.snapshot_root(directory)
-                key = bytearray(b"k" * self.exporter.TOMBSTONE_KEY_BYTES)
-                original_load = self.exporter._load_tombstone_authentication_key
-                original_noreplace = self.exporter._rename_noreplace
-                self.exporter._load_tombstone_authentication_key = lambda _root: key
-                if fail:
-                    self.exporter._rename_noreplace = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                        OSError(errno.EIO, "forced publication failure")
-                    )
-                try:
-                    if fail:
-                        with self.assertRaises(OSError):
-                            self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
-                    else:
-                        self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
-                finally:
-                    self.exporter._load_tombstone_authentication_key = original_load
-                    self.exporter._rename_noreplace = original_noreplace
-                self.assertEqual(bytearray(len(key)), key)
-
-    def test_concurrent_retries_converge_and_preserve_displaced_control_state(self):
+    def test_runtime_never_mkdirs_creates_unlinks_or_rmdirs_anchor_paths(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            marker = self.authenticated_marker(root, version)
-            target = root / version
-            target.mkdir(mode=0o700)
-            marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
-            marker_path.write_bytes(marker)
-            marker_path.chmod(0o600)
-            barrier = threading.Barrier(3)
-            outcomes = []
-
-            def retry():
-                barrier.wait()
-                try:
-                    outcomes.append(self.exporter.publish_snapshot(root, version, candidates))
-                except Exception as exc:
-                    outcomes.append(exc)
-
-            threads = [threading.Thread(target=retry) for _ in range(2)]
-            for thread in threads:
-                thread.start()
-            barrier.wait()
-            for thread in threads:
-                thread.join()
-
-            self.assertEqual(2, len(outcomes))
-            self.assertTrue(all(outcome == target for outcome in outcomes), outcomes)
-            self.assertEqual(
-                {"candidates.jsonl", "manifest.json"},
-                {path.name for path in target.iterdir()},
-            )
-            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
-
-    def test_tombstone_retry_restores_foreign_target_winning_exchange_race(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            target = root / version
-            target.mkdir(mode=0o700)
-            marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
-            marker_path.write_bytes(
-                self.authenticated_marker(root, version)
-            )
-            marker_path.chmod(0o600)
-            original_exchange = self.exporter._rename_exchange
-            raced = False
-
-            def race_exchange(source, destination, source_dir_fd=-100, target_dir_fd=-100):
-                nonlocal raced
-                if destination == version and source.startswith(f".{version}-") and not raced:
-                    raced = True
-                    os.rename(
-                        destination, "original-tombstone",
-                        src_dir_fd=target_dir_fd, dst_dir_fd=target_dir_fd,
-                    )
-                    os.mkdir(destination, dir_fd=target_dir_fd)
-                    foreign_fd = os.open(
-                        destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=target_dir_fd,
-                    )
-                    try:
-                        marker_fd = os.open(
-                            "foreign-marker", os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                            0o600, dir_fd=foreign_fd,
-                        )
-                        try:
-                            os.write(marker_fd, b"foreign data")
-                        finally:
-                            os.close(marker_fd)
-                    finally:
-                        os.close(foreign_fd)
-                return original_exchange(
-                    source, destination,
-                    source_dir_fd=source_dir_fd, target_dir_fd=target_dir_fd,
-                )
-
-            self.exporter._rename_exchange = race_exchange
-            try:
-                with self.assertRaisesRegex(FileExistsError, "mismatch"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._rename_exchange = original_exchange
-
-            self.assertTrue(raced)
-            self.assertEqual(b"foreign data", (target / "foreign-marker").read_bytes())
-            self.assertTrue((root / "original-tombstone").is_dir())
-            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
-
-    def test_retry_exchange_preserves_displaced_tombstone_after_foreign_replacement(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            target = root / version
-            target.mkdir(mode=0o700)
-            marker_path = target / self.exporter.TOMBSTONE_MARKER_NAME
-            marker_path.write_bytes(
-                self.authenticated_marker(root, version)
-            )
-            marker_path.chmod(0o600)
-            original_exchange = self.exporter._rename_exchange
-            replaced = False
-
-            def replace_new_snapshot(source, destination, source_dir_fd=-100, target_dir_fd=-100):
-                nonlocal replaced
-                original_exchange(
-                    source, destination,
-                    source_dir_fd=source_dir_fd, target_dir_fd=target_dir_fd,
-                )
-                if destination == version and source.startswith(f".{version}-") and not replaced:
-                    replaced = True
-                    os.rename(
-                        destination, "displaced-new-snapshot",
-                        src_dir_fd=target_dir_fd, dst_dir_fd=target_dir_fd,
-                    )
-                    os.mkdir(destination, dir_fd=target_dir_fd)
-                    foreign_fd = os.open(
-                        destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=target_dir_fd,
-                    )
-                    try:
-                        member = os.open(
-                            "foreign-marker", os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                            0o600, dir_fd=foreign_fd,
-                        )
-                        try:
-                            os.write(member, b"foreign data")
-                        finally:
-                            os.close(member)
-                    finally:
-                        os.close(foreign_fd)
-
-            self.exporter._rename_exchange = replace_new_snapshot
-            try:
-                with self.assertRaisesRegex(FileExistsError, "mismatch"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._rename_exchange = original_exchange
-
-            self.assertTrue(replaced)
-            self.assertEqual(b"foreign data", (target / "foreign-marker").read_bytes())
-            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
-
-    def test_rollback_exchange_restores_replacement_arriving_after_validation(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            target = root / version
-            replacement_marker = b"replacement owned by another actor"
-            original_rename = self.exporter._rename_noreplace
-            original_exchange = self.exporter._rename_exchange
-            mutated = False
-            replaced = False
-
-            def mutate_at_publish(source, destination, source_dir_fd=-100, target_dir_fd=-100):
-                nonlocal mutated
-                if source.startswith(f".{version}-") and not mutated:
-                    mutated = True
-                    staging_fd = os.open(
-                        source,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=source_dir_fd,
-                    )
-                    try:
-                        member_fd = os.open(
-                            "late-member",
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                            0o600,
-                            dir_fd=staging_fd,
-                        )
-                        os.close(member_fd)
-                    finally:
-                        os.close(staging_fd)
-                return original_rename(
-                    source,
-                    destination,
-                    source_dir_fd=source_dir_fd,
-                    target_dir_fd=target_dir_fd,
-                )
-
-            def replace_immediately_before_exchange(
-                source, destination, source_dir_fd=-100, target_dir_fd=-100
-            ):
-                nonlocal replaced
-                if source == version and not replaced:
-                    replaced = True
-                    os.rename(
-                        source,
-                        "attacker-moved-invalid",
-                        src_dir_fd=source_dir_fd,
-                        dst_dir_fd=source_dir_fd,
-                    )
-                    os.mkdir(source, dir_fd=source_dir_fd)
-                    replacement_directory_fd = os.open(
-                        source,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=source_dir_fd,
-                    )
-                    try:
-                        replacement_fd = os.open(
-                            "replacement-marker",
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                            0o600,
-                            dir_fd=replacement_directory_fd,
-                        )
-                        try:
-                            os.write(replacement_fd, replacement_marker)
-                        finally:
-                            os.close(replacement_fd)
-                    finally:
-                        os.close(replacement_directory_fd)
-                return original_exchange(
-                    source,
-                    destination,
-                    source_dir_fd=source_dir_fd,
-                    target_dir_fd=target_dir_fd,
-                )
-
-            self.exporter._rename_noreplace = mutate_at_publish
-            self.exporter._rename_exchange = replace_immediately_before_exchange
-            try:
-                with self.assertRaisesRegex(OSError, "rollback restored replacement target"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._rename_noreplace = original_rename
-                self.exporter._rename_exchange = original_exchange
-
-            self.assertTrue(mutated)
-            self.assertTrue(replaced)
-            self.assertEqual(replacement_marker, (target / "replacement-marker").read_bytes())
-            self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
-            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
-
-    def test_rollback_fails_closed_when_atomic_exchange_is_unavailable(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            target = root / version
-            original_rename = self.exporter._rename_noreplace
-            original_exchange = self.exporter._rename_exchange
-            mutated = False
-
-            def mutate_at_publish(source, destination, source_dir_fd=-100, target_dir_fd=-100):
-                nonlocal mutated
-                if source.startswith(f".{version}-") and not mutated:
-                    mutated = True
-                    staging_fd = os.open(
-                        source,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=source_dir_fd,
-                    )
-                    try:
-                        os.mkdir("late-member", dir_fd=staging_fd)
-                    finally:
-                        os.close(staging_fd)
-                return original_rename(
-                    source,
-                    destination,
-                    source_dir_fd=source_dir_fd,
-                    target_dir_fd=target_dir_fd,
-                )
-
-            def unavailable(*_args, **_kwargs):
-                raise OSError(errno.ENOTSUP, "atomic exchange unavailable")
-
-            self.exporter._rename_noreplace = mutate_at_publish
-            self.exporter._rename_exchange = unavailable
-            try:
-                with self.assertRaisesRegex(OSError, "atomic rollback exchange failed"):
-                    self.exporter.publish_snapshot(root, version, candidates)
-            finally:
-                self.exporter._rename_noreplace = original_rename
-                self.exporter._rename_exchange = original_exchange
-
-            self.assertTrue(mutated)
-            self.assertTrue(target.is_dir())
-            self.assertTrue((target / "late-member").is_dir())
-            self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
-
-    def test_cleanup_does_not_delete_a_replaced_staging_directory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            staging = root / ".snapshot-staging"
-            staging.mkdir()
-            (staging / "manifest.json").write_text("ours", encoding="utf-8")
-            original_metadata = staging.stat()
-            os.rename(staging, root / "original-staging")
-            staging.mkdir()
-            replacement = staging / "manifest.json"
-            replacement.write_text("attacker", encoding="utf-8")
-            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                self.exporter._remove_staging(
-                    root_fd,
-                    staging.name,
-                    {"manifest.json"},
-                    expected_directory=original_metadata,
-                )
-            finally:
-                os.close(root_fd)
-            self.assertEqual("attacker", replacement.read_text(encoding="utf-8"))
-
-    def test_publication_cleanup_never_calls_pathname_unlink_or_rmdir(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            staging = root / ".snapshot-staging"
-            staging.mkdir(mode=0o700)
-            member = staging / "manifest.json"
-            member.write_text("ours", encoding="utf-8")
-            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-            staging_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
-            original_unlink = self.exporter.os.unlink
-            original_rmdir = self.exporter.os.rmdir
+            root = Path(directory) / "snapshots"
+            self.provision(root, version)
+            original = (self.exporter.os.open, self.exporter.os.mkdir,
+                        self.exporter.os.unlink, self.exporter.os.rmdir)
             calls = []
-            self.exporter.os.unlink = lambda *args, **kwargs: calls.append(("unlink", args, kwargs))
-            self.exporter.os.rmdir = lambda *args, **kwargs: calls.append(("rmdir", args, kwargs))
+            def checked_open(path, flags, *args, **kwargs):
+                if flags & (os.O_CREAT | os.O_EXCL):
+                    calls.append(("open-create", os.fspath(path)))
+                return original[0](path, flags, *args, **kwargs)
+            self.exporter.os.open = checked_open
+            self.exporter.os.mkdir = lambda *a, **k: calls.append(("mkdir", a[0]))
+            self.exporter.os.unlink = lambda *a, **k: calls.append(("unlink", a[0]))
+            self.exporter.os.rmdir = lambda *a, **k: calls.append(("rmdir", a[0]))
             try:
-                self.exporter._remove_staging(
-                    root_fd,
-                    staging.name,
-                    {member.name},
-                    expected_directory=staging.stat(),
-                )
-                self.exporter._remove_exact_open_directory(
-                    root_fd,
-                    staging.name,
-                    staging_fd,
-                    staging.stat(),
-                    {member.name: member.read_bytes()},
-                    {member.name: member.stat()},
-                )
+                self.exporter.publish_snapshot(root, version, candidates)
             finally:
-                self.exporter.os.unlink = original_unlink
-                self.exporter.os.rmdir = original_rmdir
-                os.close(staging_fd)
-                os.close(root_fd)
+                (self.exporter.os.open, self.exporter.os.mkdir,
+                 self.exporter.os.unlink, self.exporter.os.rmdir) = original
             self.assertEqual([], calls)
-            self.assertEqual("ours", member.read_text(encoding="utf-8"))
+
+    def test_root_control_and_member_swaps_after_open_fail_before_publication(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        for case in ("root", "staging", "key", "key-bytes", "member"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory); root = base / "snapshots"; self.provision(root, version)
+                original = self.exporter._publication_failure_hook
+                def swap(stage, _context):
+                    if stage != "after_lock": return
+                    self.exporter._publication_failure_hook = original
+                    if case == "root":
+                        root.rename(base / "displaced-root"); root.mkdir(mode=0o700)
+                    elif case == "staging":
+                        path = root / self.exporter.STAGING_DIRECTORY_NAME
+                        path.rename(root / "displaced-staging"); path.mkdir(mode=0o700)
+                    elif case == "key":
+                        path = root / self.exporter.PUBLICATION_KEY_NAME
+                        path.rename(root / "displaced-key"); path.write_bytes(b"x" * 32); path.chmod(0o600)
+                    elif case == "key-bytes":
+                        (root / self.exporter.PUBLICATION_KEY_NAME).write_bytes(b"y" * 32)
+                    else:
+                        path = root / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json"
+                        path.rename(path.with_name("displaced-manifest")); path.write_bytes(b""); path.chmod(0o600)
+                self.exporter._publication_failure_hook = swap
+                try:
+                    with self.assertRaisesRegex(OSError, "controls changed"):
+                        self.exporter.publish_snapshot(root, version, candidates)
+                finally:
+                    self.exporter._publication_failure_hook = original
+                self.assertFalse((root / version / "manifest.json").exists())
+
+    def test_concurrent_exporters_serialize_on_the_verified_lock(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            barrier = threading.Barrier(7); guard = threading.Lock(); outcomes = []
+            active = 0; maximum = 0; original = self.exporter._publication_failure_hook
+            def observe(stage, _context):
+                nonlocal active, maximum
+                if stage != "after_lock": return
+                with guard: active += 1; maximum = max(maximum, active)
+                time.sleep(0.01)
+                with guard: active -= 1
+            def publish():
+                barrier.wait()
+                try: outcomes.append(self.exporter.publish_snapshot(root, version, candidates))
+                except Exception as exc: outcomes.append(exc)
+            self.exporter._publication_failure_hook = observe
+            try:
+                threads = [threading.Thread(target=publish) for _ in range(6)]
+                for thread in threads: thread.start()
+                barrier.wait()
+                for thread in threads: thread.join()
+            finally: self.exporter._publication_failure_hook = original
+            self.assertEqual(1, maximum); self.assertEqual(6, len(outcomes))
+            self.assertTrue(all(value == root / version for value in outcomes), outcomes)
+
+    def test_one_hundred_crashes_keep_exact_bounded_inventory_then_recover(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            original = self.exporter._publication_failure_hook
+            def crash(stage, _context):
+                if stage == "before_exchange": raise OSError(errno.EIO, "injected crash")
+            self.exporter._publication_failure_hook = crash
+            try:
+                for _ in range(100):
+                    with self.assertRaisesRegex(OSError, "injected crash"):
+                        self.exporter.publish_snapshot(root, version, candidates)
+            finally: self.exporter._publication_failure_hook = original
+            self.assert_prepared_inventory(root, version)
+            total = sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
+            self.assertLessEqual(total, self.exporter.MAX_PERSISTENT_CONTROL_BYTES)
+            self.assertTrue((self.exporter.publish_snapshot(root, version, candidates) / "manifest.json").is_file())
+
+    def test_crash_after_exchange_is_idempotently_recoverable(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            original = self.exporter._publication_failure_hook
+            def crash(stage, _context):
+                if stage == "after_exchange": raise OSError(errno.EIO, "simulated stop")
+            self.exporter._publication_failure_hook = crash
+            try:
+                with self.assertRaisesRegex(OSError, "simulated stop"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally: self.exporter._publication_failure_hook = original
+            self.assertTrue((self.exporter.publish_snapshot(root, version, candidates) / "manifest.json").is_file())
+            self.assertEqual([], list((root / self.exporter.STAGING_DIRECTORY_NAME).iterdir()))
+
+    def test_invalid_anchor_metadata_links_and_inventory_fail_closed(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        mutations = {
+            "short key": lambda r: (r / self.exporter.PUBLICATION_KEY_NAME).write_bytes(b"short"),
+            "permissive root": lambda r: r.chmod(0o755),
+            "permissive key": lambda r: (r / self.exporter.PUBLICATION_KEY_NAME).chmod(0o644),
+            "permissive staging": lambda r: (r / self.exporter.STAGING_DIRECTORY_NAME).chmod(0o755),
+            "permissive target": lambda r: (r / version).chmod(0o755),
+            "permissive member": lambda r: (
+                r / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json"
+            ).chmod(0o644),
+            "extra root": lambda r: (r / "foreign").write_bytes(b"foreign"),
+            "extra staging": lambda r: (r / self.exporter.STAGING_DIRECTORY_NAME / "foreign").write_bytes(b"foreign"),
+            "hardlink": lambda r: os.link(r / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json", r / "foreign-link"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "snapshots"; self.provision(root, version); mutate(root)
+                before = sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+                with self.assertRaises(OSError): self.exporter.publish_snapshot(root, version, candidates)
+                self.assertEqual(before, sorted(str(p.relative_to(root)) for p in root.rglob("*")))
+                self.assertFalse((root / version / "manifest.json").exists())
 
     def test_applied_version_binding_requires_independently_verified_manifest_hash(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1284,6 +565,12 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             self.assertEqual(800, len(snapshot))
             self.assertEqual(rows[0]["id"], snapshot[0]["correction_request_id"])
             self.assertFalse(any(isinstance(value[-1], dict) for value in snapshot._records.values()))
+            with tempfile.TemporaryDirectory() as directory:
+                version = "approved-2026-11-01-v1"
+                root = Path(directory) / "snapshots"
+                self.provision(root, version)
+                target = self.exporter.publish_snapshot(root, version, snapshot)
+                self.assertEqual(snapshot.byte_count, (target / "candidates.jsonl").stat().st_size)
         finally:
             tracemalloc.stop()
             self.exporter.MAX_SNAPSHOT_BYTES = original_limit
@@ -1365,272 +652,6 @@ for index in range(1000):
                 )
             )
 
-    def test_unsupported_preflight_leaves_no_output_or_control_artifacts(self):
-        candidates = self.build_snapshot([row()])
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = base / "snapshots"
-            original = self.exporter._preflight_publication_platform
-            self.exporter._preflight_publication_platform = lambda _root: (_ for _ in ()).throw(
-                OSError(errno.ENOTSUP, "unsupported publication platform")
-            )
-            try:
-                with self.assertRaisesRegex(OSError, "unsupported"):
-                    self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
-            finally:
-                self.exporter._preflight_publication_platform = original
-            self.assertFalse(root.exists())
-            self.assertFalse((base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME).exists())
-
-    def capability_control(self, root):
-        return root / self.exporter.CAPABILITY_CONTROL_DIRECTORY_NAME
-
-    def assert_canonical_capability_control(self, root):
-        control = self.capability_control(root)
-        self.assertEqual(
-            set(self.exporter.CAPABILITY_PROBE_CONTENTS),
-            {entry.name for entry in control.iterdir()},
-        )
-        for name, expected in self.exporter.CAPABILITY_PROBE_CONTENTS.items():
-            entry = control / name
-            self.assertEqual(expected, entry.read_bytes())
-            metadata = entry.stat()
-            self.assertEqual(0o600, metadata.st_mode & 0o777)
-            self.assertEqual(1, metadata.st_nlink)
-
-    def test_preflight_rejects_false_enoent_and_preserves_persistent_control(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = base / "snapshots"
-            original = self.exporter._renameat2_function
-
-            def false_enoent(*_args):
-                import ctypes
-                ctypes.set_errno(errno.ENOENT)
-                return -1
-
-            self.exporter._renameat2_function = lambda: false_enoent
-            try:
-                with self.assertRaisesRegex(OSError, "unsupported"):
-                    self.exporter._preflight_publication_platform(root)
-            finally:
-                self.exporter._renameat2_function = original
-            self.assertTrue(root.is_dir())
-            self.assertTrue(self.capability_control(root).is_dir())
-
-    def test_preflight_proves_semantics_and_keeps_bounded_canonical_control(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = base / "snapshots"
-            for _ in range(20):
-                self.exporter._preflight_publication_platform(root)
-                self.assert_canonical_capability_control(root)
-            self.assertEqual(
-                [self.exporter.CAPABILITY_CONTROL_DIRECTORY_NAME],
-                [entry.name for entry in root.iterdir()],
-            )
-
-    def test_preflight_fixture_is_inside_exact_private_output_root(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            original = self.exporter._renameat2_function
-            real_function = original()
-            observed = []
-
-            def inspect_fixture(source_fd, source, target_fd, target, flags):
-                observed.append(flags)
-                self.assertEqual(source_fd, target_fd)
-                probe_path = Path(os.readlink(f"/proc/self/fd/{source_fd}"))
-                self.assertEqual(root, probe_path.parent)
-                self.assertEqual(
-                    self.exporter.CAPABILITY_CONTROL_DIRECTORY_NAME, probe_path.name
-                )
-                self.assertEqual(0o700, os.fstat(source_fd).st_mode & 0o777)
-                return real_function(source_fd, source, target_fd, target, flags)
-
-            self.exporter._renameat2_function = lambda: inspect_fixture
-            try:
-                self.exporter._preflight_publication_platform(root)
-            finally:
-                self.exporter._renameat2_function = original
-            self.assertEqual([1, 2, 2], observed)
-            self.assert_canonical_capability_control(root)
-
-    def test_preflight_fails_closed_for_unsupported_filesystem_errors(self):
-        for unsupported_errno in (errno.ENOSYS, errno.EOPNOTSUPP, errno.EINVAL):
-            with self.subTest(error=unsupported_errno), tempfile.TemporaryDirectory() as directory:
-                base = Path(directory)
-                root = base / "snapshots"
-                original = self.exporter._renameat2_function
-
-                def unsupported(*_args, error_number=unsupported_errno):
-                    import ctypes
-                    ctypes.set_errno(error_number)
-                    return -1
-
-                self.exporter._renameat2_function = lambda: unsupported
-                try:
-                    with self.assertRaisesRegex(OSError, "unsupported"):
-                        self.exporter._preflight_publication_platform(root)
-                finally:
-                    self.exporter._renameat2_function = original
-                self.assertTrue(root.is_dir())
-                self.assertTrue(self.capability_control(root).is_dir())
-
-    def test_preflight_never_calls_unlink_or_rmdir_at_destructive_boundaries(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            self.exporter._preflight_publication_platform(root)
-            original_unlink = self.exporter.os.unlink
-            original_rmdir = self.exporter.os.rmdir
-            calls = []
-            self.exporter.os.unlink = lambda *args, **kwargs: calls.append(("unlink", args, kwargs))
-            self.exporter.os.rmdir = lambda *args, **kwargs: calls.append(("rmdir", args, kwargs))
-            try:
-                for _ in range(5):
-                    self.exporter._preflight_publication_platform(root)
-            finally:
-                self.exporter.os.unlink = original_unlink
-                self.exporter.os.rmdir = original_rmdir
-            self.assertEqual([], calls)
-            self.assert_canonical_capability_control(root)
-
-    def test_preflight_restart_restores_interrupted_exchange(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            original = self.exporter._preflight_cleanup_hook
-
-            def interrupt(stage, _context):
-                if stage == "after_test_exchange":
-                    raise RuntimeError("simulated interruption")
-
-            self.exporter._preflight_cleanup_hook = interrupt
-            try:
-                with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
-                    self.exporter._preflight_publication_platform(root)
-            finally:
-                self.exporter._preflight_cleanup_hook = original
-            control = self.capability_control(root)
-            self.assertEqual(
-                self.exporter.CAPABILITY_PROBE_CONTENTS["target"],
-                (control / "source").read_bytes(),
-            )
-            self.exporter._preflight_publication_platform(root)
-            self.assert_canonical_capability_control(root)
-
-    def test_preflight_foreign_insertion_fails_closed_without_deletion(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            self.exporter._preflight_publication_platform(root)
-            foreign = self.capability_control(root) / "foreign"
-            foreign.write_bytes(b"foreign inode")
-            with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
-                self.exporter._preflight_publication_platform(root)
-            self.assertEqual(b"foreign inode", foreign.read_bytes())
-
-    def test_preflight_hardlinked_member_fails_closed_and_preserves_both_names(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            self.exporter._preflight_publication_platform(root)
-            control = self.capability_control(root)
-            outside = root / "foreign-hardlink"
-            os.link(control / "source", outside, follow_symlinks=False)
-            with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
-                self.exporter._preflight_publication_platform(root)
-            self.assertTrue((control / "source").is_file())
-            self.assertTrue(outside.is_file())
-            self.assertEqual(2, outside.stat().st_nlink)
-
-    def test_preflight_replaced_member_at_exchange_boundary_is_preserved(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            self.exporter._preflight_publication_platform(root)
-            original = self.exporter._preflight_cleanup_hook
-            displaced = self.capability_control(root) / "displaced-source"
-
-            def replace(stage, context):
-                if stage != "before_test_exchange":
-                    return
-                control = self.capability_control(root)
-                (control / "source").rename(displaced)
-                (control / "source").write_bytes(b"foreign replacement")
-                (control / "source").chmod(0o600)
-
-            self.exporter._preflight_cleanup_hook = replace
-            try:
-                with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
-                    self.exporter._preflight_publication_platform(root)
-            finally:
-                self.exporter._preflight_cleanup_hook = original
-            self.assertEqual(b"foreign replacement", (self.capability_control(root) / "target").read_bytes())
-            self.assertEqual(
-                self.exporter.CAPABILITY_PROBE_CONTENTS["source"], displaced.read_bytes()
-            )
-
-    def test_preflight_replaced_control_directory_is_preserved(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            self.exporter._preflight_publication_platform(root)
-            original = self.exporter._preflight_cleanup_hook
-            displaced = root / "displaced-capability-control"
-
-            def replace(stage, _context):
-                if stage != "before_test_exchange":
-                    return
-                self.capability_control(root).rename(displaced)
-                replacement = self.capability_control(root)
-                replacement.mkdir(mode=0o700)
-                (replacement / "foreign-marker").write_bytes(b"foreign directory")
-
-            self.exporter._preflight_cleanup_hook = replace
-            try:
-                with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
-                    self.exporter._preflight_publication_platform(root)
-            finally:
-                self.exporter._preflight_cleanup_hook = original
-            self.assertEqual(
-                b"foreign directory",
-                (self.capability_control(root) / "foreign-marker").read_bytes(),
-            )
-            self.assertTrue(displaced.is_dir())
-            self.assertFalse((root / "approved-2026-11-01-v1").exists())
-
-    def test_preflight_replaced_output_root_is_preserved(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
-            root = base / "snapshots"
-            self.exporter._preflight_publication_platform(root)
-            original = self.exporter._preflight_cleanup_hook
-            displaced = base / "displaced-output-root"
-
-            def replace(stage, _context):
-                if stage != "before_test_exchange":
-                    return
-                root.rename(displaced)
-                root.mkdir(mode=0o700)
-                (root / "foreign-marker").write_bytes(b"foreign root")
-
-            self.exporter._preflight_cleanup_hook = replace
-            try:
-                with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
-                    self.exporter._preflight_publication_platform(root)
-            finally:
-                self.exporter._preflight_cleanup_hook = original
-            self.assertEqual(b"foreign root", (root / "foreign-marker").read_bytes())
-            self.assertTrue((displaced / self.exporter.CAPABILITY_CONTROL_DIRECTORY_NAME).is_dir())
-            self.assertFalse((root / "approved-2026-11-01-v1").exists())
-            self.assertFalse((root / self.exporter.TOMBSTONE_MARKER_NAME).exists())
-
-    def test_preflight_never_removes_preexisting_output_root(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            root.mkdir(mode=0o700)
-            before = root.stat()
-            self.exporter._preflight_publication_platform(root)
-            after = root.stat()
-            self.assertEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
-            self.assert_canonical_capability_control(root)
-
     def test_psql_timeout_kills_pipe_holding_descendants_with_a_bounded_deadline(self):
         launched = []
         program = """
@@ -1670,90 +691,181 @@ while True:
                 self.fail("psql process group survived timeout cleanup")
             time.sleep(0.01)
 
-    def test_fixture_backed_cli_exports_without_credentials_or_network(self):
+    def test_prepare_rejects_a_permissive_parent(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            fixture = root / "rows.json"
-            resolver_fixture = root / "resolver.json"
-            fixture.write_text(json.dumps([row()]), encoding="utf-8")
-            resolver_fixture.write_text(json.dumps({"example.com": ["93.184.216.34"]}), encoding="utf-8")
-            (root / "snapshots").mkdir(mode=0o700)
-            result = subprocess.run(
-                [
-                    sys.executable, str(EXPORTER), "export", "--input-json", str(fixture),
-                    "--resolver-json", str(resolver_fixture),
-                    "--output-root", str(root / "snapshots"), "--snapshot-version", "approved-2026-11-01-v1",
-                ],
-                cwd=ROOT, text=True, capture_output=True, check=False,
-            )
-            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-            summary = json.loads(result.stdout)
-            self.assertEqual(1, summary["candidate_count"])
-            self.assertTrue((root / "snapshots" / "approved-2026-11-01-v1" / "manifest.json").is_file())
-            self.assertNotIn("applied", summary)
+            parent = Path(directory) / "shared"
+            parent.mkdir(mode=0o777)
+            parent.chmod(0o777)
+            with self.assertRaisesRegex(OSError, "parent is not private"):
+                self.exporter.prepare_output_root(
+                    parent / "snapshots", "approved-2026-11-01-v1"
+                )
 
-    def test_output_root_is_a_preexisting_exact_private_trust_anchor(self):
+    def test_prepare_refuses_a_preexisting_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            foreign = base / "foreign"
+            foreign.mkdir()
+            root = base / "snapshots"
+            root.symlink_to(foreign, target_is_directory=True)
+            with self.assertRaises(FileExistsError):
+                self.exporter.prepare_output_root(root, "approved-2026-11-01-v1")
+            self.assertTrue(root.is_symlink())
+
+    def test_runtime_rejects_a_different_prepared_snapshot_version(self):
         candidates = self.build_snapshot([row()])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "snapshots"
-            with self.assertRaisesRegex(OSError, "pre-create.*0700"):
-                self.exporter.publish_snapshot(
-                    root, "approved-2026-11-01-v1", candidates
-                )
-            self.assertFalse(root.exists())
+            self.provision(root, "approved-2026-11-01-v1")
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, "approved-2026-11-01-v2", candidates)
+            self.assertFalse((root / "approved-2026-11-01-v2").exists())
 
-    def test_repeated_prepublication_failures_reuse_one_bounded_slot(self):
-        candidates = self.build_snapshot([row()])
-        version = "approved-2026-11-01-v1"
+    def test_runtime_rejects_a_nonempty_lock_file(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            original = self.exporter._publication_failure_hook
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            (root / self.exporter.PUBLICATION_LOCK_NAME).write_bytes(b"foreign")
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, version, candidates)
 
-            def fail_after_spool(stage, _context):
-                if stage == "after_spool_fsync":
-                    raise OSError(errno.EIO, "injected crash")
+    def test_runtime_rejects_an_incomplete_key_without_promotion(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            key = root / self.exporter.PUBLICATION_KEY_NAME
+            key.write_bytes(b"")
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, version, candidates)
+            self.assertEqual(b"", key.read_bytes())
 
-            self.exporter._publication_failure_hook = fail_after_spool
+    def test_runtime_rejects_a_symlink_staging_member(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            staging = root / self.exporter.STAGING_DIRECTORY_NAME
+            (staging / "manifest.json").unlink()
+            (staging / "manifest.json").symlink_to("candidates.jsonl")
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, version, candidates)
+            self.assertTrue((staging / "manifest.json").is_symlink())
+
+    def test_runtime_rejects_oversized_persistent_staging_bytes(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            path = root / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json"
+            with path.open("r+b") as stream:
+                stream.truncate(self.exporter.MAX_MANIFEST_BYTES + 1)
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, version, candidates)
+            self.assertEqual(self.exporter.MAX_MANIFEST_BYTES + 1, path.stat().st_size)
+
+    def test_runtime_rejects_a_nonempty_target_placeholder(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            (root / version / "foreign").write_bytes(b"foreign")
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, version, candidates)
+            self.assertEqual(b"foreign", (root / version / "foreign").read_bytes())
+
+    def test_runtime_rejects_a_nonregular_staging_member(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            path = root / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json"
+            path.unlink(); path.mkdir(mode=0o700)
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, version, candidates)
+            self.assertTrue(path.is_dir())
+
+    def test_runtime_rejects_a_symlink_target_placeholder(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            (root / version).rmdir()
+            (root / version).symlink_to(self.exporter.STAGING_DIRECTORY_NAME, target_is_directory=True)
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, version, candidates)
+            self.assertTrue((root / version).is_symlink())
+
+    def test_exchange_failure_preserves_the_bounded_prepared_layout(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            original = self.exporter._rename_exchange
+            self.exporter._rename_exchange = lambda *_a, **_k: (_ for _ in ()).throw(
+                OSError(errno.ENOTSUP, "exchange unavailable")
+            )
             try:
-                for _ in range(100):
-                    with self.assertRaisesRegex(OSError, "injected crash"):
-                        self.exporter.publish_snapshot(root, version, candidates)
+                with self.assertRaisesRegex(OSError, "exchange unavailable"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._rename_exchange = original
+            self.assert_prepared_inventory(root, version)
+
+    def test_crash_after_first_member_fsync_rewrites_the_same_slot(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            original = self.exporter._publication_failure_hook
+            def crash(stage, _context):
+                if stage == "after_candidates.jsonl_fsync":
+                    raise OSError(errno.EIO, "first member crash")
+            self.exporter._publication_failure_hook = crash
+            try:
+                with self.assertRaisesRegex(OSError, "first member crash"):
+                    self.exporter.publish_snapshot(root, version, candidates)
             finally:
                 self.exporter._publication_failure_hook = original
+            self.assertTrue((self.exporter.publish_snapshot(root, version, candidates) / "manifest.json").is_file())
 
-            names = {entry.name for entry in root.iterdir()}
-            self.assertEqual(set(self.exporter.PERSISTENT_CONTROL_NAMES), names)
-            self.assertLessEqual(
-                sum(entry.stat().st_size for entry in root.iterdir()),
-                self.exporter.MAX_PERSISTENT_CONTROL_BYTES,
-            )
-            target = self.exporter.publish_snapshot(root, version, candidates)
-            self.assertTrue((target / "manifest.json").is_file())
+    def test_postexchange_member_mutation_is_reported_not_accepted(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            original = self.exporter._publication_failure_hook
+            def mutate(stage, _context):
+                if stage == "after_exchange":
+                    (root / version / "manifest.json").write_bytes(b"tampered")
+            self.exporter._publication_failure_hook = mutate
+            try:
+                with self.assertRaisesRegex(OSError, "validation failed"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._publication_failure_hook = original
+            self.assertEqual(b"tampered", (root / version / "manifest.json").read_bytes())
 
-    def test_concurrent_publishers_share_the_fixed_slot_and_converge(self):
-        candidates = self.build_snapshot([row()])
+    def test_runtime_rejects_wrong_effective_owner_without_mutation(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            original = self.exporter.os.geteuid
+            self.exporter.os.geteuid = lambda: original() + 1
+            try:
+                with self.assertRaises(OSError):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter.os.geteuid = original
+            self.assertFalse((root / version / "manifest.json").exists())
+
+    def test_fixture_backed_cli_requires_prepare_then_exports(self):
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
-            root = self.snapshot_root(directory)
-            barrier = threading.Barrier(9)
-            outcomes = []
-
-            def publish():
-                barrier.wait()
-                try:
-                    outcomes.append(self.exporter.publish_snapshot(root, version, candidates))
-                except Exception as exc:
-                    outcomes.append(exc)
-
-            threads = [threading.Thread(target=publish) for _ in range(8)]
-            for thread in threads:
-                thread.start()
-            barrier.wait()
-            for thread in threads:
-                thread.join()
-            self.assertTrue(all(value == root / version for value in outcomes), outcomes)
-            hidden = {p.name for p in root.iterdir() if p.name.startswith(".")}
-            self.assertEqual(set(self.exporter.PERSISTENT_CONTROL_NAMES), hidden)
+            base = Path(directory); root = base / "snapshots"
+            fixture = base / "rows.json"; resolver = base / "resolver.json"
+            fixture.write_text(json.dumps([row()]), encoding="utf-8")
+            resolver.write_text(json.dumps({"example.com": ["93.184.216.34"]}), encoding="utf-8")
+            prepare = subprocess.run([sys.executable, str(EXPORTER), "prepare", "--output-root", str(root),
+                                      "--snapshot-version", version], cwd=ROOT, text=True, capture_output=True)
+            self.assertEqual(0, prepare.returncode, prepare.stdout + prepare.stderr)
+            result = subprocess.run([sys.executable, str(EXPORTER), "export", "--input-json", str(fixture),
+                                     "--resolver-json", str(resolver), "--output-root", str(root),
+                                     "--snapshot-version", version], cwd=ROOT, text=True, capture_output=True)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertEqual(1, json.loads(result.stdout)["candidate_count"])
+            self.assertTrue((root / version / "manifest.json").is_file())
 
 
 if __name__ == "__main__":
