@@ -15,6 +15,7 @@ import json
 import multiprocessing
 import os
 import re
+import signal
 import socket
 import stat
 import subprocess
@@ -375,7 +376,31 @@ def _read_regular_file_at(directory_fd, name):
         os.close(descriptor)
 
 
-def _directory_matches(root_fd, target_name, expected, expected_directory=None):
+def _directory_binding_matches(root_fd, target_name, target_fd, opened_directory):
+    """Prove a root entry still directly names the opened directory."""
+    try:
+        named_directory = os.stat(
+            target_name, dir_fd=root_fd, follow_symlinks=False
+        )
+        current_directory = os.fstat(target_fd)
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(named_directory.st_mode)
+        and not stat.S_ISLNK(named_directory.st_mode)
+        and _same_inode(opened_directory, named_directory)
+        and stat.S_ISDIR(current_directory.st_mode)
+        and _same_inode(opened_directory, current_directory)
+    )
+
+
+def _directory_matches(
+    root_fd,
+    target_name,
+    expected,
+    expected_directory=None,
+    expected_files=None,
+):
     """Validate an exact inventory without following target/member symlinks."""
     try:
         target_fd = os.open(
@@ -396,6 +421,10 @@ def _directory_matches(root_fd, target_name, expected, expected_directory=None):
         first_inventory = os.listdir(target_fd)
         if len(first_inventory) != len(expected) or set(first_inventory) != set(expected):
             return False
+        if not _directory_binding_matches(
+            root_fd, target_name, target_fd, opened_directory
+        ):
+            return False
         opened_files = {}
         for name in first_inventory:
             try:
@@ -404,7 +433,16 @@ def _directory_matches(root_fd, target_name, expected, expected_directory=None):
                 return False
             if raw != expected[name]:
                 return False
+            if expected_files is not None and not _same_inode(
+                metadata, expected_files[name]
+            ):
+                return False
             opened_files[name] = metadata
+
+        if not _directory_binding_matches(
+            root_fd, target_name, target_fd, opened_directory
+        ):
+            return False
 
         # Re-list and re-stat each entry to prove the validated inventory still
         # names the same inodes after every byte comparison.
@@ -418,9 +456,8 @@ def _directory_matches(root_fd, target_name, expected, expected_directory=None):
                 return False
             if not stat.S_ISREG(current.st_mode) or not _same_inode(opened, current):
                 return False
-        current_directory = os.fstat(target_fd)
-        return stat.S_ISDIR(current_directory.st_mode) and _same_inode(
-            opened_directory, current_directory
+        return _directory_binding_matches(
+            root_fd, target_name, target_fd, opened_directory
         )
     finally:
         os.close(target_fd)
@@ -465,7 +502,37 @@ def _root_path_still_names_fd(root, root_fd):
     )
 
 
-def _remove_staging(root_fd, staging_name, expected_names, expected_directory=None):
+def _remove_directory_contents(directory_fd):
+    """Remove a directory tree through descriptors without following links."""
+    for name in os.listdir(directory_fd):
+        try:
+            os.unlink(name, dir_fd=directory_fd)
+            continue
+        except FileNotFoundError:
+            continue
+        except IsADirectoryError:
+            pass
+        child_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+        try:
+            opened_child = os.fstat(child_fd)
+            _remove_directory_contents(child_fd)
+            named_child = os.stat(
+                name, dir_fd=directory_fd, follow_symlinks=False
+            )
+            if not stat.S_ISDIR(named_child.st_mode) or not _same_inode(
+                opened_child, named_child
+            ):
+                raise OSError(errno.ESTALE, "staging member changed during cleanup")
+        finally:
+            os.close(child_fd)
+        os.rmdir(name, dir_fd=directory_fd)
+
+
+def _remove_staging(root_fd, staging_name, _expected_names, expected_directory=None):
     if expected_directory is None:
         return
     try:
@@ -481,11 +548,7 @@ def _remove_staging(root_fd, staging_name, expected_names, expected_directory=No
             os.fstat(staging_fd), expected_directory
         ):
             return
-        for name in expected_names:
-            try:
-                os.unlink(name, dir_fd=staging_fd)
-            except FileNotFoundError:
-                pass
+        _remove_directory_contents(staging_fd)
     finally:
         os.close(staging_fd)
     try:
@@ -513,13 +576,16 @@ def publish_snapshot(output_root, snapshot_version, candidates):
     )
     staging_name = f".{snapshot_version}-{uuid.uuid4().hex}"
     staging_metadata = None
+    staging_files = {}
     try:
         try:
             os.stat(snapshot_version, dir_fd=root_fd, follow_symlinks=False)
         except FileNotFoundError:
             pass
         else:
-            if _directory_matches(root_fd, snapshot_version, expected) and _root_path_still_names_fd(root, root_fd):
+            if _root_path_still_names_fd(root, root_fd) and _directory_matches(
+                root_fd, snapshot_version, expected
+            ):
                 return target
             raise FileExistsError(f"existing snapshot mismatch: {target}")
 
@@ -544,16 +610,18 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                         written = os.write(file_fd, view)
                         view = view[written:]
                     os.fsync(file_fd)
+                    staging_files[name] = os.fstat(file_fd)
                 finally:
                     os.close(file_fd)
             _fsync_directory_fd(staging_fd)
-            current_staging = os.stat(
-                staging_name, dir_fd=root_fd, follow_symlinks=False
-            )
-            if not stat.S_ISDIR(current_staging.st_mode) or not _same_inode(
-                staging_metadata, current_staging
+            if not _directory_matches(
+                root_fd,
+                staging_name,
+                expected,
+                expected_directory=staging_metadata,
+                expected_files=staging_files,
             ):
-                raise OSError(errno.ESTALE, "snapshot staging directory changed")
+                raise OSError(errno.ESTALE, "snapshot staging validation failed")
             try:
                 _rename_noreplace(
                     staging_name,
@@ -562,20 +630,23 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                     target_dir_fd=root_fd,
                 )
             except FileExistsError:
-                if _directory_matches(root_fd, snapshot_version, expected) and _root_path_still_names_fd(root, root_fd):
+                if _root_path_still_names_fd(root, root_fd) and _directory_matches(
+                    root_fd, snapshot_version, expected
+                ):
                     return target
                 raise FileExistsError(f"existing snapshot mismatch: {target}")
         finally:
             os.close(staging_fd)
         _fsync_directory_fd(root_fd)
         if (
-            not _directory_matches(
+            not _root_path_still_names_fd(root, root_fd)
+            or not _directory_matches(
                 root_fd,
                 snapshot_version,
                 expected,
                 expected_directory=staging_metadata,
+                expected_files=staging_files,
             )
-            or not _root_path_still_names_fd(root, root_fd)
         ):
             raise OSError(errno.ESTALE, "published snapshot path changed")
         return target
@@ -643,18 +714,45 @@ def fetch_rows_with_psql(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
     except OSError as exc:
         raise RuntimeError("approved correction read failed") from exc
     try:
         stdout, _stderr = process.communicate(input=APPROVED_QUERY, timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        process.terminate()
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
         try:
             process.communicate(timeout=kill_grace_seconds)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=kill_grace_seconds)
+            except subprocess.TimeoutExpired:
+                # A descendant that escaped the process group may still hold a
+                # captured pipe.  Never let that prevent reaping the direct
+                # child or turn cleanup into an unbounded wait.
+                for stream_name in ("stdin", "stdout", "stderr"):
+                    stream = getattr(process, stream_name, None)
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
+                try:
+                    process.wait(timeout=kill_grace_seconds)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    try:
+                        process.wait(timeout=kill_grace_seconds)
+                    except subprocess.TimeoutExpired:
+                        pass
         raise RuntimeError("approved correction read timed out") from exc
     if process.returncode != 0:
         raise RuntimeError("approved correction read failed")

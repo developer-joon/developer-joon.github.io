@@ -278,6 +278,95 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 self.exporter._directory_matches = original_matches
             self.assertTrue(target.is_symlink())
 
+    def test_idempotent_validation_rejects_target_replaced_after_member_reads(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = self.exporter.publish_snapshot(root, version, candidates)
+            attacker = root / "attacker-copy"
+            attacker.mkdir()
+            for child in target.iterdir():
+                (attacker / child.name).write_bytes(child.read_bytes())
+
+            original_read = self.exporter._read_regular_file_at
+            reads = 0
+
+            def replace_after_last_read(*args, **kwargs):
+                nonlocal reads
+                result = original_read(*args, **kwargs)
+                reads += 1
+                if reads == 2:
+                    os.rename(target, root / "original-snapshot")
+                    os.symlink(attacker.name, target, target_is_directory=True)
+                return result
+
+            self.exporter._read_regular_file_at = replace_after_last_read
+            try:
+                with self.assertRaisesRegex(FileExistsError, "mismatch"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._read_regular_file_at = original_read
+            self.assertTrue(target.is_symlink())
+
+    def test_staging_member_replacement_is_detected_before_publication(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_fsync = self.exporter._fsync_directory_fd
+            replaced = False
+
+            def replace_member_after_staging_fsync(descriptor):
+                nonlocal replaced
+                original_fsync(descriptor)
+                if not replaced:
+                    replaced = True
+                    raw = os.open(
+                        "candidates.jsonl", os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=descriptor,
+                    )
+                    try:
+                        contents = b""
+                        while True:
+                            chunk = os.read(raw, 8192)
+                            if not chunk:
+                                break
+                            contents += chunk
+                    finally:
+                        os.close(raw)
+                    os.unlink("candidates.jsonl", dir_fd=descriptor)
+                    replacement = os.open(
+                        "candidates.jsonl",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=descriptor,
+                    )
+                    try:
+                        os.write(replacement, contents)
+                        os.fsync(replacement)
+                    finally:
+                        os.close(replacement)
+                    unexpected = os.open(
+                        "unexpected-member",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=descriptor,
+                    )
+                    os.close(unexpected)
+
+            self.exporter._fsync_directory_fd = replace_member_after_staging_fsync
+            try:
+                with self.assertRaisesRegex(OSError, "staging"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._fsync_directory_fd = original_fsync
+
+            self.assertFalse((root / version).exists())
+            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+            target = self.exporter.publish_snapshot(root, version, candidates)
+            self.assertTrue((target / "manifest.json").is_file())
+
     def test_cleanup_does_not_delete_a_replaced_staging_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -344,6 +433,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         self.assertEqual(subprocess.PIPE, kwargs["stdin"])
         self.assertEqual(subprocess.PIPE, kwargs["stdout"])
         self.assertEqual(subprocess.PIPE, kwargs["stderr"])
+        self.assertTrue(kwargs["start_new_session"])
         _, query, timeout = calls[1]
         self.assertEqual(7.5, timeout)
         self.assertIn("repeatable read read only", query)
@@ -355,36 +445,79 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             self.assertNotIn(sensitive, query)
 
     def test_psql_timeout_terminates_then_kills_and_reports_no_credentials(self):
+        group_signals = []
+
         class StalledProcess:
             returncode = None
+            pid = 424242
+            stdin = None
+            stdout = None
+            stderr = None
 
             def __init__(self):
                 self.calls = []
 
             def communicate(self, input=None, timeout=None):
                 self.calls.append(("communicate", input, timeout))
-                if self.calls[-2:] and any(call[0] == "kill" for call in self.calls[-2:]):
+                if group_signals and group_signals[-1] == signal.SIGKILL:
                     self.returncode = -9
                     return "", "contains password=secret"
                 raise subprocess.TimeoutExpired("psql", timeout)
 
-            def terminate(self):
-                self.calls.append(("terminate",))
-
-            def kill(self):
-                self.calls.append(("kill",))
-
         process = StalledProcess()
-        with self.assertRaisesRegex(RuntimeError, "timed out") as raised:
-            self.exporter.fetch_rows_with_psql(
-                process_factory=lambda *_args, **_kwargs: process,
-                timeout_seconds=0.01,
-                kill_grace_seconds=0.01,
-            )
+        original_killpg = self.exporter.os.killpg
+        self.exporter.os.killpg = lambda pid, sent_signal: group_signals.append(sent_signal)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "timed out") as raised:
+                self.exporter.fetch_rows_with_psql(
+                    process_factory=lambda *_args, **_kwargs: process,
+                    timeout_seconds=0.01,
+                    kill_grace_seconds=0.01,
+                )
+        finally:
+            self.exporter.os.killpg = original_killpg
         self.assertEqual("approved correction read timed out", str(raised.exception))
-        self.assertIn(("terminate",), process.calls)
-        self.assertIn(("kill",), process.calls)
+        self.assertEqual([signal.SIGTERM, signal.SIGKILL], group_signals)
         self.assertEqual(-9, process.returncode)
+
+    def test_psql_timeout_kills_pipe_holding_descendants_with_a_bounded_deadline(self):
+        launched = []
+        program = """
+import os
+import signal
+import time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if os.fork() == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+while True:
+    time.sleep(1)
+"""
+
+        def process_factory(_command, **kwargs):
+            process = subprocess.Popen([sys.executable, "-c", program], **kwargs)
+            launched.append(process)
+            return process
+
+        started = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            self.exporter.fetch_rows_with_psql(
+                process_factory=process_factory,
+                timeout_seconds=0.05,
+                kill_grace_seconds=0.05,
+            )
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.75)
+        self.assertEqual(1, len(launched))
+        self.assertIsNotNone(launched[0].returncode)
+        deadline = time.monotonic() + 0.5
+        while True:
+            try:
+                os.killpg(launched[0].pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                self.fail("psql process group survived timeout cleanup")
+            time.sleep(0.01)
 
     def test_fixture_backed_cli_exports_without_credentials_or_network(self):
         with tempfile.TemporaryDirectory() as directory:
