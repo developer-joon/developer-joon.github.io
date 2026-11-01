@@ -54,27 +54,53 @@ begin
   execute 'explain (format json,costs off) '||p_sql into v_plan;
   return v_plan;
 end $$;
+create function pg_temp.plan_nodes(p_plan jsonb)
+returns setof jsonb language sql immutable as $$
+  with recursive nodes(node) as (
+    select p_plan->0->'Plan'
+    union all
+    select child
+    from nodes
+    cross join lateral pg_catalog.jsonb_array_elements(coalesce(node->'Plans','[]'::jsonb)) child
+  )
+  select node from nodes
+$$;
 set local enable_seqscan=off;
 create temporary table correction_plans(name text primary key,plan jsonb);
 insert into correction_plans values
   ('active-keyset',pg_temp.explain_json($sql$
-    select id,created_at from public.benefit_correction_requests
-    where status in ('submitted','reviewing','approved')
-      and (created_at,id)<('infinity'::timestamptz,'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
-    order by created_at desc,id desc limit 51
+    with candidates as materialized (
+      select r.id,r.created_at,private.benefit_correction_admin_item(r.id) item,
+        pg_catalog.row_number() over (order by r.created_at desc,r.id desc) ordinal
+      from public.benefit_correction_requests r
+      where r.status in ('submitted','reviewing','approved')
+        and ('2026-11-01 00:00:00+00'::timestamptz is null or (r.created_at,r.id)<('2026-11-01 00:00:00+00'::timestamptz,'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid))
+      order by r.created_at desc,r.id desc limit 21
+    ), page as materialized (
+      select * from candidates where ordinal<=20 order by created_at desc,id desc
+    )
+    select coalesce(pg_catalog.jsonb_agg(item order by created_at desc,id desc),'[]'::jsonb),
+      (select exists(select 1 from candidates where ordinal=21)),
+      case when (select exists(select 1 from candidates where ordinal=21)) then (select pg_catalog.jsonb_build_object('created_at',created_at,'id',id) from page where ordinal=20) else 'null'::jsonb end
+    from page
   $sql$)),
   ('review-replay',pg_temp.explain_json($sql$
     select request_id,payload_fingerprint from public.benefit_correction_events
     where actor_kind='user' and actor_snapshot='d1000000-0000-0000-0000-000000000003'
       and operation='review' and client_key='d3000000-0000-0000-0000-000000000010'
   $sql$));
-select ok((select plan#>>'{0,Plan,Plans,0,Node Type}' in ('Index Scan','Index Only Scan')
-  and plan#>>'{0,Plan,Plans,0,Index Name}'='benefit_correction_requests_active_queue_idx'
-  and plan::text not like '%BitmapOr%' and plan::text not like '%"Node Type": "Sort"%'
-  from correction_plans where name='active-keyset'),'active keyset query traverses the ordered partial index without bitmap OR or sort');
-select ok((select plan#>>'{0,Plan,Node Type}' in ('Index Scan','Index Only Scan')
-  and plan#>>'{0,Plan,Index Name}'=(select indexrelid::regclass::text from pg_index where indrelid='public.benefit_correction_events'::regclass and indisunique and indnatts=4 and pg_get_indexdef(indexrelid) like '%(actor_kind, actor_snapshot, operation, client_key)%')
-  from correction_plans where name='review-replay'),'review replay lookup uses the unique event idempotency index');
+select ok((select exists(
+    select 1 from pg_temp.plan_nodes(plan) node
+    where node->>'Node Type'='Index Only Scan'
+      and node->>'Index Name'='benefit_correction_requests_active_queue_idx'
+  ) and not exists(
+    select 1 from pg_temp.plan_nodes(plan) node where node->>'Node Type'='Sort'
+  ) from correction_plans where name='active-keyset'),'shipped active queue query uses an index-only ordered partial-index plan without any sort');
+select ok((select exists(
+    select 1 from pg_temp.plan_nodes(plan) node
+    where node->>'Node Type' in ('Index Scan','Index Only Scan')
+      and node->>'Index Name'=(select indexrelid::regclass::text from pg_index where indrelid='public.benefit_correction_events'::regclass and indisunique and indnatts=4 and pg_get_indexdef(indexrelid) like '%(actor_kind, actor_snapshot, operation, client_key)%')
+  ) from correction_plans where name='review-replay'),'review replay lookup uses the unique event idempotency index');
 reset enable_seqscan;
 
 set local role anon;

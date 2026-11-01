@@ -164,14 +164,23 @@ select extensions.dblink_exec('bc_setup',$cleanup$
   delete from auth.users where email like '%@race.test';
   set session_replication_role=origin
 $cleanup$);
-select is((select residue_count from extensions.dblink(
-  (select connection_string from correction_race_fixture),
-  $q$select (
-    (select count(*) from auth.users where email like '%@race.test')+
-    (select count(*) from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%')+
-    (select count(*) from public.benefit_correction_requests where source_url in ('https://example.com/race','https://example.com/cas'))
-  )::integer$q$
-) as r(residue_count integer)),0,'concurrency test removes every committed race fixture from the shared database');
+select is((select residue_count from correction_race_fixture f cross join lateral extensions.dblink(
+  f.connection_string,
+  format($q$select (
+    (select count(*) from auth.users where id in (%L,%L,%L))+
+    (select count(*) from public.profiles where id in (%L,%L,%L))+
+    (select count(*) from public.user_roles where user_id in (%L,%L,%L))+
+    (select count(*) from public.benefit_correction_requests where submitter_id=%L or id=%L)+
+    (select count(*) from public.benefit_correction_events where actor_id in (%L,%L,%L) or request_id=%L)+
+    (select count(*) from public.rate_limit_events where user_id in (%L,%L,%L))
+  )::integer$q$,
+    f.submitter_id,f.admin_one_id,f.admin_two_id,
+    f.submitter_id,f.admin_one_id,f.admin_two_id,
+    f.submitter_id,f.admin_one_id,f.admin_two_id,
+    f.submitter_id,f.request_id,
+    f.submitter_id,f.admin_one_id,f.admin_two_id,f.request_id,
+    f.submitter_id,f.admin_one_id,f.admin_two_id)
+) as r(residue_count integer)),0,'concurrency test removes fixtures from every shared table it populates');
 
 select extensions.dblink_disconnect('bc_one');
 select extensions.dblink_disconnect('bc_two');

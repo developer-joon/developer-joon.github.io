@@ -338,15 +338,18 @@ begin
   if (p_cursor_created_at is null)<>(p_cursor_id is null) or (p_cursor_created_at is not null and not pg_catalog.isfinite(p_cursor_created_at)) then raise exception 'invalid cursor' using errcode='22023'; end if;
   if p_status='active' then
     with candidates as materialized (
-      select r.id,r.created_at,private.benefit_correction_admin_item(r.id) item
+      select r.id,r.created_at,private.benefit_correction_admin_item(r.id) item,
+        pg_catalog.row_number() over (order by r.created_at desc,r.id desc) ordinal
       from public.benefit_correction_requests r
       where r.status in ('submitted','reviewing','approved')
         and (p_cursor_created_at is null or (r.created_at,r.id)<(p_cursor_created_at,p_cursor_id))
       order by r.created_at desc,r.id desc limit p_limit+1
-    ), page as (select * from candidates order by created_at desc,id desc limit p_limit)
+    ), page as materialized (
+      select * from candidates where ordinal<=p_limit order by created_at desc,id desc
+    )
     select coalesce(pg_catalog.jsonb_agg(item order by created_at desc,id desc),'[]'::jsonb),
-      (select count(*)>p_limit from candidates),
-      case when (select count(*)>p_limit from candidates) then (select pg_catalog.jsonb_build_object('created_at',created_at,'id',id) from page order by created_at,id limit 1) else 'null'::jsonb end
+      (select exists(select 1 from candidates where ordinal=p_limit+1)),
+      case when (select exists(select 1 from candidates where ordinal=p_limit+1)) then (select pg_catalog.jsonb_build_object('created_at',created_at,'id',id) from page where ordinal=p_limit) else 'null'::jsonb end
     into v_items,v_has_more,v_next from page;
   elsif p_status='all' then
     with candidates as materialized (
