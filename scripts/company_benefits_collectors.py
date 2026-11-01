@@ -46,6 +46,7 @@ SENSITIVE_QUERY_KEYS = {
 SENSITIVE_RECORD_KEYS = SENSITIVE_QUERY_KEYS | {
     "cookie", "set-cookie", "proxy-authorization", "www-authenticate",
 }
+OMITTED_RESPONSE_COOKIE_HEADERS = {"set-cookie", "set-cookie2"}
 SECRET_TEXT_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"(?i)\b(?:token|password|secret|credential)[\"']?\s*[:=]\s*[\"']?[^\s&#;\"']+"),
@@ -141,6 +142,7 @@ class TransportResponse:
     headers: Mapping[str, str]
     body: bytes
     peer_ip: str
+    omitted_response_cookie_header_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -490,7 +492,8 @@ class SecureHTTPTransport:
                 },
             )
             response = connection.getresponse()
-            headers = _safe_header_items(response.getheaders())
+            sanitized_headers = _sanitize_header_items(response.getheaders())
+            headers = sanitized_headers.headers
             length = response.getheader("Content-Length")
             if length is not None:
                 try:
@@ -514,7 +517,13 @@ class SecureHTTPTransport:
             body = b"".join(chunks)
             if len(body) > max_wire_bytes:
                 raise FetchError("response exceeds wire byte limit")
-            return TransportResponse(response.status, headers, body, peer_ip)
+            return TransportResponse(
+                response.status,
+                headers,
+                body,
+                peer_ip,
+                sanitized_headers.omitted_cookie_header_count,
+            )
         except (TimeoutError, socket.timeout, ssl.SSLError, OSError, http.client.HTTPException) as exc:
             if isinstance(exc, FetchError):
                 raise
@@ -523,23 +532,49 @@ class SecureHTTPTransport:
             connection.close()
 
 
-def _safe_header_items(headers: Iterable[tuple[object, object]]) -> dict[str, str]:
+@dataclass(frozen=True)
+class _SanitizedResponseHeaders:
+    headers: dict[str, str]
+    omitted_cookie_header_count: int
+    omitted_cookie_header_bytes: int
+
+
+def _sanitize_header_items(headers: Iterable[tuple[object, object]]) -> _SanitizedResponseHeaders:
     safe: dict[str, str] = {}
-    aggregate_bytes = 0
+    retained_bytes = 0
+    raw_bytes = 0
+    omitted_cookie_header_count = 0
+    omitted_cookie_header_bytes = 0
     for key, value in headers:
         lowered = str(key).lower()
-        if lowered in SENSITIVE_RECORD_KEYS:
-            raise SecurityError(f"credential response header is prohibited: {lowered}")
         text = str(value)
-        _assert_no_secrets(text)
         try:
-            aggregate_bytes += len(lowered.encode("utf-8")) + len(text.encode("utf-8"))
+            item_bytes = len(lowered.encode("utf-8")) + len(text.encode("utf-8"))
         except UnicodeEncodeError as exc:
             raise FetchError("response header is not valid UTF-8 text") from exc
+        raw_bytes += item_bytes
+        if raw_bytes > MAX_SAFE_RESPONSE_HEADER_BYTES:
+            raise FetchError("raw headers exceed aggregate byte limit")
+        if lowered in OMITTED_RESPONSE_COOKIE_HEADERS:
+            omitted_cookie_header_count += 1
+            omitted_cookie_header_bytes += item_bytes
+            continue
+        if lowered in SENSITIVE_RECORD_KEYS:
+            raise SecurityError(f"credential response header is prohibited: {lowered}")
+        _assert_no_secrets(text)
+        retained_bytes += item_bytes
         safe[lowered] = f"{safe[lowered]}, {text}" if lowered in safe else text
-    if aggregate_bytes > MAX_SAFE_RESPONSE_HEADER_BYTES:
+    if retained_bytes > MAX_SAFE_RESPONSE_HEADER_BYTES:
         raise FetchError("response headers exceed aggregate byte limit")
-    return safe
+    return _SanitizedResponseHeaders(
+        safe,
+        omitted_cookie_header_count,
+        omitted_cookie_header_bytes,
+    )
+
+
+def _safe_header_items(headers: Iterable[tuple[object, object]]) -> dict[str, str]:
+    return _sanitize_header_items(headers).headers
 
 
 def _safe_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -753,12 +788,22 @@ def fetch_bounded(
         current = target.url
         answers = set(target.resolved_ips)
         response = _request_with_retries(current, transport, policy, answers, deadline, monotonic)
-        _safe_headers(response.headers)
+        sanitized_headers = _sanitize_header_items(
+            sorted(response.headers.items(), key=lambda item: str(item[0]).lower())
+        )
+        prior_omissions = response.omitted_response_cookie_header_count
+        if isinstance(prior_omissions, bool) or not isinstance(prior_omissions, int) or prior_omissions < 0:
+            raise FetchError("response cookie omission count is invalid")
+        omitted_cookie_header_count = (
+            prior_omissions + sanitized_headers.omitted_cookie_header_count
+        )
+        response = dataclasses.replace(response, headers=sanitized_headers.headers)
         chain.append(current)
         bindings.append({
             "url": current,
             "resolved_ips": sorted(answers),
             "peer_ip": str(_public_ip(response.peer_ip)),
+            "omitted_response_cookie_header_count": omitted_cookie_header_count,
         })
         if response.status in REDIRECT_STATUSES:
             location = next(
@@ -782,7 +827,7 @@ def fetch_bounded(
             final_url=current,
             url_chain=chain,
             status=response.status,
-            headers=_safe_headers(response.headers),
+            headers=dict(response.headers),
             body=body,
             network_bindings=tuple(bindings),
         )

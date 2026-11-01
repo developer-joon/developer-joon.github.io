@@ -232,6 +232,111 @@ class CollectorTests(unittest.TestCase):
                 "x-legacy": "h" * (collectors.MAX_LEGACY_CAPTURE_HEADER_BYTES + 1)
             })
 
+    def test_response_cookie_headers_are_dropped_but_count_toward_the_raw_bound(self):
+        cookie_secret = "session=Bearer abc.def.ghi; Path=/; HttpOnly\n folded=value"
+        raw_headers = [
+            ("Content-Type", "text/html; charset=utf-8"),
+            ("Set-Cookie", cookie_secret),
+            ("set-cookie", "second=secret-value; Secure"),
+            ("Set-Cookie2", "legacy=secret-value; Version=1"),
+            ("X-Public", "safe"),
+        ]
+        sanitized = collectors._sanitize_header_items(raw_headers)
+        headers = sanitized.headers
+        self.assertEqual({
+            "content-type": "text/html; charset=utf-8",
+            "x-public": "safe",
+        }, headers)
+        self.assertEqual(3, sanitized.omitted_cookie_header_count)
+        self.assertEqual(
+            sum(
+                len(name.lower().encode("utf-8")) + len(value.encode("utf-8"))
+                for name, value in raw_headers
+                if name.lower() in collectors.OMITTED_RESPONSE_COOKIE_HEADERS
+            ),
+            sanitized.omitted_cookie_header_bytes,
+        )
+        self.assertNotIn("cookie", json.dumps(headers).lower())
+        with self.assertRaisesRegex(collectors.FetchError, "raw headers exceed aggregate byte limit"):
+            collectors._safe_header_items([
+                ("Set-Cookie", "x=" + "x" * collectors.MAX_SAFE_RESPONSE_HEADER_BYTES),
+            ])
+        with self.assertRaisesRegex(collectors.FetchError, "raw headers exceed aggregate byte limit"):
+            collectors._safe_header_items([
+                ("X-Retained", "r" * (collectors.MAX_SAFE_RESPONSE_HEADER_BYTES // 2)),
+                ("Set-Cookie", "x=" + "x" * (collectors.MAX_SAFE_RESPONSE_HEADER_BYTES // 2)),
+            ])
+
+    def test_naver_like_cookie_response_succeeds_without_cookie_capture(self):
+        url = "https://search.naver.com/search.naver?query=benefits"
+        result = collectors.fetch_bounded(
+            url,
+            transport=FakeTransport({url: [response(
+                200,
+                b"<html><title>Naver Search</title>public result</html>",
+                {
+                    "content-type": "text/html; charset=utf-8",
+                    "set-cookie": "NNB=server-state-secret; Path=/; Secure; HttpOnly",
+                    "x-search-response": "public",
+                },
+            )]}),
+            policy=collectors.FetchPolicy(retries=0),
+            resolver=lambda host, port: ["93.184.216.34"],
+        )
+        self.assertEqual(200, result.status)
+        self.assertEqual("public", result.headers["x-search-response"])
+        self.assertNotIn("set-cookie", result.headers)
+        self.assertEqual(1, result.network_bindings[0]["omitted_response_cookie_header_count"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            )
+            receipt, source = collectors.build_records(
+                self.company, "leave", "other-public-web", "Naver benefits", result, store,
+                started_at="2026-11-01T01:00:00Z", completed_at="2026-11-01T01:00:01Z",
+            )
+            capture = store.read(receipt["raw_response_sha256"])
+            capture_bytes = collectors._canonical_json(capture)
+            self.assertEqual("source_found", receipt["result"])
+            self.assertIsNotNone(source)
+            self.assertNotIn(b"NNB", capture_bytes)
+            self.assertNotIn(b"server-state-secret", capture_bytes)
+            self.assertNotIn(b"set-cookie", capture_bytes.lower())
+            self.assertEqual(
+                1,
+                capture["request"]["network_bindings"][0]["omitted_response_cookie_header_count"],
+            )
+
+    def test_redirect_cookie_is_omitted_and_cannot_be_replayed(self):
+        start = "https://example.com/start"
+        final = "https://example.org/final"
+        cookie = "redirect-session=must-not-replay"
+        transport = FakeTransport({
+            start: [response(302, b"", {
+                "location": final,
+                "content-type": "text/html",
+                "set-cookie": cookie,
+            })],
+            final: [response(200, b"public", {"content-type": "text/html"})],
+        })
+        result = collectors.fetch_bounded(
+            start,
+            transport=transport,
+            policy=collectors.FetchPolicy(max_redirects=1, retries=0),
+            resolver=lambda host, port: ["93.184.216.34"],
+        )
+        self.assertEqual(final, result.final_url)
+        self.assertEqual([start, final], [call[0] for call in transport.calls])
+        self.assertNotIn(cookie, repr(transport.calls))
+        self.assertEqual(1, result.network_bindings[0]["omitted_response_cookie_header_count"])
+        self.assertEqual(0, result.network_bindings[1]["omitted_response_cookie_header_count"])
+
+    def test_response_authorization_headers_remain_prohibited(self):
+        for name in ("Authorization", "Proxy-Authorization", "WWW-Authenticate"):
+            with self.subTest(name=name), self.assertRaises(collectors.SecurityError):
+                collectors._safe_header_items([(name, "Bearer abc.def.ghi")])
+
     def test_retries_are_finite_and_only_retry_transient_failures(self):
         url = "https://example.com/"
         policy = collectors.FetchPolicy(retries=2, retry_backoff_seconds=0)
@@ -468,6 +573,64 @@ class CollectorTests(unittest.TestCase):
                     max_wire_bytes=100, total_timeout=0.02, resolved_ip="93.184.216.34",
                 )
         self.assertLess(time.monotonic() - started, 0.15)
+
+    def test_secure_transport_drops_duplicate_cookies_without_request_replay(self):
+        sent_headers = []
+        response_headers = [
+            [
+                ("Location", "https://example.org/final"),
+                ("Content-Type", "text/html"),
+                ("Set-Cookie", "first=secret-one; Path=/"),
+                ("Set-Cookie", "second=secret-two; Path=/"),
+                ("Set-Cookie2", "legacy=secret-three; Version=1"),
+            ],
+            [("Content-Type", "text/html")],
+        ]
+
+        class Socket:
+            def settimeout(self, value): pass
+            def getpeername(self): return ("93.184.216.34", 443)
+
+        class HTTPResponse:
+            def __init__(self, status, headers, body):
+                self.status = status
+                self._headers = headers
+                self._body = body
+            def getheaders(self): return self._headers
+            def getheader(self, name):
+                return next((value for key, value in self._headers if key.lower() == name.lower()), None)
+            def read1(self, size):
+                chunk, self._body = self._body[:size], self._body[size:]
+                return chunk
+
+        class Connection:
+            sock = Socket()
+            def __init__(self, *args, **kwargs): pass
+            def connect(self): pass
+            def request(self, method, target, headers):
+                sent_headers.append(dict(headers))
+            def getresponse(self):
+                headers = response_headers.pop(0)
+                status = 302 if headers[0][0] == "Location" else 200
+                return HTTPResponse(status, headers, b"public")
+            def close(self): pass
+
+        transport = collectors.SecureHTTPTransport()
+        with mock.patch.object(collectors, "_PinnedHTTPSConnection", Connection):
+            redirect = transport._request_direct(
+                "https://example.com/start", 1, 1, 100, 2, "93.184.216.34"
+            )
+            final = transport._request_direct(
+                "https://example.org/final", 1, 1, 100, 2, "93.184.216.34"
+            )
+        self.assertEqual(3, redirect.omitted_response_cookie_header_count)
+        self.assertNotIn("set-cookie", redirect.headers)
+        self.assertEqual(0, final.omitted_response_cookie_header_count)
+        self.assertEqual(2, len(sent_headers))
+        self.assertTrue(all("Cookie" not in headers for headers in sent_headers))
+        self.assertNotIn("secret-one", repr(sent_headers))
+        self.assertNotIn("secret-two", repr(sent_headers))
+        self.assertNotIn("secret-three", repr(sent_headers))
 
     def test_checkpoint_is_atomic_resumable_detects_corruption_and_never_persists_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
