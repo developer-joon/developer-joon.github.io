@@ -4,6 +4,8 @@
 import argparse
 import hashlib
 import json
+import os
+import stat
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -44,11 +46,53 @@ CELL_PUBLICATION_ELIGIBILITY = {
 }
 
 
-def _schema_validators():
+def _read_authoritative_text(repo_root, path):
+    """Read one regular repository file without following symlinks."""
+    root = Path(repo_root).absolute()
+    candidate = Path(path).absolute()
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise OSError(f"authoritative path escapes repository root: {candidate}") from exc
+    current = root
+    if stat.S_ISLNK(os.lstat(current).st_mode):
+        raise OSError(f"repository root must not be a symlink: {root}")
+    for part in relative.parts:
+        current = current / part
+        metadata = os.lstat(current)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise OSError(f"authoritative path contains a symlink: {current}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(candidate, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(f"authoritative path is not a regular file: {candidate}")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            descriptor = None
+            return handle.read()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _schema_validators(repo_root, errors):
+    schema_root = (
+        Path(repo_root)
+        / "docs"
+        / "research"
+        / "company-benefits"
+        / "schema"
+    )
     validators = {}
     for ledger, filename in SCHEMAS.items():
-        schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
-        Draft202012Validator.check_schema(schema)
+        try:
+            schema = json.loads(
+                _read_authoritative_text(repo_root, schema_root / filename)
+            )
+            Draft202012Validator.check_schema(schema)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            errors.append(f"authoritative schema {filename} is invalid: {exc}")
+            continue
         validators[ledger] = (filename, Draft202012Validator(schema, format_checker=FormatChecker()))
     return validators
 
@@ -82,7 +126,12 @@ def _same_scope(left, right):
     return (
         isinstance(left, dict)
         and isinstance(right, dict)
-        and all(left.get(field) == right.get(field) for field in dimensions)
+        and all(
+            isinstance(left.get(field), list)
+            and isinstance(right.get(field), list)
+            and sorted(left[field]) == sorted(right[field])
+            for field in dimensions
+        )
     )
 
 
@@ -91,8 +140,15 @@ def _canonical_evidence_id(prefix, record):
 
 
 def _canonical_official_claim_id(record):
-    source_binding = "::".join(sorted(record.get("source_ids", [])))
-    return f"official::{record.get('company_id')}::{record.get('category_id')}::{source_binding}"
+    payload = {
+        "company_id": record.get("company_id"),
+        "category_id": record.get("category_id"),
+        "source_ids": sorted(record.get("source_ids", [])),
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return f"official::{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _has_canonical_exact_entity(record, status, canonical_legal_entity):
@@ -118,11 +174,17 @@ def _receipt_content_sha256(receipt):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _company_ledger(errors):
+def _company_ledger(repo_root, errors):
     companies = {}
-    path = RESEARCH / "companies.jsonl"
+    path = (
+        Path(repo_root)
+        / "docs"
+        / "research"
+        / "company-benefits"
+        / "companies.jsonl"
+    )
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_authoritative_text(repo_root, path).splitlines()
     except OSError as exc:
         errors.append(f"canonical company ledger cannot be read: {exc}")
         return companies
@@ -167,7 +229,7 @@ def _most_conservative(values, best_to_worst):
     return max(known, key=lambda value: ranks[value]) if known else None
 
 
-def validate_package(package):
+def validate_package(package, repo_root=ROOT):
     """Return deterministic, human-readable validation errors for one package."""
     errors = []
     if not isinstance(package, dict):
@@ -188,20 +250,42 @@ def validate_package(package):
         return errors
     policy = package["coverage_policy"]
 
-    validators = _schema_validators()
+    validators = _schema_validators(repo_root, errors)
+    if len(validators) != len(SCHEMAS):
+        return sorted(errors)
+    valid_records = {ledger: [] for ledger in ID_FIELDS}
     for ledger, (filename, validator) in validators.items():
         for index, record in enumerate(package[ledger]):
-            for error in sorted(validator.iter_errors(record), key=lambda item: list(item.path)):
+            record_errors = sorted(
+                validator.iter_errors(record), key=lambda item: list(item.path)
+            )
+            for error in record_errors:
                 location = ".".join(str(part) for part in error.path)
                 suffix = f".{location}" if location else ""
                 errors.append(f"{filename}:{ledger}[{index}]{suffix}: schema {error.message}")
+            if not record_errors:
+                valid_records[ledger].append(record)
 
     indexes = {
-        ledger: _index(package[ledger], id_field, ledger, errors)
+        ledger: _index(valid_records[ledger], id_field, ledger, errors)
         for ledger, id_field in ID_FIELDS.items()
     }
-    companies = _company_ledger(errors)
-    canonical_policy = json.loads((RESEARCH / "research-coverage-policies.json").read_text(encoding="utf-8"))
+    companies = _company_ledger(repo_root, errors)
+    policy_path = (
+        Path(repo_root)
+        / "docs"
+        / "research"
+        / "company-benefits"
+        / "research-coverage-policies.json"
+    )
+    try:
+        canonical_policy = json.loads(_read_authoritative_text(repo_root, policy_path))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        errors.append(f"canonical coverage policy is invalid: {exc}")
+        return sorted(errors)
+    if not isinstance(canonical_policy, dict):
+        errors.append("canonical coverage policy must be an object")
+        return sorted(errors)
     if policy != canonical_policy:
         errors.append("package coverage_policy does not match canonical coverage policy")
     policy = canonical_policy
@@ -514,7 +598,7 @@ def validate_package(package):
         canonical_legal_entity = (
             company.get("selected_reporting_legal_entity") if company is not None else None
         )
-        for source_id in discovered_source_ids:
+        for source_id in sorted(discovered_source_ids):
             discovered_source = indexes["sources"].get(source_id)
             if discovered_source is None:
                 continue
@@ -646,7 +730,7 @@ def validate_package(package):
                 else:
                     errors.append(f"{field} receipt reuse across cells is not permitted: {value}")
 
-    return errors
+    return sorted(errors)
 
 
 def main(argv=None):

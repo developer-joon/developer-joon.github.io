@@ -25,6 +25,20 @@ CATEGORIES = {
 HASH = "a" * 64
 
 
+def official_claim_id(company_id, category_id, source_ids):
+    payload = json.dumps(
+        {
+            "company_id": company_id,
+            "category_id": category_id,
+            "source_ids": sorted(source_ids),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"official::{hashlib.sha256(payload).hexdigest()}"
+
+
 def bind_attempt(record):
     payload = {key: value for key, value in record.items() if key != "receipt_content_sha256"}
     record["receipt_content_sha256"] = hashlib.sha256(
@@ -60,7 +74,9 @@ def base_cell(state="reference"):
     }
     if state == "official_verified":
         record["official_claim_ids"] = [
-            "official::KR-CRN-1101112948086::leave::source::example"
+            official_claim_id(
+                "KR-CRN-1101112948086", "leave", ["source::example"]
+            )
         ]
         record["reference_ids"] = []
         record["reliability"] = "high"

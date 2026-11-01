@@ -1,6 +1,9 @@
 import copy
 import hashlib
+import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +23,30 @@ from scripts.tests.test_company_benefits_v2_contracts import (
 ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = ROOT / "scripts" / "validate-benefits-v2-package.py"
 POLICY_PATH = ROOT / "docs" / "research" / "company-benefits" / "research-coverage-policies.json"
+
+
+def load_validator_module():
+    spec = importlib.util.spec_from_file_location("benefits_v2_validator", VALIDATOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+VALIDATOR_MODULE = load_validator_module()
+
+
+def official_claim_id(company_id, category_id, source_ids):
+    payload = json.dumps(
+        {
+            "company_id": company_id,
+            "category_id": category_id,
+            "source_ids": sorted(source_ids),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"official::{hashlib.sha256(payload).hexdigest()}"
 
 
 def source(source_id="source::example", tier="other_public_web"):
@@ -85,7 +112,9 @@ def package_for(state="no_public_info"):
         src = source(tier="official_government")
         receipt = attempt("official-government", "source_found", [src["source_id"]])
         claim = {
-            "claim_id": "official::KR-CRN-1101112948086::leave::source::example",
+            "claim_id": official_claim_id(
+                cell["company_id"], cell["category_id"], [src["source_id"]]
+            ),
             "cell_id": cell["cell_id"],
             "company_id": cell["company_id"],
             "category_id": cell["category_id"],
@@ -458,7 +487,7 @@ class BenefitsV2PackageTests(unittest.TestCase):
         pending = copy.deepcopy(approved)
         pending["community_reports"][0]["moderation"] = {"status": "pending"}
         pending["community_reports"][0].pop("frozen_snapshot")
-        self.assert_invalid(pending, "community report must be approved")
+        self.assert_invalid(pending, "community-benefit-report.schema.json")
 
     def test_reference_and_community_states_require_eligible_underlying_sources(self):
         reference = package_for("reference")
@@ -542,12 +571,12 @@ class BenefitsV2PackageTests(unittest.TestCase):
         exact["references"][0]["scope"]["status"] = "exact_entity"
         exact["sources"][0]["scope_status"] = "exact_entity"
         exact["cells"][0]["scope_status"] = "exact_entity"
-        self.assert_invalid(exact, "government reference must use conservative non-exact scope")
+        self.assert_invalid(exact, "reference-record.schema.json")
 
         not_downgraded = copy.deepcopy(package)
         not_downgraded["references"][0]["publication_eligibility"] = "eligible"
         not_downgraded["sources"][0]["publication_eligibility"] = "eligible"
-        self.assert_invalid(not_downgraded, "government reference must be reference_only")
+        self.assert_invalid(not_downgraded, "reference-record.schema.json")
 
     def test_official_claim_identity_is_canonical_company_category_source_binding(self):
         package = package_for("official_verified")
@@ -556,7 +585,30 @@ class BenefitsV2PackageTests(unittest.TestCase):
         forged = "official::KR-CRN-1101112948086::health::source::example"
         package["official_claims"][0]["claim_id"] = forged
         package["cells"][0]["official_claim_ids"] = [forged]
-        self.assert_invalid(package, "noncanonical claim_id")
+        self.assert_invalid(package, "official-claim-v2.schema.json")
+
+    def test_official_claim_identity_has_no_delimiter_collision(self):
+        first = {
+            "company_id": "acme",
+            "category_id": "leave",
+            "source_ids": ["source::a::source::b"],
+        }
+        second = {
+            "company_id": "acme",
+            "category_id": "leave",
+            "source_ids": ["source::a", "source::b"],
+        }
+        old_first = "::".join(
+            [first["company_id"], first["category_id"], *first["source_ids"]]
+        )
+        old_second = "::".join(
+            [second["company_id"], second["category_id"], *second["source_ids"]]
+        )
+        self.assertEqual(old_first, old_second)
+        self.assertNotEqual(
+            VALIDATOR_MODULE._canonical_official_claim_id(first),
+            VALIDATOR_MODULE._canonical_official_claim_id(second),
+        )
 
     def test_conflict_status_preserves_maximum_backing_severity_for_all_combinations(self):
         ranks = {"none": 0, "disclosed": 1, "contradictory": 2}
@@ -606,7 +658,7 @@ class BenefitsV2PackageTests(unittest.TestCase):
                 package["cells"][0]["publication_eligibility"] = eligibility
                 self.assert_valid(package)
                 package["cells"][0]["publication_eligibility"] = "ineligible"
-                self.assert_invalid(package, "publication eligibility")
+                self.assert_invalid(package, "company-category-cell.schema.json")
 
     def test_schema_validation_uses_draft_2020_12_contracts(self):
         package = package_for("reference")
@@ -614,13 +666,149 @@ class BenefitsV2PackageTests(unittest.TestCase):
         self.assert_invalid(package, "source-v2.schema.json")
 
     def test_malformed_cross_ledger_fields_fail_closed_without_traceback(self):
-        package = package_for("community_report")
-        package["community_reports"][0]["moderation"] = "approved"
-        package["sources"][0]["scope"] = "KR"
+        mutations = (
+            ("cells", "attempt_ids", {"not": "an array"}),
+            ("cells", "state", ["reference"]),
+            ("attempts", "source_ids", 7),
+            ("attempts", "route_id", {"bad": "route"}),
+            ("official_claims", "source_ids", {"source::example": True}),
+            ("official_claims", "scope", "KR"),
+            ("references", "source_id", ["source::example"]),
+            ("references", "scope", "KR"),
+            ("community_reports", "moderation", "approved"),
+            ("community_reports", "frozen_snapshot", []),
+            ("sources", "scope", "KR"),
+            ("sources", "publication_eligibility", {"eligible": True}),
+        )
+        states = {
+            "cells": "reference",
+            "attempts": "reference",
+            "official_claims": "official_verified",
+            "references": "reference",
+            "community_reports": "community_report",
+            "sources": "reference",
+        }
+        for ledger, field, value in mutations:
+            with self.subTest(ledger=ledger, field=field):
+                package = package_for(states[ledger])
+                package[ledger][0][field] = value
+                result = self.run_validator(package)
+                output = result.stdout + result.stderr
+                self.assertEqual(1, result.returncode, output)
+                self.assertIn("schema", output)
+                self.assertNotIn("Traceback", output)
+
+        package = package_for("reference")
+        package["references"] = [None, [], "record", 42]
         result = self.run_validator(package)
         self.assertEqual(1, result.returncode, result.stdout + result.stderr)
-        self.assertIn("schema", result.stdout + result.stderr)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+    def test_authoritative_json_and_schema_fail_closed_without_traceback(self):
+        research_relative = Path("docs/research/company-benefits")
+        cases = (
+            (research_relative / "companies.jsonl", "{bad json\n", "company ledger"),
+            (
+                research_relative / "research-coverage-policies.json",
+                "[]",
+                "coverage policy",
+            ),
+            (
+                research_relative / "schema/source-v2.schema.json",
+                "{bad json",
+                "source-v2.schema.json",
+            ),
+        )
+        for relative_path, contents, fragment in cases:
+            with self.subTest(path=str(relative_path)):
+                with tempfile.TemporaryDirectory() as directory:
+                    repo = Path(directory)
+                    shutil.copytree(
+                        ROOT / research_relative,
+                        repo / research_relative,
+                    )
+                    (repo / relative_path).write_text(contents, encoding="utf-8")
+                    errors = VALIDATOR_MODULE.validate_package(
+                        package_for("reference"), repo_root=repo
+                    )
+                    rendered = "\n".join(errors)
+                    self.assertIn(fragment, rendered)
+                    self.assertNotIn("Traceback", rendered)
+
+    def test_authoritative_reader_rejects_symlink_leaf_parent_and_non_regular_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "repo"
+            repo.mkdir()
+            safe = repo / "safe"
+            safe.mkdir()
+            regular = safe / "record.json"
+            regular.write_text("{}", encoding="utf-8")
+            self.assertEqual(
+                "{}", VALIDATOR_MODULE._read_authoritative_text(repo, regular)
+            )
+
+            leaf = safe / "leaf.json"
+            leaf.symlink_to(regular)
+            parent = repo / "linked-parent"
+            parent.symlink_to(safe, target_is_directory=True)
+            directory_leaf = safe / "directory.json"
+            directory_leaf.mkdir()
+            for path in (leaf, parent / "record.json", directory_leaf):
+                with self.subTest(path=str(path)):
+                    with self.assertRaises(OSError):
+                        VALIDATOR_MODULE._read_authoritative_text(repo, path)
+
+    def test_authoritative_reader_rejects_paths_outside_repo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            repo = parent / "repo"
+            repo.mkdir()
+            outside = parent / "outside.json"
+            outside.write_text("{}", encoding="utf-8")
+            with self.assertRaises(OSError):
+                VALIDATOR_MODULE._read_authoritative_text(repo, outside)
+
+    def test_scope_array_order_is_semantic_but_different_members_are_rejected(self):
+        reordered = package_for("reference")
+        for record in (reordered["references"][0], reordered["sources"][0]):
+            record["scope"]["roles"] = ["engineers", "all_employees"]
+        reordered["sources"][0]["scope"]["roles"].reverse()
+        self.assert_valid(reordered)
+
+        different = copy.deepcopy(reordered)
+        different["sources"][0]["scope"]["roles"] = ["sales", "all_employees"]
+        self.assert_invalid(different, "source scope mismatch")
+
+    def test_diagnostics_are_stable_across_record_order_and_hash_seed(self):
+        package = package_for("reference")
+        for source_id in ("source::z-dropped", "source::a-dropped"):
+            dropped = source(source_id, package["sources"][0]["source_tier"])
+            package["sources"].append(dropped)
+            package["attempts"][0]["source_ids"].append(source_id)
+        bind_attempt(package["attempts"][0])
+        outputs = []
+        for seed, reverse in (("1", False), ("777", True)):
+            candidate = copy.deepcopy(package)
+            if reverse:
+                candidate["sources"].reverse()
+                candidate["attempts"][0]["source_ids"].reverse()
+                bind_attempt(candidate["attempts"][0])
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "package.json"
+                path.write_text(json.dumps(candidate), encoding="utf-8")
+                environment = os.environ.copy()
+                environment["PYTHONHASHSEED"] = seed
+                result = subprocess.run(
+                    [sys.executable, str(VALIDATOR), str(path)],
+                    cwd=ROOT,
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+                outputs.append(result.stderr)
+        self.assertEqual(outputs[0], outputs[1])
 
 
 if __name__ == "__main__":

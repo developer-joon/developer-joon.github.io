@@ -11,7 +11,7 @@
     "publication_eligibility"
   ],
   "properties": {
-    "claim_id": {"type": "string", "pattern": "^official::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}$"},
+    "claim_id": {"type": "string", "pattern": "^official::[a-f0-9]{64}$"},
     "cell_id": {"type": "string", "pattern": "^cell::[A-Za-z0-9][A-Za-z0-9._:-]{2,127}::[a-z][a-z0-9-]{1,63}$"},
     "company_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"},
     "category_id": {"enum": ["leave", "family", "health", "growth", "housing", "commute", "remote", "retirement", "meals", "inclusion"]},
