@@ -1,6 +1,8 @@
 import errno
+import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import multiprocessing
 import os
@@ -12,6 +14,7 @@ import tempfile
 import threading
 import time
 import tracemalloc
+import tarfile
 import unittest
 from pathlib import Path
 
@@ -241,20 +244,112 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         self.exporter.prepare_output_root(root, version)
         return root
 
+    def test_anonymous_artifact_contract_and_lock_order(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            self.provision(root, version)
+            self.assertEqual(
+                {self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME},
+                {entry.name for entry in root.iterdir()},
+            )
+
+            events = []
+            original_open = self.exporter._open_preprovisioned_file
+            original_flock = self.exporter.fcntl.flock
+
+            def observed_open(directory_fd, name, *args, **kwargs):
+                events.append(("open", name))
+                return original_open(directory_fd, name, *args, **kwargs)
+
+            def observed_flock(descriptor, operation):
+                events.append(("flock", operation))
+                return original_flock(descriptor, operation)
+
+            self.exporter._open_preprovisioned_file = observed_open
+            self.exporter.fcntl.flock = observed_flock
+            try:
+                artifact = self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._open_preprovisioned_file = original_open
+                self.exporter.fcntl.flock = original_flock
+
+            self.assertEqual(root / f"{version}.tar", artifact)
+            self.assertLess(
+                events.index(("flock", fcntl.LOCK_EX)),
+                events.index(("open", self.exporter.PUBLICATION_KEY_NAME)),
+            )
+            self.assertEqual(
+                {self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME, f"{version}.tar"},
+                {entry.name for entry in root.iterdir()},
+            )
+            with tarfile.open(artifact, mode="r:") as archive:
+                self.assertEqual(["manifest.json", "candidates.jsonl"], archive.getnames())
+                self.assertTrue(all(member.isfile() for member in archive.getmembers()))
+                manifest = json.load(archive.extractfile("manifest.json"))
+                candidate_bytes = archive.extractfile("candidates.jsonl").read()
+            self.assertEqual(candidates.sha256, manifest["snapshot_sha256"])
+            self.assertEqual(self.exporter.canonical_jsonl(candidates), candidate_bytes)
+            before = artifact.read_bytes()
+            self.assertEqual(artifact, self.exporter.publish_snapshot(root, version, candidates))
+            self.assertEqual(before, artifact.read_bytes())
+
+    def test_late_foreign_target_is_never_replaced(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            self.provision(root, version)
+            target = root / f"{version}.tar"
+            original = self.exporter._publication_failure_hook
+
+            def insert(stage, _context):
+                if stage == "before_link":
+                    target.write_bytes(b"foreign")
+                    target.chmod(0o600)
+
+            self.exporter._publication_failure_hook = insert
+            try:
+                with self.assertRaises(OSError):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._publication_failure_hook = original
+            self.assertEqual(b"foreign", target.read_bytes())
+
+    def test_prepare_parent_swap_during_setup_lock_fails_with_residue_diagnostic(self):
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            parent = base / "private"
+            parent.mkdir(mode=0o700)
+            root = parent / "snapshots"
+            displaced = base / "displaced-parent"
+            original = self.exporter._prepare_failure_hook
+
+            def swap(stage, _context):
+                if stage == "after_setup_lock":
+                    parent.rename(displaced)
+                    parent.mkdir(mode=0o700)
+
+            self.exporter._prepare_failure_hook = swap
+            try:
+                with self.assertRaisesRegex(OSError, "displaced|changed"):
+                    self.exporter.prepare_output_root(root, version)
+            finally:
+                self.exporter._prepare_failure_hook = original
+            self.assertFalse(root.exists())
+            self.assertTrue((displaced / "snapshots").is_dir() or not (displaced / "snapshots").exists())
+
     def assert_prepared_inventory(self, root, version):
         self.assertEqual(
-            {self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME,
-             self.exporter.STAGING_DIRECTORY_NAME, version},
+            {self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME},
             {entry.name for entry in root.iterdir()},
         )
-        self.assertEqual([], list((root / version).iterdir()))
-        staging = root / self.exporter.STAGING_DIRECTORY_NAME
-        self.assertEqual(set(self.exporter.STAGING_MEMBER_NAMES), {p.name for p in staging.iterdir()})
         self.assertEqual(0o700, root.stat().st_mode & 0o777)
-        self.assertEqual(0o700, staging.stat().st_mode & 0o777)
         key = root / self.exporter.PUBLICATION_KEY_NAME
         self.assertEqual(self.exporter.PUBLICATION_KEY_BYTES, key.stat().st_size)
-        for path in [root / self.exporter.PUBLICATION_LOCK_NAME, key, *staging.iterdir()]:
+        for path in [root / self.exporter.PUBLICATION_LOCK_NAME, key]:
             self.assertEqual(0o600, path.stat().st_mode & 0o777)
             self.assertEqual(1, path.stat().st_nlink)
 
@@ -280,8 +375,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "prepare"):
                 self.exporter.publish_snapshot(root, version, candidates)
             self.assertFalse(root.exists())
-        for missing in (self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME,
-                        self.exporter.STAGING_DIRECTORY_NAME, version):
+        for missing in (self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME):
             with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / "snapshots"
                 self.provision(root, version)
@@ -304,13 +398,12 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             root = Path(directory) / "snapshots"
             self.provision(root, version)
             target = self.exporter.publish_snapshot(root, version, candidates)
-            self.assertEqual({"candidates.jsonl", "manifest.json"}, {p.name for p in target.iterdir()})
-            self.assertEqual([], list((root / self.exporter.STAGING_DIRECTORY_NAME).iterdir()))
+            self.assertTrue(target.is_file())
             self.assertEqual(target, self.exporter.publish_snapshot(root, version, candidates))
-            (target / "candidates.jsonl").write_text("tampered\n", encoding="utf-8")
+            target.write_text("tampered\n", encoding="utf-8")
             with self.assertRaises(OSError):
                 self.exporter.publish_snapshot(root, version, candidates)
-            self.assertEqual("tampered\n", (target / "candidates.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual("tampered\n", target.read_text(encoding="utf-8"))
 
     def test_runtime_never_mkdirs_creates_unlinks_or_rmdirs_anchor_paths(self):
         candidates = self.build_snapshot([row()])
@@ -336,10 +429,10 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                  self.exporter.os.unlink, self.exporter.os.rmdir) = original
             self.assertEqual([], calls)
 
-    def test_root_control_and_member_swaps_after_open_fail_before_publication(self):
+    def test_root_lock_and_key_swaps_after_lock_fail_before_publication(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
-        for case in ("root", "staging", "key", "key-bytes", "member"):
+        for case in ("root", "lock", "key", "key-bytes"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 base = Path(directory); root = base / "snapshots"; self.provision(root, version)
                 original = self.exporter._publication_failure_hook
@@ -348,30 +441,27 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                     self.exporter._publication_failure_hook = original
                     if case == "root":
                         root.rename(base / "displaced-root"); root.mkdir(mode=0o700)
-                    elif case == "staging":
-                        path = root / self.exporter.STAGING_DIRECTORY_NAME
-                        path.rename(root / "displaced-staging"); path.mkdir(mode=0o700)
+                    elif case == "lock":
+                        path = root / self.exporter.PUBLICATION_LOCK_NAME
+                        path.rename(root / "displaced-lock"); path.write_bytes(b""); path.chmod(0o600)
                     elif case == "key":
                         path = root / self.exporter.PUBLICATION_KEY_NAME
                         path.rename(root / "displaced-key"); path.write_bytes(b"x" * 32); path.chmod(0o600)
-                    elif case == "key-bytes":
-                        (root / self.exporter.PUBLICATION_KEY_NAME).write_bytes(b"y" * 32)
                     else:
-                        path = root / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json"
-                        path.rename(path.with_name("displaced-manifest")); path.write_bytes(b""); path.chmod(0o600)
+                        (root / self.exporter.PUBLICATION_KEY_NAME).write_bytes(b"y" * 32)
                 self.exporter._publication_failure_hook = swap
                 try:
-                    with self.assertRaisesRegex(OSError, "controls changed"):
+                    with self.assertRaises(OSError):
                         self.exporter.publish_snapshot(root, version, candidates)
                 finally:
                     self.exporter._publication_failure_hook = original
-                self.assertFalse((root / version / "manifest.json").exists())
+                self.assertFalse((root / f"{version}.tar").exists())
 
     def test_concurrent_exporters_serialize_on_the_verified_lock(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "snapshots"; self.provision(root, version)
-            barrier = threading.Barrier(7); guard = threading.Lock(); outcomes = []
+            barrier = threading.Barrier(9); guard = threading.Lock(); outcomes = []
             active = 0; maximum = 0; original = self.exporter._publication_failure_hook
             def observe(stage, _context):
                 nonlocal active, maximum
@@ -385,13 +475,13 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 except Exception as exc: outcomes.append(exc)
             self.exporter._publication_failure_hook = observe
             try:
-                threads = [threading.Thread(target=publish) for _ in range(6)]
+                threads = [threading.Thread(target=publish) for _ in range(8)]
                 for thread in threads: thread.start()
                 barrier.wait()
                 for thread in threads: thread.join()
             finally: self.exporter._publication_failure_hook = original
-            self.assertEqual(1, maximum); self.assertEqual(6, len(outcomes))
-            self.assertTrue(all(value == root / version for value in outcomes), outcomes)
+            self.assertEqual(1, maximum); self.assertEqual(8, len(outcomes))
+            self.assertTrue(all(value == root / f"{version}.tar" for value in outcomes), outcomes)
 
     def test_one_hundred_crashes_keep_exact_bounded_inventory_then_recover(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
@@ -399,7 +489,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             root = Path(directory) / "snapshots"; self.provision(root, version)
             original = self.exporter._publication_failure_hook
             def crash(stage, _context):
-                if stage == "before_exchange": raise OSError(errno.EIO, "injected crash")
+                if stage == "before_link": raise OSError(errno.EIO, "injected crash")
             self.exporter._publication_failure_hook = crash
             try:
                 for _ in range(100):
@@ -408,23 +498,22 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             finally: self.exporter._publication_failure_hook = original
             self.assert_prepared_inventory(root, version)
             total = sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
-            self.assertLessEqual(total, self.exporter.MAX_PERSISTENT_CONTROL_BYTES)
-            self.assertTrue((self.exporter.publish_snapshot(root, version, candidates) / "manifest.json").is_file())
+            self.assertEqual(self.exporter.PUBLICATION_KEY_BYTES, total)
+            self.assertTrue(self.exporter.publish_snapshot(root, version, candidates).is_file())
 
-    def test_crash_after_exchange_is_idempotently_recoverable(self):
+    def test_crash_after_link_is_idempotently_recoverable(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "snapshots"; self.provision(root, version)
             original = self.exporter._publication_failure_hook
             def crash(stage, _context):
-                if stage == "after_exchange": raise OSError(errno.EIO, "simulated stop")
+                if stage == "after_link": raise OSError(errno.EIO, "simulated stop")
             self.exporter._publication_failure_hook = crash
             try:
                 with self.assertRaisesRegex(OSError, "simulated stop"):
                     self.exporter.publish_snapshot(root, version, candidates)
             finally: self.exporter._publication_failure_hook = original
-            self.assertTrue((self.exporter.publish_snapshot(root, version, candidates) / "manifest.json").is_file())
-            self.assertEqual([], list((root / self.exporter.STAGING_DIRECTORY_NAME).iterdir()))
+            self.assertTrue(self.exporter.publish_snapshot(root, version, candidates).is_file())
 
     def test_invalid_anchor_metadata_links_and_inventory_fail_closed(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
@@ -432,14 +521,8 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             "short key": lambda r: (r / self.exporter.PUBLICATION_KEY_NAME).write_bytes(b"short"),
             "permissive root": lambda r: r.chmod(0o755),
             "permissive key": lambda r: (r / self.exporter.PUBLICATION_KEY_NAME).chmod(0o644),
-            "permissive staging": lambda r: (r / self.exporter.STAGING_DIRECTORY_NAME).chmod(0o755),
-            "permissive target": lambda r: (r / version).chmod(0o755),
-            "permissive member": lambda r: (
-                r / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json"
-            ).chmod(0o644),
             "extra root": lambda r: (r / "foreign").write_bytes(b"foreign"),
-            "extra staging": lambda r: (r / self.exporter.STAGING_DIRECTORY_NAME / "foreign").write_bytes(b"foreign"),
-            "hardlink": lambda r: os.link(r / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json", r / "foreign-link"),
+            "linked key": lambda r: os.link(r / self.exporter.PUBLICATION_KEY_NAME, r / "foreign-link"),
         }
         for label, mutate in mutations.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
@@ -447,7 +530,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 before = sorted(str(p.relative_to(root)) for p in root.rglob("*"))
                 with self.assertRaises(OSError): self.exporter.publish_snapshot(root, version, candidates)
                 self.assertEqual(before, sorted(str(p.relative_to(root)) for p in root.rglob("*")))
-                self.assertFalse((root / version / "manifest.json").exists())
+                self.assertFalse((root / f"{version}.tar").exists())
 
     def test_applied_version_binding_requires_independently_verified_manifest_hash(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -570,7 +653,11 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 root = Path(directory) / "snapshots"
                 self.provision(root, version)
                 target = self.exporter.publish_snapshot(root, version, snapshot)
-                self.assertEqual(snapshot.byte_count, (target / "candidates.jsonl").stat().st_size)
+                with tarfile.open(target, mode="r:") as archive:
+                    self.assertEqual(
+                        snapshot.byte_count,
+                        archive.getmember("candidates.jsonl").size,
+                    )
         finally:
             tracemalloc.stop()
             self.exporter.MAX_SNAPSHOT_BYTES = original_limit
@@ -712,15 +799,6 @@ while True:
                 self.exporter.prepare_output_root(root, "approved-2026-11-01-v1")
             self.assertTrue(root.is_symlink())
 
-    def test_runtime_rejects_a_different_prepared_snapshot_version(self):
-        candidates = self.build_snapshot([row()])
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"
-            self.provision(root, "approved-2026-11-01-v1")
-            with self.assertRaises(OSError):
-                self.exporter.publish_snapshot(root, "approved-2026-11-01-v2", candidates)
-            self.assertFalse((root / "approved-2026-11-01-v2").exists())
-
     def test_runtime_rejects_a_nonempty_lock_file(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
@@ -728,6 +806,15 @@ while True:
             (root / self.exporter.PUBLICATION_LOCK_NAME).write_bytes(b"foreign")
             with self.assertRaises(OSError):
                 self.exporter.publish_snapshot(root, version, candidates)
+
+    def test_runtime_rejects_a_version_other_than_the_prepared_version(self):
+        candidates = self.build_snapshot([row()])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            self.provision(root, "approved-2026-11-01-v1")
+            with self.assertRaises(OSError):
+                self.exporter.publish_snapshot(root, "approved-2026-11-01-v2", candidates)
+            self.assertFalse((root / "approved-2026-11-01-v2.tar").exists())
 
     def test_runtime_rejects_an_incomplete_key_without_promotion(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
@@ -739,103 +826,69 @@ while True:
                 self.exporter.publish_snapshot(root, version, candidates)
             self.assertEqual(b"", key.read_bytes())
 
-    def test_runtime_rejects_a_symlink_staging_member(self):
+    def test_runtime_rejects_foreign_regular_symlink_and_directory_targets(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"; self.provision(root, version)
-            staging = root / self.exporter.STAGING_DIRECTORY_NAME
-            (staging / "manifest.json").unlink()
-            (staging / "manifest.json").symlink_to("candidates.jsonl")
-            with self.assertRaises(OSError):
-                self.exporter.publish_snapshot(root, version, candidates)
-            self.assertTrue((staging / "manifest.json").is_symlink())
+        for kind in ("regular", "symlink", "directory"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "snapshots"; self.provision(root, version)
+                target = root / f"{version}.tar"
+                if kind == "regular":
+                    target.write_bytes(b"foreign"); target.chmod(0o600)
+                elif kind == "symlink":
+                    target.symlink_to(self.exporter.PUBLICATION_KEY_NAME)
+                else:
+                    target.mkdir(mode=0o700)
+                with self.assertRaises(OSError):
+                    self.exporter.publish_snapshot(root, version, candidates)
+                self.assertTrue(target.exists() or target.is_symlink())
 
-    def test_runtime_rejects_oversized_persistent_staging_bytes(self):
+    def test_linkat_failure_leaves_no_named_residue(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "snapshots"; self.provision(root, version)
-            path = root / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json"
-            with path.open("r+b") as stream:
-                stream.truncate(self.exporter.MAX_MANIFEST_BYTES + 1)
-            with self.assertRaises(OSError):
-                self.exporter.publish_snapshot(root, version, candidates)
-            self.assertEqual(self.exporter.MAX_MANIFEST_BYTES + 1, path.stat().st_size)
-
-    def test_runtime_rejects_a_nonempty_target_placeholder(self):
-        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"; self.provision(root, version)
-            (root / version / "foreign").write_bytes(b"foreign")
-            with self.assertRaises(OSError):
-                self.exporter.publish_snapshot(root, version, candidates)
-            self.assertEqual(b"foreign", (root / version / "foreign").read_bytes())
-
-    def test_runtime_rejects_a_nonregular_staging_member(self):
-        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"; self.provision(root, version)
-            path = root / self.exporter.STAGING_DIRECTORY_NAME / "manifest.json"
-            path.unlink(); path.mkdir(mode=0o700)
-            with self.assertRaises(OSError):
-                self.exporter.publish_snapshot(root, version, candidates)
-            self.assertTrue(path.is_dir())
-
-    def test_runtime_rejects_a_symlink_target_placeholder(self):
-        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"; self.provision(root, version)
-            (root / version).rmdir()
-            (root / version).symlink_to(self.exporter.STAGING_DIRECTORY_NAME, target_is_directory=True)
-            with self.assertRaises(OSError):
-                self.exporter.publish_snapshot(root, version, candidates)
-            self.assertTrue((root / version).is_symlink())
-
-    def test_exchange_failure_preserves_the_bounded_prepared_layout(self):
-        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "snapshots"; self.provision(root, version)
-            original = self.exporter._rename_exchange
-            self.exporter._rename_exchange = lambda *_a, **_k: (_ for _ in ()).throw(
-                OSError(errno.ENOTSUP, "exchange unavailable")
+            original = self.exporter._link_anonymous_file
+            self.exporter._link_anonymous_file = lambda *_a, **_k: (_ for _ in ()).throw(
+                OSError(errno.ENOTSUP, "linkat unavailable")
             )
             try:
-                with self.assertRaisesRegex(OSError, "exchange unavailable"):
+                with self.assertRaisesRegex(OSError, "linkat unavailable"):
                     self.exporter.publish_snapshot(root, version, candidates)
             finally:
-                self.exporter._rename_exchange = original
+                self.exporter._link_anonymous_file = original
             self.assert_prepared_inventory(root, version)
 
-    def test_crash_after_first_member_fsync_rewrites_the_same_slot(self):
+    def test_crash_after_anonymous_artifact_fsync_leaves_no_residue(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "snapshots"; self.provision(root, version)
             original = self.exporter._publication_failure_hook
             def crash(stage, _context):
-                if stage == "after_candidates.jsonl_fsync":
-                    raise OSError(errno.EIO, "first member crash")
+                if stage == "after_artifact_fsync":
+                    raise OSError(errno.EIO, "anonymous artifact crash")
             self.exporter._publication_failure_hook = crash
             try:
-                with self.assertRaisesRegex(OSError, "first member crash"):
+                with self.assertRaisesRegex(OSError, "anonymous artifact crash"):
                     self.exporter.publish_snapshot(root, version, candidates)
             finally:
                 self.exporter._publication_failure_hook = original
-            self.assertTrue((self.exporter.publish_snapshot(root, version, candidates) / "manifest.json").is_file())
+            self.assert_prepared_inventory(root, version)
+            self.assertTrue(self.exporter.publish_snapshot(root, version, candidates).is_file())
 
-    def test_postexchange_member_mutation_is_reported_not_accepted(self):
+    def test_postlink_artifact_mutation_is_reported_not_accepted(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "snapshots"; self.provision(root, version)
             original = self.exporter._publication_failure_hook
             def mutate(stage, _context):
-                if stage == "after_exchange":
-                    (root / version / "manifest.json").write_bytes(b"tampered")
+                if stage == "after_link":
+                    (root / f"{version}.tar").write_bytes(b"tampered")
             self.exporter._publication_failure_hook = mutate
             try:
-                with self.assertRaisesRegex(OSError, "validation failed"):
+                with self.assertRaises(OSError):
                     self.exporter.publish_snapshot(root, version, candidates)
             finally:
                 self.exporter._publication_failure_hook = original
-            self.assertEqual(b"tampered", (root / version / "manifest.json").read_bytes())
+            self.assertEqual(b"tampered", (root / f"{version}.tar").read_bytes())
 
     def test_runtime_rejects_wrong_effective_owner_without_mutation(self):
         candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
@@ -848,7 +901,62 @@ while True:
                     self.exporter.publish_snapshot(root, version, candidates)
             finally:
                 self.exporter.os.geteuid = original
-            self.assertFalse((root / version / "manifest.json").exists())
+            self.assertFalse((root / f"{version}.tar").exists())
+
+    def test_review_tool_streams_valid_jsonl_and_rejects_unsafe_tar_inventory(self):
+        candidates = self.build_snapshot([row()]); version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            artifact = self.exporter.publish_snapshot(root, version, candidates)
+            output = io.BytesIO()
+            manifest = self.exporter.stream_review_candidates(artifact, version, output)
+            self.assertEqual(self.exporter.canonical_jsonl(candidates), output.getvalue())
+            self.assertEqual(1, manifest["candidate_count"])
+
+            for case in ("unsafe-name", "duplicate", "symlink"):
+                malicious = Path(directory) / f"{case}.tar"
+                with tarfile.open(malicious, mode="w:") as archive:
+                    names = ["manifest.json", "manifest.json"] if case == "duplicate" else ["../manifest.json"]
+                    if case == "symlink":
+                        member = tarfile.TarInfo("manifest.json")
+                        member.type = tarfile.SYMTYPE
+                        member.linkname = "/etc/passwd"
+                        archive.addfile(member)
+                    else:
+                        for name in names:
+                            raw = b"{}\n"
+                            member = tarfile.TarInfo(name)
+                            member.size = len(raw)
+                            archive.addfile(member, io.BytesIO(raw))
+                with self.subTest(case=case), self.assertRaises(OSError):
+                    self.exporter.stream_review_candidates(malicious, version, io.BytesIO())
+
+    def test_eight_concurrent_processes_publish_one_exact_artifact(self):
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); root = base / "snapshots"
+            fixture = base / "rows.json"; resolver = base / "resolver.json"
+            fixture.write_text(json.dumps([row()]), encoding="utf-8")
+            resolver.write_text(json.dumps({"example.com": ["93.184.216.34"]}), encoding="utf-8")
+            self.provision(root, version)
+            command = [
+                sys.executable, str(EXPORTER), "export", "--input-json", str(fixture),
+                "--resolver-json", str(resolver), "--output-root", str(root),
+                "--snapshot-version", version,
+            ]
+            processes = [
+                subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                for _ in range(8)
+            ]
+            outcomes = [process.communicate(timeout=30) for process in processes]
+            self.assertTrue(
+                all(process.returncode == 0 for process in processes),
+                [(process.returncode, stderr.decode()) for process, (_stdout, stderr) in zip(processes, outcomes)],
+            )
+            self.assertEqual(
+                {self.exporter.PUBLICATION_LOCK_NAME, self.exporter.PUBLICATION_KEY_NAME, f"{version}.tar"},
+                {entry.name for entry in root.iterdir()},
+            )
 
     def test_fixture_backed_cli_requires_prepare_then_exports(self):
         version = "approved-2026-11-01-v1"
@@ -865,7 +973,7 @@ while True:
                                      "--snapshot-version", version], cwd=ROOT, text=True, capture_output=True)
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             self.assertEqual(1, json.loads(result.stdout)["candidate_count"])
-            self.assertTrue((root / version / "manifest.json").is_file())
+            self.assertTrue((root / f"{version}.tar").is_file())
 
 
 if __name__ == "__main__":

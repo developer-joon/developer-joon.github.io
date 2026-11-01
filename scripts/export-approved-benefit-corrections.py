@@ -19,7 +19,6 @@ import multiprocessing
 import os
 import platform
 import re
-import secrets
 import selectors
 import signal
 import socket
@@ -70,10 +69,12 @@ DEFAULT_PSQL_TIMEOUT_SECONDS = 30.0
 DEFAULT_PROCESS_KILL_GRACE_SECONDS = 0.5
 PUBLICATION_LOCK_NAME = ".approved-benefit-correction-export.lock"
 PUBLICATION_KEY_NAME = ".approved-benefit-correction-export.key"
-STAGING_DIRECTORY_NAME = ".approved-benefit-correction-export.staging"
-STAGING_MEMBER_NAMES = ("candidates.jsonl", "manifest.json")
+PREPARE_MARKER_NAME = ".approved-benefit-correction-export.setup"
+ARTIFACT_SUFFIX = ".tar"
+ARTIFACT_MEMBER_NAMES = ("manifest.json", "candidates.jsonl")
 PUBLICATION_KEY_BYTES = 32
-MAX_PERSISTENT_CONTROL_BYTES = MAX_SNAPSHOT_BYTES + MAX_MANIFEST_BYTES + 4096
+MAX_ARTIFACT_BYTES = MAX_SNAPSHOT_BYTES + MAX_MANIFEST_BYTES + 4096
+AT_EMPTY_PATH = 0x1000
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
@@ -527,6 +528,7 @@ def _expected_files(snapshot_version, candidates):
         "artifact_kind": "approved_benefit_correction_offline_review_snapshot",
         "candidate_count": candidate_count,
         "candidates_file": "candidates.jsonl",
+        "container_format": "deterministic-ustar",
         "schema_version": 1,
         "snapshot_sha256": candidate_sha256,
         "snapshot_version": snapshot_version,
@@ -540,178 +542,164 @@ def _same_inode(left, right):
     )
 
 
-def _read_regular_file_at(directory_fd, name):
-    descriptor = os.open(
-        name,
-        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        dir_fd=directory_fd,
-    )
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            raise OSError(errno.EINVAL, "snapshot member is not a regular file")
-        chunks = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        if not stat.S_ISREG(current.st_mode) or not _same_inode(opened, current):
-            raise OSError(errno.ESTALE, "snapshot member changed during validation")
-        return b"".join(chunks), opened
-    finally:
-        os.close(descriptor)
+def _write_all(descriptor, raw):
+    view = memoryview(raw)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError(errno.EIO, "snapshot artifact write failed")
+        view = view[written:]
 
 
-def _streamed_regular_file_matches_at(directory_fd, name, expected):
-    """Hash a large expected member without retaining its bytes in memory."""
-    descriptor = os.open(
-        name,
-        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        dir_fd=directory_fd,
-    )
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or opened.st_size != expected.byte_count:
-            return False, opened
-        digest = hashlib.sha256()
-        remaining = expected.byte_count
-        while remaining:
-            chunk = os.read(descriptor, min(1024 * 1024, remaining))
-            if not chunk:
-                return False, opened
-            digest.update(chunk)
-            remaining -= len(chunk)
-        if os.read(descriptor, 1):
-            return False, opened
-        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        return (
-            stat.S_ISREG(current.st_mode)
-            and _same_inode(opened, current)
-            and hmac.compare_digest(digest.hexdigest(), expected.sha256)
-        ), opened
-    finally:
-        os.close(descriptor)
+def _tar_octal(value, width):
+    encoded = f"{value:0{width - 1}o}".encode("ascii")
+    if len(encoded) >= width:
+        raise ValueError("snapshot artifact tar field overflow")
+    return encoded + b"\0"
 
 
-def _directory_binding_matches(root_fd, target_name, target_fd, opened_directory):
-    """Prove a root entry still directly names the opened directory."""
-    try:
-        named_directory = os.stat(
-            target_name, dir_fd=root_fd, follow_symlinks=False
-        )
-        current_directory = os.fstat(target_fd)
-    except OSError:
-        return False
-    return (
-        _secure_owned_mode(named_directory, stat.S_ISDIR, 0o700)
-        and _same_control_identity(opened_directory, named_directory)
-        and _secure_owned_mode(current_directory, stat.S_ISDIR, 0o700)
-        and _same_control_identity(opened_directory, current_directory)
-    )
+def _tar_header(name, size):
+    raw_name = name.encode("ascii")
+    if name not in ARTIFACT_MEMBER_NAMES or len(raw_name) > 100:
+        raise ValueError("invalid snapshot artifact member")
+    header = bytearray(512)
+    header[:len(raw_name)] = raw_name
+    header[100:108] = _tar_octal(0o600, 8)
+    header[108:116] = _tar_octal(0, 8)
+    header[116:124] = _tar_octal(0, 8)
+    header[124:136] = _tar_octal(size, 12)
+    header[136:148] = _tar_octal(0, 12)
+    header[148:156] = b"        "
+    header[156:157] = b"0"
+    header[257:263] = b"ustar\0"
+    header[263:265] = b"00"
+    checksum = sum(header)
+    header[148:156] = f"{checksum:06o}\0 ".encode("ascii")
+    return bytes(header)
 
 
-def _directory_matches(
-    root_fd,
-    target_name,
-    expected,
-    expected_directory=None,
-    expected_files=None,
-):
-    """Validate an exact inventory without following target/member symlinks."""
-    try:
-        target_fd = os.open(
-            target_name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
-        )
-    except OSError:
-        return False
-    try:
-        return _directory_fd_matches(
-            root_fd,
-            target_name,
-            target_fd,
-            expected,
-            expected_directory=expected_directory,
-            expected_files=expected_files,
-        )
-    finally:
-        os.close(target_fd)
+def _write_tar_member(descriptor, name, expected):
+    size = expected.byte_count if isinstance(expected, _SnapshotFile) else len(expected)
+    _write_all(descriptor, _tar_header(name, size))
+    _write_expected_file(descriptor, expected)
+    padding = (-size) % 512
+    if padding:
+        _write_all(descriptor, b"\0" * padding)
 
 
-def _directory_fd_matches(
-    root_fd,
-    target_name,
-    target_fd,
-    expected,
-    expected_directory=None,
-    expected_files=None,
-):
-    """Validate an opened directory and its stable binding under root_fd."""
-    opened_directory = os.fstat(target_fd)
-    if not _secure_owned_mode(opened_directory, stat.S_ISDIR, 0o700):
-        return False
-    if expected_directory is not None and not _same_control_identity(
-        opened_directory, expected_directory
+def _stream_fd_digest(descriptor):
+    digest = hashlib.sha256()
+    offset = 0
+    size = os.fstat(descriptor).st_size
+    while offset < size:
+        chunk = os.pread(descriptor, min(1024 * 1024, size - offset), offset)
+        if not chunk:
+            raise OSError(errno.EIO, "snapshot artifact truncated")
+        digest.update(chunk)
+        offset += len(chunk)
+    return digest.hexdigest()
+
+
+def _parse_tar_number(field):
+    if not field or field[-1:] not in (b"\0", b" "):
+        raise ValueError("invalid snapshot artifact tar number")
+    digits = field.rstrip(b"\0 ")
+    if not digits or any(character not in b"01234567" for character in digits):
+        raise ValueError("invalid snapshot artifact tar number")
+    return int(digits, 8)
+
+
+def _validate_snapshot_artifact_fd(descriptor, expected_version=None, expected_digest=None):
+    """Validate the exact deterministic two-member tar through one held fd."""
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_ARTIFACT_BYTES:
+        raise OSError(errno.EINVAL, "invalid snapshot artifact file")
+    if expected_digest is not None and not hmac.compare_digest(
+        _stream_fd_digest(descriptor), expected_digest
     ):
-        return False
-    first_inventory = os.listdir(target_fd)
-    if len(first_inventory) != len(expected) or set(first_inventory) != set(expected):
-        return False
-    if not _directory_binding_matches(
-        root_fd, target_name, target_fd, opened_directory
-    ):
-        return False
-    opened_files = {}
-    for name in first_inventory:
+        raise OSError(errno.EEXIST, "existing snapshot artifact differs")
+
+    offset = 0
+    manifest_raw = None
+    candidate_digest = hashlib.sha256()
+    candidate_count = 0
+    candidate_last = b""
+    for expected_name in ARTIFACT_MEMBER_NAMES:
+        header = os.pread(descriptor, 512, offset)
+        if len(header) != 512 or header == b"\0" * 512:
+            raise OSError(errno.EINVAL, "invalid snapshot artifact inventory")
+        checksum_field = header[148:156]
+        checksum_header = bytearray(header)
+        checksum_header[148:156] = b"        "
         try:
-            expected_value = expected[name]
-            if isinstance(expected_value, _SnapshotFile):
-                matches, metadata = _streamed_regular_file_matches_at(
-                    target_fd, name, expected_value
-                )
-                if not matches:
-                    return False
-            else:
-                raw, metadata = _read_regular_file_at(target_fd, name)
-                if raw != expected_value:
-                    return False
-        except OSError:
-            return False
-        if not _secure_owned_mode(metadata, stat.S_ISREG, 0o600) or metadata.st_nlink != 1:
-            return False
-        if expected_files is not None and not _same_control_identity(
-            metadata, expected_files[name]
-        ):
-            return False
-        opened_files[name] = metadata
-
-    if not _directory_binding_matches(
-        root_fd, target_name, target_fd, opened_directory
-    ):
-        return False
-
-    # Re-list and re-stat each entry to prove the validated inventory still
-    # names the same inodes after every byte comparison.
-    second_inventory = os.listdir(target_fd)
-    if len(second_inventory) != len(first_inventory) or set(second_inventory) != set(first_inventory):
-        return False
-    for name, opened in opened_files.items():
-        try:
-            current = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
-        except OSError:
-            return False
+            checksum = _parse_tar_number(checksum_field)
+            size = _parse_tar_number(header[124:136])
+            mode = _parse_tar_number(header[100:108])
+            uid = _parse_tar_number(header[108:116])
+            gid = _parse_tar_number(header[116:124])
+            mtime = _parse_tar_number(header[136:148])
+            name = header[:100].split(b"\0", 1)[0].decode("ascii")
+        except (UnicodeError, ValueError) as exc:
+            raise OSError(errno.EINVAL, "invalid snapshot artifact header") from exc
         if (
-            not _secure_owned_mode(current, stat.S_ISREG, 0o600)
-            or current.st_nlink != 1
-            or not _same_control_identity(opened, current)
+            checksum != sum(checksum_header)
+            or name != expected_name
+            or header[156:157] not in (b"0", b"\0")
+            or header[157:257].strip(b"\0")
+            or header[257:263] != b"ustar\0"
+            or header[345:500].strip(b"\0")
+            or mode != 0o600 or uid != 0 or gid != 0 or mtime != 0
+            or (name == "manifest.json" and size > MAX_MANIFEST_BYTES)
+            or (name == "candidates.jsonl" and size > MAX_SNAPSHOT_BYTES)
         ):
-            return False
-    return _directory_binding_matches(
-        root_fd, target_name, target_fd, opened_directory
-    )
+            raise OSError(errno.EINVAL, "unsafe snapshot artifact member")
+        offset += 512
+        if offset + size > metadata.st_size:
+            raise OSError(errno.EINVAL, "truncated snapshot artifact member")
+        if name == "manifest.json":
+            manifest_raw = os.pread(descriptor, size, offset)
+            if len(manifest_raw) != size:
+                raise OSError(errno.EIO, "snapshot manifest truncated")
+        else:
+            remaining = size
+            member_offset = offset
+            while remaining:
+                chunk = os.pread(descriptor, min(1024 * 1024, remaining), member_offset)
+                if not chunk:
+                    raise OSError(errno.EIO, "snapshot candidates truncated")
+                candidate_digest.update(chunk)
+                candidate_count += chunk.count(b"\n")
+                candidate_last = chunk[-1:]
+                member_offset += len(chunk)
+                remaining -= len(chunk)
+            if size and candidate_last != b"\n":
+                raise OSError(errno.EINVAL, "snapshot candidates are not JSONL")
+        offset += size + ((-size) % 512)
+
+    if os.pread(descriptor, 1024, offset) != b"\0" * 1024 or offset + 1024 != metadata.st_size:
+        raise OSError(errno.EINVAL, "invalid snapshot artifact trailer or inventory")
+    try:
+        manifest = json.loads(manifest_raw)
+    except (UnicodeError, json.JSONDecodeError, TypeError) as exc:
+        raise OSError(errno.EINVAL, "invalid snapshot artifact manifest") from exc
+    expected_keys = {
+        "artifact_kind", "candidate_count", "candidates_file", "container_format",
+        "schema_version", "snapshot_sha256", "snapshot_version",
+    }
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != expected_keys
+        or _canonical_json_bytes(manifest) != manifest_raw
+        or manifest.get("artifact_kind") != "approved_benefit_correction_offline_review_snapshot"
+        or manifest.get("container_format") != "deterministic-ustar"
+        or manifest.get("candidates_file") != "candidates.jsonl"
+        or manifest.get("schema_version") != 1
+        or manifest.get("candidate_count") != candidate_count
+        or manifest.get("snapshot_sha256") != candidate_digest.hexdigest()
+        or (expected_version is not None and manifest.get("snapshot_version") != expected_version)
+    ):
+        raise OSError(errno.EINVAL, "snapshot artifact manifest mismatch")
+    return manifest
 
 
 def _fsync_directory_fd(descriptor):
@@ -727,18 +715,31 @@ def _write_expected_file(descriptor, expected):
             view = view[written:]
 
 
-def _renameat2_function():
+def _linkat_function():
     libc = ctypes.CDLL(None, use_errno=True)
-    function = getattr(libc, "renameat2", None)
+    function = getattr(libc, "linkat", None)
     if function is None:
-        raise OSError(errno.ENOTSUP, "Linux renameat2 is unavailable")
-    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        raise OSError(errno.ENOTSUP, "Linux linkat is unavailable")
+    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     function.restype = ctypes.c_int
     return function
 
 
+def _link_anonymous_file(descriptor, root_fd, name):
+    linkat = _linkat_function()
+    ctypes.set_errno(0)
+    if linkat(descriptor, b"", root_fd, os.fsencode(name), AT_EMPTY_PATH) == 0:
+        return
+    error_number = ctypes.get_errno()
+    raise OSError(error_number, os.strerror(error_number), name)
+
+
 def _publication_failure_hook(_stage, _context):
     """Test-only deterministic crash/mutation boundary hook."""
+
+
+def _prepare_failure_hook(_stage, _context):
+    """Test-only deterministic setup race hook."""
 
 
 def _secure_owned_mode(metadata, file_type, mode):
@@ -785,26 +786,6 @@ def _open_preprovisioned_file(
         raise
 
 
-def _open_preprovisioned_directory(root_fd, name):
-    descriptor = os.open(
-        name,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        dir_fd=root_fd,
-    )
-    try:
-        opened = os.fstat(descriptor)
-        named = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-        if (
-            not _secure_owned_mode(opened, stat.S_ISDIR, 0o700)
-            or not _same_control_identity(opened, named)
-        ):
-            raise OSError(errno.EPERM, f"invalid preprovisioned directory {name}")
-        return descriptor, opened
-    except Exception:
-        os.close(descriptor)
-        raise
-
-
 def _create_preprovisioned_file(directory_fd, name, contents=None):
     if contents is None:
         contents = b""
@@ -821,23 +802,26 @@ def _create_preprovisioned_file(directory_fd, name, contents=None):
         os.close(descriptor)
 
 
-def prepare_output_root(output_root, snapshot_version):
-    """Offline, exclusive setup for one preprovisioned publication slot.
+def _prepared_version_key(snapshot_version):
+    material = ("approved-benefit-correction-export\0" + snapshot_version).encode("ascii")
+    return hashlib.sha256(material).digest()
 
-    The root must not exist.  A partial prior attempt is intentionally not
-    repaired: move it aside under exclusive operator control before retrying.
-    """
+
+def prepare_output_root(output_root, snapshot_version):
+    """Offline setup with an exclusive parent marker and binding checks."""
     if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
         raise ValueError("invalid snapshot version")
     if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
         raise OSError(errno.ENOTSUP, "unsupported publication platform")
-    _renameat2_function()
+    if not hasattr(os, "O_TMPFILE"):
+        raise OSError(errno.ENOTSUP, "O_TMPFILE is unavailable")
+    _linkat_function()
     root = Path(output_root).absolute()
     parent_fd = os.open(
         root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
     root_fd = None
-    staging_fd = None
+    marker_fd = None
     try:
         parent_metadata = os.fstat(parent_fd)
         if (
@@ -846,7 +830,19 @@ def prepare_output_root(output_root, snapshot_version):
             or not _root_path_still_names_fd(root.parent, parent_fd)
         ):
             raise OSError(errno.EPERM, "output root parent is not private")
-        fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        marker_fd = os.open(
+            PREPARE_MARKER_NAME,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        os.fsync(marker_fd)
+        _prepare_failure_hook("after_setup_lock", {"parent_fd": parent_fd})
+        if not _root_path_still_names_fd(root.parent, parent_fd):
+            raise OSError(
+                errno.ESTALE,
+                "output root parent changed or was displaced; inspect the displaced tree",
+            )
         try:
             os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -860,37 +856,67 @@ def prepare_output_root(output_root, snapshot_version):
             dir_fd=parent_fd,
         )
         _create_preprovisioned_file(root_fd, PUBLICATION_LOCK_NAME)
-        key = bytearray(secrets.token_bytes(PUBLICATION_KEY_BYTES))
+        key = bytearray(_prepared_version_key(snapshot_version))
         try:
             _create_preprovisioned_file(root_fd, PUBLICATION_KEY_NAME, key)
         finally:
             key[:] = b"\x00" * len(key)
-        os.mkdir(STAGING_DIRECTORY_NAME, 0o700, dir_fd=root_fd)
-        staging_fd = os.open(
-            STAGING_DIRECTORY_NAME,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
+
+        # Prove both filesystem primitives on this exact filesystem during the
+        # exclusive offline setup. Runtime has no pathname-staging fallback.
+        probe_fd = os.open(
+            ".", os.O_RDWR | os.O_TMPFILE | os.O_CLOEXEC, 0o600, dir_fd=root_fd
         )
-        for name in STAGING_MEMBER_NAMES:
-            _create_preprovisioned_file(staging_fd, name)
-        _fsync_directory_fd(staging_fd)
-        os.mkdir(snapshot_version, 0o700, dir_fd=root_fd)
+        try:
+            os.fchmod(probe_fd, 0o600)
+            _write_all(probe_fd, b"tmpfile-probe")
+            os.fsync(probe_fd)
+            probe_name = ".approved-benefit-correction-export.tmpfile-probe"
+            _link_anonymous_file(probe_fd, root_fd, probe_name)
+            os.unlink(probe_name, dir_fd=root_fd)
+        except OSError as exc:
+            raise OSError(
+                errno.ENOTSUP,
+                "output filesystem lacks O_TMPFILE + linkat(AT_EMPTY_PATH)",
+            ) from exc
+        finally:
+            os.close(probe_fd)
         _fsync_directory_fd(root_fd)
         _fsync_directory_fd(parent_fd)
+        os.close(marker_fd)
+        marker_fd = None
+        os.unlink(PREPARE_MARKER_NAME, dir_fd=parent_fd)
+        _fsync_directory_fd(parent_fd)
+        _prepare_failure_hook("before_success", {"parent_fd": parent_fd, "root_fd": root_fd})
+        if (
+            not _root_path_still_names_fd(root.parent, parent_fd)
+            or not _binding_matches(parent_fd, root.name, root_fd, os.fstat(root_fd))
+        ):
+            raise OSError(
+                errno.ESTALE,
+                "output root parent changed or was displaced; prepared residue requires inspection",
+            )
     finally:
-        if staging_fd is not None:
-            os.close(staging_fd)
         if root_fd is not None:
             os.close(root_fd)
+        if marker_fd is not None:
+            os.close(marker_fd)
+            try:
+                os.unlink(PREPARE_MARKER_NAME, dir_fd=parent_fd)
+                _fsync_directory_fd(parent_fd)
+            except OSError:
+                pass
         os.close(parent_fd)
     return root
 
 
 def _preflight_publication_platform(output_root):
-    """Validate platform and the already-provisioned private root only."""
+    """Validate the platform, root, and anonymous-file support before DB I/O."""
     if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
         raise OSError(errno.ENOTSUP, "unsupported publication platform")
-    _renameat2_function()
+    if not hasattr(os, "O_TMPFILE"):
+        raise OSError(errno.ENOTSUP, "O_TMPFILE is unavailable")
+    _linkat_function()
     root = Path(output_root).absolute()
     try:
         root_fd = os.open(
@@ -908,6 +934,19 @@ def _preflight_publication_platform(output_root):
             or not _root_path_still_names_fd(root, root_fd)
         ):
             raise OSError(errno.EPERM, "invalid preprovisioned output root")
+        probe_fd = None
+        try:
+            probe_fd = os.open(
+                ".", os.O_RDWR | os.O_TMPFILE | os.O_CLOEXEC, 0o600, dir_fd=root_fd
+            )
+            os.fchmod(probe_fd, 0o600)
+        except OSError as exc:
+            raise OSError(
+                errno.ENOTSUP, "output filesystem lacks anonymous O_TMPFILE support"
+            ) from exc
+        finally:
+            if probe_fd is not None:
+                os.close(probe_fd)
     finally:
         os.close(root_fd)
 
@@ -946,23 +985,6 @@ def _secure_output_root_binding(root, root_fd, expected):
     )
 
 
-def _rename_exchange(source, target, source_dir_fd=-100, target_dir_fd=-100):
-    """Atomically exchange two existing names without an unsafe fallback."""
-    renameat2 = _renameat2_function()
-    ctypes.set_errno(0)
-    result = renameat2(
-        source_dir_fd,
-        os.fsencode(source),
-        target_dir_fd,
-        os.fsencode(target),
-        2,
-    )
-    if result == 0:
-        return
-    error_number = ctypes.get_errno()
-    raise OSError(error_number, os.strerror(error_number), target)
-
-
 def _root_path_still_names_fd(root, root_fd):
     try:
         path_metadata = root.lstat()
@@ -992,13 +1014,6 @@ def _read_exact_key(descriptor):
     return raw
 
 
-def _control_file_sizes_valid(lock_fd, key_fd, staging_files):
-    if os.fstat(lock_fd).st_size != 0 or os.fstat(key_fd).st_size != PUBLICATION_KEY_BYTES:
-        return False
-    limits = {"candidates.jsonl": MAX_SNAPSHOT_BYTES, "manifest.json": MAX_MANIFEST_BYTES}
-    return all(os.fstat(descriptor).st_size <= limits[name] for name, descriptor in staging_files.items())
-
-
 def _key_contents_match(key_fd, expected_key):
     observed = bytearray(os.pread(key_fd, PUBLICATION_KEY_BYTES + 1, 0))
     try:
@@ -1009,225 +1024,146 @@ def _key_contents_match(key_fd, expected_key):
         observed[:] = b"\x00" * len(observed)
 
 
-def _exact_root_inventory(root_fd, snapshot_version):
-    expected = {
-        PUBLICATION_LOCK_NAME,
-        PUBLICATION_KEY_NAME,
-        STAGING_DIRECTORY_NAME,
-        snapshot_version,
-    }
+def _exact_root_inventory(root_fd, artifact_name=None):
+    expected = {PUBLICATION_LOCK_NAME, PUBLICATION_KEY_NAME}
+    if artifact_name is not None:
+        expected.add(artifact_name)
     observed = os.listdir(root_fd)
     return len(observed) == len(expected) and set(observed) == expected
 
 
-def _empty_placeholder_matches(root_fd, name, descriptor, expected_metadata):
+def _publication_controls_match(
+    root, root_fd, root_metadata, lock_fd, lock_metadata,
+    key_fd, key_metadata, expected_key, artifact_name=None,
+):
     return (
-        _binding_matches(root_fd, name, descriptor, expected_metadata)
-        and os.listdir(descriptor) == []
+        _secure_output_root_binding(root, root_fd, root_metadata)
+        and _exact_root_inventory(root_fd, artifact_name)
+        and _binding_matches(root_fd, PUBLICATION_LOCK_NAME, lock_fd, lock_metadata)
+        and os.fstat(lock_fd).st_size == 0
+        and _binding_matches(root_fd, PUBLICATION_KEY_NAME, key_fd, key_metadata)
+        and os.fstat(key_fd).st_size == PUBLICATION_KEY_BYTES
+        and _key_contents_match(key_fd, expected_key)
     )
 
 
-def _staging_controls_match(
-    root,
-    root_fd,
-    root_metadata,
-    lock_fd,
-    lock_metadata,
-    key_fd,
-    key_metadata,
-    expected_key,
-    staging_fd,
-    staging_metadata,
-    staging_files,
-    staging_file_metadata,
-    snapshot_version,
-    target_fd,
-    target_metadata,
-):
+def _open_existing_artifact(root_fd, artifact_name):
+    descriptor = os.open(
+        artifact_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd
+    )
+    opened = os.fstat(descriptor)
+    named = os.stat(artifact_name, dir_fd=root_fd, follow_symlinks=False)
     if (
-        not _secure_output_root_binding(root, root_fd, root_metadata)
-        or not _exact_root_inventory(root_fd, snapshot_version)
-        or not _binding_matches(root_fd, PUBLICATION_LOCK_NAME, lock_fd, lock_metadata)
-        or not _binding_matches(root_fd, PUBLICATION_KEY_NAME, key_fd, key_metadata)
-        or not _control_file_sizes_valid(lock_fd, key_fd, staging_files)
-        or not _key_contents_match(key_fd, expected_key)
-        or not _binding_matches(root_fd, STAGING_DIRECTORY_NAME, staging_fd, staging_metadata)
-        or not _binding_matches(root_fd, snapshot_version, target_fd, target_metadata)
-        or set(os.listdir(staging_fd)) != set(STAGING_MEMBER_NAMES)
-        or os.listdir(target_fd) != []
+        not _secure_owned_mode(opened, stat.S_ISREG, 0o600)
+        or opened.st_nlink != 1
+        or not _same_control_identity(opened, named)
     ):
-        return False
-    for name, descriptor in staging_files.items():
-        if not _binding_matches(staging_fd, name, descriptor, staging_file_metadata[name]):
-            return False
-    return True
+        os.close(descriptor)
+        raise OSError(errno.EPERM, "invalid existing snapshot artifact")
+    return descriptor, opened
 
 
-def _write_fixed_member(descriptor, expected):
-    os.ftruncate(descriptor, 0)
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    _write_expected_file(descriptor, expected)
-    os.fsync(descriptor)
+def _validate_existing_artifact(root_fd, artifact_name, version, digest):
+    descriptor, opened = _open_existing_artifact(root_fd, artifact_name)
+    try:
+        _validate_snapshot_artifact_fd(descriptor, version, digest)
+        if not _binding_matches(root_fd, artifact_name, descriptor, opened):
+            raise OSError(errno.ESTALE, "snapshot artifact changed during validation")
+    finally:
+        os.close(descriptor)
 
 
 def publish_snapshot(output_root, snapshot_version, candidates):
-    """Publish through a wholly preprovisioned, atomically exchanged slot."""
+    """Publish one validated anonymous inode with fd-bound no-replace linkat."""
     if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
         raise ValueError("invalid snapshot version")
     _preflight_publication_platform(output_root)
     root, root_fd, root_metadata = _open_secure_output_root(output_root)
     expected = _expected_files(snapshot_version, candidates)
-    target = root / snapshot_version
+    artifact_name = snapshot_version + ARTIFACT_SUFFIX
+    target = root / artifact_name
     descriptors = []
     key = None
     try:
+        # The lock is the only child opened before acquisition. Its pathname
+        # binding and the complete root inventory are revalidated under lock.
         lock_fd, lock_metadata = _open_preprovisioned_file(
             root_fd, PUBLICATION_LOCK_NAME, size=0
         )
         descriptors.append(lock_fd)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        _publication_failure_hook("after_lock", {"root_fd": root_fd})
+        if (
+            not _secure_output_root_binding(root, root_fd, root_metadata)
+            or not _binding_matches(root_fd, PUBLICATION_LOCK_NAME, lock_fd, lock_metadata)
+            or os.fstat(lock_fd).st_size != 0
+            or not (
+                _exact_root_inventory(root_fd)
+                or _exact_root_inventory(root_fd, artifact_name)
+            )
+        ):
+            raise OSError(errno.ESTALE, "preprovisioned publication controls changed")
+
         key_fd, key_metadata = _open_preprovisioned_file(
             root_fd, PUBLICATION_KEY_NAME, flags=os.O_RDONLY,
             size=PUBLICATION_KEY_BYTES,
         )
         descriptors.append(key_fd)
         key = _read_exact_key(key_fd)
-        staging_fd, staging_metadata = _open_preprovisioned_directory(
-            root_fd, STAGING_DIRECTORY_NAME
-        )
-        descriptors.append(staging_fd)
-        staging_files = {}
-        staging_file_metadata = {}
-        if set(os.listdir(staging_fd)) == set(STAGING_MEMBER_NAMES):
-            for name in STAGING_MEMBER_NAMES:
-                limit = MAX_SNAPSHOT_BYTES if name == "candidates.jsonl" else MAX_MANIFEST_BYTES
-                descriptor, metadata = _open_preprovisioned_file(
-                    staging_fd, name, max_size=limit
-                )
-                descriptors.append(descriptor)
-                staging_files[name] = descriptor
-                staging_file_metadata[name] = metadata
-        target_fd, target_metadata = _open_preprovisioned_directory(
-            root_fd, snapshot_version
-        )
-        descriptors.append(target_fd)
-
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        _publication_failure_hook("after_lock", {"root_fd": root_fd})
-
-        # A prior or concurrent invocation may already have completed the
-        # exchange. Recognize only the exact published snapshot plus the exact
-        # empty fixed slot and unchanged lock/key/root bindings.
-        target_binding_is_recorded = (
-            _binding_matches(root_fd, snapshot_version, target_fd, target_metadata)
-            or _binding_matches(root_fd, snapshot_version, staging_fd, staging_metadata)
-        )
-        empty_stage_binding_is_recorded = (
-            _empty_placeholder_matches(
-                root_fd, STAGING_DIRECTORY_NAME, staging_fd, staging_metadata
-            )
-            or _empty_placeholder_matches(
-                root_fd, STAGING_DIRECTORY_NAME, target_fd, target_metadata
-            )
-        )
-        if (
-            _secure_output_root_binding(root, root_fd, root_metadata)
-            and _exact_root_inventory(root_fd, snapshot_version)
-            and _binding_matches(root_fd, PUBLICATION_LOCK_NAME, lock_fd, lock_metadata)
-            and _binding_matches(root_fd, PUBLICATION_KEY_NAME, key_fd, key_metadata)
-            and _control_file_sizes_valid(lock_fd, key_fd, staging_files)
-            and _key_contents_match(key_fd, key)
-            and target_binding_is_recorded
-            and empty_stage_binding_is_recorded
-            and _directory_matches(root_fd, snapshot_version, expected)
-        ):
-            return target
-
-        if set(staging_files) != set(STAGING_MEMBER_NAMES) or not _staging_controls_match(
-            root,
-            root_fd,
-            root_metadata,
-            lock_fd,
-            lock_metadata,
-            key_fd,
-            key_metadata,
-            key,
-            staging_fd,
-            staging_metadata,
-            staging_files,
-            staging_file_metadata,
-            snapshot_version,
-            target_fd,
-            target_metadata,
+        if not hmac.compare_digest(key, _prepared_version_key(snapshot_version)):
+            raise OSError(errno.EPERM, "snapshot version does not match prepared root")
+        existing = _exact_root_inventory(root_fd, artifact_name)
+        if not _publication_controls_match(
+            root, root_fd, root_metadata, lock_fd, lock_metadata,
+            key_fd, key_metadata, key, artifact_name if existing else None,
         ):
             raise OSError(errno.ESTALE, "preprovisioned publication controls changed")
 
-        for name in STAGING_MEMBER_NAMES:
-            _write_fixed_member(staging_files[name], expected[name])
-            _publication_failure_hook(
-                f"after_{name}_fsync", {"root_fd": root_fd, "staging_fd": staging_fd}
-            )
-        _fsync_directory_fd(staging_fd)
-        _publication_failure_hook(
-            "before_exchange", {"root_fd": root_fd, "staging_fd": staging_fd}
+        anonymous_fd = os.open(
+            ".", os.O_RDWR | os.O_TMPFILE | os.O_CLOEXEC, 0o600, dir_fd=root_fd
         )
+        descriptors.append(anonymous_fd)
+        os.fchmod(anonymous_fd, 0o600)
+        for name in ARTIFACT_MEMBER_NAMES:
+            _write_tar_member(anonymous_fd, name, expected[name])
+        _write_all(anonymous_fd, b"\0" * 1024)
+        os.fsync(anonymous_fd)
+        artifact_digest = _stream_fd_digest(anonymous_fd)
+        _validate_snapshot_artifact_fd(anonymous_fd, snapshot_version, artifact_digest)
+        _publication_failure_hook("after_artifact_fsync", {"root_fd": root_fd, "artifact_fd": anonymous_fd})
 
-        if not _staging_controls_match(
-            root,
-            root_fd,
-            root_metadata,
-            lock_fd,
-            lock_metadata,
-            key_fd,
-            key_metadata,
-            key,
-            staging_fd,
-            staging_metadata,
-            staging_files,
-            staging_file_metadata,
-            snapshot_version,
-            target_fd,
-            target_metadata,
-        ) or not _directory_fd_matches(
-            root_fd,
-            STAGING_DIRECTORY_NAME,
-            staging_fd,
-            expected,
-            expected_directory=staging_metadata,
-            expected_files={name: os.fstat(fd) for name, fd in staging_files.items()},
+        if existing:
+            _validate_existing_artifact(root_fd, artifact_name, snapshot_version, artifact_digest)
+            return target
+
+        _publication_failure_hook("before_link", {"root_fd": root_fd, "artifact_fd": anonymous_fd})
+        if not _publication_controls_match(
+            root, root_fd, root_metadata, lock_fd, lock_metadata,
+            key_fd, key_metadata, key,
         ):
-            raise OSError(errno.ESTALE, "staging changed before publication")
-
-        published_file_metadata = {
-            name: os.fstat(descriptor) for name, descriptor in staging_files.items()
-        }
-        _rename_exchange(
-            STAGING_DIRECTORY_NAME,
-            snapshot_version,
-            source_dir_fd=root_fd,
-            target_dir_fd=root_fd,
-        )
+            # If a same-UID process inserted only the target, validate it below;
+            # any other mutation remains a closed failure.
+            if not _exact_root_inventory(root_fd, artifact_name):
+                raise OSError(errno.ESTALE, "publication controls changed before link")
+        try:
+            _link_anonymous_file(anonymous_fd, root_fd, artifact_name)
+        except FileExistsError:
+            _validate_existing_artifact(root_fd, artifact_name, snapshot_version, artifact_digest)
+            return target
         _fsync_directory_fd(root_fd)
-        _publication_failure_hook("after_exchange", {"root_fd": root_fd})
+        _publication_failure_hook("after_link", {"root_fd": root_fd, "artifact_fd": anonymous_fd})
+        published = os.fstat(anonymous_fd)
         if (
-            not _secure_output_root_binding(root, root_fd, root_metadata)
-            or not _exact_root_inventory(root_fd, snapshot_version)
-            or not _binding_matches(root_fd, PUBLICATION_LOCK_NAME, lock_fd, lock_metadata)
-            or not _binding_matches(root_fd, PUBLICATION_KEY_NAME, key_fd, key_metadata)
-            or not _control_file_sizes_valid(lock_fd, key_fd, staging_files)
-            or not _key_contents_match(key_fd, key)
-            or not _directory_fd_matches(
-                root_fd,
-                snapshot_version,
-                staging_fd,
-                expected,
-                expected_directory=staging_metadata,
-                expected_files=published_file_metadata,
+            not _secure_owned_mode(published, stat.S_ISREG, 0o600)
+            or published.st_nlink != 1
+            or not _publication_controls_match(
+                root, root_fd, root_metadata, lock_fd, lock_metadata,
+                key_fd, key_metadata, key, artifact_name,
             )
-            or not _empty_placeholder_matches(
-                root_fd, STAGING_DIRECTORY_NAME, target_fd, target_metadata
-            )
+            or not _binding_matches(root_fd, artifact_name, anonymous_fd, published)
         ):
-            raise OSError(errno.ESTALE, "published snapshot validation failed")
+            raise OSError(errno.ESTALE, "published snapshot artifact validation failed")
+        _validate_snapshot_artifact_fd(anonymous_fd, snapshot_version, artifact_digest)
         return target
     finally:
         if key is not None:
@@ -1235,6 +1171,54 @@ def publish_snapshot(output_root, snapshot_version, candidates):
         for descriptor in reversed(descriptors):
             os.close(descriptor)
         os.close(root_fd)
+
+
+def _artifact_candidates_range(descriptor):
+    manifest_header = os.pread(descriptor, 512, 0)
+    manifest_size = _parse_tar_number(manifest_header[124:136])
+    candidate_header_offset = 512 + manifest_size + ((-manifest_size) % 512)
+    candidate_header = os.pread(descriptor, 512, candidate_header_offset)
+    if len(candidate_header) != 512:
+        raise OSError(errno.EINVAL, "invalid snapshot artifact inventory")
+    candidate_size = _parse_tar_number(candidate_header[124:136])
+    return candidate_header_offset + 512, candidate_size
+
+
+def stream_review_candidates(artifact_path, snapshot_version, output):
+    """Validate one held artifact fd and emit a revalidated anonymous copy."""
+    if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
+        raise ValueError("invalid snapshot version")
+    path = Path(artifact_path).absolute()
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(descriptor)
+        named = path.lstat()
+        if not stat.S_ISREG(opened.st_mode) or not _same_inode(opened, named):
+            raise OSError(errno.EPERM, "invalid snapshot artifact path")
+        manifest = _validate_snapshot_artifact_fd(descriptor, snapshot_version)
+        offset, remaining = _artifact_candidates_range(descriptor)
+        with tempfile.TemporaryFile(mode="w+b") as review_copy:
+            while remaining:
+                chunk = os.pread(descriptor, min(1024 * 1024, remaining), offset)
+                if not chunk:
+                    raise OSError(errno.EIO, "snapshot candidates truncated")
+                review_copy.write(chunk)
+                offset += len(chunk)
+                remaining -= len(chunk)
+            # Revalidate after copying. Output begins only after the source fd,
+            # its full content, and its pathname binding are proved unchanged.
+            _validate_snapshot_artifact_fd(descriptor, snapshot_version)
+            if not _same_inode(opened, path.lstat()):
+                raise OSError(errno.ESTALE, "snapshot artifact path changed during review")
+            review_copy.seek(0)
+            while True:
+                chunk = review_copy.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+        return manifest
+    finally:
+        os.close(descriptor)
 
 
 def load_json_rows(path):
@@ -1536,6 +1520,12 @@ def _parser():
     export.add_argument("--output-root", required=True, type=Path)
     export.add_argument("--snapshot-version", required=True)
 
+    review = commands.add_parser(
+        "review-jsonl", help="validate one snapshot artifact and stream candidates JSONL"
+    )
+    review.add_argument("--artifact", required=True, type=Path)
+    review.add_argument("--snapshot-version", required=True)
+
     binding = commands.add_parser("verify-apply-binding", help="verify a separate operator apply version")
     binding.add_argument("--manifest", required=True, type=Path)
     binding.add_argument("--applied-version", required=True)
@@ -1585,6 +1575,9 @@ def main(argv=None):
                 ),
                 "snapshot_version": args.snapshot_version,
             }
+        elif args.command == "review-jsonl":
+            stream_review_candidates(args.artifact, args.snapshot_version, sys.stdout.buffer)
+            return 0
         else:
             version = verify_applied_version_binding(
                 args.manifest, args.applied_version, args.verified_manifest_sha256
