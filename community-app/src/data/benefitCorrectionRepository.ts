@@ -25,7 +25,6 @@ export interface BenefitCorrectionRpcClient {
 
 export interface BenefitCorrectionRepository {
   getCurrentAccountScope(signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionAccountScope>>
-  createRequest(input: CreateBenefitCorrectionInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionItem>>
   createRequest(input: CreateBenefitCorrectionInput, expectedAccountScope: BenefitCorrectionAccountScope, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionItem>>
   listMyRequests(input: BenefitCorrectionListInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionPage<BenefitCorrectionItem>>>
   listAdminQueue(input: BenefitCorrectionQueueInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionPage<AdminBenefitCorrectionItem>>>
@@ -37,6 +36,7 @@ const adminKeys = [...ownerKeys, 'reviewed_at'] as const
 const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2}):(\d{2}))$/
 const dataVersionPattern = /^company-benefits-(\d{4})-(\d{2})-(\d{2})-v[1-9][0-9]*$/
 const companyPattern = /^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$/
+const accountScopePattern = /^[0-9a-f]{64}$/
 const ACCOUNT_SCOPE_DOMAIN = 'breadlab:benefit-correction:account-scope:v1'
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
@@ -141,6 +141,9 @@ function validCreateInput(input: CreateBenefitCorrectionInput) {
     && boundedText(input.currentText, 5000) && boundedText(input.proposedText, 5000) && boundedText(input.scopeText, 2000)
     && isBenefitCorrectionSourceUrl(input.sourceUrl) && isBenefitCorrectionDataVersion(input.observedDataVersion)
 }
+function validAccountScope(value: unknown): value is BenefitCorrectionAccountScope {
+  return typeof value === 'string' && accountScopePattern.test(value)
+}
 function validReviewInput(input: ReviewBenefitCorrectionInput) {
   const validExpectedStatus = input.expectedStatus === 'submitted' || input.expectedStatus === 'reviewing'
   const transitionAllowed = input.expectedStatus === 'submitted'
@@ -192,7 +195,7 @@ export function createBenefitCorrectionRepository(client: BenefitCorrectionRpcCl
       if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
       const responseScope = await currentAccountScope(signal)
       if (!responseScope.ok) return responseScope
-      if (responseScope.data !== rpcScope.data) return { ok: false, error: { code: 'stale_response', message: '로그인 계정이 변경되어 이전 응답을 폐기했습니다.' } }
+      if (responseScope.data !== rpcScope.data || (expectedAccountScope !== undefined && responseScope.data !== expectedAccountScope)) return { ok: false, error: { code: 'stale_response', message: '로그인 계정이 변경되어 이전 응답을 폐기했습니다.' } }
       if (response.error) return mapRpcError(response.error)
       try { return { ok: true, data: decode(response.data) } }
       catch { return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } } }
@@ -203,15 +206,13 @@ export function createBenefitCorrectionRepository(client: BenefitCorrectionRpcCl
   }
   return {
     getCurrentAccountScope: currentAccountScope,
-    createRequest(input, expectedAccountScopeOrSignal?: BenefitCorrectionAccountScope | AbortSignal, signal?: AbortSignal) {
-      if (!validCreateInput(input)) return Promise.resolve(invalidArgument())
-      const expectedAccountScope = typeof expectedAccountScopeOrSignal === 'string' ? expectedAccountScopeOrSignal : undefined
-      const requestSignal = expectedAccountScopeOrSignal instanceof AbortSignal ? expectedAccountScopeOrSignal : signal
+    createRequest(input, expectedAccountScope, signal) {
+      if (!validCreateInput(input) || !validAccountScope(expectedAccountScope)) return Promise.resolve(invalidArgument())
       return execute(() => client.rpc('create_benefit_correction_request_v1', {
         p_client_key: input.clientKey, p_company_id: input.companyId, p_category_id: input.categoryId,
         p_current_text: input.currentText, p_proposed_text: input.proposedText, p_scope_text: input.scopeText,
         p_source_url: input.sourceUrl, p_observed_data_version: input.observedDataVersion,
-      }, requestSignal), value => decodeBenefitCorrectionItem(value), requestSignal, expectedAccountScope)
+      }, signal), value => decodeBenefitCorrectionItem(value), signal, expectedAccountScope)
     },
     listMyRequests(input, signal) {
       if (!validListInput(input)) return Promise.resolve(invalidArgument())

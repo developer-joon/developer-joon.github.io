@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createBenefitCorrectionRepository, type BenefitCorrectionRpcClient, type BenefitCorrectionRpcResponse } from './benefitCorrectionRepository'
-import type { CreateBenefitCorrectionInput } from '../types/benefitCorrections'
+import { createBenefitCorrectionRepository, type BenefitCorrectionRepository, type BenefitCorrectionRpcClient, type BenefitCorrectionRpcResponse } from './benefitCorrectionRepository'
+import type { BenefitCorrectionAccountScope, CreateBenefitCorrectionInput } from '../types/benefitCorrections'
 
 const requestId = '56000000-0000-4000-8000-000000000010'
 const clientKey = '56000000-0000-4000-8000-000000000011'
@@ -54,7 +54,55 @@ function setup(initial = { data: ownerItem as unknown, error: null as unknown })
   }
 }
 
+async function currentScope(repository: BenefitCorrectionRepository): Promise<BenefitCorrectionAccountScope> {
+  const result = await repository.getCurrentAccountScope()
+  if (!result.ok) throw new Error('expected current account scope')
+  return result.data
+}
+
+async function scopeForActor(actorId: string): Promise<BenefitCorrectionAccountScope> {
+  return currentScope(createBenefitCorrectionRepository({ rpc: vi.fn() }, { getActorId: () => actorId }))
+}
+
+async function createFor(
+  repository: BenefitCorrectionRepository,
+  input: CreateBenefitCorrectionInput,
+  signal?: AbortSignal,
+) {
+  return repository.createRequest(input, await currentScope(repository), signal)
+}
+
 describe('benefit correction repository RPC contract', () => {
+  it('requires an expected account scope in the public create API', () => {
+    const value = setup()
+    const compileCreateCalls = () => {
+      // @ts-expect-error expectedAccountScope is mandatory
+      void value.repository.createRequest(createInput)
+      // @ts-expect-error an AbortSignal cannot replace expectedAccountScope
+      void value.repository.createRequest(createInput, new AbortController().signal)
+    }
+    expect(compileCreateCalls).toBeTypeOf('function')
+    expect(value.calls).toEqual([])
+  })
+
+  it('makes zero RPC calls for missing, null, signal-only, or forged create scopes', async () => {
+    const client: BenefitCorrectionRpcClient = { rpc: vi.fn().mockResolvedValue({ data: ownerItem, error: null }) }
+    const repository = createBenefitCorrectionRepository(client, { getActorId: () => accountBId })
+    const unsafeCreate = repository.createRequest as unknown as (
+      input: CreateBenefitCorrectionInput,
+      expectedAccountScope?: unknown,
+      signal?: AbortSignal,
+    ) => ReturnType<BenefitCorrectionRepository['createRequest']>
+    const forgedScope = await scopeForActor(accountAId)
+
+    await expect(unsafeCreate(createInput)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(unsafeCreate(createInput, undefined)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(unsafeCreate(createInput, null)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(unsafeCreate(createInput, new AbortController().signal)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(unsafeCreate(createInput, forgedScope)).resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
+    expect(client.rpc).not.toHaveBeenCalled()
+  })
+
   it('requires an authenticated actor provider at construction', () => {
     const client: BenefitCorrectionRpcClient = { rpc: vi.fn() }
     expect(() => createBenefitCorrectionRepository(client, undefined as never)).toThrow('actor provider is required')
@@ -74,14 +122,14 @@ describe('benefit correction repository RPC contract', () => {
   it('fails closed before RPC when the mandatory actor provider has no authenticated actor', async () => {
     const client: BenefitCorrectionRpcClient = { rpc: vi.fn() }
     const repository = createBenefitCorrectionRepository(client, { getActorId: () => null })
-    await expect(repository.createRequest(createInput)).resolves.toMatchObject({ ok: false, error: { code: 'auth_required' } })
+    await expect(repository.createRequest(createInput, await scopeForActor(accountAId))).resolves.toMatchObject({ ok: false, error: { code: 'auth_required' } })
     await expect(repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'auth_required' } })
     expect(client.rpc).not.toHaveBeenCalled()
   })
 
   it('calls authenticated create with only the approved RPC arguments', async () => {
     const value = setup()
-    expect(await value.repository.createRequest(createInput)).toEqual({ ok: true, data: {
+    expect(await createFor(value.repository, createInput)).toEqual({ ok: true, data: {
       id: requestId, companyId: ownerItem.company_id, categoryId: 'health', currentText: ownerItem.current_text,
       proposedText: ownerItem.proposed_text, scopeText: ownerItem.scope_text, sourceUrl: ownerItem.source_url,
       observedDataVersion: ownerItem.observed_data_version, status: 'submitted', adminResponse: null,
@@ -134,7 +182,7 @@ describe('benefit correction repository RPC contract', () => {
     ['inconsistent state', { ...ownerItem, status: 'applied', applied_data_version: null }],
   ])('fails closed on malformed create response: %s', async (_label, data) => {
     const value = setup({ data, error: null })
-    await expect(value.repository.createRequest(createInput)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    await expect(createFor(value.repository, createInput)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
   it.each([
@@ -160,8 +208,8 @@ describe('benefit correction repository RPC contract', () => {
 
   it('validates inputs before RPC and never accepts client actor or review identity fields', async () => {
     const value = setup()
-    await expect(value.repository.createRequest({ ...createInput, sourceUrl: 'https://localhost/private' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
-    await expect(value.repository.createRequest({ ...createInput, proposedText: 'x'.repeat(5001) })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(createFor(value.repository, { ...createInput, sourceUrl: 'https://localhost/private' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(createFor(value.repository, { ...createInput, proposedText: 'x'.repeat(5001) })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
     await expect(value.repository.listMyRequests({ limit: 101 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
     await expect(value.repository.reviewRequest({ requestId, expectedStatus: 'submitted', action: 'approve', adminResponse: 'invalid transition', clientKey })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
     expect(value.calls).toEqual([])
@@ -173,14 +221,15 @@ describe('benefit correction repository RPC contract', () => {
     const client: BenefitCorrectionRpcClient = { rpc: vi.fn(() => new Promise<BenefitCorrectionRpcResponse>(resolve => { finish = resolve })) }
     const repository = createBenefitCorrectionRepository(client, { getActorId: () => actorScope })
     const controller = new AbortController()
-    const pending = repository.createRequest(createInput, controller.signal)
+    const expectedScope = await currentScope(repository)
+    const pending = repository.createRequest(createInput, expectedScope, controller.signal)
     await vi.waitFor(() => expect(client.rpc).toHaveBeenCalledWith('create_benefit_correction_request_v1', expect.any(Object), controller.signal))
     actorScope = accountBId
     finish({ data: ownerItem, error: null })
     await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
 
     controller.abort()
-    await expect(repository.createRequest(createInput, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
+    await expect(repository.createRequest(createInput, expectedScope, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
   })
 
   it('rechecks cancellation after actor lookup and immediately before RPC', async () => {
@@ -190,7 +239,7 @@ describe('benefit correction repository RPC contract', () => {
     const repository = createBenefitCorrectionRepository(client, {
       getActorId: () => new Promise<string>(resolve => { releaseActor = resolve }),
     })
-    const pending = repository.createRequest(createInput, controller.signal)
+    const pending = repository.createRequest(createInput, await scopeForActor(accountAId), controller.signal)
     controller.abort()
     releaseActor(accountAId)
     await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
@@ -199,9 +248,9 @@ describe('benefit correction repository RPC contract', () => {
 
   it('uses Unicode code points for PostgreSQL-compatible text bounds', async () => {
     const value = setup({ data: { ...ownerItem, current_text: '😀'.repeat(5000), proposed_text: '😀'.repeat(5000), scope_text: '😀'.repeat(2000) }, error: null })
-    await expect(value.repository.createRequest({ ...createInput, currentText: '😀'.repeat(5000), proposedText: '😀'.repeat(5000), scopeText: '😀'.repeat(2000) })).resolves.toMatchObject({ ok: true })
-    await expect(value.repository.createRequest({ ...createInput, currentText: '😀'.repeat(5001) })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
-    await expect(value.repository.createRequest({ ...createInput, scopeText: '😀'.repeat(2001) })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(createFor(value.repository, { ...createInput, currentText: '😀'.repeat(5000), proposedText: '😀'.repeat(5000), scopeText: '😀'.repeat(2000) })).resolves.toMatchObject({ ok: true })
+    await expect(createFor(value.repository, { ...createInput, currentText: '😀'.repeat(5001) })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(createFor(value.repository, { ...createInput, scopeText: '😀'.repeat(2001) })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
     expect(value.calls).toHaveLength(1)
   })
 
