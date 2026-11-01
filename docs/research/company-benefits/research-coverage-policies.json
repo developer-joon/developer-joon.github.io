@@ -1,0 +1,26 @@
+{
+  "policy_id": "coverage-policy-v2",
+  "policy_version": 2,
+  "description": "Fail-closed minimum routes required before a category cell may be integrated as no_public_info.",
+  "allow_generator_synthesized_receipts": false,
+  "completion_rule": "all_required_routes_have_valid_receipts",
+  "receipt_schema": "schema/research-attempt.schema.json",
+  "routes": {
+    "official-government": {"route_kind": "official_government", "required": true},
+    "company-recruiting-media": {"route_kind": "company_recruiting_major_media", "required": true},
+    "other-public-web": {"route_kind": "other_public_web", "required": true},
+    "community-review": {"route_kind": "community_employee_review", "required": false}
+  },
+  "category_routes": {
+    "leave": ["official-government", "company-recruiting-media", "other-public-web"],
+    "family": ["official-government", "company-recruiting-media", "other-public-web"],
+    "health": ["official-government", "company-recruiting-media", "other-public-web"],
+    "growth": ["official-government", "company-recruiting-media", "other-public-web"],
+    "housing": ["official-government", "company-recruiting-media", "other-public-web"],
+    "commute": ["official-government", "company-recruiting-media", "other-public-web"],
+    "remote": ["official-government", "company-recruiting-media", "other-public-web"],
+    "retirement": ["official-government", "company-recruiting-media", "other-public-web"],
+    "meals": ["official-government", "company-recruiting-media", "other-public-web"],
+    "inclusion": ["official-government", "company-recruiting-media", "other-public-web"]
+  }
+}
