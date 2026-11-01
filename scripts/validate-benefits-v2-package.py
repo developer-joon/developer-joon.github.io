@@ -103,25 +103,28 @@ def _read_authoritative_text(repo_root, path):
 def _local_schema_reference_errors(schema):
     errors = []
 
-    def resolve(reference):
+    def resolve(keyword, reference):
         if reference == "#":
             return
         if not reference.startswith("#/"):
-            errors.append(f"external reference is not allowed: {reference}")
+            errors.append(f"external or anchored {keyword} is not allowed: {reference}")
             return
         target = schema
         for raw_part in reference[2:].split("/"):
             part = raw_part.replace("~1", "/").replace("~0", "~")
             if not isinstance(target, dict) or part not in target:
-                errors.append(f"unresolved reference: {reference}")
+                errors.append(f"unresolved {keyword}: {reference}")
                 return
             target = target[part]
+        if not isinstance(target, (dict, bool)):
+            errors.append(f"{keyword} target is not a schema: {reference}")
 
     def walk(value):
         if isinstance(value, dict):
-            reference = value.get("$ref")
-            if isinstance(reference, str):
-                resolve(reference)
+            for keyword in ("$ref", "$dynamicRef"):
+                reference = value.get(keyword)
+                if isinstance(reference, str):
+                    resolve(keyword, reference)
             for child in value.values():
                 walk(child)
         elif isinstance(value, list):

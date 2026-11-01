@@ -835,6 +835,27 @@ class BenefitsV2PackageTests(unittest.TestCase):
         self.assertTrue(
             any("invalid reference" in error for error in empty_errors), empty_errors
         )
+        for malformed_schema in (
+            {"$dynamicRef": "#/$defs/missing"},
+            {"description": "not a schema", "$ref": "#/description"},
+        ):
+            def malformed_reference(repo_root, path, value=malformed_schema):
+                if str(path).endswith("source-v2.schema.json"):
+                    return json.dumps(value)
+                return original(repo_root, path)
+
+            with mock.patch.object(
+                VALIDATOR_MODULE,
+                "_read_authoritative_text",
+                side_effect=malformed_reference,
+            ):
+                malformed_errors = VALIDATOR_MODULE.validate_package(
+                    package_for("no_public_info")
+                )
+            self.assertTrue(
+                any("invalid reference" in error for error in malformed_errors),
+                malformed_errors,
+            )
 
         policy = copy.deepcopy(package_for("reference")["coverage_policy"])
         shared_rule = policy["shared_bulk_source_policy"]["sources"][
