@@ -11,7 +11,7 @@ import shutil
 import sys
 import tempfile
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -60,6 +60,25 @@ def read_jsonl(path):
     return rows
 
 
+def read_jsonl_bytes(raw, label):
+    rows = []
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{label}: invalid UTF-8: {exc}") from None
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line, object_pairs_hook=reject_duplicate_keys)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(f"{label}:{number}: {exc}") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"{label}:{number}: row must be an object")
+        rows.append(value)
+    return rows
+
+
 def unique_map(rows, field, label):
     result = {}
     for row in rows:
@@ -80,14 +99,25 @@ def parse_time(value, label):
         raise ValueError(f"invalid {label}") from None
 
 
+def utc_time(value, label):
+    return parse_time(value, label).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def taxonomy_contract(taxonomy):
+    if not isinstance(taxonomy, dict):
+        raise ValueError("taxonomy must be an object")
     categories = taxonomy.get("categories")
     types = taxonomy.get("benefit_types")
     mappings = taxonomy.get("dol_form_5500_mappings")
     if taxonomy.get("taxonomy_version") != "benefit-taxonomy-v1":
         raise ValueError("unsupported taxonomy version")
-    if not isinstance(categories, list) or len(categories) != 10 or [item.get("order") for item in categories] != list(range(1, 11)):
+    if (not isinstance(categories, list) or len(categories) != 10
+            or any(not isinstance(item, dict) for item in categories)
+            or [item.get("order") for item in categories] != list(range(1, 11))):
         raise ValueError("taxonomy must contain ten canonically ordered categories")
+    if (not isinstance(types, list) or any(not isinstance(item, dict) for item in types)
+            or not isinstance(mappings, list) or any(not isinstance(item, dict) for item in mappings)):
+        raise ValueError("taxonomy types and DOL mappings must be object arrays")
     category_ids = [item.get("id") for item in categories]
     type_ids = [item.get("id") for item in types or []]
     if len(set(category_ids)) != 10 or len(type_ids) != 45 or len(set(type_ids)) != 45:
@@ -147,7 +177,7 @@ def fixture_marker(value):
     return False
 
 
-def _assemble_inputs(root, taxonomy, taxonomy_sha256):
+def _assemble_inputs(root, taxonomy, taxonomy_sha256, v2_snapshot=None):
     series = load_verifier().company_benefits_series
     progress = read_json(root / "series-progress.json")
     if series.progress_contract_version(progress) != "2":
@@ -298,7 +328,16 @@ def _assemble_inputs(root, taxonomy, taxonomy_sha256):
         "protocol_sha256": sha256(protocol_path.read_bytes()),
         "effective_selection_sha256": sha256(effective_path.read_bytes()),
     }
-    cells = read_jsonl(root / series.V2_LEDGER_FILES["cells"])
+    if v2_snapshot is None:
+        v2_snapshot = {
+            ledger: (root / filename).read_bytes()
+            for ledger, filename in series.V2_LEDGER_FILES.items()
+        }
+    v2_records = {
+        ledger: read_jsonl_bytes(v2_snapshot[ledger], series.V2_LEDGER_FILES[ledger])
+        for ledger in series.V2_LEDGER_FILES
+    }
+    cells = v2_records["cells"]
     cells_by_company = {}
     for cell in cells:
         cells_by_company.setdefault(cell["company_id"], {})[cell["category_id"]] = cell
@@ -312,12 +351,17 @@ def _assemble_inputs(root, taxonomy, taxonomy_sha256):
     if set(state_counts) - set(expected_states):
         raise ValueError("v2 artifact contains an unsupported cell state")
     ledger_sha256 = {
-        filename: sha256((root / filename).read_bytes())
-        for filename in series.V2_LEDGER_FILES.values()
+        series.V2_LEDGER_FILES[ledger]: sha256(raw)
+        for ledger, raw in v2_snapshot.items()
+    }
+    v2_indexes = {
+        ledger: unique_map(v2_records[ledger], series.V2_ID_FIELDS[ledger], f"v2 {ledger}")
+        for ledger in ("attempts", "official_claims", "references", "community_reports", "sources")
     }
     return (companies, company_map, claims_by_company, gaps_by_company, source_map, assignment_map,
             claim_reviews, protocol_binding, cells_by_company,
-            {state: state_counts.get(state, 0) for state in expected_states}, ledger_sha256)
+            {state: state_counts.get(state, 0) for state in expected_states}, ledger_sha256,
+            v2_indexes)
 
 
 def validate_inputs(root, taxonomy, taxonomy_sha256):
@@ -332,14 +376,24 @@ def publication_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
                      effective_selection_receipt):
     """Own the complete validation and input-loading operation before output."""
     root = Path(research_root)
+    series = load_verifier().company_benefits_series
+    if series.progress_contract_version(read_json(root / "series-progress.json")) != "2":
+        raise ValueError("v2 artifact publication requires explicit progress_version=2")
+    v2_snapshot = {
+        ledger: (root / filename).read_bytes()
+        for ledger, filename in series.V2_LEDGER_FILES.items()
+    }
     verify_active_ledgers(
         root, as_of, freeze_anchor_receipt, effective_selection_receipt
     )
     taxonomy_path = Path(taxonomy_path)
     taxonomy = read_json(taxonomy_path)
     taxonomy_contract(taxonomy)
+    if any((root / series.V2_LEDGER_FILES[ledger]).read_bytes() != raw
+           for ledger, raw in v2_snapshot.items()):
+        raise ValueError("v2 source ledger changed during publication validation")
     inputs = _assemble_inputs(
-        root, taxonomy, hashlib.sha256(taxonomy_path.read_bytes()).hexdigest()
+        root, taxonomy, hashlib.sha256(taxonomy_path.read_bytes()).hexdigest(), v2_snapshot
     )
     return taxonomy, inputs
 
@@ -362,7 +416,51 @@ def unknown_projection(value, fallback):
     return {"kind": "unknown", "reason": fallback}
 
 
-def build_company(company, population_sequence, claims, gap, taxonomy, assignments, source_map, cells):
+def public_v2_record(record, timestamp_fields=()):
+    projected = {
+        key: value for key, value in record.items()
+        if key not in {"moderation"}
+    }
+    for field in timestamp_fields:
+        if field in projected:
+            projected[field] = utc_time(projected[field], field)
+    if isinstance(projected.get("frozen_snapshot"), dict):
+        projected["frozen_snapshot"] = dict(projected["frozen_snapshot"])
+        projected["frozen_snapshot"]["frozen_at"] = utc_time(
+            projected["frozen_snapshot"]["frozen_at"], "frozen_at"
+        )
+    return projected
+
+
+def public_legacy_source(source):
+    return {
+        key: (utc_time(source[key], key) if key == "checked_at" else source[key])
+        for key in (
+            "source_id", "title", "owner", "source_type", "jurisdiction", "url",
+            "locator", "publication_date", "checked_at", "evidence_eligibility",
+        ) if key in source
+    }
+
+
+def merged_scope(records):
+    fields = ("countries", "legal_entities", "roles", "employment_types")
+    result = {field: [] for field in fields}
+    result["tenure_conditions"] = []
+    for record in records:
+        scope = record.get("scope", {})
+        for field in fields:
+            for value in scope.get(field, []):
+                if value not in result[field]:
+                    result[field].append(value)
+    return result
+
+
+def build_company(company, population_sequence, claims, gap, taxonomy, assignments, source_map, cells,
+                  v2_indexes=None):
+    v2_indexes = v2_indexes or {
+        "attempts": {}, "official_claims": {}, "references": {},
+        "community_reports": {}, "sources": {},
+    }
     type_map = {item["id"]: item for item in taxonomy["benefit_types"]}
     category_ids = [item["id"] for item in taxonomy["categories"]]
     projections = []
@@ -393,7 +491,7 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
                     "url": source["url"],
                     "final_owner_domain": source.get("final_owner_domain") or urlparse(source["url"]).hostname,
                     "publication_date": source.get("publication_date"),
-                    "checked_at": source["checked_at"],
+                    "checked_at": utc_time(source["checked_at"], "source checked_at"),
                     "evidence_eligibility": source["evidence_eligibility"],
                 },
             })
@@ -409,7 +507,7 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
             "application_scope": claim["application_scope"],
             "limitation_codes": limitations,
             "publication_date": claim.get("publication_date"),
-            "checked_at": claim["prepublication_checked_at"],
+            "checked_at": utc_time(claim["prepublication_checked_at"], "claim checked_at"),
             "source_evidence": evidence_rows,
         }
         projections.append(projection)
@@ -420,24 +518,51 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
         cell = cells.get(category_id)
         if cell is None:
             raise ValueError(f"{company['company_id']}:{category_id}: missing explicit cell")
+        official_records = [v2_indexes["official_claims"][record_id] for record_id in cell["official_claim_ids"]]
+        reference_records = [v2_indexes["references"][record_id] for record_id in cell["reference_ids"]]
+        community_records = [v2_indexes["community_reports"][record_id] for record_id in cell["community_report_ids"]]
+        evidence_records = [*official_records, *reference_records, *community_records]
+        evidence_count = sum(len(cell[field]) for field in (
+            "official_claim_ids", "reference_ids", "community_report_ids"
+        ))
+        assessed_at = utc_time(cell["assessed_at"], "cell assessed_at")
         outcome = {
             key: cell[key] for key in (
                 "category_id", "state", "reliability", "currentness", "scope_status",
-                "conflict_status", "publication_eligibility", "assessed_at",
+                "conflict_status", "publication_eligibility",
                 "official_claim_ids", "reference_ids", "community_report_ids",
             )
         }
+        outcome["assessed_at"] = assessed_at
+        limitation_codes = []
+        if cell["scope_status"] != "exact_entity":
+            limitation_codes.append("scope_limit")
+        if cell["currentness"] != "current":
+            limitation_codes.append("currentness_limit")
+        if cell["conflict_status"] != "none":
+            limitation_codes.append("conflicting_evidence")
+        if cell["state"] in {"reference", "community_report"}:
+            limitation_codes.append("lower_tier_evidence")
+        status = ("insufficient_evidence" if cell["state"] == "no_public_info"
+                  else "confirmed" if cell["scope_status"] == "exact_entity"
+                  and cell["reliability"] in {"high", "medium"} else "bounded")
         outcome.update({
             "kind": "insufficient_evidence" if cell["state"] == "no_public_info" else "evidenced",
-            "status": "bounded" if cell["scope_status"] != "exact_entity" or cell["reliability"] in {"low", "none"} else "confirmed",
-            "claim_count": len(cell["official_claim_ids"]),
-            "benefit_type_count": 0,
-            "scope": {"countries": [], "legal_entities": [], "roles": [], "employment_types": [], "tenure_conditions": []},
-            "limitation_codes": [], "last_checked_at": cell["assessed_at"],
-            "reason_code": "searched_not_found", "searched_source_ids": [], "searched_at": cell["assessed_at"],
+            "status": status,
+            "claim_count": evidence_count,
+            "benefit_type_count": (0 if cell["state"] == "no_public_info" else
+                                   len({type_id for _, type_ids, _ in category_claims[category_id] for type_id in type_ids})),
+            "scope": merged_scope(evidence_records),
+            "limitation_codes": limitation_codes, "last_checked_at": assessed_at,
         })
         if cell["state"] == "no_public_info":
             outcome["nonabsence_notice"] = NONABSENCE_NOTICE
+            attempts = [v2_indexes["attempts"][attempt_id] for attempt_id in cell["attempt_ids"]]
+            outcome.update(
+                reason_code="searched_not_found",
+                searched_source_ids=sorted({source_id for attempt in attempts for source_id in attempt.get("source_ids", [])}),
+                searched_at=assessed_at,
+            )
         outcomes.append(outcome)
     listing = {
         "company_id": company["company_id"],
@@ -469,7 +594,32 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
         "employment_evidence_scope": company.get("employment_evidence_scope", ""),
         "employment_boundary_note": company.get("employment_boundary_note", ""),
     }
-    return {"listing": listing, "company": detail_company, "category_outcomes": outcomes, "claims": []}
+    official_claims = [
+        public_v2_record(record) for record in v2_indexes["official_claims"].values()
+        if record.get("company_id") == company["company_id"]
+    ]
+    references = [
+        public_v2_record(record, ("checked_at",)) for record in v2_indexes["references"].values()
+        if record.get("company_id") == company["company_id"]
+    ]
+    community_reports = [
+        public_v2_record(record) for record in v2_indexes["community_reports"].values()
+        if record.get("company_id") == company["company_id"]
+    ]
+    v2_source_ids = {
+        source_id for record in [*official_claims, *references, *community_reports]
+        for source_id in record.get("source_ids", [record.get("source_id")]) if source_id
+    }
+    public_sources = [public_legacy_source(source_map[item["source_id"]]) for item in projections for item in item["source_evidence"]]
+    public_sources.extend(
+        public_v2_record(v2_indexes["sources"][source_id], ("retrieved_at",))
+        for source_id in sorted(v2_source_ids)
+    )
+    return {
+        "listing": listing, "company": detail_company, "category_outcomes": outcomes,
+        "claims": projections, "official_claims": official_claims, "references": references,
+        "community_reports": community_reports, "sources": public_sources,
+    }
 
 
 def public_taxonomy(taxonomy):
@@ -497,9 +647,10 @@ def scan_forbidden_keys(value, path="$"):
 def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", data_version):
         raise ValueError("data version is unsafe")
-    parse_time(generated_at, "generated_at")
+    generated_at = utc_time(generated_at, "generated_at")
     (companies, _, claims_by_company, gaps_by_company, source_map, assignments,
-     claim_reviews, protocol_binding, cells_by_company, state_counts, ledger_sha256) = inputs
+     claim_reviews, protocol_binding, cells_by_company, state_counts, ledger_sha256,
+     v2_indexes) = inputs
     output_root = Path(output_root)
     output_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output_root.name}-", dir=output_root.parent))
@@ -533,6 +684,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
                 assignments,
                 source_map,
                 cells_by_company.get(company_id, {}),
+                v2_indexes,
             )
             details[company_id] = detail
             listing.append(detail["listing"])
@@ -543,6 +695,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
             payload = {
                 "schema_version": 1,
                 "artifact_kind": "company_listing_chunk",
+                "artifact_protocol": "vNext",
                 "data_version": data_version,
                 "taxonomy_version": taxonomy["taxonomy_version"],
                 "chunk_index": index + 1,
@@ -563,25 +716,26 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
             payload = {
                 "schema_version": 1,
                 "artifact_kind": "company_detail",
+                "artifact_protocol": "vNext",
                 "data_version": data_version,
                 "taxonomy_version": taxonomy["taxonomy_version"],
                 "company": detail["company"],
                 "category_outcomes": detail["category_outcomes"],
                 "claims": detail["claims"],
+                "official_claims": detail["official_claims"],
+                "references": detail["references"],
+                "community_reports": detail["community_reports"],
+                "sources": detail["sources"],
             }
             shard_descriptors[company_id] = {"company_id": company_id, **write_version(relative, payload, 1)}
-        used_source_ids = sorted({
-            source_id
-            for detail in details.values()
-            for source_id in (
-                [item["source_id"] for claim in detail["claims"] for item in claim["source_evidence"]]
-            )
-        })
-        public_sources = [{
-            key: source_map[source_id].get(key)
-            for key in ("source_id", "title", "owner", "url", "locator", "publication_date", "checked_at")
-            if key in source_map[source_id]
-        } for source_id in used_source_ids]
+        source_inventory = {}
+        for detail in details.values():
+            for source in detail["sources"]:
+                existing = source_inventory.get(source["source_id"])
+                if existing is not None and existing != source:
+                    raise ValueError(f"conflicting public source projection: {source['source_id']}")
+                source_inventory[source["source_id"]] = source
+        public_sources = [source_inventory[source_id] for source_id in sorted(source_inventory)]
         sources_descriptor = write_version(Path("sources.json"), {"data_version": data_version, "sources": public_sources}, len(public_sources))
         methodology = {
             "schema_version": 1,
@@ -601,6 +755,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
         manifest = {
             "schema_version": 2,
             "artifact_kind": "company_benefits_manifest",
+            "artifact_protocol": "vNext",
             "data_version": data_version,
             "fixture": False,
             "generated_at": generated_at,

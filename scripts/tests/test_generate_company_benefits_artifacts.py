@@ -511,6 +511,53 @@ def test_taxonomy_has_reviewed_shape_and_conservative_dol_mappings():
     assert all(item["evidence_semantics"] == "historical_named_plan_feature_only" for item in taxonomy["dol_form_5500_mappings"])
 
 
+def test_taxonomy_contract_rejects_malformed_collection_members_with_controlled_error():
+    module_spec = importlib.util.spec_from_file_location("artifact_bad_taxonomy", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    taxonomy["categories"][0] = None
+    with raises(ValueError):
+        module.taxonomy_contract(taxonomy)
+
+
+def test_build_company_preserves_v1_claims_and_projects_v2_evidence():
+    module_spec = importlib.util.spec_from_file_location("artifact_evidence_projection", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    company = {"company_id": "KR-CRN-0000000000001", "legal_name": "Evidence Co", "scope": "domestic", "jurisdiction": "KR"}
+    source = {"source_id": "legacy-source", "title": "Legacy official", "owner": "Evidence Co", "source_type": "official_company_report", "jurisdiction": "KR", "url": "https://evidence.example/legacy", "checked_at": "2026-11-01T10:00:00+09:00", "evidence_eligibility": "A"}
+    claim = {"claim_id": "legacy-claim", "company_id": company["company_id"], "benefit_name": "Paid leave", "detail": "Paid leave is offered.", "status": "confirmed", "current_validity": "current", "evidence_grade": "A", "source_evidence": [{"source_id": "legacy-source", "role": "primary_claim_evidence", "proposition": "Paid leave is offered.", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64}], "application_scope": {"countries": ["KR"], "legal_entities": ["Evidence Co"], "roles": ["all"], "employment_types": ["full_time"], "tenure_condition": "none"}, "publication_date": "2026-01-01", "prepublication_checked_at": "2026-11-01T10:00:00+09:00"}
+    assignment = {"legacy-claim": {"assignment": {"state": "assigned", "benefit_type_ids": ["paid-leave"]}}}
+    official_id, reference_id, community_id = "official::" + "a" * 64, "reference::retained", "community::retained"
+    base_cell = {"state": "no_public_info", "reliability": "none", "currentness": "unknown", "scope_status": "unresolved", "conflict_status": "none", "publication_eligibility": "discovery_only", "assessed_at": "2026-11-01T10:02:03+09:00", "official_claim_ids": [], "reference_ids": [], "community_report_ids": [], "attempt_ids": ["attempt::one"]}
+    cells = {item["id"]: {**base_cell, "category_id": item["id"]} for item in taxonomy["categories"]}
+    cells["leave"].update(state="official_verified", reliability="high", currentness="current", scope_status="exact_entity", conflict_status="disclosed", publication_eligibility="official_claim", official_claim_ids=[official_id], reference_ids=[reference_id], community_report_ids=[community_id])
+    common_scope = {"countries": ["KR"], "legal_entities": ["Evidence Co"], "roles": ["all"], "employment_types": ["full_time"]}
+    sources = {}
+    for source_id, tier in (("source::official", "official_government"), ("source::reference", "other_public_web"), ("source::community", "community_employee_review")):
+        sources[source_id] = {"source_id": source_id, "source_tier": tier, "title": source_id, "url": f"https://{source_id.split('::')[1]}.example/source", "retrieved_at": "2026-11-01T10:00:00+09:00", "content_sha256": "d" * 64, "reliability": "high" if tier == "official_government" else "low", "currentness": "current", "scope_status": "exact_entity", "scope": common_scope, "conflict_status": "none", "publication_eligibility": "eligible"}
+    v2 = {
+        "official_claims": {official_id: {"claim_id": official_id, "cell_id": "cell::x", "company_id": company["company_id"], "category_id": "leave", "jurisdiction": "KR", "source_ids": ["source::official"], "source_tier": "official_government", "scope_status": "exact_entity", "scope": common_scope, "conflict_status": "none", "publication_eligibility": "eligible"}},
+        "references": {reference_id: {"reference_id": reference_id, "cell_id": "cell::x", "company_id": company["company_id"], "category_id": "leave", "source_id": "source::reference", "source_tier": "other_public_web", "statement": "Reference leave report", "supporting_quote": "Leave", "source_locator": "https://reference.example/leave", "reliability": "low", "currentness": "historical", "scope": {"status": "bounded_entity", **common_scope}, "conflict_status": "disclosed", "publication_eligibility": "eligible", "checked_at": "2026-11-01T10:00:00+09:00"}},
+        "community_reports": {community_id: {"community_report_id": community_id, "cell_id": "cell::x", "company_id": company["company_id"], "category_id": "leave", "source_id": "source::community", "source_tier": "community_employee_review", "statement": "Community leave report", "reliability": "low", "currentness": "unknown", "scope_status": "unresolved", "scope": common_scope, "conflict_status": "none", "moderation": {"status": "approved", "reviewer_id": "moderator::secret", "reviewed_at": "2026-11-01T10:00:00+09:00", "decision_sha256": "b" * 64}, "frozen_snapshot": {"locator": "https://snapshot.example/1", "content_sha256": "c" * 64, "frozen_at": "2026-11-01T10:00:00+09:00"}, "publication_eligibility": "eligible"}},
+        "sources": sources,
+        "attempts": {"attempt::one": {"attempt_id": "attempt::one", "source_ids": list(sources), "completed_at": "2026-11-01T10:01:00+09:00"}},
+    }
+    detail = module.build_company(company, 1, [claim], None, taxonomy, assignment, {"legacy-source": source}, cells, v2)
+    assert [item["claim_id"] for item in detail["claims"]] == ["legacy-claim"]
+    assert [item["claim_id"] for item in detail["official_claims"]] == [official_id]
+    assert [item["reference_id"] for item in detail["references"]] == [reference_id]
+    assert [item["community_report_id"] for item in detail["community_reports"]] == [community_id]
+    assert {item["source_id"] for item in detail["sources"]} == {"legacy-source", *sources}
+    assert "reviewer_id" not in json.dumps(detail["community_reports"])
+    leave = detail["category_outcomes"][0]
+    assert leave["reference_ids"] == [reference_id] and leave["community_report_ids"] == [community_id]
+    assert leave["claim_count"] == 3 and leave["last_checked_at"] == "2026-11-01T01:02:03Z"
+    assert "reason_code" not in leave
+
+
 def test_assignment_validator_requires_hash_bound_independent_approval(tmp_path):
     fixture = make_research_fixture(tmp_path / "research")
     module_spec = importlib.util.spec_from_file_location("taxonomy_assignments", ASSIGNMENT_VALIDATOR)
@@ -771,7 +818,7 @@ def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
     }
     assert manifest["protocol"]["protocol_id"] == "company-benefits-population-v4"
     assert set(manifest) == {
-        "schema_version", "artifact_kind", "data_version", "fixture", "generated_at", "protocol",
+        "schema_version", "artifact_kind", "artifact_protocol", "data_version", "fixture", "generated_at", "protocol",
         "taxonomy_version", "company_count", "listing_chunk_size", "listing_chunk_count", "category_count",
         "cell_count", "cell_state_counts", "ledger_sha256", "taxonomy", "sources", "methodology",
         "listing_chunks", "company_shards",
@@ -789,7 +836,8 @@ def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
         assert payload["company"]["company_id"] == company_id
     first_descriptor = manifest["company_shards"][fixture["companies"][0]["company_id"]]
     first_detail = json.loads((version / first_descriptor["url"].removeprefix(prefix)).read_text())
-    assert first_detail["claims"] == []
+    assert [claim["claim_id"] for claim in first_detail["claims"]] == [fixture["claim"]["claim_id"]]
+    assert first_detail["sources"]
     outcomes = first_detail["category_outcomes"]
     assert {item["category_id"] for item in outcomes} == {item["id"] for item in json.loads(TAXONOMY.read_text())["categories"]}
     assert all(item["state"] == "no_public_info" for item in outcomes)
@@ -954,6 +1002,24 @@ def test_generator_rejects_non_string_v2_source_binding_without_traceback_or_out
     assert "source" in result.stderr.casefold()
     assert "traceback" not in result.stderr.casefold()
     assert not output.exists()
+
+
+def test_publication_gate_rejects_v2_ledger_mutation_during_verification(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    spec = importlib.util.spec_from_file_location("artifact_ledger_race", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    target = research / series.V2_LEDGER_FILES["sources"]
+
+    def mutate(*_args, **_kwargs):
+        target.write_bytes(target.read_bytes() + b"\n")
+
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=mutate), raises(ValueError):
+        module.publication_gate(
+            research, TAXONOMY, "2026-10-31", tmp_path / "freeze.json", tmp_path / "effective.json"
+        )
 
 
 def load_tests(loader, tests, pattern):

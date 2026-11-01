@@ -78,7 +78,7 @@ export class BenefitsArtifactClient {
         const index = next++; const descriptor = manifest.listing_chunks[index]
         try {
           const chunk = await this.payload(manifest, descriptor, listingChunkSchema, (value) => value.companies.length, combined)
-          if (chunk.data_version !== manifest.data_version || chunk.taxonomy_version !== manifest.taxonomy_version || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw new Error('목록 chunk 메타데이터 불일치')
+          if ((chunk.artifact_protocol ?? 'v1') !== manifest.artifact_protocol || chunk.data_version !== manifest.data_version || chunk.taxonomy_version !== manifest.taxonomy_version || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw new Error('목록 chunk 메타데이터 불일치')
           chunk.companies.forEach((company, offset) => { if (company.population_sequence !== descriptor.first_sequence + offset || !manifest.company_shards[company.company_id]) throw new Error('목록 회사 참조 불일치') })
           results[index] = chunk.companies
         } catch (error) { failure ??= error; controller.abort(error) }
@@ -107,7 +107,7 @@ export class BenefitsArtifactClient {
         const id = ids[next++]; const descriptor = manifest.company_shards[id]
         try {
           const detail = await this.payload(manifest, descriptor, detailSchema, () => 1, combined, { maxBytes: SHARD_LIMIT, account })
-          if (detail.data_version !== manifest.data_version || detail.taxonomy_version !== manifest.taxonomy_version || detail.company.company_id !== id) throw new Error('상세 shard 메타데이터 불일치')
+          if ((detail.artifact_protocol ?? 'v1') !== manifest.artifact_protocol || detail.data_version !== manifest.data_version || detail.taxonomy_version !== manifest.taxonomy_version || detail.company.company_id !== id) throw new Error('상세 shard 메타데이터 불일치')
           assertCompanyDetailEvidence(byId.get(id)!, detail); output.set(id, detail)
         } catch (error) { failure ??= error; controller.abort(error) }
       }

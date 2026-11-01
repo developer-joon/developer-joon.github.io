@@ -436,6 +436,12 @@ class V2ContractTests(unittest.TestCase):
             record["scope_status"] = scope_status
             self.assert_invalid("company-category-cell.schema.json", record)
 
+    def test_official_verified_cell_retains_lower_tier_evidence_ids(self):
+        record = base_cell("official_verified")
+        record["reference_ids"] = ["reference::retained"]
+        record["community_report_ids"] = ["community::retained"]
+        self.assert_valid("company-category-cell.schema.json", record)
+
     def test_no_public_info_requires_policy_attempt_and_complete_bindings(self):
         for field in ("coverage_policy_id", "attempt_ids", "coverage_complete"):
             record = base_cell("no_public_info")

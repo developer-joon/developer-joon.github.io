@@ -72,7 +72,7 @@ export async function verifyBenefitsArtifacts(root) {
   }
   for (const descriptor of manifest.listing_chunks) {
     const { value } = await load(descriptor); const chunk = listingChunkSchema.parse(value)
-    if (chunk.companies.length !== descriptor.record_count || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw Error(`benefits listing metadata mismatch: ${descriptor.url}`)
+    if ((chunk.artifact_protocol ?? 'v1') !== manifest.artifact_protocol || chunk.companies.length !== descriptor.record_count || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw Error(`benefits listing metadata mismatch: ${descriptor.url}`)
     companies.push(...chunk.companies)
   }
   assertListingOutcomes(companies)
@@ -81,7 +81,7 @@ export async function verifyBenefitsArtifacts(root) {
   companies.forEach((company) => byId.set(company.company_id, company))
   for (const [id, descriptor] of Object.entries(manifest.company_shards)) {
     const { value } = await load(descriptor); const detail = detailSchema.parse(value)
-    if (descriptor.record_count !== 1 || descriptor.company_id !== id || detail.company.company_id !== id || detail.data_version !== manifest.data_version) throw Error(`benefits company shard mismatch: ${id}`)
+    if ((detail.artifact_protocol ?? 'v1') !== manifest.artifact_protocol || descriptor.record_count !== 1 || descriptor.company_id !== id || detail.company.company_id !== id || detail.data_version !== manifest.data_version) throw Error(`benefits company shard mismatch: ${id}`)
     assertCompanyDetailEvidence(byId.get(id), detail)
     for (const outcome of detail.category_outcomes) if (outcome.kind === 'insufficient_evidence' && !outcome.nonabsence_notice) throw Error(`missing nonabsence notice: ${id}`)
   }
