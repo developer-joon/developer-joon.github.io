@@ -21,6 +21,7 @@ export default defineConfig({
         post: page('./post/index.html'),
         edit: page('./edit/index.html'),
         adminReports: page('./admin/reports/index.html'),
+        adminBenefitCorrections: page('./admin/benefit-corrections/index.html'),
         authCallback: page('./auth/callback/index.html'),
       },
     },

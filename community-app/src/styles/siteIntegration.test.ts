@@ -37,6 +37,7 @@ const entryHtml = [
   'admin/reports/index.html',
   'benefits/correction/index.html',
   'benefits/my-corrections/index.html',
+  'admin/benefit-corrections/index.html',
 ].map(read)
 const shellSources = [
   'src/pages/CommunityHomePage.tsx',
@@ -45,6 +46,7 @@ const shellSources = [
   'src/pages/EditPostPage.tsx',
   'src/pages/AuthCallbackPage.tsx',
   'src/pages/AdminReportsPage.tsx',
+  'src/pages/AdminBenefitCorrectionsPage.tsx',
 ].map(read).join('\n')
 
 type CssRule = {
@@ -446,6 +448,7 @@ describe('shared shell contract', () => {
       'src/pages/EditPostPage.tsx',
       'src/pages/AuthCallbackPage.tsx',
       'src/pages/AdminReportsPage.tsx',
+      'src/pages/AdminBenefitCorrectionsPage.tsx',
     ].every((path) => read(path).includes('<AppFooter />'))).toBe(true)
   })
 
