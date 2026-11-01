@@ -9,6 +9,7 @@ credential-free tests and operator rehearsals.
 import argparse
 import ctypes
 import errno
+import fcntl
 import hashlib
 import hmac
 import ipaddress
@@ -732,6 +733,43 @@ def _renameat2_function():
     return function
 
 
+def _preflight_cleanup_hook(_stage, _context):
+    """Test hook for deterministic mutation at cleanup trust boundaries."""
+
+
+def _cleanup_metadata_matches(current, expected):
+    """Match every attribute relied on before destructive probe cleanup."""
+    return (
+        current.st_dev,
+        current.st_ino,
+        stat.S_IFMT(current.st_mode),
+        current.st_nlink,
+        current.st_uid,
+        stat.S_IMODE(current.st_mode),
+    ) == (
+        expected.st_dev,
+        expected.st_ino,
+        stat.S_IFMT(expected.st_mode),
+        expected.st_nlink,
+        expected.st_uid,
+        stat.S_IMODE(expected.st_mode),
+    )
+
+
+def _preflight_cleanup_error(root, probe_name, detail, residue_fd=None):
+    residue = root / probe_name if probe_name else root
+    if residue_fd is not None:
+        try:
+            residue = Path(os.readlink(f"/proc/self/fd/{residue_fd}"))
+        except OSError:
+            pass
+    return OSError(
+        errno.ESTALE,
+        f"capability preflight cleanup uncertain ({detail}); manual cleanup required; "
+        f"foreign entries and exporter residue preserved at {residue}",
+    )
+
+
 def _preflight_publication_platform(output_root):
     """Prove rename semantics with real entries in the exact private output FS."""
     if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
@@ -741,14 +779,15 @@ def _preflight_publication_platform(output_root):
         root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
     root_fd = None
+    probe_fd = None
     root_created = False
     root_metadata = None
-    can_remove_root = False
+    probe_metadata = None
+    file_metadata = []
+    exchange_completed = False
     nonce = secrets.token_hex(16)
-    names = (
-        f".benefit-export-preflight-source-{nonce}",
-        f".benefit-export-preflight-target-{nonce}",
-    )
+    probe_name = f".benefit-export-preflight-{nonce}"
+    names = ("source", "target")
     contents = (b"preflight-source", b"preflight-target")
     try:
         parent_metadata = os.fstat(parent_fd)
@@ -758,6 +797,9 @@ def _preflight_publication_platform(output_root):
             or not _root_path_still_names_fd(root.parent, parent_fd)
         ):
             raise OSError(errno.EPERM, "output root parent is not private")
+        fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        if not _root_path_still_names_fd(root.parent, parent_fd):
+            raise OSError(errno.ESTALE, "output root parent changed while locking")
         try:
             os.mkdir(root.name, 0o700, dir_fd=parent_fd)
             root_created = True
@@ -778,65 +820,151 @@ def _preflight_publication_platform(output_root):
         ):
             raise OSError(errno.EPERM, "invalid output root")
 
-        metadata = []
+        os.mkdir(probe_name, 0o700, dir_fd=root_fd)
+        _fsync_directory_fd(root_fd)
+        probe_fd = os.open(
+            probe_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+        fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        probe_metadata = os.fstat(probe_fd)
+        named_probe = os.stat(probe_name, dir_fd=root_fd, follow_symlinks=False)
+        if (
+            not _secure_owned_mode(probe_metadata, stat.S_ISDIR, 0o700)
+            or not _cleanup_metadata_matches(named_probe, probe_metadata)
+        ):
+            raise OSError(errno.EPERM, "invalid capability probe directory")
+
         for name, raw in zip(names, contents):
             descriptor = os.open(
-                name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600, dir_fd=root_fd,
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=probe_fd,
             )
             try:
                 _write_expected_file(descriptor, raw)
                 os.fsync(descriptor)
-                metadata.append(os.fstat(descriptor))
+                metadata = os.fstat(descriptor)
+                if not _secure_owned_mode(metadata, stat.S_ISREG, 0o600) or metadata.st_nlink != 1:
+                    raise OSError(errno.EPERM, "invalid capability probe file")
+                file_metadata.append(metadata)
             finally:
                 os.close(descriptor)
-        _fsync_directory_fd(root_fd)
+        _fsync_directory_fd(probe_fd)
 
         function = _renameat2_function()
         ctypes.set_errno(0)
-        result = function(root_fd, names[0].encode(), root_fd, names[1].encode(), 1)
+        result = function(probe_fd, names[0].encode(), probe_fd, names[1].encode(), 1)
         error_number = ctypes.get_errno()
         if result == 0 or error_number != errno.EEXIST:
             raise OSError(errno.ENOTSUP, "renameat2 no-replace is unsupported on output filesystem")
         for index, (name, raw) in enumerate(zip(names, contents)):
-            current_raw, current = _read_regular_file_at(root_fd, name)
-            if current_raw != raw or not _same_inode(current, metadata[index]):
+            current_raw, current = _read_regular_file_at(probe_fd, name)
+            if current_raw != raw or not _same_inode(current, file_metadata[index]):
                 raise OSError(errno.ENOTSUP, "renameat2 no-replace semantics are incorrect")
 
         ctypes.set_errno(0)
-        result = function(root_fd, names[0].encode(), root_fd, names[1].encode(), 2)
+        result = function(probe_fd, names[0].encode(), probe_fd, names[1].encode(), 2)
         if result != 0:
             raise OSError(errno.ENOTSUP, "renameat2 exchange is unsupported on output filesystem")
+        exchange_completed = True
         for index, (name, raw) in enumerate(zip(names, reversed(contents))):
-            current_raw, current = _read_regular_file_at(root_fd, name)
-            if current_raw != raw or not _same_inode(current, metadata[1 - index]):
+            current_raw, current = _read_regular_file_at(probe_fd, name)
+            if current_raw != raw or not _same_inode(current, file_metadata[1 - index]):
                 raise OSError(errno.ENOTSUP, "renameat2 exchange semantics are incorrect")
-        _fsync_directory_fd(root_fd)
+        _fsync_directory_fd(probe_fd)
     finally:
+        cleanup_error = None
+        context = {
+            "root": root,
+            "root_fd": root_fd,
+            "probe_name": probe_name,
+            "probe_fd": probe_fd,
+            "names": names,
+        }
+        if probe_fd is not None:
+            try:
+                _preflight_cleanup_hook("before_probe_cleanup", context)
+                if len(file_metadata) != len(names) or set(os.listdir(probe_fd)) != set(names):
+                    raise _preflight_cleanup_error(root, probe_name, "probe inventory changed")
+                if probe_metadata is None or not _cleanup_metadata_matches(
+                    os.fstat(probe_fd), probe_metadata
+                ):
+                    raise _preflight_cleanup_error(root, probe_name, "probe descriptor changed")
+                named_probe = os.stat(
+                    probe_name, dir_fd=root_fd, follow_symlinks=False
+                )
+                if not _cleanup_metadata_matches(named_probe, probe_metadata):
+                    raise _preflight_cleanup_error(root, probe_name, "probe pathname changed")
+                expected_metadata = (
+                    tuple(reversed(file_metadata))
+                    if exchange_completed
+                    else tuple(file_metadata)
+                )
+                for name, expected in zip(names, expected_metadata):
+                    current = os.stat(name, dir_fd=probe_fd, follow_symlinks=False)
+                    if not _cleanup_metadata_matches(current, expected):
+                        raise _preflight_cleanup_error(
+                            root, probe_name, f"probe member {name} changed"
+                        )
+                for name, expected in zip(names, expected_metadata):
+                    current = os.stat(name, dir_fd=probe_fd, follow_symlinks=False)
+                    if not _cleanup_metadata_matches(current, expected):
+                        raise _preflight_cleanup_error(
+                            root, probe_name, f"probe member {name} changed before unlink"
+                        )
+                    os.unlink(name, dir_fd=probe_fd)
+                _fsync_directory_fd(probe_fd)
+                _preflight_cleanup_hook("before_probe_directory_cleanup", context)
+                if os.listdir(probe_fd):
+                    raise _preflight_cleanup_error(root, probe_name, "probe directory is not empty")
+                if not _cleanup_metadata_matches(os.fstat(probe_fd), probe_metadata):
+                    raise _preflight_cleanup_error(root, probe_name, "probe descriptor changed")
+                named_probe = os.stat(
+                    probe_name, dir_fd=root_fd, follow_symlinks=False
+                )
+                if not _cleanup_metadata_matches(named_probe, probe_metadata):
+                    raise _preflight_cleanup_error(root, probe_name, "probe pathname changed")
+                os.rmdir(probe_name, dir_fd=root_fd)
+                _fsync_directory_fd(root_fd)
+            except OSError as exc:
+                cleanup_error = _preflight_cleanup_error(
+                    root, probe_name, str(exc), residue_fd=probe_fd
+                )
+            finally:
+                os.close(probe_fd)
+                probe_fd = None
         if root_fd is not None:
             try:
-                for name in names:
-                    try:
-                        os.unlink(name, dir_fd=root_fd)
-                    except FileNotFoundError:
-                        pass
-                _fsync_directory_fd(root_fd)
-                can_remove_root = (
-                    root_created
-                    and root_metadata is not None
-                    and not os.listdir(root_fd)
-                    and _root_path_still_names_fd(root, root_fd)
-                    and _same_inode(root_metadata, os.fstat(root_fd))
+                if cleanup_error is None and root_created:
+                    _preflight_cleanup_hook("before_root_cleanup", context)
+                    if os.listdir(root_fd):
+                        raise _preflight_cleanup_error(root, probe_name, "output root is not empty")
+                    current_root = os.fstat(root_fd)
+                    if (
+                        root_metadata is None
+                        or not _cleanup_metadata_matches(current_root, root_metadata)
+                        or not _root_path_still_names_fd(root, root_fd)
+                    ):
+                        raise _preflight_cleanup_error(root, probe_name, "output root pathname changed")
+                    named_root = os.stat(
+                        root.name, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if not _cleanup_metadata_matches(named_root, root_metadata):
+                        raise _preflight_cleanup_error(root, probe_name, "output root pathname changed")
+                    os.rmdir(root.name, dir_fd=parent_fd)
+                    _fsync_directory_fd(parent_fd)
+            except OSError as exc:
+                cleanup_error = _preflight_cleanup_error(
+                    root, probe_name, str(exc), residue_fd=root_fd
                 )
             finally:
                 os.close(root_fd)
-            if can_remove_root:
-                try:
-                    os.rmdir(root.name, dir_fd=parent_fd)
-                    _fsync_directory_fd(parent_fd)
-                except FileNotFoundError:
-                    pass
         os.close(parent_fd)
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def _open_secure_output_root(output_root):

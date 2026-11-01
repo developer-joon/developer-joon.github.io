@@ -1369,8 +1369,11 @@ for index in range(1000):
 
             def inspect_fixture(source_fd, source, target_fd, target, flags):
                 observed.append(flags)
-                self.assertEqual(root.stat().st_ino, os.fstat(source_fd).st_ino)
-                self.assertEqual(0o700, root.stat().st_mode & 0o777)
+                self.assertEqual(source_fd, target_fd)
+                probe_path = Path(os.readlink(f"/proc/self/fd/{source_fd}"))
+                self.assertEqual(root, probe_path.parent)
+                self.assertTrue(probe_path.name.startswith(".benefit-export-preflight-"))
+                self.assertEqual(0o700, os.fstat(source_fd).st_mode & 0o777)
                 return real_function(source_fd, source, target_fd, target, flags)
 
             self.exporter._renameat2_function = lambda: inspect_fixture
@@ -1402,6 +1405,169 @@ for index in range(1000):
                     self.exporter._renameat2_function = original
                 self.assertFalse(root.exists())
                 self.assertEqual([], list(base.iterdir()))
+
+    def _run_adversarial_preflight_cleanup(
+        self,
+        mutate,
+        verify,
+        *,
+        preexisting_root=False,
+        stage="before_probe_cleanup",
+    ):
+        candidates = self.build_snapshot([row()])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "snapshots"
+            if preexisting_root:
+                root.mkdir(mode=0o700)
+            original_hook = self.exporter._preflight_cleanup_hook
+            observed = {}
+
+            def hook(current_stage, context):
+                if current_stage == stage:
+                    observed.update(mutate(base, root, context) or {})
+
+            self.exporter._preflight_cleanup_hook = hook
+            try:
+                with self.assertRaisesRegex(
+                    OSError, "manual cleanup required.*residue"
+                ) as caught:
+                    self.exporter.publish_snapshot(
+                        root, "approved-2026-11-01-v1", candidates
+                    )
+                observed["diagnostic"] = str(caught.exception)
+            finally:
+                self.exporter._preflight_cleanup_hook = original_hook
+
+            self.assertFalse((root / "approved-2026-11-01-v1").exists())
+            self.assertFalse(
+                (base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME).exists()
+            )
+            verify(base, root, observed)
+
+    def test_preflight_cleanup_preserves_replaced_probe_file_and_fails_closed(self):
+        def replace_probe(_base, _root, context):
+            name = context["names"][0]
+            os.unlink(name, dir_fd=context["probe_fd"])
+            replacement = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=context["probe_fd"],
+            )
+            try:
+                os.write(replacement, b"foreign replacement")
+                os.fsync(replacement)
+            finally:
+                os.close(replacement)
+            return {"probe_name": context["probe_name"], "file_name": name}
+
+        def verify_replacement(base, root, observed):
+            replacement = root / observed["probe_name"] / observed["file_name"]
+            self.assertEqual(b"foreign replacement", replacement.read_bytes())
+            self.assertTrue(root.exists())
+            self.assertTrue(base.exists())
+
+        self._run_adversarial_preflight_cleanup(
+            replace_probe, verify_replacement, preexisting_root=True
+        )
+
+    def test_preflight_cleanup_preserves_hardlinked_probe_and_fails_closed(self):
+        def hardlink_probe(_base, _root, context):
+            linked_name = "foreign-hardlink"
+            os.link(
+                context["names"][0],
+                linked_name,
+                src_dir_fd=context["probe_fd"],
+                dst_dir_fd=context["root_fd"],
+                follow_symlinks=False,
+            )
+            return {"probe_name": context["probe_name"], "linked_name": linked_name}
+
+        def verify_hardlink(_base, root, observed):
+            probe = root / observed["probe_name"]
+            self.assertTrue((root / observed["linked_name"]).is_file())
+            self.assertEqual(2, (root / observed["linked_name"]).stat().st_nlink)
+            self.assertTrue((probe / "source").is_file())
+
+        self._run_adversarial_preflight_cleanup(hardlink_probe, verify_hardlink)
+
+    def test_preflight_cleanup_preserves_foreign_insertion_and_fails_closed(self):
+        def insert_foreign(_base, _root, context):
+            foreign_name = "foreign-insertion"
+            descriptor = os.open(
+                foreign_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=context["probe_fd"],
+            )
+            try:
+                os.write(descriptor, b"foreign insertion")
+            finally:
+                os.close(descriptor)
+            return {"probe_name": context["probe_name"], "foreign_name": foreign_name}
+
+        def verify_insertion(_base, root, observed):
+            foreign = root / observed["probe_name"] / observed["foreign_name"]
+            self.assertEqual(b"foreign insertion", foreign.read_bytes())
+
+        self._run_adversarial_preflight_cleanup(
+            insert_foreign,
+            verify_insertion,
+            stage="before_probe_directory_cleanup",
+        )
+
+    def test_preflight_cleanup_preserves_replaced_probe_directory(self):
+        def replace_probe_directory(_base, root, context):
+            displaced = root / "exporter-probe-residue"
+            (root / context["probe_name"]).rename(displaced)
+            replacement = root / context["probe_name"]
+            replacement.mkdir(mode=0o700)
+            (replacement / "foreign-marker").write_bytes(b"foreign probe directory")
+            return {"displaced": displaced, "probe_name": context["probe_name"]}
+
+        def verify_probe_replacement(_base, root, observed):
+            replacement = root / observed["probe_name"]
+            self.assertEqual(
+                b"foreign probe directory",
+                (replacement / "foreign-marker").read_bytes(),
+            )
+            self.assertTrue(observed["displaced"].is_dir())
+            self.assertIn(str(observed["displaced"]), observed["diagnostic"])
+
+        self._run_adversarial_preflight_cleanup(
+            replace_probe_directory,
+            verify_probe_replacement,
+            stage="before_probe_directory_cleanup",
+        )
+
+    def test_preflight_never_removes_preexisting_output_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            root.mkdir(mode=0o700)
+            before = root.stat()
+            self.exporter._preflight_publication_platform(root)
+            after = root.stat()
+            self.assertEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
+            self.assertEqual([], list(root.iterdir()))
+
+    def test_preflight_cleanup_preserves_replacement_output_root_and_owned_residue(self):
+        def replace_root(base, root, context):
+            displaced = base / "exporter-residue"
+            root.rename(displaced)
+            root.mkdir(mode=0o700)
+            (root / "foreign-marker").write_bytes(b"foreign root")
+            return {"displaced": displaced, "probe_name": context["probe_name"]}
+
+        def verify_root_replacement(_base, root, observed):
+            self.assertEqual(b"foreign root", (root / "foreign-marker").read_bytes())
+            self.assertTrue(observed["displaced"].is_dir())
+            self.assertEqual([], list(observed["displaced"].iterdir()))
+            self.assertIn(str(observed["displaced"]), observed["diagnostic"])
+
+        self._run_adversarial_preflight_cleanup(
+            replace_root, verify_root_replacement, stage="before_root_cleanup"
+        )
 
     def test_psql_timeout_kills_pipe_holding_descendants_with_a_bounded_deadline(self):
         launched = []
