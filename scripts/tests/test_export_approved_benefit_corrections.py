@@ -1,9 +1,11 @@
 import hashlib
 import importlib.util
 import json
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -40,8 +42,16 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
     def setUpClass(cls):
         cls.exporter = load_exporter()
 
+    @staticmethod
+    def public_resolver(hostname):
+        return ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]
+
+    def build_snapshot(self, rows, **kwargs):
+        kwargs.setdefault("resolver", self.public_resolver)
+        return self.exporter.build_snapshot(rows, **kwargs)
+
     def test_exports_only_approved_rows_with_a_strict_candidate_allowlist(self):
-        snapshot = self.exporter.build_snapshot([
+        snapshot = self.build_snapshot([
             row(),
             row("10000000-0000-4000-8000-000000000002", status="submitted"),
             row("10000000-0000-4000-8000-000000000003", status="rejected"),
@@ -58,16 +68,16 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
 
     def test_deduplicates_identical_rows_and_rejects_conflicting_duplicate_ids(self):
         original = row()
-        self.assertEqual(1, len(self.exporter.build_snapshot([original, dict(original)])))
+        self.assertEqual(1, len(self.build_snapshot([original, dict(original)])))
         conflicting = row(proposed_text="Different")
         with self.assertRaisesRegex(ValueError, "conflicting duplicate"):
-            self.exporter.build_snapshot([original, conflicting])
+            self.build_snapshot([original, conflicting])
         with self.assertRaisesRegex(ValueError, "conflicting duplicate"):
-            self.exporter.build_snapshot([original, row(status="submitted")])
+            self.build_snapshot([original, row(status="submitted")])
 
     def test_jsonl_escapes_malicious_text_and_round_trips_exactly(self):
         malicious = '</script>\n{"forged":true}\t\\"\u2028'
-        candidates = self.exporter.build_snapshot([row(proposed_text=malicious)])
+        candidates = self.build_snapshot([row(proposed_text=malicious)])
         raw = self.exporter.canonical_jsonl(candidates)
         self.assertNotIn(b"</script>", raw)
         self.assertEqual(malicious, json.loads(raw.decode("utf-8"))["proposed_text"])
@@ -77,7 +87,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         for field in ("unexpected", "email", "submitter_id", "reviewer_id", "provider_metadata"):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, "unexpected fields"):
-                    self.exporter.build_snapshot([row(**{field: "secret"})])
+                    self.build_snapshot([row(**{field: "secret"})])
 
     def test_rejects_malformed_rows_unbounded_text_and_non_public_https_urls(self):
         cases = [
@@ -92,19 +102,94 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         for invalid in cases:
             with self.subTest(invalid=invalid):
                 with self.assertRaises(ValueError):
-                    self.exporter.build_snapshot([invalid])
+                    self.build_snapshot([invalid])
+
+    def test_rejects_alternate_numeric_ipv4_and_credential_host_bypasses(self):
+        urls = [
+            "https://127.1/e", "https://0177.0.0.1/e", "https://0x7f.0.0.1/e",
+            "https://0x7f000001/e", "https://2130706433/e",
+            "https://user@example.com/e", "https://user:secret@example.com/e",
+            "https://user%40example.com@public.example/e",
+        ]
+        for url in urls:
+            with self.subTest(url=url):
+                with self.assertRaisesRegex(ValueError, "invalid public evidence URL"):
+                    self.build_snapshot([row(source_url=url)])
+
+    def test_validates_idna_and_resolves_the_ascii_hostname(self):
+        resolved = []
+
+        def resolver(hostname):
+            resolved.append(hostname)
+            return ["93.184.216.34"]
+
+        snapshot = self.build_snapshot([row(source_url="https://bücher.example/e")], resolver=resolver)
+        self.assertEqual("https://bücher.example/e", snapshot[0]["evidence_url"])
+        self.assertEqual(["xn--bcher-kva.example"], resolved)
+
+        invalid_urls = [
+            "https://-bad.example/e", "https://bad-.example/e", "https://a..example/e",
+            "https://\u00ad.example/e", "https://exam\u00adple.com/e",
+            "https://www。example.com/e", "https://example。/e", "https://xn--/e",
+        ]
+        for url in invalid_urls:
+            with self.subTest(url=url):
+                with self.assertRaisesRegex(ValueError, "invalid public evidence URL"):
+                    self.build_snapshot([row(source_url=url)])
+
+    def test_rejects_any_non_global_dns_answer_including_mapped_ipv6(self):
+        unsafe_answers = [
+            ["127.0.0.1"], ["10.0.0.1"], ["169.254.1.2"], ["192.0.2.1"],
+            ["224.0.0.1"], ["::1"], ["fe80::1"], ["::ffff:127.0.0.1"],
+            ["93.184.216.34", "10.0.0.1"],
+        ]
+        for answers in unsafe_answers:
+            with self.subTest(answers=answers):
+                with self.assertRaisesRegex(ValueError, "invalid public evidence URL"):
+                    self.build_snapshot(
+                        [row(source_url="https://public-looking.example/e")],
+                        resolver=lambda _hostname, answers=answers: answers,
+                    )
+        with self.assertRaisesRegex(ValueError, "invalid public evidence URL"):
+            self.build_snapshot(
+                [row(source_url="https://127.0.0.1.nip.io/e")],
+                resolver=lambda _hostname: ["127.0.0.1"],
+            )
+
+    def test_dns_validation_fails_closed_on_error_timeout_empty_or_malformed_answers(self):
+        def raises(_hostname):
+            raise socket.gaierror("no answer")
+
+        def blocks(_hostname):
+            time.sleep(0.2)
+            return ["93.184.216.34"]
+
+        resolvers = [raises, lambda _hostname: [], lambda _hostname: ["not-an-ip"], blocks]
+        for resolver in resolvers:
+            with self.subTest(resolver=resolver):
+                with self.assertRaisesRegex(ValueError, "invalid public evidence URL"):
+                    self.build_snapshot(
+                        [row()], resolver=resolver, resolver_timeout_seconds=0.01
+                    )
+
+    def test_dns_answers_are_validation_only_and_do_not_change_snapshot_bytes(self):
+        left = self.exporter.canonical_jsonl(self.build_snapshot([row()], resolver=lambda _host: ["8.8.8.8"]))
+        right = self.exporter.canonical_jsonl(self.build_snapshot([row()], resolver=lambda _host: ["1.1.1.1"]))
+        self.assertEqual(left, right)
+        self.assertNotIn(b"8.8.8.8", left)
+        self.assertNotIn(b"1.1.1.1", right)
 
     def test_canonical_order_and_hash_are_deterministic(self):
         second = row("10000000-0000-4000-8000-000000000002", company_id="US-CIK0000320193")
         first = row()
-        left = self.exporter.canonical_jsonl(self.exporter.build_snapshot([second, first]))
-        right = self.exporter.canonical_jsonl(self.exporter.build_snapshot([first, second]))
+        left = self.exporter.canonical_jsonl(self.build_snapshot([second, first]))
+        right = self.exporter.canonical_jsonl(self.build_snapshot([first, second]))
         self.assertEqual(left, right)
         self.assertEqual(hashlib.sha256(left).hexdigest(), self.exporter.snapshot_sha256(left))
         self.assertEqual(first["id"], json.loads(left.splitlines()[0])["correction_request_id"])
 
     def test_publish_is_atomic_idempotent_and_refuses_existing_mismatch(self):
-        candidates = self.exporter.build_snapshot([row()])
+        candidates = self.build_snapshot([row()])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
@@ -175,10 +260,13 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = root / "rows.json"
+            resolver_fixture = root / "resolver.json"
             fixture.write_text(json.dumps([row()]), encoding="utf-8")
+            resolver_fixture.write_text(json.dumps({"example.com": ["93.184.216.34"]}), encoding="utf-8")
             result = subprocess.run(
                 [
                     sys.executable, str(EXPORTER), "export", "--input-json", str(fixture),
+                    "--resolver-json", str(resolver_fixture),
                     "--output-root", str(root / "snapshots"), "--snapshot-version", "approved-2026-11-01-v1",
                 ],
                 cwd=ROOT, text=True, capture_output=True, check=False,

@@ -13,12 +13,16 @@ import hashlib
 import ipaddress
 import json
 import os
+import queue
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import unicodedata
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -46,6 +50,8 @@ SNAPSHOT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_CANDIDATES = 100_000
 MAX_MANIFEST_BYTES = 10 * 1024 * 1024
+MAX_DNS_ANSWERS = 64
+DEFAULT_DNS_TIMEOUT_SECONDS = 2.0
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
@@ -102,41 +108,127 @@ def _require_data_version(value, field="observed_data_version"):
     return value
 
 
-def _require_public_https_url(value):
+def _system_resolver(hostname):
+    """Return every A/AAAA address from the operating system resolver."""
+    answers = socket.getaddrinfo(
+        hostname, 443, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP,
+    )
+    return [answer[4][0] for answer in answers]
+
+
+def _bounded_resolve(hostname, resolver, timeout_seconds):
+    if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+        raise ValueError("invalid public evidence URL")
+    result_queue = queue.Queue(maxsize=1)
+
+    def run():
+        try:
+            raw_answers = resolver(hostname)
+            if isinstance(raw_answers, (str, bytes)):
+                raise ValueError("malformed resolver answer")
+            answers = []
+            for index, answer in enumerate(raw_answers):
+                if index >= MAX_DNS_ANSWERS:
+                    raise ValueError("too many resolver answers")
+                answers.append(answer)
+            result_queue.put((answers, None))
+        except Exception as exc:  # Resolver failures are intentionally fail-closed.
+            result_queue.put((None, exc))
+
+    threading.Thread(target=run, daemon=True, name="benefit-url-resolver").start()
+    try:
+        answers, error = result_queue.get(timeout=timeout_seconds)
+    except queue.Empty as exc:
+        raise ValueError("invalid public evidence URL") from exc
+    if error is not None or not answers:
+        raise ValueError("invalid public evidence URL")
+    return answers
+
+
+def _ascii_hostname(hostname):
+    if any(
+        character in "\u3002\uff0e\uff61" or unicodedata.category(character).startswith("C")
+        for character in hostname
+    ):
+        raise ValueError("invalid public evidence URL")
+    try:
+        ascii_host = hostname.encode("idna").decode("ascii").lower()
+    except (UnicodeError, AttributeError) as exc:
+        raise ValueError("invalid public evidence URL") from exc
+    if len(ascii_host) > 253 or ascii_host.endswith("."):
+        raise ValueError("invalid public evidence URL")
+    labels = ascii_host.split(".")
+    if len(labels) < 2 or any(not label or len(label) > 63 for label in labels):
+        raise ValueError("invalid public evidence URL")
+    label_pattern = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+    if any(not label_pattern.fullmatch(label) for label in labels):
+        raise ValueError("invalid public evidence URL")
+    for label in labels:
+        if label.startswith("xn--"):
+            try:
+                if label.encode("ascii").decode("idna").encode("idna").decode("ascii").lower() != label:
+                    raise ValueError("invalid public evidence URL")
+            except UnicodeError as exc:
+                raise ValueError("invalid public evidence URL") from exc
+    return ascii_host
+
+
+def _require_public_https_url(value, resolver, resolver_timeout_seconds):
     value = _require_text(value, "source_url", 2048)
     if any(character.isspace() or ord(character) < 32 for character in value):
         raise ValueError("invalid public evidence URL")
     try:
         parsed = urlsplit(value)
         port = parsed.port
+        username = parsed.username
+        password = parsed.password
     except ValueError as exc:
         raise ValueError("invalid public evidence URL") from exc
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username is not None or parsed.password is not None:
+    if parsed.scheme != "https" or not parsed.netloc or username is not None or password is not None:
         raise ValueError("invalid public evidence URL")
     authority = parsed.netloc
     if "@" in authority or "[" in authority or "]" in authority:
         raise ValueError("invalid public evidence URL")
-    if not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", authority):
-        raise ValueError("invalid public evidence URL")
     if port is not None and not 1 <= port <= 65535:
         raise ValueError("invalid public evidence URL")
-    host = (parsed.hostname or "").lower()
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    else:
+    host = parsed.hostname or ""
+    ascii_host = _ascii_hostname(host)
+    if re.fullmatch(r"[0-9.]+", ascii_host):
+        raise ValueError("invalid public evidence URL")
+    numeric_labels = re.compile(r"(?:[0-9]+|0x[0-9a-f]+)")
+    if all(numeric_labels.fullmatch(label) for label in ascii_host.split(".")):
         raise ValueError("invalid public evidence URL")
     if (
-        host == "localhost"
-        or host.endswith((".localhost", ".local", ".internal", ".test", ".invalid"))
-        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", host)
+        ascii_host == "localhost"
+        or ascii_host.endswith((".localhost", ".local", ".internal", ".test", ".invalid"))
     ):
         raise ValueError("invalid public evidence URL")
+    answers = _bounded_resolve(ascii_host, resolver, resolver_timeout_seconds)
+    for answer in answers:
+        if not isinstance(answer, str):
+            raise ValueError("invalid public evidence URL")
+        try:
+            address = ipaddress.ip_address(answer)
+        except ValueError as exc:
+            raise ValueError("invalid public evidence URL") from exc
+        mapped = getattr(address, "ipv4_mapped", None)
+        prohibited = (
+            not address.is_global or address.is_private or address.is_loopback
+            or address.is_link_local or address.is_reserved or address.is_multicast
+            or address.is_unspecified
+        )
+        mapped_prohibited = mapped is not None and (
+            not mapped.is_global or mapped.is_private or mapped.is_loopback
+            or mapped.is_link_local or mapped.is_reserved or mapped.is_multicast
+            or mapped.is_unspecified
+        )
+        if prohibited or mapped_prohibited:
+            raise ValueError("invalid public evidence URL")
     return value
 
 
-def _validate_row(row, index):
+def _validate_row(row, index, resolver, resolver_timeout_seconds):
     if not isinstance(row, dict):
         raise ValueError(f"database row {index} must be an object")
     unknown = set(row) - DB_FIELDS
@@ -162,13 +254,15 @@ def _validate_row(row, index):
         "current_text": _require_text(row["current_text"], "current_text", 5000),
         "proposed_text": _require_text(row["proposed_text"], "proposed_text", 5000),
         "scope_text": _require_text(row["scope_text"], "scope_text", 2000),
-        "evidence_url": _require_public_https_url(row["source_url"]),
+        "evidence_url": _require_public_https_url(
+            row["source_url"], resolver, resolver_timeout_seconds
+        ),
         "observed_data_version": _require_data_version(row["observed_data_version"]),
     }
     return status, candidate
 
 
-def build_snapshot(rows):
+def build_snapshot(rows, resolver=None, resolver_timeout_seconds=DEFAULT_DNS_TIMEOUT_SECONDS):
     """Validate an exact DB projection and return sorted approved candidates."""
     if not isinstance(rows, list):
         raise ValueError("database response must be an array")
@@ -176,8 +270,9 @@ def build_snapshot(rows):
         raise ValueError("database response exceeds candidate limit")
     by_id = {}
     seen_rows = {}
+    resolver = resolver or _system_resolver
     for index, row in enumerate(rows):
-        status, candidate = _validate_row(row, index)
+        status, candidate = _validate_row(row, index, resolver, resolver_timeout_seconds)
         request_id = candidate["correction_request_id"]
         validated = (status, candidate)
         prior_row = seen_rows.get(request_id)
@@ -312,6 +407,34 @@ def load_json_rows(path):
         raise ValueError(f"invalid input JSON: {exc}") from exc
 
 
+def load_resolver_fixture(path):
+    """Load a hostname-to-addresses map for deterministic offline rehearsals."""
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("resolver JSON must be a regular file")
+    try:
+        mapping = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid resolver JSON: {exc}") from exc
+    if not isinstance(mapping, dict) or not mapping:
+        raise ValueError("invalid resolver JSON")
+    normalized = {}
+    for hostname, addresses in mapping.items():
+        if not isinstance(hostname, str) or _ascii_hostname(hostname) != hostname.lower():
+            raise ValueError("invalid resolver JSON")
+        if not isinstance(addresses, list) or not addresses or len(addresses) > MAX_DNS_ANSWERS:
+            raise ValueError("invalid resolver JSON")
+        normalized[hostname.lower()] = list(addresses)
+
+    def resolve(hostname):
+        try:
+            return normalized[hostname]
+        except KeyError as exc:
+            raise OSError("hostname absent from resolver fixture") from exc
+
+    return resolve
+
+
 def fetch_rows_with_psql(runner=subprocess.run):
     """Read the exact approved projection using psql's configured connection."""
     result = runner(
@@ -364,6 +487,14 @@ def _parser():
     source = export.add_mutually_exclusive_group(required=True)
     source.add_argument("--input-json", type=Path, help="fixture/rehearsal DB response")
     source.add_argument("--psql", action="store_true", help="use psql environment/service configuration")
+    export.add_argument(
+        "--resolver-json", type=Path,
+        help="fixture-only hostname-to-A/AAAA JSON map; disables live DNS for offline rehearsals",
+    )
+    export.add_argument(
+        "--dns-timeout-seconds", type=float, default=DEFAULT_DNS_TIMEOUT_SECONDS,
+        help="per-host system DNS deadline (default: 2.0; production fails closed on timeout/error)",
+    )
     export.add_argument("--output-root", required=True, type=Path)
     export.add_argument("--snapshot-version", required=True)
 
@@ -378,8 +509,13 @@ def main(argv=None):
     args = _parser().parse_args(argv)
     try:
         if args.command == "export":
+            if args.resolver_json and not args.input_json:
+                raise ValueError("--resolver-json requires --input-json")
             rows = load_json_rows(args.input_json) if args.input_json else fetch_rows_with_psql()
-            candidates = build_snapshot(rows)
+            resolver = load_resolver_fixture(args.resolver_json) if args.resolver_json else None
+            candidates = build_snapshot(
+                rows, resolver=resolver, resolver_timeout_seconds=args.dns_timeout_seconds
+            )
             target = publish_snapshot(args.output_root, args.snapshot_version, candidates)
             raw = canonical_jsonl(candidates)
             result = {

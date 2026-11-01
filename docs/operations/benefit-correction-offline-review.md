@@ -23,16 +23,21 @@ python3 scripts/export-approved-benefit-corrections.py export \
   --snapshot-version approved-corrections-YYYY-MM-DD-v1
 ```
 
-`psql` uses its existing environment/service configuration; the command accepts no credential argument. The version directory contains canonical `candidates.jsonl` and canonical `manifest.json`. The manifest binds the candidate count and SHA-256 of the exact JSONL bytes. Candidate ordering is by correction request UUID. Identical duplicate rows collapse; conflicting duplicate IDs fail. Re-running the same version with identical bytes is idempotent. If any existing file, bytes, type, or inventory differs, the exporter refuses to overwrite it. Publication stages and fsyncs both files before one atomic directory rename, so a failure cannot partially replace an existing snapshot.
+`psql` uses its existing environment/service configuration; the command accepts no credential argument. In production, each evidence hostname is IDNA-validated and resolved through the operating-system resolver with a two-second per-host deadline. Every returned A/AAAA address must be globally routable; a private, loopback, link-local, reserved, multicast, unspecified, IPv4-mapped unsafe, empty, malformed, failed, or timed-out answer fails the export. Override the deadline with `--dns-timeout-seconds` only when the operating environment requires it. Resolved addresses are validation-only and never enter snapshot bytes.
+
+The version directory contains canonical `candidates.jsonl` and canonical `manifest.json`. The manifest binds the candidate count and SHA-256 of the exact JSONL bytes. Candidate ordering is by correction request UUID. Identical duplicate rows collapse; conflicting duplicate IDs fail. Re-running the same version with identical bytes is idempotent. If any existing file, bytes, type, or inventory differs, the exporter refuses to overwrite it. Publication stages and fsyncs both files before one atomic directory rename, so a failure cannot partially replace an existing snapshot.
 
 For a credential-free rehearsal only, supply a private synthetic DB-response fixture:
 
 ```bash
 python3 scripts/export-approved-benefit-corrections.py export \
   --input-json /private/synthetic-approved-rows.json \
+  --resolver-json /private/synthetic-resolver.json \
   --output-root /private/rehearsal-snapshots \
   --snapshot-version rehearsal-approved-corrections-v1
 ```
+
+The resolver fixture is a JSON object mapping each fixture hostname to a non-empty array of literal A/AAAA addresses, for example `{"example.com":["93.184.216.34"]}`. It is accepted only with `--input-json`, so production `--psql` exports cannot substitute fixture DNS. Omitting it uses live system DNS even for an input fixture.
 
 Never fabricate a fixture and represent it as production approvals. Keep the exported snapshot private: submitted text is untrusted and may contain JSON, Markdown, HTML, or control-like content. Parse JSONL with a JSON parser; never interpolate it into HTML, shell, SQL, Markdown, or a ledger.
 
