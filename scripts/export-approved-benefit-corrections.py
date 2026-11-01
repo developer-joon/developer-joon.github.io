@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Export approved benefit corrections as immutable offline-review candidates.
+
+This tool never changes correction rows, evidence ledgers, or public artifacts.  Its
+production transport uses a read-only psql transaction; JSON input exists for
+credential-free tests and operator rehearsals.
+"""
+
+import argparse
+import ctypes
+import errno
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+from urllib.parse import urlsplit
+
+
+DB_FIELDS = {
+    "id",
+    "company_id",
+    "category_id",
+    "current_text",
+    "proposed_text",
+    "scope_text",
+    "source_url",
+    "observed_data_version",
+    "status",
+}
+STATUSES = {"submitted", "reviewing", "approved", "rejected", "applied"}
+CATEGORIES = {
+    "leave", "family", "health", "growth", "housing",
+    "commute", "remote", "retirement", "meals", "inclusion",
+}
+COMPANY_RE = re.compile(r"^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$")
+DATA_VERSION_RE = re.compile(r"^company-benefits-[0-9]{4}-[0-9]{2}-[0-9]{2}-v[1-9][0-9]*$")
+SNAPSHOT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_CANDIDATES = 100_000
+MAX_MANIFEST_BYTES = 10 * 1024 * 1024
+
+# The projection deliberately omits submitter/reviewer identity, audit events,
+# provider metadata, tokens, email, and the moderator's internal response.
+APPROVED_QUERY = r"""
+begin isolation level repeatable read read only;
+select coalesce(jsonb_agg(jsonb_build_object(
+  'id',r.id,
+  'company_id',r.company_id,
+  'category_id',r.category_id,
+  'current_text',r.current_text,
+  'proposed_text',r.proposed_text,
+  'scope_text',r.scope_text,
+  'source_url',r.source_url,
+  'observed_data_version',r.observed_data_version,
+  'status',r.status
+) order by r.id),'[]'::jsonb)::text
+from public.benefit_correction_requests r
+where r.status='approved';
+commit;
+"""
+
+
+def _require_text(value, field, maximum):
+    if not isinstance(value, str) or not value or value != value.strip(" ") or len(value) > maximum:
+        raise ValueError(f"invalid {field}")
+    if "\x00" in value or any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+        raise ValueError(f"invalid {field}")
+    return value
+
+
+def _require_uuid(value):
+    if not isinstance(value, str):
+        raise ValueError("invalid id")
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("invalid id") from exc
+    if str(parsed) != value.lower():
+        raise ValueError("invalid id")
+    return value.lower()
+
+
+def _require_data_version(value, field="observed_data_version"):
+    value = _require_text(value, field, 100)
+    if not DATA_VERSION_RE.fullmatch(value):
+        raise ValueError(f"invalid {field}")
+    try:
+        # Parsing without importing date keeps the accepted format aligned with
+        # the DB helper while rejecting impossible month/day combinations.
+        from datetime import date
+        date.fromisoformat(value[17:27])
+    except ValueError as exc:
+        raise ValueError(f"invalid {field}") from exc
+    return value
+
+
+def _require_public_https_url(value):
+    value = _require_text(value, "source_url", 2048)
+    if any(character.isspace() or ord(character) < 32 for character in value):
+        raise ValueError("invalid public evidence URL")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid public evidence URL") from exc
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username is not None or parsed.password is not None:
+        raise ValueError("invalid public evidence URL")
+    authority = parsed.netloc
+    if "@" in authority or "[" in authority or "]" in authority:
+        raise ValueError("invalid public evidence URL")
+    if not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]{1,5})?", authority):
+        raise ValueError("invalid public evidence URL")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("invalid public evidence URL")
+    host = (parsed.hostname or "").lower()
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("invalid public evidence URL")
+    if (
+        host == "localhost"
+        or host.endswith((".localhost", ".local", ".internal", ".test", ".invalid"))
+        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", host)
+    ):
+        raise ValueError("invalid public evidence URL")
+    return value
+
+
+def _validate_row(row, index):
+    if not isinstance(row, dict):
+        raise ValueError(f"database row {index} must be an object")
+    unknown = set(row) - DB_FIELDS
+    missing = DB_FIELDS - set(row)
+    if unknown:
+        raise ValueError(f"database row {index} has unexpected fields: {sorted(unknown)}")
+    if missing:
+        raise ValueError(f"database row {index} is missing fields: {sorted(missing)}")
+    status = row["status"]
+    if not isinstance(status, str) or status not in STATUSES:
+        raise ValueError(f"database row {index} has invalid status")
+    request_id = _require_uuid(row["id"])
+    company_id = _require_text(row["company_id"], "company_id", 64)
+    if not COMPANY_RE.fullmatch(company_id):
+        raise ValueError("invalid company_id")
+    category_id = _require_text(row["category_id"], "category_id", 20)
+    if category_id not in CATEGORIES:
+        raise ValueError("invalid category_id")
+    candidate = {
+        "correction_request_id": request_id,
+        "company_id": company_id,
+        "category_id": category_id,
+        "current_text": _require_text(row["current_text"], "current_text", 5000),
+        "proposed_text": _require_text(row["proposed_text"], "proposed_text", 5000),
+        "scope_text": _require_text(row["scope_text"], "scope_text", 2000),
+        "evidence_url": _require_public_https_url(row["source_url"]),
+        "observed_data_version": _require_data_version(row["observed_data_version"]),
+    }
+    return status, candidate
+
+
+def build_snapshot(rows):
+    """Validate an exact DB projection and return sorted approved candidates."""
+    if not isinstance(rows, list):
+        raise ValueError("database response must be an array")
+    if len(rows) > MAX_CANDIDATES:
+        raise ValueError("database response exceeds candidate limit")
+    by_id = {}
+    seen_rows = {}
+    for index, row in enumerate(rows):
+        status, candidate = _validate_row(row, index)
+        request_id = candidate["correction_request_id"]
+        validated = (status, candidate)
+        prior_row = seen_rows.get(request_id)
+        if prior_row is not None and prior_row != validated:
+            raise ValueError(f"conflicting duplicate correction request: {request_id}")
+        seen_rows[request_id] = validated
+        if status != "approved":
+            continue
+        by_id[request_id] = candidate
+    return [by_id[key] for key in sorted(by_id)]
+
+
+def _canonical_json_bytes(value):
+    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    # Keep canonical JSON safe even if an operator accidentally embeds it in an
+    # HTML/script context; JSON parsers restore the original untrusted text.
+    encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return (encoded + "\n").encode("utf-8")
+
+
+def canonical_jsonl(candidates):
+    return b"".join(_canonical_json_bytes(candidate) for candidate in candidates)
+
+
+def snapshot_sha256(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _expected_files(snapshot_version, candidates):
+    rows = canonical_jsonl(candidates)
+    manifest = {
+        "artifact_kind": "approved_benefit_correction_offline_review_snapshot",
+        "candidate_count": len(candidates),
+        "candidates_file": "candidates.jsonl",
+        "schema_version": 1,
+        "snapshot_sha256": snapshot_sha256(rows),
+        "snapshot_version": snapshot_version,
+    }
+    return {"candidates.jsonl": rows, "manifest.json": _canonical_json_bytes(manifest)}
+
+
+def _directory_matches(target, expected):
+    try:
+        entries = list(target.iterdir())
+    except OSError:
+        return False
+    if {entry.name for entry in entries} != set(expected):
+        return False
+    for entry in entries:
+        try:
+            metadata = entry.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or entry.read_bytes() != expected[entry.name]:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _rename_noreplace(source, target):
+    """Atomically publish a directory without replacing any existing target."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOTSUP, "atomic no-replace rename is unavailable")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100,
+        os.fsencode(source),
+        -100,
+        os.fsencode(target),
+        1,
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise FileExistsError(error_number, os.strerror(error_number), target)
+    raise OSError(error_number, os.strerror(error_number), target)
+
+
+def publish_snapshot(output_root, snapshot_version, candidates):
+    """Atomically publish or idempotently accept one immutable version directory."""
+    if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
+        raise ValueError("invalid snapshot version")
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / snapshot_version
+    expected = _expected_files(snapshot_version, candidates)
+    if target.exists() or target.is_symlink():
+        if target.is_dir() and not target.is_symlink() and _directory_matches(target, expected):
+            return target
+        raise FileExistsError(f"existing snapshot mismatch: {target}")
+
+    staging = Path(tempfile.mkdtemp(prefix=f".{snapshot_version}-", dir=root))
+    try:
+        for name, raw in expected.items():
+            path = staging / name
+            with path.open("xb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+        _fsync_directory(staging)
+        try:
+            _rename_noreplace(staging, target)
+        except FileExistsError:
+            if target.is_dir() and not target.is_symlink() and _directory_matches(target, expected):
+                return target
+            raise FileExistsError(f"existing snapshot mismatch: {target}")
+        _fsync_directory(root)
+        return target
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
+def load_json_rows(path):
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("input JSON must be a regular file")
+    try:
+        return json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid input JSON: {exc}") from exc
+
+
+def fetch_rows_with_psql(runner=subprocess.run):
+    """Read the exact approved projection using psql's configured connection."""
+    result = runner(
+        ["psql", "-X", "--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--tuples-only", "--no-align", "--quiet"],
+        input=APPROVED_QUERY,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("approved correction read failed")
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError("malformed psql response")
+    try:
+        return json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError("malformed psql response") from exc
+
+
+def verify_applied_version_binding(manifest_path, applied_version, verified_manifest_sha256):
+    """Bind a separate apply step to an independently verified public manifest."""
+    if not isinstance(verified_manifest_sha256, str) or not HASH_RE.fullmatch(verified_manifest_sha256):
+        raise ValueError("invalid verified manifest SHA-256")
+    path = Path(manifest_path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("verified manifest must be a regular file")
+    raw = path.read_bytes()
+    if len(raw) > MAX_MANIFEST_BYTES:
+        raise ValueError("verified manifest is too large")
+    if hashlib.sha256(raw).hexdigest() != verified_manifest_sha256:
+        raise ValueError("verified manifest SHA-256 does not match")
+    try:
+        manifest = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("verified manifest is invalid JSON") from exc
+    if not isinstance(manifest, dict) or manifest.get("artifact_kind") != "company_benefits_manifest":
+        raise ValueError("verified manifest has the wrong artifact kind")
+    manifest_version = _require_data_version(manifest.get("data_version"), "manifest data_version")
+    applied_version = _require_data_version(applied_version, "applied version")
+    if manifest_version != applied_version:
+        raise ValueError("applied version does not match verified manifest version")
+    return applied_version
+
+
+def _parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    export = commands.add_parser("export", help="export an immutable candidate snapshot")
+    source = export.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input-json", type=Path, help="fixture/rehearsal DB response")
+    source.add_argument("--psql", action="store_true", help="use psql environment/service configuration")
+    export.add_argument("--output-root", required=True, type=Path)
+    export.add_argument("--snapshot-version", required=True)
+
+    binding = commands.add_parser("verify-apply-binding", help="verify a separate operator apply version")
+    binding.add_argument("--manifest", required=True, type=Path)
+    binding.add_argument("--applied-version", required=True)
+    binding.add_argument("--verified-manifest-sha256", required=True)
+    return parser
+
+
+def main(argv=None):
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "export":
+            rows = load_json_rows(args.input_json) if args.input_json else fetch_rows_with_psql()
+            candidates = build_snapshot(rows)
+            target = publish_snapshot(args.output_root, args.snapshot_version, candidates)
+            raw = canonical_jsonl(candidates)
+            result = {
+                "candidate_count": len(candidates),
+                "snapshot_path": str(target),
+                "snapshot_sha256": snapshot_sha256(raw),
+                "snapshot_version": args.snapshot_version,
+            }
+        else:
+            version = verify_applied_version_binding(
+                args.manifest, args.applied_version, args.verified_manifest_sha256
+            )
+            result = {"applied_data_version": version, "binding_verified": True}
+        sys.stdout.buffer.write(_canonical_json_bytes(result))
+        return 0
+    except (FileExistsError, OSError, RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
