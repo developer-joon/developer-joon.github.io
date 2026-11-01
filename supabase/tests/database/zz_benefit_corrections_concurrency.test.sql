@@ -35,6 +35,27 @@ begin
 end $$;
 
 select extensions.dblink_connect('bc_setup',connection_string) from correction_race_fixture;
+select extensions.dblink_exec('bc_setup',$cleanup$
+  set session_replication_role=replica;
+  delete from public.rate_limit_events where user_id in (
+    select id from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%'
+  );
+  delete from public.benefit_correction_events where request_id in (
+    select r.id from public.benefit_correction_requests r join public.profiles p on p.id=r.submitter_id
+    where p.login like 'bc-owner-%'
+  ) or actor_id in (
+    select id from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%'
+  );
+  delete from public.benefit_correction_requests where submitter_id in (
+    select id from public.profiles where login like 'bc-owner-%'
+  );
+  delete from public.user_roles where user_id in (
+    select id from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%'
+  );
+  delete from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%';
+  delete from auth.users where email like '%@race.test';
+  set session_replication_role=origin
+$cleanup$);
 select extensions.dblink_exec('bc_setup',format($setup$
   insert into auth.users(id,aud,role,email) values
     (%L,'authenticated','authenticated',%L),
@@ -86,9 +107,9 @@ select is((select count(*)::integer from extensions.dblink((select connection_st
 
 select extensions.dblink_exec('bc_setup',format($setup$
   insert into public.benefit_correction_requests(id,submitter_id,client_key,payload_fingerprint,company_id,category_id,current_text,proposed_text,scope_text,source_url,observed_data_version)
-  values (%L,%L,gen_random_uuid(),repeat('c',32),'US-CIK0000320193','leave','CAS old','CAS new','CAS scope','https://example.com/cas','company-benefits-2026-10-31-v1');
+  values (%L,%L,gen_random_uuid(),repeat('c',64),'US-CIK0000320193','leave','CAS old','CAS new','CAS scope','https://example.com/cas','company-benefits-2026-10-31-v1');
   insert into public.benefit_correction_events(request_id,actor_kind,actor_id,actor_snapshot,operation,client_key,payload_fingerprint,action,from_status,to_status)
-  values (%L,'user',%L,%L,'create',gen_random_uuid(),repeat('c',32),'submitted',null,'submitted')
+  values (%L,'user',%L,%L,'create',gen_random_uuid(),repeat('c',64),'submitted',null,'submitted')
 $setup$,request_id,submitter_id,request_id,submitter_id,submitter_id::text)) from correction_race_fixture;
 select extensions.dblink_exec('bc_two',$fn$
   create or replace function pg_temp.try_review(p_request uuid,p_key uuid)
@@ -122,12 +143,39 @@ select is((select value from cas_two),'40001','concurrent CAS has exactly one wi
 select ok((select value->>'status'='reviewing' from cas_one),'CAS winner transitions the request');
 select is((select count(*)::integer from extensions.dblink((select connection_string from correction_race_fixture),format('select id from public.benefit_correction_events where request_id=%L and operation=''review''',(select request_id from correction_race_fixture))) as r(id uuid)),1,'concurrent CAS emits one review audit event');
 
+select extensions.dblink_exec('bc_setup',$cleanup$
+  set session_replication_role=replica;
+  delete from public.rate_limit_events where user_id in (
+    select id from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%'
+  );
+  delete from public.benefit_correction_events where request_id in (
+    select r.id from public.benefit_correction_requests r join public.profiles p on p.id=r.submitter_id
+    where p.login like 'bc-owner-%'
+  ) or actor_id in (
+    select id from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%'
+  );
+  delete from public.benefit_correction_requests where submitter_id in (
+    select id from public.profiles where login like 'bc-owner-%'
+  );
+  delete from public.user_roles where user_id in (
+    select id from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%'
+  );
+  delete from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%';
+  delete from auth.users where email like '%@race.test';
+  set session_replication_role=origin
+$cleanup$);
+select is((select residue_count from extensions.dblink(
+  (select connection_string from correction_race_fixture),
+  $q$select (
+    (select count(*) from auth.users where email like '%@race.test')+
+    (select count(*) from public.profiles where login like 'bc-owner-%' or login like 'bc-admin1-%' or login like 'bc-admin2-%')+
+    (select count(*) from public.benefit_correction_requests where source_url in ('https://example.com/race','https://example.com/cas'))
+  )::integer$q$
+) as r(residue_count integer)),0,'concurrency test removes every committed race fixture from the shared database');
+
 select extensions.dblink_disconnect('bc_one');
 select extensions.dblink_disconnect('bc_two');
 select extensions.dblink_disconnect('bc_setup');
--- The winning remote commits intentionally cannot be deleted: audit rows are
--- append-only and their request/actor FKs are RESTRICT. A clean db reset is the
--- test-suite cleanup boundary for these randomized concurrency fixtures.
 
 select * from finish();
 rollback;

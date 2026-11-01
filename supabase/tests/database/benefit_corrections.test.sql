@@ -44,6 +44,38 @@ select is((select max_requests from public.rate_limit_rules where action='benefi
 select is((select max_requests from public.rate_limit_rules where action='benefit_correction.apply' and window_seconds=3600 and is_enabled),100,'operator apply mutations are rate limited');
 select ok((select bool_and(p.proconfig @> array['plan_cache_mode=force_custom_plan']) from pg_proc p where p.oid=any(array['public.list_my_benefit_correction_requests_v1(integer,timestamptz,uuid)'::regprocedure,'public.list_benefit_correction_queue_v1(text,integer,timestamptz,uuid)'::regprocedure])),'keyset list RPCs prevent generic plans from defeating parameter-specific indexes');
 select is((select pg_get_indexdef('public.benefit_correction_requests_active_queue_idx'::regclass)),'CREATE INDEX benefit_correction_requests_active_queue_idx ON public.benefit_correction_requests USING btree (created_at DESC, id DESC) WHERE (status = ANY (ARRAY[''submitted''::text, ''reviewing''::text, ''approved''::text]))','active queue index matches global cursor order');
+select ok((select strpos(prosrc,'if p_status=''active'' then')>0 from pg_proc where oid='public.list_benefit_correction_queue_v1(text,integer,timestamptz,uuid)'::regprocedure),'queue RPC gives the active predicate a dedicated plan branch');
+select ok((select strpos(prosrc,'actor_kind=''user'' and actor_snapshot=v_actor::text and operation=''review'' and client_key=p_client_key')>0 from pg_proc where oid='public.review_benefit_correction_request_v1(uuid,text,text,text,uuid)'::regprocedure),'review replay lookup matches the unique event key exactly');
+
+create function pg_temp.explain_json(p_sql text)
+returns jsonb language plpgsql as $$
+declare v_plan jsonb;
+begin
+  execute 'explain (format json,costs off) '||p_sql into v_plan;
+  return v_plan;
+end $$;
+set local enable_seqscan=off;
+create temporary table correction_plans(name text primary key,plan jsonb);
+insert into correction_plans values
+  ('active-keyset',pg_temp.explain_json($sql$
+    select id,created_at from public.benefit_correction_requests
+    where status in ('submitted','reviewing','approved')
+      and (created_at,id)<('infinity'::timestamptz,'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)
+    order by created_at desc,id desc limit 51
+  $sql$)),
+  ('review-replay',pg_temp.explain_json($sql$
+    select request_id,payload_fingerprint from public.benefit_correction_events
+    where actor_kind='user' and actor_snapshot='d1000000-0000-0000-0000-000000000003'
+      and operation='review' and client_key='d3000000-0000-0000-0000-000000000010'
+  $sql$));
+select ok((select plan#>>'{0,Plan,Plans,0,Node Type}' in ('Index Scan','Index Only Scan')
+  and plan#>>'{0,Plan,Plans,0,Index Name}'='benefit_correction_requests_active_queue_idx'
+  and plan::text not like '%BitmapOr%' and plan::text not like '%"Node Type": "Sort"%'
+  from correction_plans where name='active-keyset'),'active keyset query traverses the ordered partial index without bitmap OR or sort');
+select ok((select plan#>>'{0,Plan,Node Type}' in ('Index Scan','Index Only Scan')
+  and plan#>>'{0,Plan,Index Name}'=(select indexrelid::regclass::text from pg_index where indrelid='public.benefit_correction_events'::regclass and indisunique and indnatts=4 and pg_get_indexdef(indexrelid) like '%(actor_kind, actor_snapshot, operation, client_key)%')
+  from correction_plans where name='review-replay'),'review replay lookup uses the unique event idempotency index');
+reset enable_seqscan;
 
 set local role anon;
 select throws_like($$select public.create_benefit_correction_request_v1('d2000000-0000-0000-0000-000000000001','KR-CRN-1101112948086','health','old','new','all employees','https://example.com/source','company-benefits-2026-10-31-v1')$$,'%permission denied%','anonymous create is denied');
@@ -80,14 +112,14 @@ select throws_ok($$select public.list_my_benefit_correction_requests_v1(10,'2026
 reset role;
 
 select is((select submitter_id from public.benefit_correction_requests where id=((select payload->>'id' from correction_results where name='created')::uuid)),'d1000000-0000-0000-0000-000000000001'::uuid,'submitter is derived server-side');
-select ok((select client_key='d2000000-0000-0000-0000-000000000001' and char_length(payload_fingerprint)=32 and current_text='Current display' and source_url='https://example.com/source?id=1' from public.benefit_correction_requests where id=((select payload->>'id' from correction_results where name='created')::uuid)),'submitted payload is canonicalized with a stored fingerprint');
+select ok((select client_key='d2000000-0000-0000-0000-000000000001' and payload_fingerprint ~ '^[0-9a-f]{64}$' and current_text='Current display' and source_url='https://example.com/source?id=1' from public.benefit_correction_requests where id=((select payload->>'id' from correction_results where name='created')::uuid)),'submitted payload is canonicalized with a SHA-256 fingerprint');
 select is((select count(*)::integer from public.benefit_correction_events where request_id=((select payload->>'id' from correction_results where name='created')::uuid) and action='submitted'),1,'create replay emits one submitted event');
 select is((select count(*)::integer from public.rate_limit_events where user_id='d1000000-0000-0000-0000-000000000001' and action='benefit_correction.create'),1,'create replay consumes one rate slot');
 
 set local role authenticated;
 set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000002';
 select is(jsonb_array_length(public.list_my_benefit_correction_requests_v1()->'items'),0,'other member cannot see owner request');
-select throws_like($$insert into public.benefit_correction_requests(submitter_id,client_key,payload_fingerprint,company_id,category_id,current_text,proposed_text,scope_text,source_url,observed_data_version) values ('d1000000-0000-0000-0000-000000000002','d2000000-0000-0000-0000-000000000090',repeat('a',32),'US-CIK0000320193','health','old','new','scope','https://example.com','company-benefits-2026-10-31-v1')$$,'%permission denied%','member cannot insert requests directly');
+select throws_like($$insert into public.benefit_correction_requests(submitter_id,client_key,payload_fingerprint,company_id,category_id,current_text,proposed_text,scope_text,source_url,observed_data_version) values ('d1000000-0000-0000-0000-000000000002','d2000000-0000-0000-0000-000000000090',repeat('a',64),'US-CIK0000320193','health','old','new','scope','https://example.com','company-benefits-2026-10-31-v1')$$,'%permission denied%','member cannot insert requests directly');
 select throws_like(format('update public.benefit_correction_requests set status=''approved'' where id=%L',(select payload->>'id' from correction_results where name='created')),'%permission denied%','member cannot update requests directly');
 select throws_like(format('delete from public.benefit_correction_requests where id=%L',(select payload->>'id' from correction_results where name='created')),'%permission denied%','member cannot delete requests directly');
 select throws_ok($$select public.list_benefit_correction_queue_v1()$$,'42501','admin required','member cannot list moderation queue');
@@ -125,9 +157,9 @@ reset role;
 select is((select count(*)::integer from public.rate_limit_events where user_id='d1000000-0000-0000-0000-000000000003' and action='benefit_correction.review'),3,'review replays and rejected actions consume no extra rate slots');
 
 insert into public.benefit_correction_requests(id,submitter_id,client_key,payload_fingerprint,company_id,category_id,current_text,proposed_text,scope_text,source_url,observed_data_version)
-values ('d4000000-0000-0000-0000-000000000001','d1000000-0000-0000-0000-000000000001','d2000000-0000-0000-0000-000000000080',repeat('b',32),'US-CIK0000320193','leave','Old leave','Proposed leave','US employees','https://example.com/leave','company-benefits-2026-10-31-v1');
+values ('d4000000-0000-0000-0000-000000000001','d1000000-0000-0000-0000-000000000001','d2000000-0000-0000-0000-000000000080',repeat('b',64),'US-CIK0000320193','leave','Old leave','Proposed leave','US employees','https://example.com/leave','company-benefits-2026-10-31-v1');
 insert into public.benefit_correction_events(request_id,actor_kind,actor_id,actor_snapshot,operation,client_key,payload_fingerprint,action,from_status,to_status)
-values ('d4000000-0000-0000-0000-000000000001','user','d1000000-0000-0000-0000-000000000001','d1000000-0000-0000-0000-000000000001','create','d2000000-0000-0000-0000-000000000080',repeat('b',32),'submitted',null,'submitted');
+values ('d4000000-0000-0000-0000-000000000001','user','d1000000-0000-0000-0000-000000000001','d1000000-0000-0000-0000-000000000001','create','d2000000-0000-0000-0000-000000000080',repeat('b',64),'submitted',null,'submitted');
 set local role authenticated;
 set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000003';
 select is(public.review_benefit_correction_request_v1('d4000000-0000-0000-0000-000000000001','submitted','start_review','Reviewing rejection fixture','d3000000-0000-0000-0000-000000000016')->>'status','reviewing','second request enters review');

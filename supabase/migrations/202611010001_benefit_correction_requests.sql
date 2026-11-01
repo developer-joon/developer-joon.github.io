@@ -30,7 +30,7 @@ create table public.benefit_correction_requests (
   created_at timestamptz not null default pg_catalog.clock_timestamp(),
   updated_at timestamptz not null default pg_catalog.clock_timestamp(),
   unique(submitter_id,client_key),
-  constraint benefit_correction_requests_fingerprint_check check (payload_fingerprint ~ '^[0-9a-f]{32}$'),
+  constraint benefit_correction_requests_fingerprint_check check (payload_fingerprint ~ '^[0-9a-f]{64}$'),
   constraint benefit_correction_requests_company_check check (company_id ~ '^(KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$'),
   constraint benefit_correction_requests_category_check check (category_id in ('leave','family','health','growth','housing','commute','remote','retirement','meals','inclusion')),
   constraint benefit_correction_requests_current_check check (char_length(current_text) between 1 and 5000 and current_text=btrim(current_text)),
@@ -72,7 +72,7 @@ create table public.benefit_correction_events (
     or (actor_kind='service_role' and actor_id is null and actor_snapshot='service_role')
   ),
   constraint benefit_correction_events_operation_check check (operation in ('create','review','apply')),
-  constraint benefit_correction_events_fingerprint_check check (payload_fingerprint ~ '^[0-9a-f]{32}$'),
+  constraint benefit_correction_events_fingerprint_check check (payload_fingerprint ~ '^[0-9a-f]{64}$'),
   constraint benefit_correction_events_action_check check (action in ('submitted','start_review','additional_material_requested','approved','rejected','applied')),
   constraint benefit_correction_events_from_status_check check (from_status is null or from_status in ('submitted','reviewing','approved','rejected','applied')),
   constraint benefit_correction_events_to_status_check check (to_status in ('submitted','reviewing','approved','rejected','applied')),
@@ -291,7 +291,7 @@ begin
   v_scope:=private.benefit_correction_text(p_scope_text,'scope text',2000);
   v_url:=private.benefit_correction_source_url(p_source_url);
   v_version:=private.benefit_correction_data_version(p_observed_data_version);
-  v_fingerprint:=pg_catalog.md5(pg_catalog.jsonb_build_object('company_id',v_company,'category_id',v_category,'current_text',v_current,'proposed_text',v_proposed,'scope_text',v_scope,'source_url',v_url,'observed_data_version',v_version)::text);
+  v_fingerprint:=pg_catalog.encode(extensions.digest(pg_catalog.convert_to(pg_catalog.jsonb_build_object('company_id',v_company,'category_id',v_category,'current_text',v_current,'proposed_text',v_proposed,'scope_text',v_scope,'source_url',v_url,'observed_data_version',v_version)::text,'UTF8'),'sha256'),'hex');
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-correction:create:'||v_actor::text||':'||p_client_key::text,0));
   select * into v_request from public.benefit_correction_requests where submitter_id=v_actor and client_key=p_client_key;
   if found then
@@ -336,17 +336,42 @@ begin
   if p_status is null or p_status not in ('active','submitted','reviewing','approved','rejected','applied','all') then raise exception 'invalid correction status filter' using errcode='22023'; end if;
   if p_limit is null or p_limit not between 1 and 100 then raise exception 'invalid page limit' using errcode='22023'; end if;
   if (p_cursor_created_at is null)<>(p_cursor_id is null) or (p_cursor_created_at is not null and not pg_catalog.isfinite(p_cursor_created_at)) then raise exception 'invalid cursor' using errcode='22023'; end if;
-  with candidates as materialized (
-    select r.id,r.created_at,private.benefit_correction_admin_item(r.id) item
-    from public.benefit_correction_requests r
-    where (p_status='all' or (p_status='active' and r.status in ('submitted','reviewing','approved')) or r.status=p_status)
-      and (p_cursor_created_at is null or (r.created_at,r.id)<(p_cursor_created_at,p_cursor_id))
-    order by r.created_at desc,r.id desc limit p_limit+1
-  ), page as (select * from candidates order by created_at desc,id desc limit p_limit)
-  select coalesce(pg_catalog.jsonb_agg(item order by created_at desc,id desc),'[]'::jsonb),
-    (select count(*)>p_limit from candidates),
-    case when (select count(*)>p_limit from candidates) then (select pg_catalog.jsonb_build_object('created_at',created_at,'id',id) from page order by created_at,id limit 1) else 'null'::jsonb end
-  into v_items,v_has_more,v_next from page;
+  if p_status='active' then
+    with candidates as materialized (
+      select r.id,r.created_at,private.benefit_correction_admin_item(r.id) item
+      from public.benefit_correction_requests r
+      where r.status in ('submitted','reviewing','approved')
+        and (p_cursor_created_at is null or (r.created_at,r.id)<(p_cursor_created_at,p_cursor_id))
+      order by r.created_at desc,r.id desc limit p_limit+1
+    ), page as (select * from candidates order by created_at desc,id desc limit p_limit)
+    select coalesce(pg_catalog.jsonb_agg(item order by created_at desc,id desc),'[]'::jsonb),
+      (select count(*)>p_limit from candidates),
+      case when (select count(*)>p_limit from candidates) then (select pg_catalog.jsonb_build_object('created_at',created_at,'id',id) from page order by created_at,id limit 1) else 'null'::jsonb end
+    into v_items,v_has_more,v_next from page;
+  elsif p_status='all' then
+    with candidates as materialized (
+      select r.id,r.created_at,private.benefit_correction_admin_item(r.id) item
+      from public.benefit_correction_requests r
+      where (p_cursor_created_at is null or (r.created_at,r.id)<(p_cursor_created_at,p_cursor_id))
+      order by r.created_at desc,r.id desc limit p_limit+1
+    ), page as (select * from candidates order by created_at desc,id desc limit p_limit)
+    select coalesce(pg_catalog.jsonb_agg(item order by created_at desc,id desc),'[]'::jsonb),
+      (select count(*)>p_limit from candidates),
+      case when (select count(*)>p_limit from candidates) then (select pg_catalog.jsonb_build_object('created_at',created_at,'id',id) from page order by created_at,id limit 1) else 'null'::jsonb end
+    into v_items,v_has_more,v_next from page;
+  else
+    with candidates as materialized (
+      select r.id,r.created_at,private.benefit_correction_admin_item(r.id) item
+      from public.benefit_correction_requests r
+      where r.status=p_status
+        and (p_cursor_created_at is null or (r.created_at,r.id)<(p_cursor_created_at,p_cursor_id))
+      order by r.created_at desc,r.id desc limit p_limit+1
+    ), page as (select * from candidates order by created_at desc,id desc limit p_limit)
+    select coalesce(pg_catalog.jsonb_agg(item order by created_at desc,id desc),'[]'::jsonb),
+      (select count(*)>p_limit from candidates),
+      case when (select count(*)>p_limit from candidates) then (select pg_catalog.jsonb_build_object('created_at',created_at,'id',id) from page order by created_at,id limit 1) else 'null'::jsonb end
+    into v_items,v_has_more,v_next from page;
+  end if;
   return pg_catalog.jsonb_build_object('items',v_items,'has_more',v_has_more,'next_cursor',v_next);
 end $$;
 
@@ -362,9 +387,9 @@ begin
   if p_expected_status is null or p_expected_status not in ('submitted','reviewing') then raise exception 'invalid expected correction status' using errcode='22023'; end if;
   if p_action is null or p_action not in ('start_review','request_additional_material','approve','reject') then raise exception 'correction review action not allowed' using errcode='22023'; end if;
   v_response:=private.benefit_correction_text(p_admin_response,'admin response',2000);
-  v_fingerprint:=pg_catalog.md5(pg_catalog.jsonb_build_object('request_id',p_request_id,'expected_status',p_expected_status,'action',p_action,'admin_response',v_response)::text);
+  v_fingerprint:=pg_catalog.encode(extensions.digest(pg_catalog.convert_to(pg_catalog.jsonb_build_object('request_id',p_request_id,'expected_status',p_expected_status,'action',p_action,'admin_response',v_response)::text,'UTF8'),'sha256'),'hex');
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-correction:review:'||v_actor::text||':'||p_client_key::text,0));
-  select * into v_event from public.benefit_correction_events where actor_id=v_actor and operation='review' and client_key=p_client_key;
+  select * into v_event from public.benefit_correction_events where actor_kind='user' and actor_snapshot=v_actor::text and operation='review' and client_key=p_client_key;
   if found then
     if v_event.payload_fingerprint<>v_fingerprint then raise exception 'client key reused with different payload' using errcode='22023'; end if;
     return private.benefit_correction_admin_item(v_event.request_id);
@@ -399,7 +424,7 @@ begin
   if p_client_key is null then raise exception 'client key is required' using errcode='22023'; end if;
   if p_expected_status is null or p_expected_status<>'approved' then raise exception 'invalid expected correction status' using errcode='22023'; end if;
   v_version:=private.benefit_correction_data_version(p_applied_data_version);
-  v_fingerprint:=pg_catalog.md5(pg_catalog.jsonb_build_object('request_id',p_request_id,'expected_status',p_expected_status,'applied_data_version',v_version)::text);
+  v_fingerprint:=pg_catalog.encode(extensions.digest(pg_catalog.convert_to(pg_catalog.jsonb_build_object('request_id',p_request_id,'expected_status',p_expected_status,'applied_data_version',v_version)::text,'UTF8'),'sha256'),'hex');
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-correction:apply:'||v_actor_snapshot||':'||p_client_key::text,0));
   select * into v_event from public.benefit_correction_events where actor_kind='service_role' and actor_snapshot=v_actor_snapshot and operation='apply' and client_key=p_client_key;
   if found then
