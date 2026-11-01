@@ -36,6 +36,10 @@ ID_FIELDS = {
 PACKAGE_FIELDS = {"coverage_policy", *ID_FIELDS}
 OFFICIAL_TIER = "official_government"
 ACCEPTABLE_EMPTY_RESULTS = {"no_result", "ineligible_source"}
+BENEFIT_CATEGORIES = {
+    "leave", "family", "health", "growth", "housing",
+    "commute", "remote", "retirement", "meals", "inclusion",
+}
 SCOPE_STATUS_BEST_TO_WORST = ("exact_entity", "bounded_entity", "group_only", "unresolved")
 CURRENTNESS_BEST_TO_WORST = ("current", "historical", "unknown")
 CONFLICT_SEVERITY = {"none": 0, "disclosed": 1, "contradictory": 2}
@@ -287,6 +291,51 @@ def _coverage_policy_errors(policy):
                         f"canonical coverage policy category references unknown route: "
                         f"{category}/{route_id}"
                     )
+        category_keys = {
+            category for category in category_routes if isinstance(category, str)
+        }
+        if category_keys != BENEFIT_CATEGORIES:
+            missing = sorted(BENEFIT_CATEGORIES - category_keys)
+            extra = sorted(category_keys - BENEFIT_CATEGORIES)
+            errors.append(
+                "canonical coverage policy category set mismatch; "
+                f"missing={missing}, extra={extra}"
+            )
+    shared = policy.get("shared_bulk_source_policy")
+    if not isinstance(shared, dict):
+        errors.append("canonical shared bulk source policy must be an object")
+    else:
+        if not isinstance(shared.get("default_allow_reuse"), bool):
+            errors.append("canonical shared bulk default_allow_reuse must be boolean")
+        shared_sources = shared.get("sources")
+        if not isinstance(shared_sources, dict):
+            errors.append("canonical shared bulk sources must be an object")
+        else:
+            for source_id, rule in sorted(
+                shared_sources.items(), key=lambda item: str(item[0])
+            ):
+                if not isinstance(source_id, str) or not isinstance(rule, dict):
+                    errors.append(
+                        f"canonical shared bulk source rule is invalid: {source_id!r}"
+                    )
+                    continue
+                allowed = rule.get("allowed_route_ids")
+                if not isinstance(allowed, list) or any(
+                    not isinstance(route_id, str) for route_id in allowed
+                ):
+                    errors.append(
+                        f"canonical shared bulk source has invalid allowed_route_ids: "
+                        f"{source_id}"
+                    )
+                elif any(route_id not in routes for route_id in allowed):
+                    errors.append(
+                        f"canonical shared bulk source references unknown route: {source_id}"
+                    )
+                if rule.get("require_per_entity_result_binding") is not True:
+                    errors.append(
+                        f"canonical shared bulk source must require per-entity binding: "
+                        f"{source_id}"
+                    )
     return errors
 
 
@@ -317,9 +366,16 @@ def validate_package(package, repo_root=ROOT):
     valid_records = {ledger: [] for ledger in ID_FIELDS}
     for ledger, (filename, validator) in validators.items():
         for index, record in enumerate(package[ledger]):
-            record_errors = sorted(
-                validator.iter_errors(record), key=lambda item: list(item.path)
-            )
+            try:
+                record_errors = sorted(
+                    validator.iter_errors(record), key=lambda item: list(item.path)
+                )
+            except Exception as exc:
+                errors.append(
+                    f"authoritative schema {filename} cannot validate records: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                continue
             for error in record_errors:
                 location = ".".join(str(part) for part in error.path)
                 suffix = f".{location}" if location else ""
@@ -400,7 +456,14 @@ def validate_package(package, repo_root=ROOT):
                 errors.append(f"{cell_id}: missing attempt {attempt_id}")
                 continue
             bound_attempts.append(receipt)
-            if receipt.get("receipt_content_sha256") != _receipt_content_sha256(receipt):
+            try:
+                expected_receipt_hash = _receipt_content_sha256(receipt)
+            except UnicodeError as exc:
+                errors.append(
+                    f"{attempt_id}: receipt cannot be canonically encoded: {exc}"
+                )
+                expected_receipt_hash = None
+            if receipt.get("receipt_content_sha256") != expected_receipt_hash:
                 errors.append(f"{attempt_id}: receipt content hash mismatch")
             if (
                 "shared_bulk_result_binding" in receipt

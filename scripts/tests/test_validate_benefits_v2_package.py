@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.tests.test_company_benefits_v2_contracts import (
     base_attempt,
@@ -809,6 +810,68 @@ class BenefitsV2PackageTests(unittest.TestCase):
             self.assertTrue(
                 any("invalid category routes" in error for error in errors), errors
             )
+
+    def test_unresolved_schema_reference_and_malformed_shared_policy_fail_closed(self):
+        original = VALIDATOR_MODULE._read_authoritative_text
+
+        def unresolved_schema(repo_root, path):
+            if str(path).endswith("source-v2.schema.json"):
+                return '{"$ref":"#/$defs/missing"}'
+            return original(repo_root, path)
+
+        with mock.patch.object(
+            VALIDATOR_MODULE, "_read_authoritative_text", side_effect=unresolved_schema
+        ):
+            errors = VALIDATOR_MODULE.validate_package(package_for("reference"))
+        self.assertTrue(
+            any("cannot validate records" in error for error in errors), errors
+        )
+
+        policy = copy.deepcopy(package_for("reference")["coverage_policy"])
+        shared_rule = policy["shared_bulk_source_policy"]["sources"][
+            "source::approved-shared-benefits-bulk"
+        ]
+        shared_rule["allowed_route_ids"] = None
+
+        def malformed_policy(repo_root, path):
+            if str(path).endswith("research-coverage-policies.json"):
+                return json.dumps(policy)
+            return original(repo_root, path)
+
+        package = package_for("reference")
+        package["coverage_policy"] = policy
+        with mock.patch.object(
+            VALIDATOR_MODULE, "_read_authoritative_text", side_effect=malformed_policy
+        ):
+            errors = VALIDATOR_MODULE.validate_package(package)
+        self.assertTrue(
+            any("invalid allowed_route_ids" in error for error in errors), errors
+        )
+
+    def test_policy_requires_every_benefit_category_and_receipt_surrogates_fail_closed(self):
+        original = VALIDATOR_MODULE._read_authoritative_text
+        policy = copy.deepcopy(package_for("no_public_info")["coverage_policy"])
+        del policy["category_routes"]["leave"]
+
+        def missing_category(repo_root, path):
+            if str(path).endswith("research-coverage-policies.json"):
+                return json.dumps(policy)
+            return original(repo_root, path)
+
+        package = package_for("no_public_info")
+        package["coverage_policy"] = policy
+        with mock.patch.object(
+            VALIDATOR_MODULE, "_read_authoritative_text", side_effect=missing_category
+        ):
+            errors = VALIDATOR_MODULE.validate_package(package)
+        self.assertTrue(any("category set mismatch" in error for error in errors), errors)
+
+        package = package_for("reference")
+        package["attempts"][0]["query_or_locator"] = "abc\ud800"
+        errors = VALIDATOR_MODULE.validate_package(package)
+        self.assertTrue(
+            any("cannot be canonically encoded" in error for error in errors), errors
+        )
 
     def test_scope_array_order_is_semantic_but_different_members_are_rejected(self):
         reordered = package_for("reference")
