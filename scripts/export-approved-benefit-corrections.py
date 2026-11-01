@@ -509,6 +509,27 @@ def _rename_noreplace(source, target, source_dir_fd=-100, target_dir_fd=-100):
     raise OSError(error_number, os.strerror(error_number), target)
 
 
+def _rename_exchange(source, target, source_dir_fd=-100, target_dir_fd=-100):
+    """Atomically exchange two existing names without an unsafe fallback."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(errno.ENOTSUP, "atomic exchange rename is unavailable")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        source_dir_fd,
+        os.fsencode(source),
+        target_dir_fd,
+        os.fsencode(target),
+        2,
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    raise OSError(error_number, os.strerror(error_number), target)
+
+
 def _publish_staging_noreplace(
     root_fd,
     staging_fd,
@@ -609,21 +630,7 @@ def _remove_staging(root_fd, staging_name, _expected_names, expected_directory=N
 
 
 def _rollback_published_directory(root_fd, target_name, expected_directory):
-    """Quarantine and remove only the exact directory this call published."""
-    try:
-        named = os.stat(target_name, dir_fd=root_fd, follow_symlinks=False)
-    except FileNotFoundError as exc:
-        raise OSError(
-            errno.ESTALE,
-            "published snapshot validation failed; rollback target unavailable",
-        ) from exc
-    if not stat.S_ISDIR(named.st_mode) or not _same_inode(
-        named, expected_directory
-    ):
-        raise OSError(
-            errno.ESTALE,
-            "published snapshot validation failed; rollback refused replacement target",
-        )
+    """Capture the published inode or restore a raced replacement atomically."""
     try:
         target_fd = os.open(
             target_name,
@@ -644,40 +651,145 @@ def _rollback_published_directory(root_fd, target_name, expected_directory):
                 errno.ESTALE,
                 "published snapshot validation failed; rollback refused replacement target",
             )
+
+        quarantine_name = f".{target_name}-quarantine-{uuid.uuid4().hex}"
+        os.mkdir(quarantine_name, mode=0o700, dir_fd=root_fd)
+        placeholder_fd = os.open(
+            quarantine_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+        placeholder_directory = os.fstat(placeholder_fd)
+        placeholder_location = quarantine_name
+        try:
+            if os.listdir(placeholder_fd):
+                raise OSError(errno.ESTALE, "rollback placeholder is not empty")
+            if not _directory_binding_matches(
+                root_fd,
+                quarantine_name,
+                placeholder_fd,
+                placeholder_directory,
+            ):
+                raise OSError(errno.ESTALE, "rollback placeholder identity changed")
+            _fsync_directory_fd(root_fd)
+            try:
+                _rename_exchange(
+                    target_name,
+                    quarantine_name,
+                    source_dir_fd=root_fd,
+                    target_dir_fd=root_fd,
+                )
+            except OSError as exc:
+                raise OSError(
+                    exc.errno or errno.ENOTSUP,
+                    "published snapshot validation failed; atomic rollback exchange failed",
+                ) from exc
+            placeholder_location = target_name
+
+            try:
+                captured_fd = os.open(
+                    quarantine_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=root_fd,
+                )
+            except OSError as exc:
+                raise OSError(
+                    errno.ESTALE,
+                    "published snapshot validation failed; quarantine identity unavailable",
+                ) from exc
+            try:
+                captured_directory = os.fstat(captured_fd)
+                if not _directory_binding_matches(
+                    root_fd,
+                    quarantine_name,
+                    captured_fd,
+                    captured_directory,
+                ):
+                    raise OSError(
+                        errno.ESTALE,
+                        "published snapshot validation failed; quarantine identity changed",
+                    )
+
+                if _same_inode(captured_directory, expected_directory):
+                    if os.listdir(placeholder_fd) or not _directory_binding_matches(
+                        root_fd,
+                        target_name,
+                        placeholder_fd,
+                        placeholder_directory,
+                    ):
+                        raise OSError(
+                            errno.ESTALE,
+                            "published snapshot validation failed; rollback placeholder changed",
+                        )
+                    os.rmdir(target_name, dir_fd=root_fd)
+                    placeholder_location = None
+                    _remove_directory_contents(captured_fd)
+                    if not _directory_binding_matches(
+                        root_fd,
+                        quarantine_name,
+                        captured_fd,
+                        captured_directory,
+                    ):
+                        raise OSError(
+                            errno.ESTALE,
+                            "published snapshot validation failed; quarantine identity changed",
+                        )
+                    os.rmdir(quarantine_name, dir_fd=root_fd)
+                    _fsync_directory_fd(root_fd)
+                    return
+
+                # A replacement arrived after target validation. Put the exact
+                # captured replacement back and remove only our placeholder.
+                try:
+                    _rename_exchange(
+                        target_name,
+                        quarantine_name,
+                        source_dir_fd=root_fd,
+                        target_dir_fd=root_fd,
+                    )
+                except OSError as exc:
+                    raise OSError(
+                        exc.errno or errno.ESTALE,
+                        "published snapshot validation failed; replacement restoration exchange failed",
+                    ) from exc
+                placeholder_location = quarantine_name
+                if not _directory_binding_matches(
+                    root_fd,
+                    target_name,
+                    captured_fd,
+                    captured_directory,
+                ) or not _directory_binding_matches(
+                    root_fd,
+                    quarantine_name,
+                    placeholder_fd,
+                    placeholder_directory,
+                ):
+                    raise OSError(
+                        errno.ESTALE,
+                        "published snapshot validation failed; replacement restoration changed identity",
+                    )
+            finally:
+                os.close(captured_fd)
+
+            os.rmdir(quarantine_name, dir_fd=root_fd)
+            placeholder_location = None
+            _fsync_directory_fd(root_fd)
+            raise OSError(
+                errno.ESTALE,
+                "published snapshot validation failed; rollback restored replacement target",
+            )
+        finally:
+            os.close(placeholder_fd)
+            if placeholder_location == quarantine_name:
+                _remove_staging(
+                    root_fd,
+                    quarantine_name,
+                    (),
+                    expected_directory=placeholder_directory,
+                )
+                _fsync_directory_fd(root_fd)
     finally:
         os.close(target_fd)
-
-    quarantine_name = f".{target_name}-quarantine-{uuid.uuid4().hex}"
-    _rename_noreplace(
-        target_name,
-        quarantine_name,
-        source_dir_fd=root_fd,
-        target_dir_fd=root_fd,
-    )
-    try:
-        quarantined = os.stat(
-            quarantine_name, dir_fd=root_fd, follow_symlinks=False
-        )
-    except OSError as exc:
-        raise OSError(
-            errno.ESTALE,
-            "published snapshot validation failed; quarantine identity unavailable",
-        ) from exc
-    if not stat.S_ISDIR(quarantined.st_mode) or not _same_inode(
-        quarantined, expected_directory
-    ):
-        raise OSError(
-            errno.ESTALE,
-            "published snapshot validation failed; quarantine identity changed",
-        )
-    _fsync_directory_fd(root_fd)
-    _remove_staging(
-        root_fd,
-        quarantine_name,
-        (),
-        expected_directory=expected_directory,
-    )
-    _fsync_directory_fd(root_fd)
 
 
 def publish_snapshot(output_root, snapshot_version, candidates):

@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import importlib.util
 import json
@@ -414,26 +415,61 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             target = self.exporter.publish_snapshot(root, version, candidates)
             self.assertTrue((target / "manifest.json").is_file())
 
-    def test_rollback_never_deletes_a_replacement_target(self):
+    def test_rollback_exchange_restores_replacement_arriving_after_validation(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / version
             replacement_marker = b"replacement owned by another actor"
-            original_matches = self.exporter._directory_matches
+            original_rename = self.exporter._rename_noreplace
+            original_exchange = self.exporter._rename_exchange
+            mutated = False
             replaced = False
 
-            def replace_before_post_publication_validation(root_fd, target_name, expected, **kwargs):
-                nonlocal replaced
-                if target_name == version and kwargs.get("expected_directory") is not None and not replaced:
-                    replaced = True
-                    os.rename(target_name, "displaced-corrupt", src_dir_fd=root_fd, dst_dir_fd=root_fd)
-                    os.mkdir(target_name, dir_fd=root_fd)
-                    replacement_directory_fd = os.open(
-                        target_name,
+            def mutate_at_publish(source, destination, source_dir_fd=-100, target_dir_fd=-100):
+                nonlocal mutated
+                if source.startswith(f".{version}-") and not mutated:
+                    mutated = True
+                    staging_fd = os.open(
+                        source,
                         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=root_fd,
+                        dir_fd=source_dir_fd,
+                    )
+                    try:
+                        member_fd = os.open(
+                            "late-member",
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                            0o600,
+                            dir_fd=staging_fd,
+                        )
+                        os.close(member_fd)
+                    finally:
+                        os.close(staging_fd)
+                return original_rename(
+                    source,
+                    destination,
+                    source_dir_fd=source_dir_fd,
+                    target_dir_fd=target_dir_fd,
+                )
+
+            def replace_immediately_before_exchange(
+                source, destination, source_dir_fd=-100, target_dir_fd=-100
+            ):
+                nonlocal replaced
+                if source == version and not replaced:
+                    replaced = True
+                    os.rename(
+                        source,
+                        "attacker-moved-invalid",
+                        src_dir_fd=source_dir_fd,
+                        dst_dir_fd=source_dir_fd,
+                    )
+                    os.mkdir(source, dir_fd=source_dir_fd)
+                    replacement_directory_fd = os.open(
+                        source,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=source_dir_fd,
                     )
                     try:
                         replacement_fd = os.open(
@@ -448,19 +484,74 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                             os.close(replacement_fd)
                     finally:
                         os.close(replacement_directory_fd)
-                return original_matches(root_fd, target_name, expected, **kwargs)
+                return original_exchange(
+                    source,
+                    destination,
+                    source_dir_fd=source_dir_fd,
+                    target_dir_fd=target_dir_fd,
+                )
 
-            self.exporter._directory_matches = replace_before_post_publication_validation
+            self.exporter._rename_noreplace = mutate_at_publish
+            self.exporter._rename_exchange = replace_immediately_before_exchange
             try:
-                with self.assertRaisesRegex(OSError, "rollback refused replacement target"):
+                with self.assertRaisesRegex(OSError, "rollback restored replacement target"):
                     self.exporter.publish_snapshot(root, version, candidates)
             finally:
-                self.exporter._directory_matches = original_matches
+                self.exporter._rename_noreplace = original_rename
+                self.exporter._rename_exchange = original_exchange
 
+            self.assertTrue(mutated)
             self.assertTrue(replaced)
             self.assertEqual(replacement_marker, (target / "replacement-marker").read_bytes())
             self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
             self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+
+    def test_rollback_fails_closed_when_atomic_exchange_is_unavailable(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / version
+            original_rename = self.exporter._rename_noreplace
+            original_exchange = self.exporter._rename_exchange
+            mutated = False
+
+            def mutate_at_publish(source, destination, source_dir_fd=-100, target_dir_fd=-100):
+                nonlocal mutated
+                if source.startswith(f".{version}-") and not mutated:
+                    mutated = True
+                    staging_fd = os.open(
+                        source,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=source_dir_fd,
+                    )
+                    try:
+                        os.mkdir("late-member", dir_fd=staging_fd)
+                    finally:
+                        os.close(staging_fd)
+                return original_rename(
+                    source,
+                    destination,
+                    source_dir_fd=source_dir_fd,
+                    target_dir_fd=target_dir_fd,
+                )
+
+            def unavailable(*_args, **_kwargs):
+                raise OSError(errno.ENOTSUP, "atomic exchange unavailable")
+
+            self.exporter._rename_noreplace = mutate_at_publish
+            self.exporter._rename_exchange = unavailable
+            try:
+                with self.assertRaisesRegex(OSError, "atomic rollback exchange failed"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._rename_noreplace = original_rename
+                self.exporter._rename_exchange = original_exchange
+
+            self.assertTrue(mutated)
+            self.assertTrue(target.is_dir())
+            self.assertTrue((target / "late-member").is_dir())
+            self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
 
     def test_cleanup_does_not_delete_a_replaced_staging_directory(self):
         with tempfile.TemporaryDirectory() as directory:
