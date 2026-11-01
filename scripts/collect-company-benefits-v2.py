@@ -184,26 +184,28 @@ def main(argv=None) -> int:
         items = _expand_requests(requests, companies, args.max_items)
         policy_contract = _read_json(args.coverage_policy)
         input_hash = batch_input_sha256(items)
-        checkpoint = BatchCheckpoint(args.checkpoint, input_hash)
-        package = collect_batch(
-            items,
-            transport=SecureHTTPTransport(),
-            capture_store=CaptureStore(args.capture_root, args.capture_base_url, repository_root=ROOT),
-            checkpoint=checkpoint,
-            policy=FetchPolicy(
-                max_redirects=args.max_redirects,
-                max_wire_bytes=args.max_response_bytes,
-                max_decoded_bytes=args.max_decoded_bytes,
-                connect_timeout=args.connect_timeout,
-                read_timeout=args.read_timeout,
-                dns_timeout=args.dns_timeout,
-                total_timeout=args.total_timeout,
-                retries=args.retries,
-            ),
-            now=_now,
-            coverage_policy=policy_contract,
-        )
-        _atomic_json(args.output, package)
+        with BatchCheckpoint(args.checkpoint, input_hash) as checkpoint, CaptureStore(
+            args.capture_root, args.capture_base_url, repository_root=ROOT
+        ) as capture_store:
+            package = collect_batch(
+                items,
+                transport=SecureHTTPTransport(),
+                capture_store=capture_store,
+                checkpoint=checkpoint,
+                policy=FetchPolicy(
+                    max_redirects=args.max_redirects,
+                    max_wire_bytes=args.max_response_bytes,
+                    max_decoded_bytes=args.max_decoded_bytes,
+                    connect_timeout=args.connect_timeout,
+                    read_timeout=args.read_timeout,
+                    dns_timeout=args.dns_timeout,
+                    total_timeout=args.total_timeout,
+                    retries=args.retries,
+                ),
+                now=_now,
+                coverage_policy=policy_contract,
+            )
+            _atomic_json(args.output, package)
     except CollectorError as exc:
         print(f"collection failed: {exc}", file=sys.stderr)
         return 2

@@ -55,6 +55,10 @@ SECRET_TEXT_PATTERNS = (
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_ROOT = REPOSITORY_ROOT / "docs" / "research" / "company-benefits" / "schema"
+MAX_CAPTURE_ENVELOPE_BYTES = 16 * 1024 * 1024
+MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
+_CAPTURE_FIXED_OVERHEAD_BYTES = 256 * 1024
+_CAPTURE_HEADER_OVERHEAD_BYTES = 256 * 1024
 
 
 class CollectorError(ValueError):
@@ -154,6 +158,14 @@ class FetchResult:
 class _ValidatedTarget:
     url: str
     resolved_ips: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _CanonicalTarget:
+    url: str
+    host: str
+    port: int
+    literal_ips: frozenset[str]
 
 
 class Transport(Protocol):
@@ -280,13 +292,8 @@ def _sensitive_key(value: str) -> bool:
     )
 
 
-def _validated_public_https_target(
-    url: str,
-    *,
-    resolver: Callable[[str, int], Sequence[str]] = _default_resolver,
-    dns_timeout: float = 3.0,
-) -> _ValidatedTarget:
-    """Canonicalize a URL and bind it to public DNS answers."""
+def _canonical_public_https_target(url: str) -> _CanonicalTarget:
+    """Canonicalize and validate HTTPS syntax without performing DNS."""
     if not isinstance(url, str) or len(url) > 4000:
         raise SecurityError("URL must be a bounded string")
     try:
@@ -316,10 +323,7 @@ def _validated_public_https_target(
     try:
         literal = ipaddress.ip_address(ascii_host)
     except ValueError:
-        raw_answers = _resolve_bounded(resolver, ascii_host, port, dns_timeout)
-        if not raw_answers:
-            raise TransientFetchError(f"DNS returned no addresses for {ascii_host}")
-        answers = frozenset(str(_public_ip(answer)) for answer in raw_answers)
+        answers: frozenset[str] = frozenset()
         netloc_host = ascii_host
     else:
         address = str(_public_ip(str(literal)))
@@ -328,7 +332,24 @@ def _validated_public_https_target(
     netloc = netloc_host if port == 443 else f"{netloc_host}:{port}"
     path = parsed.path or "/"
     canonical = urllib.parse.urlunsplit(("https", netloc, path, parsed.query, parsed.fragment))
-    return _ValidatedTarget(canonical, answers)
+    return _CanonicalTarget(canonical, ascii_host, port, answers)
+
+
+def _validated_public_https_target(
+    url: str,
+    *,
+    resolver: Callable[[str, int], Sequence[str]] = _default_resolver,
+    dns_timeout: float = 3.0,
+) -> _ValidatedTarget:
+    """Canonicalize a URL and bind it to public DNS answers."""
+    canonical = _canonical_public_https_target(url)
+    answers = canonical.literal_ips
+    if not answers:
+        raw_answers = _resolve_bounded(resolver, canonical.host, canonical.port, dns_timeout)
+        if not raw_answers:
+            raise TransientFetchError(f"DNS returned no addresses for {canonical.host}")
+        answers = frozenset(str(_public_ip(answer)) for answer in raw_answers)
+    return _ValidatedTarget(canonical.url, answers)
 
 
 def validate_public_https_url(
@@ -852,13 +873,23 @@ def _prepare_secure_directory(path: Path, error_type: type[CollectorError]) -> t
         raise
 
 
-def _read_regular_at(directory_fd: int, name: str, error_type: type[CollectorError]) -> bytes:
+def _read_regular_at(
+    directory_fd: int,
+    name: str,
+    error_type: type[CollectorError],
+    *,
+    max_bytes: int,
+) -> bytes:
+    if max_bytes < 0:
+        raise error_type("regular file byte limit must be non-negative")
     try:
         metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     except OSError as exc:
         raise error_type(f"cannot inspect regular file {name}: {exc}") from exc
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
         raise error_type(f"file is not a private regular file: {name}")
+    if metadata.st_size > max_bytes:
+        raise error_type(f"regular file exceeds byte limit: {name}")
     try:
         descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
     except OSError as exc:
@@ -867,11 +898,17 @@ def _read_regular_at(directory_fd: int, name: str, error_type: type[CollectorErr
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise error_type(f"file is not a private regular file: {name}")
+        if metadata.st_size > max_bytes:
+            raise error_type(f"regular file exceeds byte limit: {name}")
         chunks: list[bytes] = []
+        total = 0
         while True:
-            chunk = os.read(descriptor, 64 * 1024)
+            chunk = os.read(descriptor, min(64 * 1024, max_bytes - total + 1))
             if not chunk:
                 return b"".join(chunks)
+            total += len(chunk)
+            if total > max_bytes:
+                raise error_type(f"regular file exceeds byte limit: {name}")
             chunks.append(chunk)
     finally:
         os.close(descriptor)
@@ -881,6 +918,7 @@ class CaptureStore:
     """Descriptor-relative, content-addressed external capture store."""
 
     def __init__(self, root: Path, base_url: str, *, repository_root: Path = REPOSITORY_ROOT):
+        self._root_fd = -1
         requested = _path_without_traversal(root, SecurityError)
         repository = Path(repository_root).expanduser().resolve(strict=True)
         canonical_candidate = requested.resolve(strict=False)
@@ -890,33 +928,53 @@ class CaptureStore:
             inside_repository = False
         if inside_repository:
             raise SecurityError("capture root must be outside the repository")
-        self.root, self._root_fd = _prepare_secure_directory(requested, SecurityError)
-        descriptor_path = Path(f"/proc/self/fd/{self._root_fd}").resolve(strict=True)
-        if descriptor_path != self.root.resolve(strict=True):
-            os.close(self._root_fd)
-            raise SecurityError("capture root descriptor/path mismatch")
         try:
-            descriptor_inside = os.path.commonpath((str(repository), str(descriptor_path))) == str(repository)
-        except ValueError:
-            descriptor_inside = False
-        if descriptor_inside:
+            self.root, self._root_fd = _prepare_secure_directory(requested, SecurityError)
+            descriptor_path = Path(f"/proc/self/fd/{self._root_fd}").resolve(strict=True)
+            if descriptor_path != self.root.resolve(strict=True):
+                raise SecurityError("capture root descriptor/path mismatch")
+            try:
+                descriptor_inside = os.path.commonpath((str(repository), str(descriptor_path))) == str(repository)
+            except ValueError:
+                descriptor_inside = False
+            if descriptor_inside:
+                raise SecurityError("capture root resolves inside the repository")
+            self.base_url = base_url.rstrip("/") + "/"
+            validate_public_https_url(
+                self.base_url, resolver=lambda host, port: ["93.184.216.34"], dns_timeout=1.0
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    def _ensure_open(self) -> int:
+        if self._root_fd < 0:
+            raise CollectorError("capture store is closed")
+        return self._root_fd
+
+    def close(self) -> None:
+        if self._root_fd >= 0:
             os.close(self._root_fd)
-            raise SecurityError("capture root resolves inside the repository")
-        self.base_url = base_url.rstrip("/") + "/"
-        validate_public_https_url(
-            self.base_url, resolver=lambda host, port: ["93.184.216.34"], dns_timeout=1.0
-        )
+            self._root_fd = -1
+
+    def __enter__(self) -> "CaptureStore":
+        self._ensure_open()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
 
     def _digest_directory(self, digest: str) -> int:
+        root_fd = self._ensure_open()
         name = digest[:2]
         try:
-            os.mkdir(name, mode=0o700, dir_fd=self._root_fd)
-            os.fsync(self._root_fd)
+            os.mkdir(name, mode=0o700, dir_fd=root_fd)
+            os.fsync(root_fd)
         except FileExistsError:
             pass
         try:
             descriptor = os.open(
-                name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=self._root_fd
+                name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd
             )
         except OSError as exc:
             raise CollectorError(f"capture shard is unsafe: {name}: {exc}") from exc
@@ -925,13 +983,17 @@ class CaptureStore:
             raise CollectorError(f"capture shard is not a directory: {name}")
         return descriptor
 
-    def _verify_at(self, directory_fd: int, name: str, digest: str) -> bytes:
-        raw = _read_regular_at(directory_fd, name, CollectorError)
+    def _verify_at(
+        self, directory_fd: int, name: str, digest: str, *, max_bytes: int = MAX_CAPTURE_ENVELOPE_BYTES
+    ) -> bytes:
+        max_bytes = min(max_bytes, MAX_CAPTURE_ENVELOPE_BYTES)
+        raw = _read_regular_at(directory_fd, name, CollectorError, max_bytes=max_bytes)
         if hashlib.sha256(raw).hexdigest() != digest:
             raise CollectorError(f"existing capture is corrupt: {name}")
         return raw
 
     def put(self, value: Mapping[str, object]) -> tuple[str, str]:
+        self._ensure_open()
         _assert_no_secrets(value)
         raw = _canonical_json(value)
         digest = hashlib.sha256(raw).hexdigest()
@@ -981,12 +1043,16 @@ class CaptureStore:
                     pass
             os.close(directory_fd)
 
-    def read(self, digest: str) -> dict[str, object]:
+    def read(
+        self, digest: str, *, max_bytes: int = MAX_CAPTURE_ENVELOPE_BYTES
+    ) -> dict[str, object]:
+        self._ensure_open()
+        max_bytes = min(max_bytes, MAX_CAPTURE_ENVELOPE_BYTES)
         if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise CollectorError("invalid capture digest")
         directory_fd = self._digest_directory(digest)
         try:
-            raw = self._verify_at(directory_fd, f"{digest}.json", digest)
+            raw = self._verify_at(directory_fd, f"{digest}.json", digest, max_bytes=max_bytes)
         finally:
             os.close(directory_fd)
         try:
@@ -1177,32 +1243,61 @@ def _atomic_json(path: Path, value: object) -> None:
 
 class BatchCheckpoint:
     def __init__(self, path: Path, input_sha256: str):
+        self._directory_fd = -1
         self.path = _path_without_traversal(path, CheckpointError)
         _, self._directory_fd = _prepare_secure_directory(self.path.parent, CheckpointError)
         self._name = self.path.name
         self.input_sha256 = input_sha256
         self.completed: dict[str, object] = {}
         try:
-            os.stat(self._name, dir_fd=self._directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return
-        try:
-            raw = _read_regular_at(self._directory_fd, self._name, CheckpointError)
+            try:
+                os.stat(self._name, dir_fd=self._directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            raw = _read_regular_at(
+                self._directory_fd, self._name, CheckpointError, max_bytes=MAX_CHECKPOINT_BYTES
+            )
             value = json.loads(raw)
         except (UnicodeError, json.JSONDecodeError) as exc:
+            self.close()
             raise CheckpointError(f"checkpoint cannot be read: {exc}") from exc
-        stored_hash = value.pop("checkpoint_sha256", None) if isinstance(value, dict) else None
-        if not isinstance(value, dict) or stored_hash != hashlib.sha256(_canonical_json(value)).hexdigest():
-            raise CheckpointError("checkpoint content hash mismatch")
-        if value.get("input_sha256") != input_sha256:
-            raise CheckpointError("checkpoint input hash mismatch")
-        completed = value.get("completed")
-        if value.get("format_version") != 1 or not isinstance(completed, dict):
-            raise CheckpointError("unsupported checkpoint structure")
-        _assert_no_secrets(completed)
-        self.completed = completed
+        except BaseException:
+            self.close()
+            raise
+        try:
+            stored_hash = value.pop("checkpoint_sha256", None) if isinstance(value, dict) else None
+            if not isinstance(value, dict) or stored_hash != hashlib.sha256(_canonical_json(value)).hexdigest():
+                raise CheckpointError("checkpoint content hash mismatch")
+            if value.get("input_sha256") != input_sha256:
+                raise CheckpointError("checkpoint input hash mismatch")
+            completed = value.get("completed")
+            if value.get("format_version") != 1 or not isinstance(completed, dict):
+                raise CheckpointError("unsupported checkpoint structure")
+            _assert_no_secrets(completed)
+            self.completed = completed
+        except BaseException:
+            self.close()
+            raise
+
+    def _ensure_open(self) -> int:
+        if self._directory_fd < 0:
+            raise CheckpointError("batch checkpoint is closed")
+        return self._directory_fd
+
+    def close(self) -> None:
+        if self._directory_fd >= 0:
+            os.close(self._directory_fd)
+            self._directory_fd = -1
+
+    def __enter__(self) -> "BatchCheckpoint":
+        self._ensure_open()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
 
     def record(self, key: str, result: object) -> None:
+        directory_fd = self._ensure_open()
         _assert_no_secrets(result)
         self.completed[key] = result
         value: dict[str, object] = {
@@ -1211,7 +1306,7 @@ class BatchCheckpoint:
             "completed": {item: self.completed[item] for item in sorted(self.completed)},
         }
         value["checkpoint_sha256"] = hashlib.sha256(_canonical_json(value)).hexdigest()
-        _atomic_json_at(self._directory_fd, self._name, value, CheckpointError)
+        _atomic_json_at(directory_fd, self._name, value, CheckpointError)
 
 
 def _serialized_item(item: Mapping[str, object]) -> dict[str, object]:
@@ -1248,6 +1343,18 @@ def _schema_errors(name: str, value: object) -> list[str]:
         raise CheckpointError(f"cannot load checkpoint validation schema {name}: {exc}") from exc
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     return [error.message for error in validator.iter_errors(value)]
+
+
+def _capture_envelope_max_bytes(policy: FetchPolicy) -> int:
+    base64_body = 4 * ((policy.max_decoded_bytes + 2) // 3)
+    wire_allowance = min(policy.max_wire_bytes, MAX_CAPTURE_ENVELOPE_BYTES)
+    derived = (
+        _CAPTURE_FIXED_OVERHEAD_BYTES
+        + _CAPTURE_HEADER_OVERHEAD_BYTES
+        + wire_allowance
+        + base64_body
+    )
+    return min(MAX_CAPTURE_ENVELOPE_BYTES, derived)
 
 
 def _validate_resumed_entry(
@@ -1292,13 +1399,10 @@ def _validate_resumed_entry(
     if not isinstance(digest, str) or receipt.get("capture_locator") != capture_store.base_url + digest:
         raise CheckpointError("checkpoint receipt capture binding mismatch")
     try:
-        capture = capture_store.read(digest)
+        capture = capture_store.read(digest, max_bytes=_capture_envelope_max_bytes(policy))
         validation_deadline = time.monotonic() + policy.total_timeout
-        locator_target = _validated_public_https_target(
-            locator, resolver=resolver,
-            dns_timeout=min(policy.dns_timeout, max(0.001, validation_deadline - time.monotonic())),
-        )
-        canonical_locator = locator_target.url
+        locator_canonical = _canonical_public_https_target(locator)
+        canonical_locator = locator_canonical.url
     except CollectorError as exc:
         raise CheckpointError(f"checkpoint capture cannot be validated: {exc}") from exc
     expected_scope = {
@@ -1334,37 +1438,36 @@ def _validate_resumed_entry(
     ):
         raise CheckpointError("checkpoint redirect or final URL binding mismatch")
     try:
-        validated_chain: list[_ValidatedTarget] = []
+        canonical_chain: list[_CanonicalTarget] = []
         for index, value in enumerate(chain):
             if not isinstance(value, str):
                 raise SecurityError("redirect URL is malformed")
-            if index == 0:
-                target = locator_target
-            else:
-                remaining = validation_deadline - time.monotonic()
-                if remaining <= 0:
-                    raise FetchError("checkpoint URL validation deadline exceeded")
-                target = _validated_public_https_target(
-                    value, resolver=resolver,
-                    dns_timeout=min(policy.dns_timeout, remaining),
-                )
-            if target.url != value:
+            canonical = locator_canonical if index == 0 else _canonical_public_https_target(value)
+            if canonical.url != value:
                 raise SecurityError("redirect URL is not canonical")
-            validated_chain.append(target)
-        for target, binding in zip(validated_chain, bindings):
-            if not isinstance(binding, dict) or binding.get("url") != target.url:
+            canonical_chain.append(canonical)
+            remaining = validation_deadline - time.monotonic()
+            if remaining > 0 and not canonical.literal_ips:
+                try:
+                    _validated_public_https_target(
+                        value, resolver=resolver, dns_timeout=min(policy.dns_timeout, remaining)
+                    )
+                except TransientFetchError:
+                    pass
+        for canonical, binding in zip(canonical_chain, bindings):
+            if not isinstance(binding, dict) or binding.get("url") != canonical.url:
                 raise SecurityError("network binding URL mismatch")
             stored_ips = binding.get("resolved_ips")
-            if not isinstance(stored_ips, list) or not stored_ips:
-                raise SecurityError("network binding has no DNS answers")
+            if not isinstance(stored_ips, list):
+                raise SecurityError("network binding DNS answers are malformed")
             canonical_ips = {str(_public_ip(str(value))) for value in stored_ips}
             if len(canonical_ips) != len(stored_ips):
                 raise SecurityError("network binding has duplicate DNS answers")
-            if canonical_ips != set(target.resolved_ips):
-                raise SecurityError("recorded DNS answers differ from validated resolution")
             peer = binding.get("peer_ip")
-            if peer is None and response.get("status") == 599:
+            if not canonical_ips and peer is None and response.get("status") == 599:
                 continue
+            if not canonical_ips:
+                raise SecurityError("network binding has no DNS answers")
             if not isinstance(peer, str) or str(_public_ip(peer)) not in canonical_ips:
                 raise SecurityError("network peer differs from recorded DNS answers")
     except CollectorError as exc:
@@ -1469,6 +1572,7 @@ def collect_batch(
         locator = item.get("locator") or search_locator(query)
         if not isinstance(locator, str):
             raise CollectorError("locator must be a string")
+        canonical_locator = _canonical_public_https_target(locator).url
         prior = checkpoint.completed.get(key)
         if prior is not None:
             receipt, source = _validate_resumed_entry(
@@ -1485,27 +1589,29 @@ def collect_batch(
         remaining = attempt_deadline - time.monotonic()
         if remaining <= 0:
             raise FetchError("total collect deadline exceeded")
-        initial_target = _validated_public_https_target(
-            locator, resolver=resolver,
-            dns_timeout=min(policy.dns_timeout, remaining),
-        )
+        initial_target: _ValidatedTarget | None = None
         try:
+            initial_target = _validated_public_https_target(
+                canonical_locator, resolver=resolver,
+                dns_timeout=min(policy.dns_timeout, remaining),
+            )
             fetched = fetch_bounded(
                 initial_target.url, transport=transport, policy=policy, resolver=resolver,
                 _initial_target=initial_target, _deadline=attempt_deadline,
             )
         except (FetchError, SecurityError) as exc:
             completed = now()
+            failure_target = initial_target or _ValidatedTarget(canonical_locator, frozenset())
             synthetic = FetchResult(
-                requested_url=initial_target.url,
-                final_url=initial_target.url,
-                url_chain=[initial_target.url],
+                requested_url=failure_target.url,
+                final_url=failure_target.url,
+                url_chain=[failure_target.url],
                 status=599,
                 headers={"content-type": "text/plain; charset=ascii"},
                 body=str(exc).encode("ascii", errors="backslashreplace")[:policy.max_decoded_bytes],
                 network_bindings=({
-                    "url": initial_target.url,
-                    "resolved_ips": sorted(initial_target.resolved_ips),
+                    "url": failure_target.url,
+                    "resolved_ips": sorted(failure_target.resolved_ips),
                     "peer_ip": None,
                 },),
             )

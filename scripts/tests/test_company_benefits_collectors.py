@@ -457,6 +457,60 @@ class CollectorTests(unittest.TestCase):
             with self.assertRaises(collectors.CheckpointError):
                 collectors.BatchCheckpoint(path, "b" * 64)
 
+    def test_capture_store_and_checkpoint_close_idempotently_and_reject_use_after_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            capture_root = Path(tmp) / "captures"
+            checkpoint_path = Path(tmp) / "checkpoint.json"
+            with collectors.CaptureStore(
+                capture_root, "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store, collectors.BatchCheckpoint(checkpoint_path, "a" * 64) as checkpoint:
+                digest, _ = store.put({"safe": True})
+                self.assertEqual({"safe": True}, store.read(digest))
+                checkpoint.record("attempt::one", {"result": "no_result"})
+            store.close()
+            checkpoint.close()
+            with self.assertRaisesRegex(collectors.CollectorError, "closed"):
+                store.read(digest)
+            with self.assertRaisesRegex(collectors.CheckpointError, "closed"):
+                checkpoint.record("attempt::two", {"result": "no_result"})
+
+    def test_descriptor_owners_do_not_leak_on_context_exit_or_constructor_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = len(os.listdir("/proc/self/fd"))
+            for index in range(20):
+                with collectors.CaptureStore(
+                    Path(tmp) / f"captures-{index}",
+                    "https://captures.invalid/sha256/",
+                    repository_root=ROOT,
+                ), collectors.BatchCheckpoint(Path(tmp) / f"checkpoint-{index}.json", "a" * 64):
+                    pass
+            corrupt = Path(tmp) / "corrupt.json"
+            corrupt.write_text("not JSON")
+            for index in range(20):
+                with self.assertRaises(collectors.CheckpointError):
+                    collectors.BatchCheckpoint(corrupt, "a" * 64)
+                with self.assertRaises(collectors.SecurityError):
+                    collectors.CaptureStore(
+                        Path(tmp) / f"invalid-captures-{index}",
+                        "http://captures.invalid/sha256/",
+                        repository_root=ROOT,
+                    )
+            self.assertEqual(baseline, len(os.listdir("/proc/self/fd")))
+
+    def test_oversized_regular_capture_is_rejected_before_json_parsing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store:
+                digest = "a" * 64
+                shard = store.root / digest[:2]
+                shard.mkdir()
+                oversized = shard / f"{digest}.json"
+                oversized.write_bytes(b"{" + b" " * collectors.MAX_CAPTURE_ENVELOPE_BYTES)
+                with mock.patch.object(json, "loads", side_effect=AssertionError("must not parse")):
+                    with self.assertRaisesRegex(collectors.CollectorError, "byte limit"):
+                        store.read(digest)
+
     def test_checkpoint_rejects_embedded_secrets_symlinks_special_files_and_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -618,7 +672,6 @@ class CollectorTests(unittest.TestCase):
                 ),
                 ("mismatch", "https://example.org/final", [url], None),
                 ("peer mismatch", url, [url], {"url": url, "resolved_ips": ["93.184.216.34"], "peer_ip": "93.184.216.35"}),
-                ("resolution mismatch", url, [url], {"url": url, "resolved_ips": ["93.184.216.35"], "peer_ip": "93.184.216.35"}),
             ):
                 prior = copy.deepcopy(original)
                 capture = store.read(prior["receipt"]["raw_response_sha256"])
@@ -640,6 +693,46 @@ class CollectorTests(unittest.TestCase):
                         locator=url, query=collectors.canonical_query(self.company, "leave", "official-company"),
                         capture_store=store, resolver=lambda h, p: ["93.184.216.34"],
                         policy=collectors.FetchPolicy(),
+                    )
+
+    def test_resume_accepts_public_dns_rotation_for_immutable_historical_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store, collectors.BatchCheckpoint(
+                Path(tmp) / "checkpoint.json", collectors.batch_input_sha256(items)
+            ) as checkpoint:
+                collectors.collect_batch(
+                    items, transport=FakeTransport({url: [response(404)]}),
+                    capture_store=store, checkpoint=checkpoint,
+                    resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+                )
+                artifact = collectors.collect_batch(
+                    items, transport=FakeTransport({}), capture_store=store, checkpoint=checkpoint,
+                    resolver=lambda h, p: ["93.184.216.35"], now=lambda: "2026-11-01T01:00:00Z",
+                )
+            self.assertEqual("no_result", artifact["attempts"][0]["result"])
+
+    def test_resume_rejects_current_dns_rotation_to_private_address(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store, collectors.BatchCheckpoint(
+                Path(tmp) / "checkpoint.json", collectors.batch_input_sha256(items)
+            ) as checkpoint:
+                collectors.collect_batch(
+                    items, transport=FakeTransport({url: [response(404)]}),
+                    capture_store=store, checkpoint=checkpoint,
+                    resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+                )
+                with self.assertRaises(collectors.CheckpointError):
+                    collectors.collect_batch(
+                        items, transport=FakeTransport({}), capture_store=store, checkpoint=checkpoint,
+                        resolver=lambda h, p: ["10.0.0.1"], now=lambda: "2026-11-01T01:00:00Z",
                     )
 
     def test_batch_emits_only_actual_attempts_and_never_synthesizes_no_public_info(self):
@@ -822,10 +915,61 @@ class CollectorTests(unittest.TestCase):
                 )
             self.assertLess(time.monotonic() - started, 0.15)
             self.assertEqual("access_failed", artifact["attempts"][0]["result"])
-            self.assertLessEqual(multiprocessing_calls.value, 2)
+            self.assertEqual(1, multiprocessing_calls.value)
             if pid_path.exists():
                 with self.assertRaises(ProcessLookupError):
                     os.kill(int(pid_path.read_text()), 0)
+
+    def test_initial_dns_failure_persists_access_failed_checkpoint_with_no_dns_answers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            transport = FakeTransport({})
+            checkpoint_path = Path(tmp) / "checkpoint.json"
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store, collectors.BatchCheckpoint(
+                checkpoint_path, collectors.batch_input_sha256(items)
+            ) as checkpoint:
+                artifact = collectors.collect_batch(
+                    items, transport=transport, capture_store=store, checkpoint=checkpoint,
+                    policy=collectors.FetchPolicy(retries=0, total_timeout=0.05, dns_timeout=0.01),
+                    resolver=lambda h, p: (_ for _ in ()).throw(TimeoutError("DNS unavailable")),
+                    now=lambda: "2026-11-01T01:00:00Z",
+                )
+                key = collectors.attempt_id(self.company.company_id, "leave", "official-company")
+                entry = checkpoint.completed[key]
+                assert isinstance(entry, dict)
+                receipt = entry["receipt"]
+                assert isinstance(receipt, dict)
+                digest = receipt["raw_response_sha256"]
+                assert isinstance(digest, str)
+                capture = store.read(digest)
+            self.assertEqual([], transport.calls)
+            self.assertEqual("access_failed", artifact["attempts"][0]["result"])
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as resumed_store, collectors.BatchCheckpoint(
+                checkpoint_path, collectors.batch_input_sha256(items)
+            ) as resumed_checkpoint:
+                resumed = collectors.collect_batch(
+                    items, transport=FakeTransport({}), capture_store=resumed_store,
+                    checkpoint=resumed_checkpoint, resolver=lambda h, p: ["93.184.216.34"],
+                    now=lambda: "2026-11-01T01:00:00Z",
+                )
+            resumed_attempts = resumed["attempts"]
+            assert isinstance(resumed_attempts, list)
+            resumed_attempt = resumed_attempts[0]
+            assert isinstance(resumed_attempt, dict)
+            self.assertEqual("access_failed", resumed_attempt["result"])
+            request = capture["request"]
+            assert isinstance(request, dict)
+            bindings = request["network_bindings"]
+            assert isinstance(bindings, list)
+            first_binding = bindings[0]
+            assert isinstance(first_binding, dict)
+            self.assertEqual([], first_binding["resolved_ips"])
+            self.assertIn(key, json.loads(checkpoint_path.read_text())["completed"])
 
     def test_batch_rejects_adapters_that_alias_the_same_policy_route(self):
         with tempfile.TemporaryDirectory() as tmp:
