@@ -11,6 +11,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,31 +49,46 @@ CELL_PUBLICATION_ELIGIBILITY = {
 
 def _read_authoritative_text(repo_root, path):
     """Read one regular repository file without following symlinks."""
-    root = Path(repo_root).absolute()
-    candidate = Path(path).absolute()
+    root = Path(repo_root)
+    candidate = Path(path)
+    if ".." in root.parts or ".." in candidate.parts:
+        raise OSError("authoritative paths must not contain parent traversal")
+    root = root.absolute()
+    candidate = candidate.absolute()
     try:
         relative = candidate.relative_to(root)
     except ValueError as exc:
         raise OSError(f"authoritative path escapes repository root: {candidate}") from exc
-    current = root
-    if stat.S_ISLNK(os.lstat(current).st_mode):
-        raise OSError(f"repository root must not be a symlink: {root}")
-    for part in relative.parts:
-        current = current / part
-        metadata = os.lstat(current)
-        if stat.S_ISLNK(metadata.st_mode):
-            raise OSError(f"authoritative path contains a symlink: {current}")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(candidate, flags)
+    if not relative.parts:
+        raise OSError("authoritative path must name a file")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    directory_fd = os.open(root, directory_flags)
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        for part in relative.parts[:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        leaf = relative.parts[-1]
+        metadata = os.stat(leaf, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
             raise OSError(f"authoritative path is not a regular file: {candidate}")
-        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            descriptor = None
-            return handle.read()
+        file_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        file_fd = os.open(leaf, file_flags, dir_fd=directory_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                raise OSError(f"authoritative path changed type while opening: {candidate}")
+            with os.fdopen(file_fd, "r", encoding="utf-8") as handle:
+                file_fd = None
+                return handle.read()
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
+        os.close(directory_fd)
 
 
 def _schema_validators(repo_root, errors):
@@ -90,7 +106,7 @@ def _schema_validators(repo_root, errors):
                 _read_authoritative_text(repo_root, schema_root / filename)
             )
             Draft202012Validator.check_schema(schema)
-        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (OSError, UnicodeError, json.JSONDecodeError, SchemaError, TypeError, ValueError) as exc:
             errors.append(f"authoritative schema {filename} is invalid: {exc}")
             continue
         validators[ledger] = (filename, Draft202012Validator(schema, format_checker=FormatChecker()))
@@ -185,7 +201,7 @@ def _company_ledger(repo_root, errors):
     )
     try:
         lines = _read_authoritative_text(repo_root, path).splitlines()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         errors.append(f"canonical company ledger cannot be read: {exc}")
         return companies
     for line_number, line in enumerate(lines, 1):
@@ -227,6 +243,51 @@ def _most_conservative(values, best_to_worst):
     ranks = {value: index for index, value in enumerate(best_to_worst)}
     known = [value for value in values if value in ranks]
     return max(known, key=lambda value: ranks[value]) if known else None
+
+
+def _coverage_policy_errors(policy):
+    errors = []
+    if not isinstance(policy, dict):
+        return ["canonical coverage policy must be an object"]
+    if not isinstance(policy.get("policy_id"), str) or not policy["policy_id"]:
+        errors.append("canonical coverage policy has invalid policy_id")
+    routes = policy.get("routes")
+    if not isinstance(routes, dict):
+        errors.append("canonical coverage policy routes must be an object")
+        routes = {}
+    else:
+        for route_id, route in sorted(routes.items(), key=lambda item: str(item[0])):
+            if not isinstance(route_id, str) or not isinstance(route, dict):
+                errors.append(f"canonical coverage policy has invalid route: {route_id!r}")
+            elif not isinstance(route.get("route_kind"), str):
+                errors.append(f"canonical coverage policy route lacks route_kind: {route_id}")
+    category_routes = policy.get("category_routes")
+    if not isinstance(category_routes, dict):
+        errors.append("canonical coverage policy category_routes must be an object")
+    else:
+        for category, route_ids in sorted(
+            category_routes.items(), key=lambda item: str(item[0])
+        ):
+            if not isinstance(category, str) or not isinstance(route_ids, list):
+                errors.append(
+                    f"canonical coverage policy has invalid category routes: {category!r}"
+                )
+                continue
+            if any(not isinstance(route_id, str) for route_id in route_ids):
+                errors.append(
+                    f"canonical coverage policy category has non-string route: {category}"
+                )
+            elif len(route_ids) != len(set(route_ids)):
+                errors.append(
+                    f"canonical coverage policy category has duplicate route: {category}"
+                )
+            for route_id in route_ids:
+                if isinstance(route_id, str) and route_id not in routes:
+                    errors.append(
+                        f"canonical coverage policy category references unknown route: "
+                        f"{category}/{route_id}"
+                    )
+    return errors
 
 
 def validate_package(package, repo_root=ROOT):
@@ -280,11 +341,12 @@ def validate_package(package, repo_root=ROOT):
     )
     try:
         canonical_policy = json.loads(_read_authoritative_text(repo_root, policy_path))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
         errors.append(f"canonical coverage policy is invalid: {exc}")
         return sorted(errors)
-    if not isinstance(canonical_policy, dict):
-        errors.append("canonical coverage policy must be an object")
+    policy_errors = _coverage_policy_errors(canonical_policy)
+    if policy_errors:
+        errors.extend(policy_errors)
         return sorted(errors)
     if policy != canonical_policy:
         errors.append("package coverage_policy does not match canonical coverage policy")
@@ -579,8 +641,14 @@ def validate_package(package, repo_root=ROOT):
             if status in CONFLICT_SEVERITY
         ]
         if ranked_conflicts:
-            evidence_id, maximum_conflict = max(
-                ranked_conflicts, key=lambda item: CONFLICT_SEVERITY[item[1]]
+            maximum_conflict = max(
+                (status for _, status in ranked_conflicts),
+                key=lambda status: CONFLICT_SEVERITY[status],
+            )
+            evidence_id = min(
+                evidence_id
+                for evidence_id, status in ranked_conflicts
+                if status == maximum_conflict
             )
             cell_conflict = cell.get("conflict_status")
             if CONFLICT_SEVERITY.get(cell_conflict, -1) < CONFLICT_SEVERITY[maximum_conflict]:
@@ -739,7 +807,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         package = json.loads(args.package.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         print(f"invalid package JSON: {exc}", file=sys.stderr)
         return 2
     errors = validate_package(package)

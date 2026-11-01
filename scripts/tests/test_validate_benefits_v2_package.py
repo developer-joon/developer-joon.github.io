@@ -753,7 +753,9 @@ class BenefitsV2PackageTests(unittest.TestCase):
             parent.symlink_to(safe, target_is_directory=True)
             directory_leaf = safe / "directory.json"
             directory_leaf.mkdir()
-            for path in (leaf, parent / "record.json", directory_leaf):
+            fifo = safe / "fifo.json"
+            os.mkfifo(fifo)
+            for path in (leaf, parent / "record.json", directory_leaf, fifo):
                 with self.subTest(path=str(path)):
                     with self.assertRaises(OSError):
                         VALIDATOR_MODULE._read_authoritative_text(repo, path)
@@ -767,6 +769,46 @@ class BenefitsV2PackageTests(unittest.TestCase):
             outside.write_text("{}", encoding="utf-8")
             with self.assertRaises(OSError):
                 VALIDATOR_MODULE._read_authoritative_text(repo, outside)
+            traversed = repo / "safe" / ".." / ".." / "outside.json"
+            with self.assertRaises(OSError):
+                VALIDATOR_MODULE._read_authoritative_text(repo, traversed)
+
+    def test_malformed_authoritative_schema_encoding_and_policy_shape_fail_closed(self):
+        research_relative = Path("docs/research/company-benefits")
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            shutil.copytree(ROOT / research_relative, repo / research_relative)
+
+            schema = repo / research_relative / "schema/source-v2.schema.json"
+            schema.write_text('{"type":"bogus"}', encoding="utf-8")
+            errors = VALIDATOR_MODULE.validate_package(
+                package_for("reference"), repo_root=repo
+            )
+            self.assertTrue(any("authoritative schema" in error for error in errors))
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            shutil.copytree(ROOT / research_relative, repo / research_relative)
+            companies = repo / research_relative / "companies.jsonl"
+            companies.write_bytes(b"\xff")
+            errors = VALIDATOR_MODULE.validate_package(
+                package_for("reference"), repo_root=repo
+            )
+            self.assertTrue(any("company ledger cannot be read" in error for error in errors))
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            shutil.copytree(ROOT / research_relative, repo / research_relative)
+            policy_path = repo / research_relative / "research-coverage-policies.json"
+            policy = json.loads(policy_path.read_text(encoding="utf-8"))
+            policy["category_routes"]["leave"] = 7
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            package = package_for("no_public_info")
+            package["coverage_policy"] = policy
+            errors = VALIDATOR_MODULE.validate_package(package, repo_root=repo)
+            self.assertTrue(
+                any("invalid category routes" in error for error in errors), errors
+            )
 
     def test_scope_array_order_is_semantic_but_different_members_are_rejected(self):
         reordered = package_for("reference")
@@ -809,6 +851,32 @@ class BenefitsV2PackageTests(unittest.TestCase):
                 self.assertEqual(1, result.returncode, result.stdout + result.stderr)
                 outputs.append(result.stderr)
         self.assertEqual(outputs[0], outputs[1])
+
+    def test_equal_severity_conflict_diagnostic_has_stable_evidence_tiebreak(self):
+        package = package_for("official_verified")
+        second = copy.deepcopy(package["sources"][0])
+        second["source_id"] = "source::second"
+        package["sources"].append(second)
+        package["attempts"][0]["source_ids"] = ["source::example", "source::second"]
+        bind_attempt(package["attempts"][0])
+        package["official_claims"][0]["source_ids"] = [
+            "source::example",
+            "source::second",
+        ]
+        claim_id = official_claim_id(
+            package["cells"][0]["company_id"],
+            package["cells"][0]["category_id"],
+            package["official_claims"][0]["source_ids"],
+        )
+        package["official_claims"][0]["claim_id"] = claim_id
+        package["cells"][0]["official_claim_ids"] = [claim_id]
+        for record in package["sources"]:
+            record["conflict_status"] = "disclosed"
+        first = VALIDATOR_MODULE.validate_package(package)
+        package["official_claims"][0]["source_ids"].reverse()
+        second_result = VALIDATOR_MODULE.validate_package(package)
+        self.assertEqual(first, second_result)
+        self.assertTrue(any("source::example" in error for error in first), first)
 
 
 if __name__ == "__main__":
