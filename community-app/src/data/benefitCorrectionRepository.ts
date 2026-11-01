@@ -3,11 +3,15 @@ import { parseEnv } from '../config/env'
 import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
 import {
   BENEFIT_CATEGORIES,
+  BENEFIT_CORRECTION_AUDIT_EVENT_TYPES,
   BENEFIT_CORRECTION_QUEUE_FILTERS,
   BENEFIT_CORRECTION_REVIEW_ACTIONS,
   BENEFIT_CORRECTION_STATUSES,
   type AdminBenefitCorrectionItem,
   type BenefitCategory,
+  type BenefitCorrectionAuditEvent,
+  type BenefitCorrectionAuditInput,
+  type BenefitCorrectionAuditPage,
   type BenefitCorrectionCursor,
   type BenefitCorrectionAccountScope,
   type BenefitCorrectionItem,
@@ -34,11 +38,13 @@ export interface BenefitCorrectionRepository {
   createRequest(input: CreateBenefitCorrectionInput, expectedAccountScope: BenefitCorrectionAccountScope, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionItem>>
   listMyRequests(input: BenefitCorrectionListInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionPage<BenefitCorrectionItem>>>
   listAdminQueue(input: BenefitCorrectionQueueInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionPage<AdminBenefitCorrectionItem>>>
+  listAdminAudit(input: BenefitCorrectionAuditInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<BenefitCorrectionAuditPage>>
   reviewRequest(input: ReviewBenefitCorrectionInput, signal?: AbortSignal): Promise<BenefitCorrectionResult<AdminBenefitCorrectionItem>>
 }
 
 const ownerKeys = ['id', 'company_id', 'category_id', 'current_text', 'proposed_text', 'scope_text', 'source_url', 'observed_data_version', 'status', 'admin_response', 'applied_data_version', 'applied_at', 'created_at', 'updated_at'] as const
 const adminKeys = [...ownerKeys, 'reviewed_at'] as const
+const auditKeys = ['sequence', 'event_type', 'from_status', 'to_status', 'admin_response', 'applied_version', 'created_at'] as const
 const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2}):(\d{2}))$/
 const dataVersionPattern = /^company-benefits-(\d{4})-(\d{2})-(\d{2})-v[1-9][0-9]*$/
 const companyPattern = /^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$/
@@ -128,6 +134,66 @@ function decodePage<T extends BenefitCorrectionItem>(value: unknown, admin: bool
   return { items: value.items.map(item => decodeBenefitCorrectionItem(item, admin) as T), hasMore: value.has_more, nextCursor: value.next_cursor === null ? null : decodeCursor(value.next_cursor) }
 }
 
+function isCorrectionStatus(value: unknown): value is BenefitCorrectionItem['status'] {
+  return typeof value === 'string' && (BENEFIT_CORRECTION_STATUSES as readonly string[]).includes(value)
+}
+
+function decodeAuditEvent(value: unknown): BenefitCorrectionAuditEvent {
+  if (!isRecord(value) || !hasExactKeys(value, auditKeys) || !isCanonicalUuid(value.sequence)
+    || typeof value.event_type !== 'string' || !(BENEFIT_CORRECTION_AUDIT_EVENT_TYPES as readonly string[]).includes(value.event_type)
+    || (value.from_status !== null && !isCorrectionStatus(value.from_status)) || !isCorrectionStatus(value.to_status)
+    || (value.admin_response !== null && !boundedText(value.admin_response, 2000))
+    || (value.applied_version !== null && !isBenefitCorrectionDataVersion(value.applied_version))
+    || !isBenefitCorrectionTimestamp(value.created_at)) throw new Error('invalid audit event')
+  const eventType = value.event_type as BenefitCorrectionAuditEvent['eventType']
+  const hasResponse = value.admin_response !== null
+  const hasVersion = value.applied_version !== null
+  const validShape = eventType === 'submitted'
+    ? value.from_status === null && value.to_status === 'submitted' && !hasResponse && !hasVersion
+    : eventType === 'start_review'
+      ? value.from_status === 'submitted' && value.to_status === 'reviewing' && hasResponse && !hasVersion
+      : eventType === 'additional_material_requested'
+        ? value.from_status === 'reviewing' && value.to_status === 'reviewing' && hasResponse && !hasVersion
+        : eventType === 'approved' || eventType === 'rejected'
+          ? value.from_status === 'reviewing' && value.to_status === eventType && hasResponse && !hasVersion
+          : value.from_status === 'approved' && value.to_status === 'applied' && !hasResponse && hasVersion
+  if (!validShape) throw new Error('invalid audit event state')
+  return {
+    sequence: value.sequence.toLowerCase(), eventType, fromStatus: value.from_status as BenefitCorrectionAuditEvent['fromStatus'],
+    toStatus: value.to_status, adminResponse: value.admin_response as string | null,
+    appliedVersion: value.applied_version as string | null, createdAt: value.created_at,
+  }
+}
+
+function decodeAuditCursor(value: unknown) {
+  if (!isRecord(value) || !hasExactKeys(value, ['created_at', 'sequence']) || !isBenefitCorrectionTimestamp(value.created_at) || !isCanonicalUuid(value.sequence)) throw new Error('invalid audit cursor')
+  return { createdAt: value.created_at, sequence: value.sequence.toLowerCase() }
+}
+
+function auditTimestampMicros(value: string) {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/.exec(value)
+  if (!match) throw new Error('invalid audit timestamp')
+  return BigInt(Date.parse(`${match[1]}${match[3]}`)) * 1000n + BigInt((match[2] ?? '').padEnd(6, '0') || '0')
+}
+
+function compareAuditTuple(left: { createdAt: string; sequence: string }, right: { createdAt: string; sequence: string }) {
+  const timeOrder = auditTimestampMicros(left.createdAt) - auditTimestampMicros(right.createdAt)
+  return timeOrder < 0n ? -1 : timeOrder > 0n ? 1 : left.sequence < right.sequence ? -1 : left.sequence > right.sequence ? 1 : 0
+}
+
+function decodeAuditPage(value: unknown, input: BenefitCorrectionAuditInput): BenefitCorrectionAuditPage {
+  if (!isRecord(value) || !hasExactKeys(value, ['items', 'has_more', 'next_cursor']) || !Array.isArray(value.items) || typeof value.has_more !== 'boolean') throw new Error('invalid audit page')
+  if ((value.has_more && value.next_cursor === null) || (!value.has_more && value.next_cursor !== null)) throw new Error('invalid audit page cursor state')
+  const items = value.items.map(decodeAuditEvent)
+  if (items.length > input.limit || (value.has_more && items.length === 0)
+    || new Set(items.map(item => item.sequence)).size !== items.length
+    || !items.every((item, index) => index === 0 || compareAuditTuple(items[index - 1], item) < 0)
+    || (input.cursor && items.length > 0 && compareAuditTuple(input.cursor, items[0]) >= 0)) throw new Error('invalid audit page order')
+  const nextCursor = value.next_cursor === null ? null : decodeAuditCursor(value.next_cursor)
+  if (nextCursor !== null && (items.length === 0 || compareAuditTuple(items[items.length - 1], nextCursor) !== 0)) throw new Error('invalid audit page cursor')
+  return { items, hasMore: value.has_more, nextCursor }
+}
+
 function invalidArgument<T>(): BenefitCorrectionResult<T> { return { ok: false, error: { code: 'invalid_argument', message: '입력 내용을 확인해 주세요.' } } }
 function sourceCodeFrom(error: unknown): string | undefined {
   if (!isRecord(error)) return undefined
@@ -157,6 +223,10 @@ function mapRpcError(error: unknown): BenefitCorrectionResult<never> {
 function validListInput(input: BenefitCorrectionListInput) {
   return Number.isSafeInteger(input.limit) && input.limit >= 1 && input.limit <= 100
     && (!input.cursor || (isBenefitCorrectionTimestamp(input.cursor.createdAt) && isCanonicalUuid(input.cursor.id)))
+}
+function validAuditInput(input: BenefitCorrectionAuditInput) {
+  return isCanonicalUuid(input.requestId) && Number.isSafeInteger(input.limit) && input.limit >= 1 && input.limit <= 100
+    && (!input.cursor || (isBenefitCorrectionTimestamp(input.cursor.createdAt) && isCanonicalUuid(input.cursor.sequence)))
 }
 function validCreateInput(input: CreateBenefitCorrectionInput) {
   return isStrictUuid(input.clientKey) && companyPattern.test(input.companyId) && isCategory(input.categoryId)
@@ -316,6 +386,13 @@ export function createBenefitCorrectionRepository(options: { getSessionContext: 
       return execute('list_benefit_correction_queue_v1', {
         p_status: input.status, p_limit: input.limit, p_cursor_created_at: input.cursor?.createdAt, p_cursor_id: input.cursor?.id,
       }, value => decodePage<AdminBenefitCorrectionItem>(value, true), signal)
+    },
+    listAdminAudit(input, signal) {
+      if (!validAuditInput(input)) return Promise.resolve(invalidArgument())
+      return execute('list_benefit_correction_audit_v1', {
+        p_request_id: input.requestId, p_limit: input.limit,
+        p_cursor_created_at: input.cursor?.createdAt, p_cursor_sequence: input.cursor?.sequence,
+      }, value => decodeAuditPage(value, input), signal)
     },
     reviewRequest(input, signal) {
       if (!validReviewInput(input)) return Promise.resolve(invalidArgument())

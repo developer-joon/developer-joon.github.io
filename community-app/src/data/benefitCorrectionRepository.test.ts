@@ -25,6 +25,16 @@ const ownerItem = {
   updated_at: createdAt,
 }
 
+const auditEvent = {
+  sequence: '57000000-0000-4000-8000-000000000001',
+  event_type: 'additional_material_requested',
+  from_status: 'reviewing',
+  to_status: 'reviewing',
+  admin_response: '공식 자료를 추가해 주세요.',
+  applied_version: null,
+  created_at: '2026-11-01T02:00:00.000Z',
+}
+
 const createInput: CreateBenefitCorrectionInput = {
   clientKey,
   companyId: ownerItem.company_id,
@@ -208,6 +218,53 @@ describe('benefit correction repository RPC contract', () => {
       p_request_id: requestId, p_expected_status: 'submitted', p_action: 'start_review',
       p_admin_response: '검토 시작', p_client_key: clientKey,
     }, signal: undefined, boundActor: accountAId, boundSession: 'session-a-1' })
+  })
+
+  it('lists one request audit through the session-bound RPC with exact keyset arguments', async () => {
+    const value = setup({ data: { items: [auditEvent], has_more: true, next_cursor: { created_at: auditEvent.created_at, sequence: auditEvent.sequence } }, error: null })
+    const result = await value.repository.listAdminAudit({ requestId, limit: 25 })
+    expect(result).toEqual({ ok: true, data: {
+      items: [{
+        sequence: auditEvent.sequence, eventType: 'additional_material_requested', fromStatus: 'reviewing', toStatus: 'reviewing',
+        adminResponse: '공식 자료를 추가해 주세요.', appliedVersion: null, createdAt: auditEvent.created_at,
+      }],
+      hasMore: true,
+      nextCursor: { createdAt: auditEvent.created_at, sequence: auditEvent.sequence },
+    } })
+    expect(value.calls).toEqual([{ name: 'list_benefit_correction_audit_v1', args: {
+      p_request_id: requestId, p_limit: 25, p_cursor_created_at: undefined, p_cursor_sequence: undefined,
+    }, signal: undefined, boundActor: accountAId, boundSession: 'session-a-1' }])
+    expect(JSON.stringify(result)).not.toMatch(/actor|reviewer|email|token|snapshot|diagnostic/i)
+  })
+
+  it.each([
+    [{ items: [{ ...auditEvent, actor_id: accountAId }], has_more: false, next_cursor: null }],
+    [{ items: [{ ...auditEvent, event_type: 'internal_retry' }], has_more: false, next_cursor: null }],
+    [{ items: [{ ...auditEvent, sequence: 'bad' }], has_more: false, next_cursor: null }],
+    [{ items: [{ ...auditEvent, created_at: '2026-02-30T00:00:00Z' }], has_more: false, next_cursor: null }],
+    [{ items: [], has_more: true, next_cursor: { created_at: auditEvent.created_at, sequence: 'bad' } }],
+    [{ items: [], has_more: true, next_cursor: { created_at: auditEvent.created_at, sequence: auditEvent.sequence } }],
+    [{ items: [], has_more: false, next_cursor: { created_at: auditEvent.created_at, sequence: auditEvent.sequence } }],
+    [{ items: [auditEvent], has_more: true, next_cursor: { created_at: auditEvent.created_at, sequence: '57000000-0000-4000-8000-000000000002' } }],
+    [{ items: [auditEvent, auditEvent], has_more: false, next_cursor: null }],
+    [{ items: [auditEvent, { ...auditEvent, sequence: '57000000-0000-4000-8000-000000000000' }], has_more: false, next_cursor: null }],
+  ])('fails closed on malformed audit envelopes %#', async (data) => {
+    const value = setup({ data, error: null })
+    await expect(value.repository.listAdminAudit({ requestId, limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects audit pages that do not advance beyond the requested cursor', async () => {
+    const value = setup({ data: { items: [auditEvent], has_more: false, next_cursor: null }, error: null })
+    await expect(value.repository.listAdminAudit({ requestId, limit: 25, cursor: { createdAt: auditEvent.created_at, sequence: auditEvent.sequence } }))
+      .resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects malformed audit IDs, bounds, and partial cursors before RPC', async () => {
+    const value = setup()
+    await expect(value.repository.listAdminAudit({ requestId: 'bad', limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(value.repository.listAdminAudit({ requestId, limit: 101 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(value.repository.listAdminAudit({ requestId, limit: 25, cursor: { createdAt, sequence: 'bad' } })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(value.calls).toEqual([])
   })
 
   it.each([

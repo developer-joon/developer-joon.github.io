@@ -367,6 +367,15 @@
 .evidence-url { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .correction-review-controls > label { display: block; padding: 20px 24px 8px; font-family: var(--serif); font-size: 18px; font-weight: 800; }
 .correction-review-controls textarea { display: block; width: calc(100% - 48px); min-width: 0; min-height: 8rem; margin: 0 24px 18px; resize: vertical; border: 1px solid var(--ink); border-radius: 0; background: var(--paper); padding: 12px; color: var(--ink); font: inherit; }
+.correction-audit { border-top: 4px solid var(--ink); }
+.audit-state { margin: 0; padding: 24px; color: var(--muted); }
+.audit-state.admin-error { color: var(--error); }
+.audit-state.admin-error p { margin: 0 0 12px; }
+.correction-audit-list { margin: 0; padding: 0; list-style: none; }
+.correction-audit-list li { border-bottom: 1px solid var(--line); padding: 18px 24px; }
+.correction-audit-list li > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.correction-audit-list time, .correction-audit-list li > p { color: var(--muted); font-size: 12px; }
+.correction-audit-list blockquote { margin: 12px 0 0; border-left: 3px solid var(--blue); padding: 3px 0 3px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .correction-row, .correction-queue .report-filters button, .correction-review-controls button, .correction-queue .admin-load-more button, .correction-queue .admin-state button { min-height: 56px; }
 .correction-row:focus-visible, .correction-review-controls button:focus-visible, .correction-review-controls textarea:focus, .admin-local-nav a:focus-visible { outline: 3px solid var(--blue); outline-offset: -3px; }
 .report-trigger { border: 0; border-bottom: 1px solid currentColor; background: transparent; padding: 7px 2px; color: var(--blue-dark); font: inherit; font-weight: 800; cursor: pointer; }

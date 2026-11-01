@@ -2,11 +2,13 @@ export const BENEFIT_CATEGORIES = ['leave', 'family', 'health', 'growth', 'housi
 export const BENEFIT_CORRECTION_STATUSES = ['submitted', 'reviewing', 'approved', 'rejected', 'applied'] as const
 export const BENEFIT_CORRECTION_QUEUE_FILTERS = ['active', ...BENEFIT_CORRECTION_STATUSES, 'all'] as const
 export const BENEFIT_CORRECTION_REVIEW_ACTIONS = ['start_review', 'request_additional_material', 'approve', 'reject'] as const
+export const BENEFIT_CORRECTION_AUDIT_EVENT_TYPES = ['submitted', 'start_review', 'additional_material_requested', 'approved', 'rejected', 'applied'] as const
 
 export type BenefitCategory = typeof BENEFIT_CATEGORIES[number]
 export type BenefitCorrectionStatus = typeof BENEFIT_CORRECTION_STATUSES[number]
 export type BenefitCorrectionQueueFilter = typeof BENEFIT_CORRECTION_QUEUE_FILTERS[number]
 export type BenefitCorrectionReviewAction = typeof BENEFIT_CORRECTION_REVIEW_ACTIONS[number]
+export type BenefitCorrectionAuditEventType = typeof BENEFIT_CORRECTION_AUDIT_EVENT_TYPES[number]
 
 export interface BenefitCorrectionItem {
   id: string
@@ -31,6 +33,19 @@ export interface AdminBenefitCorrectionItem extends BenefitCorrectionItem {
 
 export interface BenefitCorrectionCursor { createdAt: string; id: string }
 export interface BenefitCorrectionPage<T> { items: T[]; hasMore: boolean; nextCursor: BenefitCorrectionCursor | null }
+
+export interface BenefitCorrectionAuditEvent {
+  sequence: string
+  eventType: BenefitCorrectionAuditEventType
+  fromStatus: BenefitCorrectionStatus | null
+  toStatus: BenefitCorrectionStatus
+  adminResponse: string | null
+  appliedVersion: string | null
+  createdAt: string
+}
+export interface BenefitCorrectionAuditCursor { createdAt: string; sequence: string }
+export interface BenefitCorrectionAuditPage { items: BenefitCorrectionAuditEvent[]; hasMore: boolean; nextCursor: BenefitCorrectionAuditCursor | null }
+export interface BenefitCorrectionAuditInput { requestId: string; limit: number; cursor?: BenefitCorrectionAuditCursor }
 
 export interface CreateBenefitCorrectionInput {
   clientKey: string

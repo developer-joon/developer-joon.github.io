@@ -21,6 +21,7 @@ function corrections(overrides: Partial<BenefitCorrectionRepository> = {}) {
   return {
     getCurrentAccountScope: vi.fn(), createRequest: vi.fn(), listMyRequests: vi.fn(),
     listAdminQueue: vi.fn().mockResolvedValue({ ok: true, data: { items: [submitted], hasMore: false, nextCursor: null } }),
+    listAdminAudit: vi.fn().mockResolvedValue({ ok: true, data: { items: [], hasMore: false, nextCursor: null } }),
     reviewRequest: vi.fn(), ...overrides,
   } as BenefitCorrectionRepository
 }
@@ -57,6 +58,66 @@ describe('AdminBenefitCorrectionsPage', () => {
     expect(screen.queryByText(/submitter|actor|token|@example/i)).not.toBeInTheDocument()
   })
 
+  it('loads a privacy-safe accessible audit timeline for the selected request', async () => {
+    const listAdminAudit = vi.fn().mockResolvedValue({ ok: true, data: { items: [
+      { sequence: '57000000-0000-4000-8000-000000000001', eventType: 'submitted', fromStatus: null, toStatus: 'submitted', adminResponse: null, appliedVersion: null, createdAt: '2026-11-01T01:00:00Z' },
+      { sequence: '57000000-0000-4000-8000-000000000002', eventType: 'additional_material_requested', fromStatus: 'reviewing', toStatus: 'reviewing', adminResponse: '첫 번째 자료 요청', appliedVersion: null, createdAt: '2026-11-01T02:00:00Z' },
+      { sequence: '57000000-0000-4000-8000-000000000003', eventType: 'additional_material_requested', fromStatus: 'reviewing', toStatus: 'reviewing', adminResponse: '두 번째 자료 요청', appliedVersion: null, createdAt: '2026-11-01T03:00:00Z' },
+      { sequence: '57000000-0000-4000-8000-000000000004', eventType: 'applied', fromStatus: 'approved', toStatus: 'applied', adminResponse: null, appliedVersion: 'company-benefits-2026-11-02-v1', createdAt: '2026-11-02T02:00:00Z' },
+    ], hasMore: false, nextCursor: null } })
+    page(corrections({ listAdminAudit }))
+    fireEvent.click(await screen.findByRole('button', { name: /복지 정정.*선택/ }))
+    expect(await screen.findByRole('heading', { name: '검토 감사 이력' })).toBeInTheDocument()
+    expect(listAdminAudit).toHaveBeenCalledWith({ requestId: submitted.id, limit: 50 }, expect.any(AbortSignal))
+    const timeline = screen.getByRole('list', { name: '검토 감사 타임라인' })
+    expect(within(timeline).getByText('첫 번째 자료 요청')).toBeInTheDocument()
+    expect(within(timeline).getByText('두 번째 자료 요청')).toBeInTheDocument()
+    expect(within(timeline).getByText('company-benefits-2026-11-02-v1')).toBeInTheDocument()
+    expect(within(timeline).getAllByText(/2026/).length).toBeGreaterThan(0)
+    expect(within(timeline).queryByText(/actor|reviewer|token|email|snapshot/i)).not.toBeInTheDocument()
+  })
+
+  it('aborts and stale-suppresses audit selection changes with accessible error retry and empty states', async () => {
+    const second = { ...submitted, id: '10000000-0000-4000-8000-000000000002' }
+    let finishFirst!: (value: unknown) => void
+    const listAdminAudit = vi.fn()
+      .mockReturnValueOnce(new Promise(resolve => { finishFirst = resolve }))
+      .mockResolvedValueOnce({ ok: false, error: { code: 'network', message: '감사 이력을 불러오지 못했습니다.' } })
+      .mockResolvedValueOnce({ ok: true, data: { items: [], hasMore: false, nextCursor: null } })
+    page(corrections({
+      listAdminQueue: vi.fn().mockResolvedValue({ ok: true, data: { items: [submitted, second], hasMore: false, nextCursor: null } }),
+      listAdminAudit,
+    }))
+    const rows = await screen.findAllByRole('button', { name: /복지 정정.*선택/ })
+    fireEvent.click(rows[0])
+    expect(await screen.findByText('감사 이력을 불러오는 중입니다.')).toHaveAttribute('role', 'status')
+    const firstSignal = listAdminAudit.mock.calls[0][1] as AbortSignal
+    fireEvent.click(rows[1])
+    expect(firstSignal.aborted).toBe(true)
+    finishFirst({ ok: true, data: { items: [{ sequence: '57000000-0000-4000-8000-000000000009', eventType: 'submitted', fromStatus: null, toStatus: 'submitted', adminResponse: 'stale secret', appliedVersion: null, createdAt: '2026-11-01T00:00:00Z' }], hasMore: false, nextCursor: null } })
+    expect(await screen.findByRole('alert')).toHaveTextContent('감사 이력을 불러오지 못했습니다.')
+    expect(screen.queryByText('stale secret')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '감사 이력 다시 시도' }))
+    expect(await screen.findByText('기록된 감사 이벤트가 없습니다.')).toBeInTheDocument()
+  })
+
+  it('does not render the previous request audit while a new selection loads', async () => {
+    const second = { ...submitted, id: '10000000-0000-4000-8000-000000000002' }
+    let finishSecond!: (value: unknown) => void
+    const listAdminAudit = vi.fn()
+      .mockResolvedValueOnce({ ok: true, data: { items: [{ sequence: '57000000-0000-4000-8000-000000000001', eventType: 'additional_material_requested', fromStatus: 'reviewing', toStatus: 'reviewing', adminResponse: '첫 요청 전용 응답', appliedVersion: null, createdAt: '2026-11-01T02:00:00Z' }], hasMore: false, nextCursor: null } })
+      .mockReturnValueOnce(new Promise(resolve => { finishSecond = resolve }))
+    page(corrections({ listAdminQueue: vi.fn().mockResolvedValue({ ok: true, data: { items: [submitted, second], hasMore: false, nextCursor: null } }), listAdminAudit }))
+    const rows = await screen.findAllByRole('button', { name: /복지 정정.*선택/ })
+    fireEvent.click(rows[0])
+    expect(await screen.findByText('첫 요청 전용 응답')).toBeInTheDocument()
+    fireEvent.click(rows[1])
+    expect(screen.queryByText('첫 요청 전용 응답')).not.toBeInTheDocument()
+    expect(screen.getByText('감사 이력을 불러오는 중입니다.')).toBeInTheDocument()
+    finishSecond({ ok: true, data: { items: [], hasMore: false, nextCursor: null } })
+    expect(await screen.findByText('기록된 감사 이벤트가 없습니다.')).toBeInTheDocument()
+  })
+
   it('suppresses stale filter responses, aborts cleanup, and deduplicates keyset pages', async () => {
     let finishActive!: (value: unknown) => void; let finishMore!: (value: unknown) => void
     const active = new Promise(resolve => { finishActive = resolve }); const more = new Promise(resolve => { finishMore = resolve })
@@ -88,7 +149,8 @@ describe('AdminBenefitCorrectionsPage', () => {
     let finish!: (value: unknown) => void
     const reviewRequest = vi.fn().mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
     const listAdminQueue = vi.fn().mockResolvedValue({ ok: true, data: { items: [submitted], hasMore: false, nextCursor: null } })
-    page(corrections({ listAdminQueue, reviewRequest }))
+    const listAdminAudit = vi.fn().mockResolvedValue({ ok: true, data: { items: [], hasMore: false, nextCursor: null } })
+    page(corrections({ listAdminQueue, reviewRequest, listAdminAudit }))
     fireEvent.click(await screen.findByRole('button', { name: /복지 정정.*선택/ }))
     const response = screen.getByLabelText('관리자 응답')
     expect(response).toHaveAttribute('maxLength', '2000')
@@ -99,6 +161,7 @@ describe('AdminBenefitCorrectionsPage', () => {
     expect(reviewRequest).toHaveBeenCalledWith(expect.objectContaining({ requestId: submitted.id, expectedStatus: 'submitted', action: 'start_review', adminResponse: '검토를 시작합니다.', clientKey: expect.any(String) }), expect.any(AbortSignal))
     finish({ ok: true, data: reviewing })
     expect(await screen.findByRole('button', { name: '추가 자료 요청' })).toBeInTheDocument()
+    await waitFor(() => expect(listAdminAudit).toHaveBeenCalledTimes(2))
 
     reviewRequest.mockResolvedValueOnce({ ok: false, error: { code: 'conflict', message: '요청 상태가 변경되었습니다. 새로고침 후 다시 시도해 주세요.' } })
     fireEvent.change(response, { target: { value: '근거가 부족합니다.' } })
