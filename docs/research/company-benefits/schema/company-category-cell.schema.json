@@ -23,7 +23,7 @@
     "community_report_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^community::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}$"}},
     "reliability": {"enum": ["high", "medium", "low", "none"]},
     "currentness": {"enum": ["current", "historical", "unknown"]},
-    "scope_status": {"enum": ["exact_entity", "group_only", "unresolved"]},
+    "scope_status": {"enum": ["exact_entity", "bounded_entity", "group_only", "unresolved"]},
     "conflict_status": {"enum": ["none", "disclosed", "contradictory"]},
     "publication_eligibility": {"enum": ["official_claim", "reference_only", "community_only", "discovery_only"]},
     "coverage_complete": {"type": "boolean"},

@@ -33,7 +33,7 @@ ID_FIELDS = {
 PACKAGE_FIELDS = {"coverage_policy", *ID_FIELDS}
 OFFICIAL_TIER = "official_government"
 ACCEPTABLE_EMPTY_RESULTS = {"no_result", "ineligible_source"}
-SCOPE_STATUS_BEST_TO_WORST = ("exact_entity", "group_only", "unresolved")
+SCOPE_STATUS_BEST_TO_WORST = ("exact_entity", "bounded_entity", "group_only", "unresolved")
 CURRENTNESS_BEST_TO_WORST = ("current", "historical", "unknown")
 CONFLICT_SEVERITY = {"none": 0, "disclosed": 1, "contradictory": 2}
 CELL_PUBLICATION_ELIGIBILITY = {
@@ -400,10 +400,22 @@ def validate_package(package):
             if source is not None:
                 backing_scope_statuses.append(source.get("scope_status"))
                 backing_currentness.append(source.get("currentness"))
+            reference_eligibility = reference.get("publication_eligibility")
+            source_eligibility = source.get("publication_eligibility") if source is not None else None
+            if reference.get("source_tier") == OFFICIAL_TIER:
+                if reference_eligibility != "reference_only" or source_eligibility != "reference_only":
+                    errors.append(f"{reference_id}: government reference must be reference_only")
+                if (
+                    reference.get("scope", {}).get("status") == "exact_entity"
+                    or (source is not None and source.get("scope_status") == "exact_entity")
+                ):
+                    errors.append(
+                        f"{reference_id}: government reference must use conservative non-exact scope"
+                    )
             if (
-                reference.get("publication_eligibility") == "eligible"
+                reference_eligibility in {"eligible", "reference_only"}
                 and source is not None
-                and source.get("publication_eligibility") == "eligible"
+                and source_eligibility in {"eligible", "reference_only"}
             ):
                 eligible_reference_evidence = True
 
@@ -513,7 +525,7 @@ def validate_package(package):
             ):
                 errors.append(f"{source_id}: legal entity differs from canonical company ledger")
             if (
-                discovered_source.get("publication_eligibility") == "eligible"
+                discovered_source.get("publication_eligibility") in {"eligible", "reference_only"}
                 and source_id not in linked_source_ids
             ):
                 errors.append(
@@ -569,7 +581,7 @@ def validate_package(package):
                     errors.append(f"{receipt.get('attempt_id')}: unacceptable terminal result for no_public_info")
                 for source_id in receipt.get("source_ids", []):
                     source = indexes["sources"].get(source_id, {})
-                    if source.get("publication_eligibility") == "eligible":
+                    if source.get("publication_eligibility") in {"eligible", "reference_only"}:
                         errors.append(f"{cell_id}: no_public_info has publishable evidence {source_id}")
             evidence_ledgers = (
                 (indexes["official_claims"], "official claim"),
@@ -578,7 +590,10 @@ def validate_package(package):
             )
             for records, label in evidence_ledgers:
                 for record_id, record in records.items():
-                    if _same_cell(record, cell) and record.get("publication_eligibility") == "eligible":
+                    if (
+                        _same_cell(record, cell)
+                        and record.get("publication_eligibility") in {"eligible", "reference_only"}
+                    ):
                         errors.append(f"{cell_id}: no_public_info has publishable evidence {label} {record_id}")
 
     ledgers_and_use = (

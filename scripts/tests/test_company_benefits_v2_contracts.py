@@ -312,7 +312,7 @@ class V2ContractTests(unittest.TestCase):
 
     def test_reference_is_strict_and_keeps_official_claims_separate(self):
         self.assert_valid("reference-record.schema.json", base_reference())
-        for tier in ("official_government", "community_employee_review", "user_submission"):
+        for tier in ("community_employee_review", "user_submission"):
             record = base_reference()
             record["source_tier"] = tier
             self.assert_invalid("reference-record.schema.json", record)
@@ -320,7 +320,7 @@ class V2ContractTests(unittest.TestCase):
         record["official_claim_id"] = "claim-1"
         self.assert_invalid("reference-record.schema.json", record)
 
-    def test_reference_rejects_malformed_values_and_ineligible_publication(self):
+    def test_reference_rejects_malformed_values_and_accepts_conservative_publication_scope(self):
         for field, value in (
             ("reference_id", "bad id"),
             ("source_locator", "http://insecure.example"),
@@ -331,9 +331,26 @@ class V2ContractTests(unittest.TestCase):
             record = base_reference()
             record[field] = value
             self.assert_invalid("reference-record.schema.json", record)
-        unresolved = base_reference()
-        unresolved["scope"]["status"] = "unresolved"
-        self.assert_invalid("reference-record.schema.json", unresolved)
+        for scope_status in ("bounded_entity", "group_only", "unresolved"):
+            with self.subTest(scope_status=scope_status):
+                conservative = base_reference()
+                conservative["scope"]["status"] = scope_status
+                self.assert_valid("reference-record.schema.json", conservative)
+
+    def test_government_reference_requires_explicit_downgrade_and_non_exact_scope(self):
+        record = base_reference()
+        record["source_tier"] = "official_government"
+        record["scope"]["status"] = "group_only"
+        record["publication_eligibility"] = "reference_only"
+        self.assert_valid("reference-record.schema.json", record)
+
+        exact = copy.deepcopy(record)
+        exact["scope"]["status"] = "exact_entity"
+        self.assert_invalid("reference-record.schema.json", exact)
+
+        not_downgraded = copy.deepcopy(record)
+        not_downgraded["publication_eligibility"] = "eligible"
+        self.assert_invalid("reference-record.schema.json", not_downgraded)
 
     def test_community_publication_requires_approval_and_frozen_snapshot(self):
         self.assert_valid("community-benefit-report.schema.json", base_community())
@@ -431,7 +448,7 @@ class V2ContractTests(unittest.TestCase):
             {route for routes in policy["category_routes"].values() for route in routes},
         )
         self.assertEqual(
-            ["exact_entity", "group_only", "unresolved"],
+            ["exact_entity", "bounded_entity", "group_only", "unresolved"],
             policy["cell_evidence_aggregation"]["scope_status_best_to_worst"],
         )
         self.assertEqual(

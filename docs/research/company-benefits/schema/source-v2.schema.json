@@ -19,7 +19,7 @@
     "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "reliability": {"enum": ["high", "medium", "low", "unrated"]},
     "currentness": {"enum": ["current", "historical", "unknown"]},
-    "scope_status": {"enum": ["exact_entity", "group_only", "unresolved"]},
+    "scope_status": {"enum": ["exact_entity", "bounded_entity", "group_only", "unresolved"]},
     "scope": {
       "type": "object",
       "additionalProperties": false,
@@ -32,12 +32,16 @@
       }
     },
     "conflict_status": {"enum": ["none", "disclosed", "contradictory"]},
-    "publication_eligibility": {"enum": ["eligible", "discovery_only", "ineligible"]}
+    "publication_eligibility": {"enum": ["eligible", "reference_only", "discovery_only", "ineligible"]}
   },
   "allOf": [
     {
       "if": {"properties": {"publication_eligibility": {"const": "eligible"}}},
       "then": {"properties": {"conflict_status": {"enum": ["none", "disclosed", "contradictory"]}}}
+    },
+    {
+      "if": {"properties": {"publication_eligibility": {"const": "reference_only"}}},
+      "then": {"properties": {"scope_status": {"enum": ["bounded_entity", "group_only", "unresolved"]}}}
     }
   ]
 }

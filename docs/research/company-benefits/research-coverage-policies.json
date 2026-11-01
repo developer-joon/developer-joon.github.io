@@ -7,7 +7,7 @@
   "receipt_schema": "schema/research-attempt.schema.json",
   "cell_evidence_aggregation": {
     "rule": "cell_equals_most_conservative_backing_value",
-    "scope_status_best_to_worst": ["exact_entity", "group_only", "unresolved"],
+    "scope_status_best_to_worst": ["exact_entity", "bounded_entity", "group_only", "unresolved"],
     "currentness_best_to_worst": ["current", "historical", "unknown"]
   },
   "shared_bulk_source_policy": {

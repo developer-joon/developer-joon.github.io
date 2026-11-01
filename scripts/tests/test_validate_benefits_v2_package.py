@@ -197,6 +197,17 @@ class BenefitsV2PackageTests(unittest.TestCase):
         package["sources"] = [src]
         self.assert_invalid(package, "publishable evidence")
 
+        downgraded = package_for()
+        ref = base_reference()
+        ref["scope"]["status"] = "unresolved"
+        ref["publication_eligibility"] = "reference_only"
+        src = source(tier=ref["source_tier"])
+        src["scope_status"] = "unresolved"
+        src["publication_eligibility"] = "reference_only"
+        downgraded["references"] = [ref]
+        downgraded["sources"] = [src]
+        self.assert_invalid(downgraded, "publishable evidence")
+
     def test_package_policy_cannot_omit_a_required_route(self):
         package = package_for()
         package["coverage_policy"]["category_routes"]["leave"].pop()
@@ -502,6 +513,41 @@ class BenefitsV2PackageTests(unittest.TestCase):
         overstated = copy.deepcopy(package)
         overstated["cells"][0]["scope_status"] = "exact_entity"
         self.assert_invalid(overstated, "overstates backing scope")
+
+    def test_unresolved_reference_is_publishable_with_conservative_cell_scope(self):
+        package = package_for("reference")
+        package["references"][0]["scope"]["status"] = "unresolved"
+        package["sources"][0]["scope_status"] = "unresolved"
+        package["cells"][0]["scope_status"] = "unresolved"
+        self.assert_valid(package)
+
+    def test_group_only_government_source_can_be_downgraded_to_reference(self):
+        package = package_for("reference")
+        reference = package["references"][0]
+        source_record = package["sources"][0]
+        reference["source_tier"] = "official_government"
+        reference["scope"]["status"] = "group_only"
+        reference["publication_eligibility"] = "reference_only"
+        source_record["source_tier"] = "official_government"
+        source_record["scope_status"] = "group_only"
+        source_record["publication_eligibility"] = "reference_only"
+        package["attempts"] = [
+            attempt("official-government", "source_found", [source_record["source_id"]])
+        ]
+        package["cells"][0]["attempt_ids"] = [package["attempts"][0]["attempt_id"]]
+        package["cells"][0]["scope_status"] = "group_only"
+        self.assert_valid(package)
+
+        exact = copy.deepcopy(package)
+        exact["references"][0]["scope"]["status"] = "exact_entity"
+        exact["sources"][0]["scope_status"] = "exact_entity"
+        exact["cells"][0]["scope_status"] = "exact_entity"
+        self.assert_invalid(exact, "government reference must use conservative non-exact scope")
+
+        not_downgraded = copy.deepcopy(package)
+        not_downgraded["references"][0]["publication_eligibility"] = "eligible"
+        not_downgraded["sources"][0]["publication_eligibility"] = "eligible"
+        self.assert_invalid(not_downgraded, "government reference must be reference_only")
 
     def test_official_claim_identity_is_canonical_company_category_source_binding(self):
         package = package_for("official_verified")
