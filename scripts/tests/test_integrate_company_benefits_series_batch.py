@@ -44,18 +44,68 @@ class SeriesIntegrationTests(unittest.TestCase):
         (self.input / name).write_bytes(payload)
         return hashlib.sha256(payload).hexdigest()
 
-    def package(self, claims=None, sources=None, reviews=None, gaps=None, checks=None, status="approved"):
+    def package(self, claims=None, sources=None, reviews=None, gaps=None, checks=None, status="approved",
+                include_review_audit=True):
+        normalized_gaps = [dict(gap, researcher_id=gap.get("researcher_id", "gap-researcher"))
+                           for gap in (gaps or [])]
         values = {"sources.jsonl": sources or [], "claims.jsonl": claims or [], "reviews.jsonl": reviews or [],
-                  "gaps.jsonl": gaps or [], "checks.jsonl": checks or []}
+                  "gaps.jsonl": normalized_gaps, "checks.jsonl": checks or []}
         values.update({filename: self.v2_records[ledger] for ledger, filename in V2_FILES.items()})
         artifacts = {name: self.write_jsonl(name, records) for name, records in values.items()}
         manifest = {"schema_version": "1", "batch_id": self.batch["batch_id"],
                     "company_list_sha256": self.batch["company_list_sha256"], "status": status,
                     "effective_sequence_sha256": self.batch["effective_sequence_sha256"],
                     "replacement_events_sha256": self.batch["replacement_events_sha256"],
-                    "approved_at": "2026-10-21T00:00:00Z", "reviewer_id": "batch-reviewer",
+                    "approved_at": "2026-10-23T00:00:00Z", "reviewer_id": "batch-reviewer",
                     "artifacts": artifacts}
-        (self.input / "batch.json").write_text(json.dumps(manifest), encoding="utf-8")
+        if include_review_audit:
+            candidate_claims = [{key: value for key, value in claim.items() if key != "prepublication_checked_at"}
+                                for claim in values["claims.jsonl"]]
+            claims_by_company = {}
+            for claim in candidate_claims:
+                claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
+            gaps_by_company = {}
+            for gap in normalized_gaps:
+                gaps_by_company.setdefault(gap.get("company_id"), []).append(gap)
+            requests = []
+            for company_id in self.batch["company_ids"]:
+                for claim in claims_by_company.get(company_id, []):
+                    target = claim.get("claim_id")
+                    requests.append({"request_id": f"review-request::claim::{target}", "target_type": "claim",
+                                     "target_id": target, "researcher_id": claim.get("researcher_id", "gap-researcher"),
+                                     "status": "pending_independent_review"})
+                for gap in gaps_by_company.get(company_id, []):
+                    target = gap.get("audit_id")
+                    requests.append({"request_id": f"review-request::gap::{target}", "target_type": "gap",
+                                     "target_id": target, "researcher_id": gap["researcher_id"],
+                                     "status": "pending_independent_review"})
+            candidate_values = {"sources.jsonl": values["sources.jsonl"], "claims.jsonl": candidate_claims,
+                                "gaps.jsonl": normalized_gaps, "review-requests.jsonl": requests,
+                                **{filename: values[filename] for filename in V2_FILES.values()}}
+            candidate_artifacts = {name: hashlib.sha256(self.module.series.jsonl_bytes(records)).hexdigest()
+                                   for name, records in candidate_values.items()}
+            candidate_manifest = {
+                "schema_version": "1", "batch_id": self.batch["batch_id"],
+                "company_list_sha256": self.batch["company_list_sha256"],
+                "effective_sequence_sha256": self.batch["effective_sequence_sha256"],
+                "replacement_events_sha256": self.batch["replacement_events_sha256"],
+                "status": "review_pending", "researcher_id": "gap-researcher", "artifacts": candidate_artifacts,
+            }
+            candidate_raw = self.module.series.json_bytes(candidate_manifest)
+            review_bundle = {
+                "schema_version": "1", "candidate_manifest_sha256": hashlib.sha256(candidate_raw).hexdigest(),
+                "candidate_artifacts": candidate_artifacts, "promotion_reviewer_id": "batch-reviewer",
+                "approved_at": manifest["approved_at"],
+                "artifacts": {name: artifacts[name] for name in ("reviews.jsonl", "checks.jsonl")},
+            }
+            review_raw = self.module.series.json_bytes(review_bundle)
+            manifest["review_audit"] = {
+                "candidate_manifest_sha256": hashlib.sha256(candidate_raw).hexdigest(),
+                "candidate_manifest": candidate_manifest, "candidate_artifacts": candidate_artifacts,
+                "review_bundle_sha256": hashlib.sha256(review_raw).hexdigest(),
+                "review_bundle": review_bundle, "review_artifacts": review_bundle["artifacts"],
+            }
+        (self.input / "batch.json").write_bytes(self.module.series.json_bytes(manifest))
 
     def outcome_reviews(self, gaps):
         return [{"review_id": f"review::{gap['audit_id']}", "record_id": gap["audit_id"],
@@ -84,6 +134,86 @@ class SeriesIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "approved"):
             self.module.load_package(self.input, self.root)
 
+    def test_rejects_v2_package_without_review_audit(self):
+        self.package(include_review_audit=False)
+        with self.assertRaisesRegex(ValueError, "review_audit|candidate|promotion"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_already_approved_legacy_entry_even_without_cell_count(self):
+        progress_path = self.root / "series-progress.json"
+        progress = json.loads(progress_path.read_text())
+        current = next(item for item in progress["batches"] if item["batch_id"] == self.batch["batch_id"])
+        current.update(status="approved", approved_at="2026-10-20T00:00:00Z", reviewer_ids=["legacy-reviewer"])
+        current.pop("cell_count", None)
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+        self.package()
+        with self.assertRaisesRegex(ValueError, "pending"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_prior_approved_v2_tampering_before_hash_regeneration(self):
+        first = next(item for item in self.module.series.read_jsonl(self.root / "series-batches.jsonl")
+                     if item["batch_id"] == "domestic-01")
+        existing = no_public_info_records(first, self.fixture.companies)
+        for ledger, filename in V2_FILES.items():
+            self.module.series.write_jsonl(self.root / filename, existing[ledger])
+        self.module.series.materialize_contract(
+            self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "legacy-reviewer"
+        )
+        attempts_path = self.root / V2_FILES["attempts"]
+        attempts = self.module.series.read_jsonl(attempts_path)
+        attempts[0]["query_or_locator"] += " tampered"
+        payload = {key: value for key, value in attempts[0].items() if key != "receipt_content_sha256"}
+        attempts[0]["receipt_content_sha256"] = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.module.series.write_jsonl(attempts_path, attempts)
+        self.package()
+        with self.assertRaisesRegex(ValueError, "persisted v2 ledger hash mismatch"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_forged_review_audit_not_bound_to_exact_candidate_payload(self):
+        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        manifest = json.loads((self.input / "batch.json").read_bytes())
+        audit = manifest["review_audit"]
+        audit["candidate_artifacts"]["company-category-cells.jsonl"] = "0" * 64
+        audit["candidate_manifest"]["artifacts"] = audit["candidate_artifacts"]
+        candidate_raw = self.module.series.json_bytes(audit["candidate_manifest"])
+        audit["candidate_manifest_sha256"] = hashlib.sha256(candidate_raw).hexdigest()
+        audit["review_bundle"]["candidate_manifest_sha256"] = audit["candidate_manifest_sha256"]
+        audit["review_bundle"]["candidate_artifacts"] = audit["candidate_artifacts"]
+        review_raw = self.module.series.json_bytes(audit["review_bundle"])
+        audit["review_bundle_sha256"] = hashlib.sha256(review_raw).hexdigest()
+        (self.input / "batch.json").write_bytes(self.module.series.json_bytes(manifest))
+        with self.assertRaisesRegex(ValueError, "artifact hash|candidate|binding"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_legacy_shaped_unbound_review_audit(self):
+        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        manifest = json.loads((self.input / "batch.json").read_bytes())
+        candidate_artifacts = dict(manifest["review_audit"]["candidate_artifacts"])
+        candidate_artifacts["company-category-cells.jsonl"] = "0" * 64
+        manifest["review_audit"] = {
+            "candidate_manifest_sha256": "0" * 64,
+            "candidate_artifacts": candidate_artifacts,
+            "review_artifacts": {name: manifest["artifacts"][name]
+                                 for name in ("reviews.jsonl", "checks.jsonl")},
+        }
+        (self.input / "batch.json").write_bytes(self.module.series.json_bytes(manifest))
+        with self.assertRaisesRegex(ValueError, "review_audit|candidate|binding"):
+            self.module.load_package(self.input, self.root)
+
     def test_rejects_stale_effective_sequence_or_replacement_event_binding(self):
         self.package()
         manifest = json.loads((self.input / "batch.json").read_text())
@@ -96,7 +226,7 @@ class SeriesIntegrationTests(unittest.TestCase):
         claim = dict(self.fixture.claims[0], claim_id="wrong-batch-claim")
         review = dict(self.fixture.reviews[0], review_id="wrong-review", claim_id="wrong-batch-claim")
         self.package(claims=[claim], reviews=[review])
-        with self.assertRaisesRegex(ValueError, "outside batch"):
+        with self.assertRaisesRegex(ValueError, "outside (canonical )?batch"):
             self.module.load_package(self.input, self.root)
 
         gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
@@ -104,15 +234,22 @@ class SeriesIntegrationTests(unittest.TestCase):
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
                 for company_id in self.batch["company_ids"][:-1]]
-        self.package(gaps=gaps)
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
         with self.assertRaisesRegex(ValueError, "all 25"):
             self.module.load_package(self.input, self.root)
 
     def test_rejects_cross_batch_id_collision_and_evidence_files(self):
-        claim = dict(self.fixture.claims[0])
-        claim["company_id"] = self.batch["company_ids"][0]
-        review = dict(self.fixture.reviews[0])
-        self.package(claims=[claim], reviews=[review])
+        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        existing_attempts = self.module.series.read_jsonl(self.root / V2_FILES["attempts"])
+        existing_attempts.append(self.v2_records["attempts"][0])
+        self.module.series.write_jsonl(self.root / V2_FILES["attempts"], existing_attempts)
         with self.assertRaisesRegex(ValueError, "collision"):
             self.module.load_package(self.input, self.root)
         (self.input / "evidence.pdf").write_bytes(b"not allowed")

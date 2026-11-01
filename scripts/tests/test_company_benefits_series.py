@@ -9,6 +9,7 @@ from pathlib import Path
 
 from scripts.tests.benefits_test_fixture import FrozenFixture
 from scripts.tests.benefits_v2_batch_fixture import V2_FILES, no_public_info_records
+from scripts.tests.test_company_benefits_v2_contracts import base_reference
 
 ROOT = Path(__file__).resolve().parents[2]
 SERIES_MODULE = ROOT / "scripts" / "company_benefits_series.py"
@@ -183,6 +184,48 @@ class SeriesContractTests(unittest.TestCase):
         self.fixture.claims.append(claim)
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         self.assertTrue(any("pending batch" in error for error in self.errors()), self.errors()[:20])
+
+    def test_merged_v2_ledgers_reject_copied_attempt_capture_and_receipt_payload(self):
+        attempts_path = self.root / V2_FILES["attempts"]
+        attempts = self.series.read_jsonl(attempts_path)
+        attempts[1]["capture_locator"] = attempts[0]["capture_locator"]
+        attempts[1]["raw_response_sha256"] = attempts[0]["raw_response_sha256"]
+        payload = {key: value for key, value in attempts[1].items() if key != "receipt_content_sha256"}
+        attempts[1]["receipt_content_sha256"] = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.series.write_jsonl(attempts_path, attempts)
+        errors = self.errors()
+        self.assertTrue(any("receipt reuse" in error for error in errors), errors[:20])
+
+    def test_merged_v2_ledgers_reject_orphan_reference_record(self):
+        cells = self.series.read_jsonl(self.root / V2_FILES["cells"])
+        orphan = base_reference()
+        orphan.update(
+            reference_id="reference::orphan",
+            cell_id=cells[0]["cell_id"],
+            company_id=cells[0]["company_id"],
+            category_id=cells[0]["category_id"],
+            source_id="source::orphan",
+        )
+        self.series.write_jsonl(self.root / V2_FILES["references"], [orphan])
+        errors = self.errors()
+        self.assertTrue(any("orphan reference" in error for error in errors), errors[:20])
+
+    def test_progress_hashes_all_six_full_v2_payloads_and_rejects_tampering(self):
+        progress = json.loads((self.root / "series-progress.json").read_text())
+        entry = next(item for item in progress["batches"] if item["batch_id"] == "domestic-01")
+        self.assertEqual(set(V2_FILES.values()), set(entry["v2_ledger_sha256"]))
+        attempts_path = self.root / V2_FILES["attempts"]
+        attempts = self.series.read_jsonl(attempts_path)
+        attempts[0]["query_or_locator"] += " tampered"
+        payload = {key: value for key, value in attempts[0].items() if key != "receipt_content_sha256"}
+        attempts[0]["receipt_content_sha256"] = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.series.write_jsonl(attempts_path, attempts)
+        errors = self.errors()
+        self.assertTrue(any("250-cell set and hash" in error for error in errors), errors[:20])
 
     def test_partial_approved_batch_is_rejected(self):
         self.fixture.claims.pop()

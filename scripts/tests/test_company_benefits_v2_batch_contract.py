@@ -63,6 +63,13 @@ class V2BatchContractTests(unittest.TestCase):
         records, batch = fixture()
         self.module.validate_v2_batch_records(records, batch)
 
+    def test_merged_id_order_is_partitioned_back_to_canonical_batch_order(self):
+        records, batch = fixture()
+        for ledger, field in self.module.V2_ID_FIELDS.items():
+            records[ledger] = sorted(records[ledger], key=lambda item: item[field])
+        sliced = self.module.v2_batch_slice(records, batch)
+        self.module.validate_v2_batch_records(sliced, batch)
+
     def test_rejects_missing_duplicate_and_substituted_cells_by_set_equality(self):
         for mutation, message in (
             (lambda rows: rows.pop(), "missing.*cell|exact canonical"),

@@ -15,9 +15,10 @@
     "reviewer_id": {"type": "string", "minLength": 1},
     "review_audit": {
       "type": "object", "additionalProperties": false,
-      "required": ["candidate_manifest_sha256", "candidate_artifacts", "review_artifacts"],
+      "required": ["candidate_manifest_sha256", "candidate_manifest", "candidate_artifacts", "review_bundle_sha256", "review_bundle", "review_artifacts"],
       "properties": {
         "candidate_manifest_sha256": {"$ref": "#/$defs/hash"},
+        "candidate_manifest": {"type": "object"},
         "candidate_artifacts": {
           "type": "object", "additionalProperties": false,
           "required": ["sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl", "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl", "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl"],
@@ -29,6 +30,8 @@
             "community-benefit-reports.jsonl": {"$ref": "#/$defs/hash"}, "sources-v2.jsonl": {"$ref": "#/$defs/hash"}
           }
         },
+        "review_bundle_sha256": {"$ref": "#/$defs/hash"},
+        "review_bundle": {"type": "object"},
         "review_artifacts": {
           "type": "object", "additionalProperties": false,
           "required": ["reviews.jsonl", "checks.jsonl"],

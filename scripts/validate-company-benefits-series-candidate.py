@@ -116,13 +116,18 @@ def validate_candidate(candidate_dir, research_root):
     if actual != ALLOWED_FILES or any(not path.is_file() for path in candidate_dir.iterdir()):
         raise ValueError("candidate package must contain exactly candidate.json and ten canonical JSONL files")
     try:
-        manifest = json.loads((candidate_dir / "candidate.json").read_text(encoding="utf-8"))
+        manifest_raw = (candidate_dir / "candidate.json").read_bytes()
+        manifest = json.loads(manifest_raw)
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("invalid candidate manifest") from exc
     fields = {"schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256",
               "replacement_events_sha256", "status", "researcher_id", "artifacts"}
     if set(manifest) != fields or manifest.get("schema_version") != "1" or manifest.get("status") != "review_pending":
         raise ValueError("candidate manifest schema mismatch; status must be review_pending")
+    canonical_manifest = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"),
+                                    allow_nan=False).encode("utf-8")
+    if manifest_raw != canonical_manifest:
+        raise ValueError("candidate manifest must use canonical JSON bytes")
     if not isinstance(manifest.get("researcher_id"), str) or not manifest["researcher_id"].strip():
         raise ValueError("candidate researcher_id is required")
     batch = _canonical_batch(research_root, manifest.get("batch_id"))

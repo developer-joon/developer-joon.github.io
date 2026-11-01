@@ -160,9 +160,8 @@ def read_v2_batch_records(directory):
     return {ledger: read_jsonl(directory / filename) for ledger, filename in V2_LEDGER_FILES.items()}
 
 
-def validate_v2_package_records(records, batch, research_root):
-    """Run batch envelope checks and the authoritative v2 package validator."""
-    validate_v2_batch_records(records, batch)
+def validate_v2_authoritative_records(records, research_root):
+    """Run the authoritative cross-ledger validator over an arbitrary complete slice."""
     validator_path = Path(__file__).with_name("validate-benefits-v2-package.py")
     spec = importlib.util.spec_from_file_location("benefits_v2_batch_package_validator", validator_path)
     if spec is None or spec.loader is None:
@@ -196,8 +195,19 @@ def validate_v2_package_records(records, batch, research_root):
     return records
 
 
+def validate_v2_package_records(records, batch, research_root):
+    """Run batch envelope checks and the authoritative v2 package validator."""
+    validate_v2_batch_records(records, batch)
+    return validate_v2_authoritative_records(records, research_root)
+
+
 def json_bytes(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def canonical_json_bytes(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+                      allow_nan=False).encode("utf-8")
 
 
 def jsonl_bytes(values):
@@ -322,6 +332,55 @@ def company_list_sha256(company_ids):
 def v2_cell_set_sha256(cells):
     identities = sorted((cell.get("company_id"), cell.get("category_id")) for cell in cells)
     return hashlib.sha256(json_bytes(identities)).hexdigest()
+
+
+def v2_batch_slice(records, batch):
+    """Return the complete authoritative package slice owned or used by one batch."""
+    company_ids = set(batch.get("company_ids", []))
+    sliced = {
+        ledger: [record for record in records[ledger] if record.get("company_id") in company_ids]
+        for ledger in V2_LEDGER_FILES if ledger != "sources"
+    }
+    source_ids = {source_id for attempt in sliced["attempts"] for source_id in attempt.get("source_ids", [])}
+    source_ids.update(source_id for claim in sliced["official_claims"] for source_id in claim.get("source_ids", []))
+    source_ids.update(record.get("source_id") for ledger in ("references", "community_reports")
+                      for record in sliced[ledger])
+    sliced["sources"] = [record for record in records["sources"] if record.get("source_id") in source_ids]
+    company_position = {company_id: index for index, company_id in enumerate(batch.get("company_ids", []))}
+    category_position = {category_id: index for index, category_id in enumerate(V2_CATEGORIES)}
+    cell_key = lambda record: (company_position.get(record.get("company_id"), 10**9),
+                               category_position.get(record.get("category_id"), 10**9))
+    sliced["cells"].sort(key=cell_key)
+    sliced["attempts"].sort(key=lambda record: (*cell_key(record), record.get("route_id", "")))
+    for ledger in ("official_claims", "references", "community_reports", "sources"):
+        sliced[ledger].sort(key=lambda record, field=V2_ID_FIELDS[ledger]: record.get(field, ""))
+    return sliced
+
+
+def v2_ledger_sha256(records):
+    """Bind every full canonical record payload, independent of source file ordering."""
+    result = {}
+    for ledger, filename in V2_LEDGER_FILES.items():
+        field = V2_ID_FIELDS[ledger]
+        ordered = sorted(records[ledger], key=lambda record: record.get(field, ""))
+        result[filename] = hashlib.sha256(canonical_json_bytes(ordered)).hexdigest()
+    return result
+
+
+def validate_persisted_v2_hashes(root, batches=None, progress=None):
+    """Reject approved-ledger drift before any operation can regenerate progress hashes."""
+    root = Path(root)
+    batches = batches if batches is not None else read_jsonl(root / "series-batches.jsonl")
+    if progress is None:
+        progress = json.loads((root / "series-progress.json").read_text(encoding="utf-8"))
+    batch_map = {batch.get("batch_id"): batch for batch in batches}
+    records = read_v2_batch_records(root)
+    for entry in progress.get("batches", []):
+        if entry.get("status") != "approved" or not entry.get("cell_count", 0):
+            continue
+        batch = batch_map.get(entry.get("batch_id"))
+        if batch is None or entry.get("v2_ledger_sha256") != v2_ledger_sha256(v2_batch_slice(records, batch)):
+            raise ValueError(f"{entry.get('batch_id')}: persisted v2 ledger hash mismatch")
 
 
 def file_sha256(path):
@@ -464,7 +523,8 @@ def build_progress(root, batches, approved_batch_ids, approved_at, reviewer_id, 
     for claim in claims:
         claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
     gaps_by_company = _company_gap_map(gaps)
-    v2_cells = read_jsonl(root / V2_LEDGER_FILES["cells"])
+    v2_records = read_v2_batch_records(root)
+    v2_cells = v2_records["cells"]
     v2_cells_by_company = {}
     for cell in v2_cells:
         v2_cells_by_company.setdefault(cell.get("company_id"), []).append(cell)
@@ -493,6 +553,7 @@ def build_progress(root, batches, approved_batch_ids, approved_at, reviewer_id, 
             entry.update(approved_at=timestamp, reviewer_ids=sorted(reviewers or []))
             if batch_cells:
                 entry["cell_set_sha256"] = v2_cell_set_sha256(batch_cells)
+                entry["v2_ledger_sha256"] = v2_ledger_sha256(v2_batch_slice(v2_records, batch))
         entries.append(entry)
     all_ids = [company_id for batch in batches for company_id in batch["company_ids"]]
     return {
@@ -645,7 +706,8 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         review_by_claim.setdefault(review.get("claim_id"), []).append(review)
     gaps = read_jsonl(root / "series-research-gaps.jsonl")
     gap_map = _company_gap_map(gaps)
-    v2_cells = read_jsonl(root / V2_LEDGER_FILES["cells"])
+    v2_records = read_v2_batch_records(root)
+    v2_cells = v2_records["cells"]
     gap_by_id = {item.get("audit_id"): item for item in gaps if str(item.get("audit_id", "")).startswith("company-gap::")}
     outcome_reviews = [item for item in reviews if item.get("record_id") and not item.get("claim_id")]
     outcome_targets = set()
@@ -680,7 +742,7 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         if status == "approved":
             expected_fields |= {"approved_at", "reviewer_ids"}
             if v2_progress and entry.get("cell_count", 0):
-                expected_fields.add("cell_set_sha256")
+                expected_fields |= {"cell_set_sha256", "v2_ledger_sha256"}
             approved_batches.append(batch)
             approved_companies.update(batch["company_ids"])
             if not entry.get("reviewer_ids") or len(entry["reviewer_ids"]) != len(set(entry["reviewer_ids"])):
@@ -696,6 +758,7 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         batch_gaps = [gap for company_id in batch["company_ids"] for gap in gap_map.get(company_id, [])]
         batch_cells = [cell for cell in v2_cells
                        if cell.get("company_id") in set(batch["company_ids"])]
+        batch_v2_records = v2_batch_slice(v2_records, batch)
         if status == "pending":
             if batch_claims or batch_gaps or any(review_by_claim.get(claim.get("claim_id")) for claim in batch_claims):
                 errors.append(f"{batch['batch_id']}: pending batch must have no published claims, reviews, or company gaps")
@@ -709,8 +772,13 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         if batch_cells or entry.get("cell_count", 0):
             if (len(batch_cells) != 250 or len(set(actual_cell_keys)) != 250 or set(actual_cell_keys) != expected_cell_keys
                     or entry.get("cell_count") != 250
-                    or entry.get("cell_set_sha256") != v2_cell_set_sha256(batch_cells)):
+                    or entry.get("cell_set_sha256") != v2_cell_set_sha256(batch_cells)
+                    or entry.get("v2_ledger_sha256") != v2_ledger_sha256(batch_v2_records)):
                 errors.append(f"{batch['batch_id']}: approved batch requires exact canonical 250-cell set and hash")
+            try:
+                validate_v2_package_records(batch_v2_records, batch, root)
+            except (OSError, ValueError, RuntimeError) as exc:
+                errors.append(f"{batch['batch_id']}: merged v2 batch validation failed: {exc}")
         accounted = 0
         for company_id in batch["company_ids"]:
             company_claims = claims_by_company.get(company_id, [])
@@ -736,6 +804,11 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         errors.append("claims for a pending batch are prohibited")
     if set(gap_map) - approved_companies:
         errors.append("company gaps for a pending batch are prohibited")
+    if any(v2_records.values()):
+        try:
+            validate_v2_authoritative_records(v2_records, root)
+        except (OSError, ValueError, RuntimeError) as exc:
+            errors.append(f"merged v2 ledgers failed authoritative validation: {exc}")
     expected_outcome_targets = {
         gap.get("audit_id")
         for gap in gaps

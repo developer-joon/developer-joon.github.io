@@ -66,20 +66,23 @@ def _review_source_ids(kind, target, claim_map, gap_map, source_map):
     return set(source_ids)
 
 
-def promote(candidate_dir, review_dir, output_dir, research_root):
-    validator = _load(Path(__file__).with_name("validate-company-benefits-series-candidate.py"), "candidate_contract")
-    package = validator.validate_candidate(candidate_dir, research_root)
+def validate_external_review(package, review_dir, validator):
+    """Validate the promotion review contract without writing or integrating output."""
     review_dir = _external_directory(review_dir)
     if {path.name for path in review_dir.iterdir()} != REVIEW_FILES or any(not path.is_file() for path in review_dir.iterdir()):
         raise ValueError("external review package must contain exactly review-bundle.json, reviews.jsonl, and checks.jsonl")
     try:
-        bundle = json.loads((review_dir / "review-bundle.json").read_text(encoding="utf-8"))
+        bundle_raw = (review_dir / "review-bundle.json").read_bytes()
+        bundle = json.loads(bundle_raw)
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("invalid external review bundle") from exc
     bundle_fields = {"schema_version", "candidate_manifest_sha256", "candidate_artifacts",
                      "promotion_reviewer_id", "approved_at", "artifacts"}
     if set(bundle) != bundle_fields or bundle.get("schema_version") != "1":
         raise ValueError("external review bundle schema mismatch")
+    canonical_bundle = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if bundle_raw != canonical_bundle:
+        raise ValueError("external review bundle must use canonical JSON bytes")
     if (bundle.get("candidate_manifest_sha256") != package["manifest_sha256"]
             or bundle.get("candidate_artifacts") != package["manifest"]["artifacts"]):
         raise ValueError("external review candidate hash binding mismatch; old approval transfer is prohibited")
@@ -155,6 +158,17 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
         if checked >= approved_at:
             raise ValueError(f"{source_id}: post-review check must precede promotion approval")
 
+    return {"bundle": bundle, "reviews": reviews, "checks": checks, "verifier": verifier}
+
+
+def promote(candidate_dir, review_dir, output_dir, research_root):
+    validator = _load(Path(__file__).with_name("validate-company-benefits-series-candidate.py"), "candidate_contract")
+    package = validator.validate_candidate(candidate_dir, research_root)
+    review = validate_external_review(package, review_dir, validator)
+    bundle, reviews, checks, verifier = (review[key] for key in ("bundle", "reviews", "checks", "verifier"))
+    records = package["records"]
+    reviewer = bundle["promotion_reviewer_id"]
+
     output_dir = Path(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     check_map = {check["source_id"]: check for check in checks}
@@ -189,7 +203,12 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
             "status": "approved", "approved_at": bundle["approved_at"], "reviewer_id": reviewer,
             "artifacts": final_hashes,
             "review_audit": {"candidate_manifest_sha256": package["manifest_sha256"],
+                             "candidate_manifest": package["manifest"],
                              "candidate_artifacts": package["manifest"]["artifacts"],
+                             "review_bundle_sha256": validator.sha256(json.dumps(
+                                 bundle, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                             ).encode("utf-8")),
+                             "review_bundle": bundle,
                              "review_artifacts": bundle["artifacts"]},
         }
         (staged / "batch.json").write_bytes(verifier.company_benefits_series.json_bytes(manifest))

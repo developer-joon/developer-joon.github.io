@@ -99,6 +99,96 @@ def merge_checks(existing, incoming, latest_review_by_source_id, expected_source
     return [merged[key] for key in sorted(merged)]
 
 
+def validate_review_audit(manifest, batch, records, research_root):
+    """Reconstruct and revalidate the exact candidate and independent-review contracts."""
+    audit = manifest.get("review_audit")
+    audit_fields = {"candidate_manifest_sha256", "candidate_manifest", "candidate_artifacts",
+                    "review_bundle_sha256", "review_bundle", "review_artifacts"}
+    if not isinstance(audit, dict) or set(audit) != audit_fields:
+        raise ValueError("v2 package requires an exact candidate/promotion review_audit")
+    candidate_manifest = audit.get("candidate_manifest")
+    review_bundle = audit.get("review_bundle")
+    if not isinstance(candidate_manifest, dict) or not isinstance(review_bundle, dict):
+        raise ValueError("review_audit must retain the candidate manifest and review bundle")
+    candidate_raw = series.json_bytes(candidate_manifest)
+    review_raw = series.json_bytes(review_bundle)
+    if (sha256(candidate_raw) != audit.get("candidate_manifest_sha256")
+            or candidate_manifest.get("artifacts") != audit.get("candidate_artifacts")
+            or sha256(review_raw) != audit.get("review_bundle_sha256")
+            or review_bundle.get("artifacts") != audit.get("review_artifacts")):
+        raise ValueError("review_audit manifest or bundle hash binding mismatch")
+    for field in ("batch_id", "company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256"):
+        if candidate_manifest.get(field) != manifest.get(field):
+            raise ValueError(f"review_audit candidate batch binding mismatch: {field}")
+    if (review_bundle.get("promotion_reviewer_id") != manifest.get("reviewer_id")
+            or review_bundle.get("approved_at") != manifest.get("approved_at")):
+        raise ValueError("review_audit promotion identity or approval timestamp mismatch")
+
+    candidate_claims = []
+    for claim in records["claims.jsonl"]:
+        candidate_claim = dict(claim)
+        candidate_claim.pop("prepublication_checked_at", None)
+        candidate_claims.append(candidate_claim)
+    claims_by_company = {}
+    for claim in candidate_claims:
+        claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
+    gaps_by_company = {}
+    for gap in records["gaps.jsonl"]:
+        gaps_by_company.setdefault(gap.get("company_id"), []).append(gap)
+    researcher = candidate_manifest.get("researcher_id")
+    requests = []
+    for company_id in batch["company_ids"]:
+        for claim in claims_by_company.get(company_id, []):
+            target = claim.get("claim_id")
+            author = claim.get("researcher_id", researcher)
+            requests.append({"request_id": f"review-request::claim::{target}", "target_type": "claim",
+                             "target_id": target, "researcher_id": author,
+                             "status": "pending_independent_review"})
+        for gap in gaps_by_company.get(company_id, []):
+            target = gap.get("audit_id")
+            requests.append({"request_id": f"review-request::gap::{target}", "target_type": "gap",
+                             "target_id": target, "researcher_id": gap.get("researcher_id", researcher),
+                             "status": "pending_independent_review"})
+
+    candidate_values = {
+        "sources.jsonl": records["sources.jsonl"], "claims.jsonl": candidate_claims,
+        "gaps.jsonl": records["gaps.jsonl"], "review-requests.jsonl": requests,
+        **{filename: records[filename] for filename in series.V2_LEDGER_FILES.values()},
+    }
+    with tempfile.TemporaryDirectory(prefix="benefits-review-audit-") as directory:
+        base = Path(directory)
+        candidate_dir, review_dir = base / "candidate", base / "review"
+        candidate_dir.mkdir()
+        review_dir.mkdir()
+        (candidate_dir / "candidate.json").write_bytes(candidate_raw)
+        for name, values in candidate_values.items():
+            (candidate_dir / name).write_bytes(series.jsonl_bytes(values))
+        (review_dir / "review-bundle.json").write_bytes(review_raw)
+        for name in ("reviews.jsonl", "checks.jsonl"):
+            (review_dir / name).write_bytes(series.jsonl_bytes(records[name]))
+        candidate_validator = _load_script(Path(__file__).with_name("validate-company-benefits-series-candidate.py"),
+                                           "integrated_candidate_audit_validator")
+        package = candidate_validator.validate_candidate(candidate_dir, research_root)
+        promoter = _load_script(Path(__file__).with_name("promote-company-benefits-series-candidate.py"),
+                                "integrated_review_audit_validator")
+        review = promoter.validate_external_review(package, review_dir, candidate_validator)
+    check_map = {check["source_id"]: check for check in review["checks"]}
+    expected_claims = []
+    for claim in candidate_claims:
+        promoted = dict(claim)
+        if claim.get("status") != "unknown":
+            bound = [check_map[source_id] for source_id in claim.get("source_ids", [])]
+            if not bound:
+                raise ValueError(f"{claim.get('claim_id')}: reviewed factual claim has no source check")
+            promoted["prepublication_checked_at"] = max(
+                bound, key=lambda check: parse_timestamp(check["checked_at"], "check checked_at")
+            )["checked_at"]
+        expected_claims.append(promoted)
+    if expected_claims != records["claims.jsonl"]:
+        raise ValueError("review_audit candidate claims do not produce the exact promoted claims")
+    return audit
+
+
 def load_package(input_dir, research_root):
     input_dir, research_root = Path(input_dir), Path(research_root)
     actual = {path.name for path in input_dir.iterdir()}
@@ -110,8 +200,8 @@ def load_package(input_dir, research_root):
         raise ValueError(f"invalid batch manifest: {exc}") from exc
     expected_manifest_fields = {"schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256",
                                 "replacement_events_sha256", "status", "approved_at", "reviewer_id", "artifacts"}
-    if set(manifest) not in (expected_manifest_fields, expected_manifest_fields | {"review_audit"}) or manifest.get("schema_version") != "1":
-        raise ValueError("batch manifest schema mismatch")
+    if set(manifest) != expected_manifest_fields | {"review_audit"} or manifest.get("schema_version") != "1":
+        raise ValueError("batch manifest schema mismatch; v2 packages require review_audit")
     if manifest.get("status") != "approved" or not manifest.get("reviewer_id"):
         raise ValueError("only explicitly approved batches with reviewer identity may be integrated")
     parse_timestamp(manifest.get("approved_at"), "approved_at")
@@ -123,28 +213,15 @@ def load_package(input_dir, research_root):
             or manifest.get("replacement_events_sha256") != batch.get("replacement_events_sha256")):
         raise ValueError("batch effective sequence or replacement-event binding is stale")
     progress = json.loads((research_root / "series-progress.json").read_text(encoding="utf-8"))
+    series.validate_persisted_v2_hashes(research_root, list(batches.values()), progress)
     current = next((item for item in progress["batches"] if item["batch_id"] == batch["batch_id"]), None)
-    if current is None or current.get("cell_count", 0) != 0:
-        raise ValueError("v2 batch is not pending")
+    if current is None or current.get("status") != "pending" or current.get("cell_count", 0) != 0:
+        raise ValueError("v2 batch is not pending or already contains v2 cells")
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != set(FILES):
-        raise ValueError("batch manifest must hash all five exact artifacts")
-    review_audit = manifest.get("review_audit")
-    if review_audit is not None:
-        audit_fields = {"candidate_manifest_sha256", "candidate_artifacts", "review_artifacts"}
-        candidate_files = {"sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl",
-                           *series.V2_LEDGER_FILES.values()}
-        review_files = {"reviews.jsonl", "checks.jsonl"}
-        if (not isinstance(review_audit, dict) or set(review_audit) != audit_fields
-                or not re.fullmatch(r"[0-9a-f]{64}", str(review_audit.get("candidate_manifest_sha256", "")))
-                or not isinstance(review_audit.get("candidate_artifacts"), dict)
-                or set(review_audit["candidate_artifacts"]) != candidate_files
-                or not isinstance(review_audit.get("review_artifacts"), dict)
-                or set(review_audit["review_artifacts"]) != review_files
-                or any(not re.fullmatch(r"[0-9a-f]{64}", str(value)) for value in review_audit["candidate_artifacts"].values())
-                or any(review_audit["review_artifacts"].get(name) != artifacts.get(name) for name in review_files)):
-            raise ValueError("batch review_audit candidate/review hash binding mismatch")
+        raise ValueError("batch manifest must hash all eleven exact artifacts")
+
     records = {}
     for name in FILES:
         raw = (input_dir / name).read_bytes()
@@ -163,6 +240,7 @@ def load_package(input_dir, research_root):
         raise ValueError("incoming source schema validation failed:\n" + "\n".join(source_errors))
     v2_records = {ledger: records[filename] for ledger, filename in series.V2_LEDGER_FILES.items()}
     series.validate_v2_package_records(v2_records, batch, research_root)
+    validate_review_audit(manifest, batch, records, research_root)
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
     for name in ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", *series.V2_LEDGER_FILES.values()):
@@ -623,7 +701,7 @@ def integrate_batch(input_dir, research_root, freeze_anchor_receipt, effective_s
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input_dir", type=Path, help="directory containing batch.json and five JSONL artifacts")
+    parser.add_argument("input_dir", type=Path, help="directory containing batch.json and eleven JSONL artifacts")
     parser.add_argument("--research-root", type=Path, default=Path("docs/research/company-benefits"))
     parser.add_argument("--freeze-anchor-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT"), required=False)
     parser.add_argument("--effective-selection-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_EFFECTIVE_SELECTION_RECEIPT"))
