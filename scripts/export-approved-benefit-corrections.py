@@ -25,6 +25,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 import uuid
@@ -52,7 +53,7 @@ COMPANY_RE = re.compile(r"^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$")
 DATA_VERSION_RE = re.compile(r"^company-benefits-[0-9]{4}-[0-9]{2}-[0-9]{2}-v[1-9][0-9]*$")
 SNAPSHOT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
-MAX_CANDIDATES = 100_000
+MAX_CANDIDATES = 10_000
 # The complete canonical candidates.jsonl is capped at 64 MiB.  Validation is
 # incremental, so neither the psql transport nor the accepted candidate set can
 # grow toward the multi-gigabyte theoretical row-count maximum.
@@ -333,8 +334,76 @@ def _canonical_json_bytes(value):
     return (encoded + "\n").encode("utf-8")
 
 
+class _SnapshotFile:
+    """A repeatably readable, bounded canonical JSONL file."""
+
+    def __init__(self, spool):
+        self.spool = spool
+        self.byte_count = spool.byte_count
+        self.sha256 = spool.sha256
+
+    def chunks(self, chunk_size=1024 * 1024):
+        yield from self.spool.iter_chunks(chunk_size)
+
+
+class _SnapshotSpool:
+    """Disk-backed canonical candidates plus bounded duplicate metadata."""
+
+    def __init__(self, file_object, records, byte_count, digest):
+        self._file = file_object
+        self._records = records
+        self.byte_count = byte_count
+        self.sha256 = digest
+        self._ordered_ids = tuple(
+            key for key in sorted(records) if records[key][0] == "approved"
+        )
+
+    def __len__(self):
+        return len(self._ordered_ids)
+
+    def __iter__(self):
+        descriptor = self._file.fileno()
+        for request_id in self._ordered_ids:
+            _status, _fingerprint, offset, length = self._records[request_id]
+            raw = os.pread(descriptor, length, offset)
+            if len(raw) != length:
+                raise OSError(errno.EIO, "snapshot spool truncated")
+            yield json.loads(raw)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return list(self)[index]
+        request_id = self._ordered_ids[index]
+        _status, _fingerprint, offset, length = self._records[request_id]
+        raw = os.pread(self._file.fileno(), length, offset)
+        if len(raw) != length:
+            raise OSError(errno.EIO, "snapshot spool truncated")
+        return json.loads(raw)
+
+    def iter_chunks(self, chunk_size=1024 * 1024):
+        offset = 0
+        descriptor = self._file.fileno()
+        while offset < self.byte_count:
+            raw = os.pread(descriptor, min(chunk_size, self.byte_count - offset), offset)
+            if not raw:
+                raise OSError(errno.EIO, "snapshot spool truncated")
+            offset += len(raw)
+            yield raw
+
+    def read_bytes(self):
+        return b"".join(self.iter_chunks())
+
+    def close(self):
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    def __del__(self):
+        self.close()
+
+
 class _SnapshotAccumulator:
-    """Retain one validated representation per id under the artifact byte cap."""
+    """Validate rows into a disk spool while retaining only fixed-size metadata."""
 
     def __init__(self, resolver, resolver_timeout_seconds):
         self.resolver = resolver or _system_resolver
@@ -343,6 +412,12 @@ class _SnapshotAccumulator:
         self.records = {}
         self.canonical_bytes = 0
         self.row_count = 0
+        self._unordered = tempfile.TemporaryFile(mode="w+b")
+
+    def close(self):
+        if self._unordered is not None:
+            self._unordered.close()
+            self._unordered = None
 
     def add(self, row):
         if self.row_count >= MAX_CANDIDATES:
@@ -363,22 +438,49 @@ class _SnapshotAccumulator:
                 raise ValueError(f"conflicting duplicate correction request: {request_id}")
             return
         if status == "approved":
-            candidate_bytes = len(_canonical_json_bytes(candidate))
+            candidate_raw = _canonical_json_bytes(candidate)
+            candidate_bytes = len(candidate_raw)
             if self.canonical_bytes + candidate_bytes > MAX_SNAPSHOT_BYTES:
                 raise ValueError("database response exceeds snapshot byte limit")
+            offset = self._unordered.tell()
+            self._unordered.write(candidate_raw)
             self.canonical_bytes += candidate_bytes
-            self.records[request_id] = (status, fingerprint, candidate)
+            self.records[request_id] = (status, fingerprint, offset, candidate_bytes)
         else:
             # Non-approved rows are fixture-only (the SQL filters them). Keep a
             # fixed-size digest for duplicate-conflict detection, not their text.
-            self.records[request_id] = (status, fingerprint, None)
+            self.records[request_id] = (status, fingerprint, None, None)
 
     def finish(self):
-        return [
-            self.records[key][2]
-            for key in sorted(self.records)
-            if self.records[key][0] == "approved"
-        ]
+        ordered = tempfile.TemporaryFile(mode="w+b")
+        digest = hashlib.sha256()
+        byte_count = 0
+        try:
+            self._unordered.flush()
+            for request_id in sorted(self.records):
+                status, fingerprint, offset, length = self.records[request_id]
+                if status != "approved":
+                    continue
+                raw = os.pread(self._unordered.fileno(), length, offset)
+                if len(raw) != length:
+                    raise OSError(errno.EIO, "snapshot spool truncated")
+                final_offset = byte_count
+                ordered.write(raw)
+                digest.update(raw)
+                byte_count += length
+                self.records[request_id] = (
+                    status, fingerprint, final_offset, length
+                )
+            ordered.flush()
+            result = _SnapshotSpool(
+                ordered, self.records, byte_count, digest.hexdigest()
+            )
+            ordered = None
+            return result
+        finally:
+            self.close()
+            if ordered is not None:
+                ordered.close()
 
 
 def build_snapshot(rows, resolver=None, resolver_timeout_seconds=DEFAULT_DNS_TIMEOUT_SECONDS):
@@ -386,12 +488,17 @@ def build_snapshot(rows, resolver=None, resolver_timeout_seconds=DEFAULT_DNS_TIM
     if not isinstance(rows, list):
         raise ValueError("database response must be an array")
     accumulator = _SnapshotAccumulator(resolver, resolver_timeout_seconds)
-    for row in rows:
-        accumulator.add(row)
-    return accumulator.finish()
+    try:
+        for row in rows:
+            accumulator.add(row)
+        return accumulator.finish()
+    finally:
+        accumulator.close()
 
 
 def canonical_jsonl(candidates):
+    if isinstance(candidates, _SnapshotSpool):
+        return candidates.read_bytes()
     output = io.BytesIO()
     total = 0
     for candidate in candidates:
@@ -408,13 +515,20 @@ def snapshot_sha256(raw):
 
 
 def _expected_files(snapshot_version, candidates):
-    rows = canonical_jsonl(candidates)
+    if isinstance(candidates, _SnapshotSpool):
+        rows = _SnapshotFile(candidates)
+        candidate_count = len(candidates)
+        candidate_sha256 = candidates.sha256
+    else:
+        rows = canonical_jsonl(candidates)
+        candidate_count = len(candidates)
+        candidate_sha256 = snapshot_sha256(rows)
     manifest = {
         "artifact_kind": "approved_benefit_correction_offline_review_snapshot",
-        "candidate_count": len(candidates),
+        "candidate_count": candidate_count,
         "candidates_file": "candidates.jsonl",
         "schema_version": 1,
-        "snapshot_sha256": snapshot_sha256(rows),
+        "snapshot_sha256": candidate_sha256,
         "snapshot_version": snapshot_version,
     }
     return {"candidates.jsonl": rows, "manifest.json": _canonical_json_bytes(manifest)}
@@ -446,6 +560,37 @@ def _read_regular_file_at(directory_fd, name):
         if not stat.S_ISREG(current.st_mode) or not _same_inode(opened, current):
             raise OSError(errno.ESTALE, "snapshot member changed during validation")
         return b"".join(chunks), opened
+    finally:
+        os.close(descriptor)
+
+
+def _streamed_regular_file_matches_at(directory_fd, name, expected):
+    """Hash a large expected member without retaining its bytes in memory."""
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=directory_fd,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size != expected.byte_count:
+            return False, opened
+        digest = hashlib.sha256()
+        remaining = expected.byte_count
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                return False, opened
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            return False, opened
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        return (
+            stat.S_ISREG(current.st_mode)
+            and _same_inode(opened, current)
+            and hmac.compare_digest(digest.hexdigest(), expected.sha256)
+        ), opened
     finally:
         os.close(descriptor)
 
@@ -523,10 +668,18 @@ def _directory_fd_matches(
     opened_files = {}
     for name in first_inventory:
         try:
-            raw, metadata = _read_regular_file_at(target_fd, name)
+            expected_value = expected[name]
+            if isinstance(expected_value, _SnapshotFile):
+                matches, metadata = _streamed_regular_file_matches_at(
+                    target_fd, name, expected_value
+                )
+                if not matches:
+                    return False
+            else:
+                raw, metadata = _read_regular_file_at(target_fd, name)
+                if raw != expected_value:
+                    return False
         except OSError:
-            return False
-        if raw != expected[name]:
             return False
         if expected_files is not None and not _same_inode(
             metadata, expected_files[name]
@@ -560,6 +713,15 @@ def _fsync_directory_fd(descriptor):
     os.fsync(descriptor)
 
 
+def _write_expected_file(descriptor, expected):
+    chunks = expected.chunks() if isinstance(expected, _SnapshotFile) else (expected,)
+    for chunk in chunks:
+        view = memoryview(chunk)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+
+
 def _renameat2_function():
     libc = ctypes.CDLL(None, use_errno=True)
     function = getattr(libc, "renameat2", None)
@@ -571,17 +733,23 @@ def _renameat2_function():
 
 
 def _preflight_publication_platform(output_root):
-    """Prove required rename semantics using real entries on the target FS."""
+    """Prove rename semantics with real entries in the exact private output FS."""
     if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
         raise OSError(errno.ENOTSUP, "unsupported publication platform")
     root = Path(output_root).absolute()
     parent_fd = os.open(
         root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
-    probe_parent_fd = None
-    probe_fd = None
-    probe_created = False
-    probe_name = f".benefit-export-preflight-{secrets.token_hex(16)}"
+    root_fd = None
+    root_created = False
+    root_metadata = None
+    can_remove_root = False
+    nonce = secrets.token_hex(16)
+    names = (
+        f".benefit-export-preflight-source-{nonce}",
+        f".benefit-export-preflight-target-{nonce}",
+    )
+    contents = (b"preflight-source", b"preflight-target")
     try:
         parent_metadata = os.fstat(parent_fd)
         if (
@@ -591,80 +759,83 @@ def _preflight_publication_platform(output_root):
         ):
             raise OSError(errno.EPERM, "output root parent is not private")
         try:
-            probe_parent_fd = os.open(
-                root.name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=parent_fd,
-            )
-        except FileNotFoundError:
-            probe_parent_fd = os.dup(parent_fd)
-        else:
-            opened_root = os.fstat(probe_parent_fd)
-            if not _secure_owned_mode(opened_root, stat.S_ISDIR, 0o700):
-                raise OSError(errno.EPERM, "invalid output root")
-
-        os.mkdir(probe_name, 0o700, dir_fd=probe_parent_fd)
-        probe_created = True
-        probe_fd = os.open(
-            probe_name,
+            os.mkdir(root.name, 0o700, dir_fd=parent_fd)
+            root_created = True
+            _fsync_directory_fd(parent_fd)
+        except FileExistsError:
+            pass
+        root_fd = os.open(
+            root.name,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=probe_parent_fd,
+            dir_fd=parent_fd,
         )
-        names = ("noreplace-source", "noreplace-target")
-        contents = (b"preflight-source", b"preflight-target")
+        root_metadata = os.fstat(root_fd)
+        named_root = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not _secure_owned_mode(root_metadata, stat.S_ISDIR, 0o700)
+            or not _same_inode(root_metadata, named_root)
+            or not _root_path_still_names_fd(root, root_fd)
+        ):
+            raise OSError(errno.EPERM, "invalid output root")
+
         metadata = []
         for name, raw in zip(names, contents):
             descriptor = os.open(
                 name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600, dir_fd=probe_fd,
+                0o600, dir_fd=root_fd,
             )
             try:
-                os.write(descriptor, raw)
+                _write_expected_file(descriptor, raw)
                 os.fsync(descriptor)
                 metadata.append(os.fstat(descriptor))
             finally:
                 os.close(descriptor)
-        _fsync_directory_fd(probe_fd)
+        _fsync_directory_fd(root_fd)
 
         function = _renameat2_function()
         ctypes.set_errno(0)
-        result = function(probe_fd, names[0].encode(), probe_fd, names[1].encode(), 1)
+        result = function(root_fd, names[0].encode(), root_fd, names[1].encode(), 1)
         error_number = ctypes.get_errno()
         if result == 0 or error_number != errno.EEXIST:
             raise OSError(errno.ENOTSUP, "renameat2 no-replace is unsupported on output filesystem")
         for index, (name, raw) in enumerate(zip(names, contents)):
-            current_raw, current = _read_regular_file_at(probe_fd, name)
+            current_raw, current = _read_regular_file_at(root_fd, name)
             if current_raw != raw or not _same_inode(current, metadata[index]):
                 raise OSError(errno.ENOTSUP, "renameat2 no-replace semantics are incorrect")
 
         ctypes.set_errno(0)
-        result = function(probe_fd, names[0].encode(), probe_fd, names[1].encode(), 2)
+        result = function(root_fd, names[0].encode(), root_fd, names[1].encode(), 2)
         if result != 0:
             raise OSError(errno.ENOTSUP, "renameat2 exchange is unsupported on output filesystem")
         for index, (name, raw) in enumerate(zip(names, reversed(contents))):
-            current_raw, current = _read_regular_file_at(probe_fd, name)
-            expected_metadata = metadata[1 - index]
-            if current_raw != raw or not _same_inode(current, expected_metadata):
+            current_raw, current = _read_regular_file_at(root_fd, name)
+            if current_raw != raw or not _same_inode(current, metadata[1 - index]):
                 raise OSError(errno.ENOTSUP, "renameat2 exchange semantics are incorrect")
-        _fsync_directory_fd(probe_fd)
+        _fsync_directory_fd(root_fd)
     finally:
-        if probe_fd is not None:
+        if root_fd is not None:
             try:
-                for name in os.listdir(probe_fd):
-                    os.unlink(name, dir_fd=probe_fd)
-                _fsync_directory_fd(probe_fd)
-            finally:
-                os.close(probe_fd)
-        if probe_parent_fd is not None:
-            try:
-                if probe_created:
+                for name in names:
                     try:
-                        os.rmdir(probe_name, dir_fd=probe_parent_fd)
-                        _fsync_directory_fd(probe_parent_fd)
+                        os.unlink(name, dir_fd=root_fd)
                     except FileNotFoundError:
                         pass
+                _fsync_directory_fd(root_fd)
+                can_remove_root = (
+                    root_created
+                    and root_metadata is not None
+                    and not os.listdir(root_fd)
+                    and _root_path_still_names_fd(root, root_fd)
+                    and _same_inode(root_metadata, os.fstat(root_fd))
+                )
             finally:
-                os.close(probe_parent_fd)
+                os.close(root_fd)
+            if can_remove_root:
+                try:
+                    os.rmdir(root.name, dir_fd=parent_fd)
+                    _fsync_directory_fd(parent_fd)
+                except FileNotFoundError:
+                    pass
         os.close(parent_fd)
 
 
@@ -1020,7 +1191,12 @@ def _load_tombstone_authentication_key(output_root):
 
 def _tombstone_snapshot_identity(expected):
     inventory = {
-        name: hashlib.sha256(raw).hexdigest() for name, raw in expected.items()
+        name: (
+            raw.sha256
+            if isinstance(raw, _SnapshotFile)
+            else hashlib.sha256(raw).hexdigest()
+        )
+        for name, raw in expected.items()
     }
     return hashlib.sha256(_canonical_json_bytes(inventory)).hexdigest()
 
@@ -1570,10 +1746,7 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                     dir_fd=staging_fd,
                 )
                 try:
-                    view = memoryview(raw)
-                    while view:
-                        written = os.write(file_fd, view)
-                        view = view[written:]
+                    _write_expected_file(file_fd, raw)
                     os.fsync(file_fd)
                     staging_files[name] = os.fstat(file_fd)
                 finally:
@@ -1884,13 +2057,16 @@ def fetch_snapshot_with_psql(
 ):
     """Validate psql JSONL incrementally without retaining decoded DB rows."""
     accumulator = _SnapshotAccumulator(resolver, resolver_timeout_seconds)
-    fetch_rows_with_psql(
-        process_factory=process_factory,
-        timeout_seconds=timeout_seconds,
-        kill_grace_seconds=kill_grace_seconds,
-        row_consumer=accumulator.add,
-    )
-    return accumulator.finish()
+    try:
+        fetch_rows_with_psql(
+            process_factory=process_factory,
+            timeout_seconds=timeout_seconds,
+            kill_grace_seconds=kill_grace_seconds,
+            row_consumer=accumulator.add,
+        )
+        return accumulator.finish()
+    finally:
+        accumulator.close()
 
 
 def verify_applied_version_binding(manifest_path, applied_version, verified_manifest_sha256):
@@ -1949,6 +2125,7 @@ def _parser():
 
 def main(argv=None):
     args = _parser().parse_args(argv)
+    candidates = None
     try:
         if args.command == "export":
             if args.resolver_json and not args.input_json:
@@ -1971,11 +2148,14 @@ def main(argv=None):
                     timeout_seconds=args.psql_timeout_seconds,
                 )
             target = publish_snapshot(args.output_root, args.snapshot_version, candidates)
-            raw = canonical_jsonl(candidates)
             result = {
                 "candidate_count": len(candidates),
                 "snapshot_path": str(target),
-                "snapshot_sha256": snapshot_sha256(raw),
+                "snapshot_sha256": (
+                    candidates.sha256
+                    if isinstance(candidates, _SnapshotSpool)
+                    else snapshot_sha256(canonical_jsonl(candidates))
+                ),
                 "snapshot_version": args.snapshot_version,
             }
         else:
@@ -1988,6 +2168,9 @@ def main(argv=None):
     except (FileExistsError, OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if isinstance(candidates, _SnapshotSpool):
+            candidates.close()
 
 
 if __name__ == "__main__":

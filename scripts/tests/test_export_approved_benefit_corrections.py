@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import tracemalloc
 import unittest
 from pathlib import Path
 
@@ -1209,6 +1210,48 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         finally:
             self.exporter.MAX_SNAPSHOT_BYTES = original_limit
 
+    def test_snapshot_uses_disk_spool_and_bounded_metadata_near_limit(self):
+        original_limit = self.exporter.MAX_SNAPSHOT_BYTES
+        original_candidates = self.exporter.MAX_CANDIDATES
+        self.exporter.MAX_SNAPSHOT_BYTES = 1024 * 1024
+        self.exporter.MAX_CANDIDATES = 2_000
+        rows = [
+            row(
+                f"10000000-0000-4000-8000-{index:012d}",
+                current_text="c" * 400,
+                proposed_text="p" * 400,
+            )
+            for index in range(800)
+        ]
+        tracemalloc.start()
+        try:
+            snapshot = self.build_snapshot(list(reversed(rows)))
+            _current, peak = tracemalloc.get_traced_memory()
+            self.assertIsInstance(snapshot, self.exporter._SnapshotSpool)
+            self.assertGreater(snapshot.byte_count, self.exporter.MAX_SNAPSHOT_BYTES * 0.8)
+            self.assertLessEqual(snapshot.byte_count, self.exporter.MAX_SNAPSHOT_BYTES)
+            self.assertLess(peak, 12 * 1024 * 1024)
+            self.assertEqual(800, len(snapshot))
+            self.assertEqual(rows[0]["id"], snapshot[0]["correction_request_id"])
+            self.assertFalse(any(isinstance(value[-1], dict) for value in snapshot._records.values()))
+        finally:
+            tracemalloc.stop()
+            self.exporter.MAX_SNAPSHOT_BYTES = original_limit
+            self.exporter.MAX_CANDIDATES = original_candidates
+
+    def test_streamed_manifest_is_deterministic_without_materializing_snapshot(self):
+        rows = [
+            row("10000000-0000-4000-8000-000000000002", proposed_text="second"),
+            row("10000000-0000-4000-8000-000000000001", proposed_text="first"),
+        ]
+        left = self.build_snapshot(rows)
+        right = self.build_snapshot(list(reversed(rows)))
+        self.assertEqual(left.sha256, right.sha256)
+        self.assertEqual(left.byte_count, right.byte_count)
+        left_manifest = self.exporter._expected_files("approved-2026-11-01-v1", left)["manifest.json"]
+        right_manifest = self.exporter._expected_files("approved-2026-11-01-v1", right)["manifest.json"]
+        self.assertEqual(left_manifest, right_manifest)
+
     def test_psql_snapshot_byte_overflow_terminates_process(self):
         launched = []
         original_limit = self.exporter.MAX_SNAPSHOT_BYTES
@@ -1316,6 +1359,49 @@ for index in range(1000):
             self.exporter._preflight_publication_platform(root)
             self.assertFalse(root.exists())
             self.assertEqual([], list(base.iterdir()))
+
+    def test_preflight_fixture_is_inside_exact_private_output_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            original = self.exporter._renameat2_function
+            real_function = original()
+            observed = []
+
+            def inspect_fixture(source_fd, source, target_fd, target, flags):
+                observed.append(flags)
+                self.assertEqual(root.stat().st_ino, os.fstat(source_fd).st_ino)
+                self.assertEqual(0o700, root.stat().st_mode & 0o777)
+                return real_function(source_fd, source, target_fd, target, flags)
+
+            self.exporter._renameat2_function = lambda: inspect_fixture
+            try:
+                self.exporter._preflight_publication_platform(root)
+            finally:
+                self.exporter._renameat2_function = original
+            self.assertEqual([1, 2], observed)
+            self.assertFalse(root.exists())
+            self.assertEqual([], list(Path(directory).iterdir()))
+
+    def test_preflight_fails_closed_for_unsupported_filesystem_errors(self):
+        for unsupported_errno in (errno.ENOSYS, errno.EOPNOTSUPP, errno.EINVAL):
+            with self.subTest(error=unsupported_errno), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root = base / "snapshots"
+                original = self.exporter._renameat2_function
+
+                def unsupported(*_args, error_number=unsupported_errno):
+                    import ctypes
+                    ctypes.set_errno(error_number)
+                    return -1
+
+                self.exporter._renameat2_function = lambda: unsupported
+                try:
+                    with self.assertRaisesRegex(OSError, "unsupported"):
+                        self.exporter._preflight_publication_platform(root)
+                finally:
+                    self.exporter._renameat2_function = original
+                self.assertFalse(root.exists())
+                self.assertEqual([], list(base.iterdir()))
 
     def test_psql_timeout_kills_pipe_holding_descendants_with_a_bounded_deadline(self):
         launched = []
