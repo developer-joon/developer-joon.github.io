@@ -1,10 +1,14 @@
 import hashlib
 import importlib.util
 import json
+import multiprocessing
+import os
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -117,15 +121,13 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                     self.build_snapshot([row(source_url=url)])
 
     def test_validates_idna_and_resolves_the_ascii_hostname(self):
-        resolved = []
-
         def resolver(hostname):
-            resolved.append(hostname)
+            if hostname != "xn--bcher-kva.example":
+                raise AssertionError(f"unexpected resolver hostname: {hostname}")
             return ["93.184.216.34"]
 
         snapshot = self.build_snapshot([row(source_url="https://bücher.example/e")], resolver=resolver)
         self.assertEqual("https://bücher.example/e", snapshot[0]["evidence_url"])
-        self.assertEqual(["xn--bcher-kva.example"], resolved)
 
         invalid_urls = [
             "https://-bad.example/e", "https://bad-.example/e", "https://a..example/e",
@@ -172,6 +174,36 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                         [row()], resolver=resolver, resolver_timeout_seconds=0.01
                     )
 
+    def test_repeated_dns_timeouts_reap_every_worker(self):
+        def blocks_well_past_the_deadline(_hostname):
+            if threading.current_thread() is threading.main_thread():
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            time.sleep(5)
+            return ["93.184.216.34"]
+
+        child_pids_before = {child.pid for child in multiprocessing.active_children()}
+        resolver_threads_before = {
+            thread.ident for thread in threading.enumerate()
+            if thread.name == "benefit-url-resolver"
+        }
+        for _ in range(4):
+            with self.assertRaisesRegex(ValueError, "invalid public evidence URL"):
+                self.build_snapshot(
+                    [row()], resolver=blocks_well_past_the_deadline,
+                    resolver_timeout_seconds=0.01,
+                )
+        self.assertEqual(
+            child_pids_before,
+            {child.pid for child in multiprocessing.active_children()},
+        )
+        self.assertEqual(
+            resolver_threads_before,
+            {
+                thread.ident for thread in threading.enumerate()
+                if thread.name == "benefit-url-resolver"
+            },
+        )
+
     def test_dns_answers_are_validation_only_and_do_not_change_snapshot_bytes(self):
         left = self.exporter.canonical_jsonl(self.build_snapshot([row()], resolver=lambda _host: ["8.8.8.8"]))
         right = self.exporter.canonical_jsonl(self.build_snapshot([row()], resolver=lambda _host: ["1.1.1.1"]))
@@ -215,6 +247,60 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             self.assertTrue(source.is_dir())
             self.assertEqual([], list(target.iterdir()))
 
+    def test_idempotent_validation_rejects_target_swapped_to_symlink(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = self.exporter.publish_snapshot(root, version, candidates)
+            attacker = root / "attacker-copy"
+            attacker.mkdir()
+            for child in target.iterdir():
+                (attacker / child.name).write_bytes(child.read_bytes())
+
+            original_matches = self.exporter._directory_matches
+            swapped = False
+
+            def swap_before_inventory(*args, **kwargs):
+                nonlocal swapped
+                if not swapped:
+                    swapped = True
+                    renamed = root / "original-snapshot"
+                    os.rename(target, renamed)
+                    os.symlink(attacker.name, target, target_is_directory=True)
+                return original_matches(*args, **kwargs)
+
+            self.exporter._directory_matches = swap_before_inventory
+            try:
+                with self.assertRaisesRegex(FileExistsError, "mismatch"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._directory_matches = original_matches
+            self.assertTrue(target.is_symlink())
+
+    def test_cleanup_does_not_delete_a_replaced_staging_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / ".snapshot-staging"
+            staging.mkdir()
+            (staging / "manifest.json").write_text("ours", encoding="utf-8")
+            original_metadata = staging.stat()
+            os.rename(staging, root / "original-staging")
+            staging.mkdir()
+            replacement = staging / "manifest.json"
+            replacement.write_text("attacker", encoding="utf-8")
+            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                self.exporter._remove_staging(
+                    root_fd,
+                    staging.name,
+                    {"manifest.json"},
+                    expected_directory=original_metadata,
+                )
+            finally:
+                os.close(root_fd)
+            self.assertEqual("attacker", replacement.read_text(encoding="utf-8"))
+
     def test_applied_version_binding_requires_independently_verified_manifest_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"
@@ -232,22 +318,34 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 self.exporter.verify_applied_version_binding(path, "company-benefits-2026-11-02-v1", digest)
 
-    def test_psql_transport_is_injectable_read_only_and_has_no_sensitive_projection(self):
+    def test_psql_transport_is_injectable_read_only_bounded_and_has_no_sensitive_projection(self):
         calls = []
 
-        class Result:
+        class Process:
             returncode = 0
-            stdout = "[]\n"
 
-        def runner(command, **kwargs):
+            def communicate(self, input, timeout):
+                calls.append(("communicate", input, timeout))
+                return "[]\n", ""
+
+        def process_factory(command, **kwargs):
             calls.append((command, kwargs))
-            return Result()
+            return Process()
 
-        self.assertEqual([], self.exporter.fetch_rows_with_psql(runner))
+        self.assertEqual(
+            [],
+            self.exporter.fetch_rows_with_psql(
+                process_factory=process_factory, timeout_seconds=7.5
+            ),
+        )
         command, kwargs = calls[0]
         self.assertEqual("psql", command[0])
         self.assertNotIn("--dbname", command)
-        query = kwargs["input"]
+        self.assertEqual(subprocess.PIPE, kwargs["stdin"])
+        self.assertEqual(subprocess.PIPE, kwargs["stdout"])
+        self.assertEqual(subprocess.PIPE, kwargs["stderr"])
+        _, query, timeout = calls[1]
+        self.assertEqual(7.5, timeout)
         self.assertIn("repeatable read read only", query)
         self.assertIn("where r.status='approved'", query)
         for sensitive in (
@@ -255,6 +353,38 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             "payload_fingerprint", "benefit_correction_events",
         ):
             self.assertNotIn(sensitive, query)
+
+    def test_psql_timeout_terminates_then_kills_and_reports_no_credentials(self):
+        class StalledProcess:
+            returncode = None
+
+            def __init__(self):
+                self.calls = []
+
+            def communicate(self, input=None, timeout=None):
+                self.calls.append(("communicate", input, timeout))
+                if self.calls[-2:] and any(call[0] == "kill" for call in self.calls[-2:]):
+                    self.returncode = -9
+                    return "", "contains password=secret"
+                raise subprocess.TimeoutExpired("psql", timeout)
+
+            def terminate(self):
+                self.calls.append(("terminate",))
+
+            def kill(self):
+                self.calls.append(("kill",))
+
+        process = StalledProcess()
+        with self.assertRaisesRegex(RuntimeError, "timed out") as raised:
+            self.exporter.fetch_rows_with_psql(
+                process_factory=lambda *_args, **_kwargs: process,
+                timeout_seconds=0.01,
+                kill_grace_seconds=0.01,
+            )
+        self.assertEqual("approved correction read timed out", str(raised.exception))
+        self.assertIn(("terminate",), process.calls)
+        self.assertIn(("kill",), process.calls)
+        self.assertEqual(-9, process.returncode)
 
     def test_fixture_backed_cli_exports_without_credentials_or_network(self):
         with tempfile.TemporaryDirectory() as directory:

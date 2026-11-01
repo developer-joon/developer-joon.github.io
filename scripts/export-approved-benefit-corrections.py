@@ -12,16 +12,13 @@ import errno
 import hashlib
 import ipaddress
 import json
+import multiprocessing
 import os
-import queue
 import re
-import shutil
 import socket
 import stat
 import subprocess
 import sys
-import tempfile
-import threading
 import unicodedata
 import uuid
 from pathlib import Path
@@ -52,6 +49,8 @@ MAX_CANDIDATES = 100_000
 MAX_MANIFEST_BYTES = 10 * 1024 * 1024
 MAX_DNS_ANSWERS = 64
 DEFAULT_DNS_TIMEOUT_SECONDS = 2.0
+DEFAULT_PSQL_TIMEOUT_SECONDS = 30.0
+DEFAULT_PROCESS_KILL_GRACE_SECONDS = 0.5
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
@@ -117,31 +116,63 @@ def _system_resolver(hostname):
     return [answer[4][0] for answer in answers]
 
 
+def _resolver_worker(connection, resolver, hostname):
+    """Resolve in a disposable process so a stuck libc/NSS call is killable."""
+    try:
+        raw_answers = resolver(hostname)
+        if isinstance(raw_answers, (str, bytes)):
+            raise ValueError("malformed resolver answer")
+        answers = []
+        for index, answer in enumerate(raw_answers):
+            if index >= MAX_DNS_ANSWERS:
+                raise ValueError("too many resolver answers")
+            answers.append(answer)
+        connection.send((answers, False))
+    except BaseException:  # Child diagnostics must not expose resolver internals.
+        try:
+            connection.send((None, True))
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+    finally:
+        connection.close()
+
+
+def _stop_process(process, grace_seconds=DEFAULT_PROCESS_KILL_GRACE_SECONDS):
+    """Terminate, escalate to kill, and always reap a worker process."""
+    if not process.is_alive():
+        process.join()
+        return
+    process.terminate()
+    process.join(grace_seconds)
+    if process.is_alive():
+        process.kill()
+        process.join()
+
+
 def _bounded_resolve(hostname, resolver, timeout_seconds):
     if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
         raise ValueError("invalid public evidence URL")
-    result_queue = queue.Queue(maxsize=1)
-
-    def run():
-        try:
-            raw_answers = resolver(hostname)
-            if isinstance(raw_answers, (str, bytes)):
-                raise ValueError("malformed resolver answer")
-            answers = []
-            for index, answer in enumerate(raw_answers):
-                if index >= MAX_DNS_ANSWERS:
-                    raise ValueError("too many resolver answers")
-                answers.append(answer)
-            result_queue.put((answers, None))
-        except Exception as exc:  # Resolver failures are intentionally fail-closed.
-            result_queue.put((None, exc))
-
-    threading.Thread(target=run, daemon=True, name="benefit-url-resolver").start()
+    # Linux is the publication platform. Fork preserves injected resolver
+    # callables (including closures) while still making every worker killable.
+    context = multiprocessing.get_context("fork")
+    parent_connection, child_connection = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_resolver_worker,
+        args=(child_connection, resolver, hostname),
+        name="benefit-url-resolver",
+    )
+    process.start()
+    child_connection.close()
     try:
-        answers, error = result_queue.get(timeout=timeout_seconds)
-    except queue.Empty as exc:
+        if not parent_connection.poll(timeout_seconds):
+            raise ValueError("invalid public evidence URL")
+        answers, failed = parent_connection.recv()
+    except (EOFError, OSError) as exc:
         raise ValueError("invalid public evidence URL") from exc
-    if error is not None or not answers:
+    finally:
+        parent_connection.close()
+        _stop_process(process)
+    if failed or not answers:
         raise ValueError("invalid public evidence URL")
     return answers
 
@@ -314,32 +345,92 @@ def _expected_files(snapshot_version, candidates):
     return {"candidates.jsonl": rows, "manifest.json": _canonical_json_bytes(manifest)}
 
 
-def _directory_matches(target, expected):
-    try:
-        entries = list(target.iterdir())
-    except OSError:
-        return False
-    if {entry.name for entry in entries} != set(expected):
-        return False
-    for entry in entries:
-        try:
-            metadata = entry.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or entry.read_bytes() != expected[entry.name]:
-                return False
-        except OSError:
-            return False
-    return True
+def _same_inode(left, right):
+    return (left.st_dev, left.st_ino, stat.S_IFMT(left.st_mode)) == (
+        right.st_dev, right.st_ino, stat.S_IFMT(right.st_mode)
+    )
 
 
-def _fsync_directory(path):
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+def _read_regular_file_at(directory_fd, name):
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=directory_fd,
+    )
     try:
-        os.fsync(descriptor)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise OSError(errno.EINVAL, "snapshot member is not a regular file")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISREG(current.st_mode) or not _same_inode(opened, current):
+            raise OSError(errno.ESTALE, "snapshot member changed during validation")
+        return b"".join(chunks), opened
     finally:
         os.close(descriptor)
 
 
-def _rename_noreplace(source, target):
+def _directory_matches(root_fd, target_name, expected, expected_directory=None):
+    """Validate an exact inventory without following target/member symlinks."""
+    try:
+        target_fd = os.open(
+            target_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+    except OSError:
+        return False
+    try:
+        opened_directory = os.fstat(target_fd)
+        if not stat.S_ISDIR(opened_directory.st_mode):
+            return False
+        if expected_directory is not None and not _same_inode(
+            opened_directory, expected_directory
+        ):
+            return False
+        first_inventory = os.listdir(target_fd)
+        if len(first_inventory) != len(expected) or set(first_inventory) != set(expected):
+            return False
+        opened_files = {}
+        for name in first_inventory:
+            try:
+                raw, metadata = _read_regular_file_at(target_fd, name)
+            except OSError:
+                return False
+            if raw != expected[name]:
+                return False
+            opened_files[name] = metadata
+
+        # Re-list and re-stat each entry to prove the validated inventory still
+        # names the same inodes after every byte comparison.
+        second_inventory = os.listdir(target_fd)
+        if len(second_inventory) != len(first_inventory) or set(second_inventory) != set(first_inventory):
+            return False
+        for name, opened in opened_files.items():
+            try:
+                current = os.stat(name, dir_fd=target_fd, follow_symlinks=False)
+            except OSError:
+                return False
+            if not stat.S_ISREG(current.st_mode) or not _same_inode(opened, current):
+                return False
+        current_directory = os.fstat(target_fd)
+        return stat.S_ISDIR(current_directory.st_mode) and _same_inode(
+            opened_directory, current_directory
+        )
+    finally:
+        os.close(target_fd)
+
+
+def _fsync_directory_fd(descriptor):
+    os.fsync(descriptor)
+
+
+def _rename_noreplace(source, target, source_dir_fd=-100, target_dir_fd=-100):
     """Atomically publish a directory without replacing any existing target."""
     libc = ctypes.CDLL(None, use_errno=True)
     renameat2 = getattr(libc, "renameat2", None)
@@ -348,9 +439,9 @@ def _rename_noreplace(source, target):
     renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
     renameat2.restype = ctypes.c_int
     result = renameat2(
-        -100,
+        source_dir_fd,
         os.fsencode(source),
-        -100,
+        target_dir_fd,
         os.fsencode(target),
         1,
     )
@@ -362,6 +453,52 @@ def _rename_noreplace(source, target):
     raise OSError(error_number, os.strerror(error_number), target)
 
 
+def _root_path_still_names_fd(root, root_fd):
+    try:
+        path_metadata = root.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(path_metadata.st_mode)
+        and not stat.S_ISLNK(path_metadata.st_mode)
+        and _same_inode(path_metadata, os.fstat(root_fd))
+    )
+
+
+def _remove_staging(root_fd, staging_name, expected_names, expected_directory=None):
+    if expected_directory is None:
+        return
+    try:
+        staging_fd = os.open(
+            staging_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+    except FileNotFoundError:
+        return
+    try:
+        if expected_directory is not None and not _same_inode(
+            os.fstat(staging_fd), expected_directory
+        ):
+            return
+        for name in expected_names:
+            try:
+                os.unlink(name, dir_fd=staging_fd)
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(staging_fd)
+    try:
+        current = os.stat(staging_name, dir_fd=root_fd, follow_symlinks=False)
+        if expected_directory is not None and not _same_inode(
+            current, expected_directory
+        ):
+            return
+        os.rmdir(staging_name, dir_fd=root_fd)
+    except FileNotFoundError:
+        pass
+
+
 def publish_snapshot(output_root, snapshot_version, candidates):
     """Atomically publish or idempotently accept one immutable version directory."""
     if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
@@ -370,31 +507,86 @@ def publish_snapshot(output_root, snapshot_version, candidates):
     root.mkdir(parents=True, exist_ok=True)
     target = root / snapshot_version
     expected = _expected_files(snapshot_version, candidates)
-    if target.exists() or target.is_symlink():
-        if target.is_dir() and not target.is_symlink() and _directory_matches(target, expected):
-            return target
-        raise FileExistsError(f"existing snapshot mismatch: {target}")
-
-    staging = Path(tempfile.mkdtemp(prefix=f".{snapshot_version}-", dir=root))
+    root_fd = os.open(
+        root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    staging_name = f".{snapshot_version}-{uuid.uuid4().hex}"
+    staging_metadata = None
     try:
-        for name, raw in expected.items():
-            path = staging / name
-            with path.open("xb") as handle:
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-        _fsync_directory(staging)
         try:
-            _rename_noreplace(staging, target)
-        except FileExistsError:
-            if target.is_dir() and not target.is_symlink() and _directory_matches(target, expected):
+            os.stat(snapshot_version, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if _directory_matches(root_fd, snapshot_version, expected) and _root_path_still_names_fd(root, root_fd):
                 return target
             raise FileExistsError(f"existing snapshot mismatch: {target}")
-        _fsync_directory(root)
+
+        os.mkdir(staging_name, mode=0o700, dir_fd=root_fd)
+        staging_fd = os.open(
+            staging_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+        try:
+            staging_metadata = os.fstat(staging_fd)
+            for name, raw in expected.items():
+                file_fd = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=staging_fd,
+                )
+                try:
+                    view = memoryview(raw)
+                    while view:
+                        written = os.write(file_fd, view)
+                        view = view[written:]
+                    os.fsync(file_fd)
+                finally:
+                    os.close(file_fd)
+            _fsync_directory_fd(staging_fd)
+            current_staging = os.stat(
+                staging_name, dir_fd=root_fd, follow_symlinks=False
+            )
+            if not stat.S_ISDIR(current_staging.st_mode) or not _same_inode(
+                staging_metadata, current_staging
+            ):
+                raise OSError(errno.ESTALE, "snapshot staging directory changed")
+            try:
+                _rename_noreplace(
+                    staging_name,
+                    snapshot_version,
+                    source_dir_fd=root_fd,
+                    target_dir_fd=root_fd,
+                )
+            except FileExistsError:
+                if _directory_matches(root_fd, snapshot_version, expected) and _root_path_still_names_fd(root, root_fd):
+                    return target
+                raise FileExistsError(f"existing snapshot mismatch: {target}")
+        finally:
+            os.close(staging_fd)
+        _fsync_directory_fd(root_fd)
+        if (
+            not _directory_matches(
+                root_fd,
+                snapshot_version,
+                expected,
+                expected_directory=staging_metadata,
+            )
+            or not _root_path_still_names_fd(root, root_fd)
+        ):
+            raise OSError(errno.ESTALE, "published snapshot path changed")
         return target
     finally:
-        if staging.exists():
-            shutil.rmtree(staging)
+        _remove_staging(
+            root_fd,
+            staging_name,
+            expected,
+            expected_directory=staging_metadata,
+        )
+        os.close(root_fd)
 
 
 def load_json_rows(path):
@@ -435,18 +627,38 @@ def load_resolver_fixture(path):
     return resolve
 
 
-def fetch_rows_with_psql(runner=subprocess.run):
+def fetch_rows_with_psql(
+    process_factory=subprocess.Popen,
+    timeout_seconds=DEFAULT_PSQL_TIMEOUT_SECONDS,
+    kill_grace_seconds=DEFAULT_PROCESS_KILL_GRACE_SECONDS,
+):
     """Read the exact approved projection using psql's configured connection."""
-    result = runner(
-        ["psql", "-X", "--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--tuples-only", "--no-align", "--quiet"],
-        input=APPROVED_QUERY,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
+    for value in (timeout_seconds, kill_grace_seconds):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            raise ValueError("invalid psql timeout")
+    try:
+        process = process_factory(
+            ["psql", "-X", "--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--tuples-only", "--no-align", "--quiet"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
+        raise RuntimeError("approved correction read failed") from exc
+    try:
+        stdout, _stderr = process.communicate(input=APPROVED_QUERY, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        process.terminate()
+        try:
+            process.communicate(timeout=kill_grace_seconds)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+        raise RuntimeError("approved correction read timed out") from exc
+    if process.returncode != 0:
         raise RuntimeError("approved correction read failed")
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    lines = [line for line in stdout.splitlines() if line.strip()]
     if len(lines) != 1:
         raise ValueError("malformed psql response")
     try:
@@ -495,6 +707,10 @@ def _parser():
         "--dns-timeout-seconds", type=float, default=DEFAULT_DNS_TIMEOUT_SECONDS,
         help="per-host system DNS deadline (default: 2.0; production fails closed on timeout/error)",
     )
+    export.add_argument(
+        "--psql-timeout-seconds", type=float, default=DEFAULT_PSQL_TIMEOUT_SECONDS,
+        help="psql read deadline (default: 30.0; process is terminated/killed on timeout)",
+    )
     export.add_argument("--output-root", required=True, type=Path)
     export.add_argument("--snapshot-version", required=True)
 
@@ -511,7 +727,11 @@ def main(argv=None):
         if args.command == "export":
             if args.resolver_json and not args.input_json:
                 raise ValueError("--resolver-json requires --input-json")
-            rows = load_json_rows(args.input_json) if args.input_json else fetch_rows_with_psql()
+            rows = (
+                load_json_rows(args.input_json)
+                if args.input_json
+                else fetch_rows_with_psql(timeout_seconds=args.psql_timeout_seconds)
+            )
             resolver = load_resolver_fixture(args.resolver_json) if args.resolver_json else None
             candidates = build_snapshot(
                 rows, resolver=resolver, resolver_timeout_seconds=args.dns_timeout_seconds
