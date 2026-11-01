@@ -57,10 +57,12 @@ export type BenefitCorrectionErrorCode = 'invalid_argument' | 'invalid_response'
 export interface BenefitCorrectionError { code: BenefitCorrectionErrorCode; message: string; sourceCode?: string }
 export type BenefitCorrectionResult<T> = { ok: true; data: T } | { ok: false; error: BenefitCorrectionError }
 
+export type BenefitCorrectionAccountScope = string & { readonly __benefitCorrectionAccountScope: unique symbol }
+
 export interface BenefitCorrectionDraft {
-  version: 1
+  version: 2
+  accountScope: BenefitCorrectionAccountScope
   draftId: string
-  submissionScopeId: string
   companyId: string
   categoryId: BenefitCategory | ''
   currentText: string

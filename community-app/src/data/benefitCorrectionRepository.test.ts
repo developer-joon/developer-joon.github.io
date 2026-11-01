@@ -157,4 +157,58 @@ describe('benefit correction repository RPC contract', () => {
     controller.abort()
     await expect(repository.createRequest(createInput, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
   })
+
+  it('rechecks cancellation after actor lookup and immediately before RPC', async () => {
+    const controller = new AbortController()
+    let releaseActor!: (value: string) => void
+    const client: BenefitCorrectionRpcClient = { rpc: vi.fn().mockResolvedValue({ data: ownerItem, error: null }) }
+    const repository = createBenefitCorrectionRepository(client, {
+      getActorScope: () => new Promise<string>(resolve => { releaseActor = resolve }),
+    })
+    const pending = repository.createRequest(createInput, controller.signal)
+    controller.abort()
+    releaseActor('session-a')
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
+    expect(client.rpc).not.toHaveBeenCalled()
+  })
+
+  it('uses Unicode code points for PostgreSQL-compatible text bounds', async () => {
+    const value = setup({ data: { ...ownerItem, current_text: '😀'.repeat(5000), proposed_text: '😀'.repeat(5000), scope_text: '😀'.repeat(2000) }, error: null })
+    await expect(value.repository.createRequest({ ...createInput, currentText: '😀'.repeat(5000), proposedText: '😀'.repeat(5000), scopeText: '😀'.repeat(2000) })).resolves.toMatchObject({ ok: true })
+    await expect(value.repository.createRequest({ ...createInput, currentText: '😀'.repeat(5001) })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    await expect(value.repository.createRequest({ ...createInput, scopeText: '😀'.repeat(2001) })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(value.calls).toHaveLength(1)
+  })
+
+  it('applies Unicode code-point bounds to admin responses before review RPCs', async () => {
+    const value = setup({ data: { ...ownerItem, status: 'reviewing', admin_response: '😀'.repeat(2000), reviewed_at: createdAt }, error: null })
+    await expect(value.repository.reviewRequest({ requestId, expectedStatus: 'submitted', action: 'start_review', adminResponse: '😀'.repeat(2000), clientKey })).resolves.toMatchObject({ ok: true })
+    await expect(value.repository.reviewRequest({ requestId, expectedStatus: 'submitted', action: 'start_review', adminResponse: '😀'.repeat(2001), clientKey })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(value.calls).toHaveLength(1)
+  })
+
+  it.each([
+    ['submitted', 'start_review', true],
+    ['submitted', 'request_additional_material', false],
+    ['submitted', 'approve', false],
+    ['submitted', 'reject', false],
+    ['reviewing', 'start_review', false],
+    ['reviewing', 'request_additional_material', true],
+    ['reviewing', 'approve', true],
+    ['reviewing', 'reject', true],
+  ] as const)('validates migration transition %s + %s before RPC', async (expectedStatus, action, allowed) => {
+    const value = setup({ data: { ...ownerItem, status: 'reviewing', admin_response: '검토', reviewed_at: createdAt }, error: null })
+    const result = await value.repository.reviewRequest({ requestId, expectedStatus, action, adminResponse: '검토', clientKey })
+    expect(result.ok).toBe(allowed)
+    expect(value.calls).toHaveLength(allowed ? 1 : 0)
+  })
+
+  it.each(['approved', 'rejected', 'applied', 'SUBMITTED', '', null, undefined])(
+    'rejects malformed expectedStatus %# before RPC', async expectedStatus => {
+      const value = setup()
+      await expect(value.repository.reviewRequest({ requestId, expectedStatus, action: 'start_review', adminResponse: '검토', clientKey } as never))
+        .resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+      expect(value.calls).toEqual([])
+    },
+  )
 })

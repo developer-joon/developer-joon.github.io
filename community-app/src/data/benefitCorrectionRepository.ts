@@ -51,14 +51,15 @@ export function isBenefitCorrectionTimestamp(value: unknown): value is string {
     && (Number.isNaN(offsetHour) || (offsetHour <= 23 && offsetMinute <= 59))
     && Number.isFinite(Date.parse(value))
 }
+function codePointLength(value: string) { return Array.from(value).length }
 export function isBenefitCorrectionDataVersion(value: unknown): value is string {
-  if (typeof value !== 'string' || value.length < 30 || value.length > 100 || value.trim() !== value) return false
+  if (typeof value !== 'string' || codePointLength(value) < 30 || codePointLength(value) > 100 || value.trim() !== value) return false
   const match = dataVersionPattern.exec(value); if (!match) return false
   const [, year, month, day] = match.map(Number)
   return year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month)
 }
 export function isBenefitCorrectionSourceUrl(value: unknown): value is string {
-  if (typeof value !== 'string' || value.length < 9 || value.length > 2048 || value.trim() !== value
+  if (typeof value !== 'string' || codePointLength(value) < 9 || codePointLength(value) > 2048 || value.trim() !== value
     || /\s/u.test(value) || [...value].some(character => { const code = character.charCodeAt(0); return code <= 31 || code === 127 })) return false
   const match = /^https:\/\/([^/?#]+)(?:[/?#].*)?$/.exec(value); if (!match) return false
   const authority = match[1]
@@ -68,7 +69,7 @@ export function isBenefitCorrectionSourceUrl(value: unknown): value is string {
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.test') || host.endsWith('.invalid') || /^[0-9.]+$/.test(host)) return false
   return /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(host)
 }
-function boundedText(value: unknown, max: number): value is string { return typeof value === 'string' && value.length >= 1 && value.length <= max && value.trim() === value }
+function boundedText(value: unknown, max: number): value is string { return typeof value === 'string' && codePointLength(value) >= 1 && codePointLength(value) <= max && value.trim() === value }
 function isCategory(value: unknown): value is BenefitCategory { return typeof value === 'string' && (BENEFIT_CATEGORIES as readonly string[]).includes(value) }
 function timestampOrder(...values: Array<string | null>) {
   const present = values.filter((value): value is string => value !== null)
@@ -137,8 +138,12 @@ function validCreateInput(input: CreateBenefitCorrectionInput) {
     && isBenefitCorrectionSourceUrl(input.sourceUrl) && isBenefitCorrectionDataVersion(input.observedDataVersion)
 }
 function validReviewInput(input: ReviewBenefitCorrectionInput) {
-  const transitionAllowed = input.expectedStatus === 'submitted' ? input.action === 'start_review' : input.action !== 'start_review'
-  return isCanonicalUuid(input.requestId) && isStrictUuid(input.clientKey) && (BENEFIT_CORRECTION_REVIEW_ACTIONS as readonly string[]).includes(input.action)
+  const validExpectedStatus = input.expectedStatus === 'submitted' || input.expectedStatus === 'reviewing'
+  const transitionAllowed = input.expectedStatus === 'submitted'
+    ? input.action === 'start_review'
+    : input.expectedStatus === 'reviewing' && input.action !== 'start_review'
+  return isCanonicalUuid(input.requestId) && isStrictUuid(input.clientKey) && validExpectedStatus
+    && (BENEFIT_CORRECTION_REVIEW_ACTIONS as readonly string[]).includes(input.action)
     && transitionAllowed && boundedText(input.adminResponse, 2000)
 }
 
@@ -148,6 +153,7 @@ export function createBenefitCorrectionRepository(client: BenefitCorrectionRpcCl
     if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
     try {
       const actorScope = await getActorScope()
+      if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
       const response = await call()
       if (signal?.aborted) return { ok: false, error: { code: 'aborted', message: '요청이 취소되었습니다.' } }
       if (await getActorScope() !== actorScope) return { ok: false, error: { code: 'stale_response', message: '로그인 계정이 변경되어 이전 응답을 폐기했습니다.' } }
