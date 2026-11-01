@@ -12,6 +12,7 @@ import errno
 import hashlib
 import hmac
 import ipaddress
+import io
 import json
 import multiprocessing
 import os
@@ -52,6 +53,10 @@ DATA_VERSION_RE = re.compile(r"^company-benefits-[0-9]{4}-[0-9]{2}-[0-9]{2}-v[1-
 SNAPSHOT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_CANDIDATES = 100_000
+# The complete canonical candidates.jsonl is capped at 64 MiB.  Validation is
+# incremental, so neither the psql transport nor the accepted candidate set can
+# grow toward the multi-gigabyte theoretical row-count maximum.
+MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 # JSON may escape each accepted Unicode code point as two UTF-16 ``\u`` pairs.
 # This cap is derived from every projected text limit plus fixed JSON overhead.
 MAX_DB_ROW_BYTES = (5000 + 5000 + 2000 + 2048 + 100 + 64 + 36 + 20 + 16) * 12 + 1024
@@ -320,32 +325,6 @@ def _validate_row(row, index, resolver, resolver_timeout_seconds, resolution_cac
     return status, candidate
 
 
-def build_snapshot(rows, resolver=None, resolver_timeout_seconds=DEFAULT_DNS_TIMEOUT_SECONDS):
-    """Validate an exact DB projection and return sorted approved candidates."""
-    if not isinstance(rows, list):
-        raise ValueError("database response must be an array")
-    if len(rows) > MAX_CANDIDATES:
-        raise ValueError("database response exceeds candidate limit")
-    by_id = {}
-    seen_rows = {}
-    resolver = resolver or _system_resolver
-    resolution_cache = {}
-    for index, row in enumerate(rows):
-        status, candidate = _validate_row(
-            row, index, resolver, resolver_timeout_seconds, resolution_cache
-        )
-        request_id = candidate["correction_request_id"]
-        validated = (status, candidate)
-        prior_row = seen_rows.get(request_id)
-        if prior_row is not None and prior_row != validated:
-            raise ValueError(f"conflicting duplicate correction request: {request_id}")
-        seen_rows[request_id] = validated
-        if status != "approved":
-            continue
-        by_id[request_id] = candidate
-    return [by_id[key] for key in sorted(by_id)]
-
-
 def _canonical_json_bytes(value):
     encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     # Keep canonical JSON safe even if an operator accidentally embeds it in an
@@ -354,8 +333,74 @@ def _canonical_json_bytes(value):
     return (encoded + "\n").encode("utf-8")
 
 
+class _SnapshotAccumulator:
+    """Retain one validated representation per id under the artifact byte cap."""
+
+    def __init__(self, resolver, resolver_timeout_seconds):
+        self.resolver = resolver or _system_resolver
+        self.resolver_timeout_seconds = resolver_timeout_seconds
+        self.resolution_cache = {}
+        self.records = {}
+        self.canonical_bytes = 0
+        self.row_count = 0
+
+    def add(self, row):
+        if self.row_count >= MAX_CANDIDATES:
+            raise ValueError("database response exceeds candidate limit")
+        index = self.row_count
+        self.row_count += 1
+        status, candidate = _validate_row(
+            row, index, self.resolver, self.resolver_timeout_seconds,
+            self.resolution_cache,
+        )
+        request_id = candidate["correction_request_id"]
+        prior = self.records.get(request_id)
+        fingerprint = hashlib.sha256(
+            _canonical_json_bytes((status, candidate))
+        ).digest()
+        if prior is not None:
+            if prior[1] != fingerprint:
+                raise ValueError(f"conflicting duplicate correction request: {request_id}")
+            return
+        if status == "approved":
+            candidate_bytes = len(_canonical_json_bytes(candidate))
+            if self.canonical_bytes + candidate_bytes > MAX_SNAPSHOT_BYTES:
+                raise ValueError("database response exceeds snapshot byte limit")
+            self.canonical_bytes += candidate_bytes
+            self.records[request_id] = (status, fingerprint, candidate)
+        else:
+            # Non-approved rows are fixture-only (the SQL filters them). Keep a
+            # fixed-size digest for duplicate-conflict detection, not their text.
+            self.records[request_id] = (status, fingerprint, None)
+
+    def finish(self):
+        return [
+            self.records[key][2]
+            for key in sorted(self.records)
+            if self.records[key][0] == "approved"
+        ]
+
+
+def build_snapshot(rows, resolver=None, resolver_timeout_seconds=DEFAULT_DNS_TIMEOUT_SECONDS):
+    """Validate an exact DB projection under row and canonical-byte limits."""
+    if not isinstance(rows, list):
+        raise ValueError("database response must be an array")
+    accumulator = _SnapshotAccumulator(resolver, resolver_timeout_seconds)
+    for row in rows:
+        accumulator.add(row)
+    return accumulator.finish()
+
+
 def canonical_jsonl(candidates):
-    return b"".join(_canonical_json_bytes(candidate) for candidate in candidates)
+    output = io.BytesIO()
+    total = 0
+    for candidate in candidates:
+        raw = _canonical_json_bytes(candidate)
+        total += len(raw)
+        if total > MAX_SNAPSHOT_BYTES:
+            raise ValueError("snapshot exceeds snapshot byte limit")
+        output.write(raw)
+    return output.getvalue()
 
 
 def snapshot_sha256(raw):
@@ -526,14 +571,17 @@ def _renameat2_function():
 
 
 def _preflight_publication_platform(output_root):
-    """Fail before artifact creation unless Linux primitives work on the target FS."""
+    """Prove required rename semantics using real entries on the target FS."""
     if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
         raise OSError(errno.ENOTSUP, "unsupported publication platform")
     root = Path(output_root).absolute()
     parent_fd = os.open(
         root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
+    probe_parent_fd = None
     probe_fd = None
+    probe_created = False
+    probe_name = f".benefit-export-preflight-{secrets.token_hex(16)}"
     try:
         parent_metadata = os.fstat(parent_fd)
         if (
@@ -543,29 +591,80 @@ def _preflight_publication_platform(output_root):
         ):
             raise OSError(errno.EPERM, "output root parent is not private")
         try:
-            probe_fd = os.open(
+            probe_parent_fd = os.open(
                 root.name,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                 dir_fd=parent_fd,
             )
         except FileNotFoundError:
-            probe_fd = os.dup(parent_fd)
+            probe_parent_fd = os.dup(parent_fd)
+        else:
+            opened_root = os.fstat(probe_parent_fd)
+            if not _secure_owned_mode(opened_root, stat.S_ISDIR, 0o700):
+                raise OSError(errno.EPERM, "invalid output root")
+
+        os.mkdir(probe_name, 0o700, dir_fd=probe_parent_fd)
+        probe_created = True
+        probe_fd = os.open(
+            probe_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=probe_parent_fd,
+        )
+        names = ("noreplace-source", "noreplace-target")
+        contents = (b"preflight-source", b"preflight-target")
+        metadata = []
+        for name, raw in zip(names, contents):
+            descriptor = os.open(
+                name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600, dir_fd=probe_fd,
+            )
+            try:
+                os.write(descriptor, raw)
+                os.fsync(descriptor)
+                metadata.append(os.fstat(descriptor))
+            finally:
+                os.close(descriptor)
+        _fsync_directory_fd(probe_fd)
+
         function = _renameat2_function()
-        nonce = secrets.token_hex(16).encode("ascii")
-        missing_a = b".benefit-export-preflight-a-" + nonce
-        missing_b = b".benefit-export-preflight-b-" + nonce
-        for flag, operation in ((1, "no-replace"), (2, "exchange")):
-            ctypes.set_errno(0)
-            result = function(probe_fd, missing_a, probe_fd, missing_b, flag)
-            error_number = ctypes.get_errno()
-            if result == 0 or error_number != errno.ENOENT:
-                raise OSError(
-                    errno.ENOTSUP,
-                    f"renameat2 {operation} is unsupported on output filesystem",
-                )
+        ctypes.set_errno(0)
+        result = function(probe_fd, names[0].encode(), probe_fd, names[1].encode(), 1)
+        error_number = ctypes.get_errno()
+        if result == 0 or error_number != errno.EEXIST:
+            raise OSError(errno.ENOTSUP, "renameat2 no-replace is unsupported on output filesystem")
+        for index, (name, raw) in enumerate(zip(names, contents)):
+            current_raw, current = _read_regular_file_at(probe_fd, name)
+            if current_raw != raw or not _same_inode(current, metadata[index]):
+                raise OSError(errno.ENOTSUP, "renameat2 no-replace semantics are incorrect")
+
+        ctypes.set_errno(0)
+        result = function(probe_fd, names[0].encode(), probe_fd, names[1].encode(), 2)
+        if result != 0:
+            raise OSError(errno.ENOTSUP, "renameat2 exchange is unsupported on output filesystem")
+        for index, (name, raw) in enumerate(zip(names, reversed(contents))):
+            current_raw, current = _read_regular_file_at(probe_fd, name)
+            expected_metadata = metadata[1 - index]
+            if current_raw != raw or not _same_inode(current, expected_metadata):
+                raise OSError(errno.ENOTSUP, "renameat2 exchange semantics are incorrect")
+        _fsync_directory_fd(probe_fd)
     finally:
         if probe_fd is not None:
-            os.close(probe_fd)
+            try:
+                for name in os.listdir(probe_fd):
+                    os.unlink(name, dir_fd=probe_fd)
+                _fsync_directory_fd(probe_fd)
+            finally:
+                os.close(probe_fd)
+        if probe_parent_fd is not None:
+            try:
+                if probe_created:
+                    try:
+                        os.rmdir(probe_name, dir_fd=probe_parent_fd)
+                        _fsync_directory_fd(probe_parent_fd)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                os.close(probe_parent_fd)
         os.close(parent_fd)
 
 
@@ -1557,6 +1656,12 @@ def load_json_rows(path):
     if source.is_symlink() or not source.is_file():
         raise ValueError("input JSON must be a regular file")
     try:
+        source_size = source.stat().st_size
+    except OSError as exc:
+        raise ValueError(f"invalid input JSON: {exc}") from exc
+    if source_size > MAX_SNAPSHOT_BYTES:
+        raise ValueError("input JSON exceeds snapshot byte limit")
+    try:
         return json.loads(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid input JSON: {exc}") from exc
@@ -1655,6 +1760,7 @@ def fetch_rows_with_psql(
     process_factory=subprocess.Popen,
     timeout_seconds=DEFAULT_PSQL_TIMEOUT_SECONDS,
     kill_grace_seconds=DEFAULT_PROCESS_KILL_GRACE_SECONDS,
+    row_consumer=None,
 ):
     """Incrementally read bounded JSONL using psql's configured connection."""
     for value in (timeout_seconds, kill_grace_seconds):
@@ -1672,8 +1778,11 @@ def fetch_rows_with_psql(
         raise RuntimeError("approved correction read failed") from exc
     query = APPROVED_QUERY.encode("utf-8")
     deadline = time.monotonic() + timeout_seconds
-    stdout_limit = (MAX_CANDIDATES + 1) * (MAX_DB_ROW_BYTES + 1) + 1024
+    # jsonb text includes DB-only names/status and whitespace, so allow bounded
+    # transport overhead while deriving the cap from the artifact limit.
+    stdout_limit = MAX_SNAPSHOT_BYTES * 2
     rows = []
+    row_count = 0
     stdout_buffer = bytearray()
     stdout_bytes = 0
     stderr_bytes = 0
@@ -1732,13 +1841,23 @@ def fetch_rows_with_psql(
                         break
                     raw = bytes(stdout_buffer[:newline])
                     del stdout_buffer[:newline + 1]
-                    if len(rows) >= MAX_CANDIDATES:
+                    if row_count >= MAX_CANDIDATES:
                         raise ValueError("database response exceeds candidate limit")
-                    rows.append(_parse_psql_row(raw, len(rows)))
+                    parsed = _parse_psql_row(raw, row_count)
+                    row_count += 1
+                    if row_consumer is None:
+                        rows.append(parsed)
+                    else:
+                        row_consumer(parsed)
         if stdout_buffer:
-            if len(rows) >= MAX_CANDIDATES:
+            if row_count >= MAX_CANDIDATES:
                 raise ValueError("database response exceeds candidate limit")
-            rows.append(_parse_psql_row(bytes(stdout_buffer), len(rows)))
+            parsed = _parse_psql_row(bytes(stdout_buffer), row_count)
+            row_count += 1
+            if row_consumer is None:
+                rows.append(parsed)
+            else:
+                row_consumer(parsed)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError("approved correction read timed out")
@@ -1754,6 +1873,24 @@ def fetch_rows_with_psql(
     if process.returncode != 0:
         raise RuntimeError("approved correction read failed")
     return rows
+
+
+def fetch_snapshot_with_psql(
+    resolver=None,
+    resolver_timeout_seconds=DEFAULT_DNS_TIMEOUT_SECONDS,
+    process_factory=subprocess.Popen,
+    timeout_seconds=DEFAULT_PSQL_TIMEOUT_SECONDS,
+    kill_grace_seconds=DEFAULT_PROCESS_KILL_GRACE_SECONDS,
+):
+    """Validate psql JSONL incrementally without retaining decoded DB rows."""
+    accumulator = _SnapshotAccumulator(resolver, resolver_timeout_seconds)
+    fetch_rows_with_psql(
+        process_factory=process_factory,
+        timeout_seconds=timeout_seconds,
+        kill_grace_seconds=kill_grace_seconds,
+        row_consumer=accumulator.add,
+    )
+    return accumulator.finish()
 
 
 def verify_applied_version_binding(manifest_path, applied_version, verified_manifest_sha256):
@@ -1819,16 +1956,20 @@ def main(argv=None):
             # Check platform/filesystem support before DB/DNS work and before
             # creating the output root or persistent control key.
             _preflight_publication_platform(args.output_root)
-            rows = (
-                load_json_rows(args.input_json)
-                if args.input_json
-                else fetch_rows_with_psql(timeout_seconds=args.psql_timeout_seconds)
-            )
             resolver = load_resolver_fixture(args.resolver_json) if args.resolver_json else None
-            candidates = build_snapshot(
-                rows, resolver=resolver, resolver_timeout_seconds=args.dns_timeout_seconds
-            )
-            del rows
+            if args.input_json:
+                rows = load_json_rows(args.input_json)
+                candidates = build_snapshot(
+                    rows, resolver=resolver,
+                    resolver_timeout_seconds=args.dns_timeout_seconds,
+                )
+                del rows
+            else:
+                candidates = fetch_snapshot_with_psql(
+                    resolver=resolver,
+                    resolver_timeout_seconds=args.dns_timeout_seconds,
+                    timeout_seconds=args.psql_timeout_seconds,
+                )
             target = publish_snapshot(args.output_root, args.snapshot_version, candidates)
             raw = canonical_jsonl(candidates)
             result = {

@@ -1179,6 +1179,74 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         finally:
             self.exporter.MAX_CANDIDATES = original_limit
 
+    def test_snapshot_byte_limit_rejects_many_valid_rows_below_row_limit(self):
+        sample = self.build_snapshot([row()])
+        one_row_bytes = len(self.exporter.canonical_jsonl(sample))
+        original_limit = self.exporter.MAX_SNAPSHOT_BYTES
+        self.exporter.MAX_SNAPSHOT_BYTES = one_row_bytes * 2
+        rows = [
+            row(f"10000000-0000-4000-8000-{index:012d}")
+            for index in range(1, 4)
+        ]
+        try:
+            with self.assertRaisesRegex(ValueError, "snapshot byte limit"):
+                self.build_snapshot(rows)
+        finally:
+            self.exporter.MAX_SNAPSHOT_BYTES = original_limit
+
+    def test_snapshot_byte_limit_accepts_exact_boundary(self):
+        rows = [
+            row(f"10000000-0000-4000-8000-{index:012d}")
+            for index in range(1, 3)
+        ]
+        expected = self.build_snapshot(rows)
+        exact_size = len(self.exporter.canonical_jsonl(expected))
+        original_limit = self.exporter.MAX_SNAPSHOT_BYTES
+        self.exporter.MAX_SNAPSHOT_BYTES = exact_size
+        try:
+            actual = self.build_snapshot(rows)
+            self.assertEqual(exact_size, len(self.exporter.canonical_jsonl(actual)))
+        finally:
+            self.exporter.MAX_SNAPSHOT_BYTES = original_limit
+
+    def test_psql_snapshot_byte_overflow_terminates_process(self):
+        launched = []
+        original_limit = self.exporter.MAX_SNAPSHOT_BYTES
+        self.exporter.MAX_SNAPSHOT_BYTES = 1024
+        program = """
+import json
+import sys
+sys.stdin.buffer.read()
+template = %r
+for index in range(1000):
+    value = dict(template)
+    value["id"] = f"10000000-0000-4000-8000-{index:012d}"
+    sys.stdout.write(json.dumps(value) + "\\n")
+    sys.stdout.flush()
+""" % row()
+
+        def process_factory(_command, **kwargs):
+            process = subprocess.Popen([sys.executable, "-c", program], **kwargs)
+            launched.append(process)
+            return process
+
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                output_root = base / "snapshots"
+                self.exporter._preflight_publication_platform(output_root)
+                with self.assertRaisesRegex((RuntimeError, ValueError), "byte limit"):
+                    self.exporter.fetch_snapshot_with_psql(
+                        resolver=self.public_resolver,
+                        process_factory=process_factory,
+                    )
+                self.assertFalse(output_root.exists())
+                self.assertEqual([], list(base.iterdir()))
+        finally:
+            self.exporter.MAX_SNAPSHOT_BYTES = original_limit
+        self.assertEqual(1, len(launched))
+        self.assertIsNotNone(launched[0].returncode)
+
     def test_psql_rejects_oversized_stdout_line_and_stderr_flood(self):
         cases = [
             ("import sys; sys.stdin.buffer.read(); sys.stdout.buffer.write(b'x'*200000)", "stdout"),
@@ -1220,6 +1288,34 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 self.exporter._preflight_publication_platform = original
             self.assertFalse(root.exists())
             self.assertFalse((base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME).exists())
+
+    def test_preflight_rejects_false_enoent_without_leaving_probe_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "snapshots"
+            original = self.exporter._renameat2_function
+
+            def false_enoent(*_args):
+                import ctypes
+                ctypes.set_errno(errno.ENOENT)
+                return -1
+
+            self.exporter._renameat2_function = lambda: false_enoent
+            try:
+                with self.assertRaisesRegex(OSError, "unsupported"):
+                    self.exporter._preflight_publication_platform(root)
+            finally:
+                self.exporter._renameat2_function = original
+            self.assertFalse(root.exists())
+            self.assertEqual([], list(base.iterdir()))
+
+    def test_preflight_proves_real_noreplace_and_exchange_semantics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "snapshots"
+            self.exporter._preflight_publication_platform(root)
+            self.assertFalse(root.exists())
+            self.assertEqual([], list(base.iterdir()))
 
     def test_psql_timeout_kills_pipe_holding_descendants_with_a_bounded_deadline(self):
         launched = []
