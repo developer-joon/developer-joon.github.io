@@ -44,6 +44,16 @@ DB_FIELDS = {
     "observed_data_version",
     "status",
 }
+CANDIDATE_FIELDS = {
+    "correction_request_id",
+    "company_id",
+    "category_id",
+    "current_text",
+    "proposed_text",
+    "scope_text",
+    "evidence_url",
+    "observed_data_version",
+}
 STATUSES = {"submitted", "reviewing", "approved", "rejected", "applied"}
 CATEGORIES = {
     "leave", "family", "health", "growth", "housing",
@@ -236,7 +246,9 @@ def _ascii_hostname(hostname):
     return ascii_host
 
 
-def _require_public_https_url(value, resolver, resolver_timeout_seconds, resolution_cache):
+def _require_public_https_url(
+    value, resolver, resolver_timeout_seconds, resolution_cache, resolve_dns=True,
+):
     value = _require_text(value, "source_url", 2048)
     if any(character.isspace() or ord(character) < 32 for character in value):
         raise ValueError("invalid public evidence URL")
@@ -266,6 +278,8 @@ def _require_public_https_url(value, resolver, resolver_timeout_seconds, resolut
         or ascii_host.endswith((".localhost", ".local", ".internal", ".test", ".invalid"))
     ):
         raise ValueError("invalid public evidence URL")
+    if not resolve_dns:
+        return value
     answers = resolution_cache.get(ascii_host)
     if answers is None:
         answers = _bounded_resolve(ascii_host, resolver, resolver_timeout_seconds)
@@ -293,6 +307,44 @@ def _require_public_https_url(value, resolver, resolver_timeout_seconds, resolut
     return value
 
 
+def _validate_candidate(
+    candidate, resolver=None,
+    resolver_timeout_seconds=DEFAULT_DNS_TIMEOUT_SECONDS,
+    resolution_cache=None,
+):
+    """Validate the public/offline candidate schema at creation and review."""
+    if not isinstance(candidate, dict):
+        raise ValueError("candidate must be an object")
+    unknown = set(candidate) - CANDIDATE_FIELDS
+    missing = CANDIDATE_FIELDS - set(candidate)
+    if unknown:
+        raise ValueError(f"candidate has unexpected fields: {sorted(unknown)}")
+    if missing:
+        raise ValueError(f"candidate is missing fields: {sorted(missing)}")
+    if resolution_cache is None:
+        resolution_cache = {}
+    request_id = _require_uuid(candidate["correction_request_id"])
+    company_id = _require_text(candidate["company_id"], "company_id", 64)
+    if not COMPANY_RE.fullmatch(company_id):
+        raise ValueError("invalid company_id")
+    category_id = _require_text(candidate["category_id"], "category_id", 20)
+    if category_id not in CATEGORIES:
+        raise ValueError("invalid category_id")
+    return {
+        "correction_request_id": request_id,
+        "company_id": company_id,
+        "category_id": category_id,
+        "current_text": _require_text(candidate["current_text"], "current_text", 5000),
+        "proposed_text": _require_text(candidate["proposed_text"], "proposed_text", 5000),
+        "scope_text": _require_text(candidate["scope_text"], "scope_text", 2000),
+        "evidence_url": _require_public_https_url(
+            candidate["evidence_url"], resolver, resolver_timeout_seconds,
+            resolution_cache, resolve_dns=resolver is not None,
+        ),
+        "observed_data_version": _require_data_version(candidate["observed_data_version"]),
+    }
+
+
 def _validate_row(row, index, resolver, resolver_timeout_seconds, resolution_cache):
     if not isinstance(row, dict):
         raise ValueError(f"database row {index} must be an object")
@@ -305,25 +357,16 @@ def _validate_row(row, index, resolver, resolver_timeout_seconds, resolution_cac
     status = row["status"]
     if not isinstance(status, str) or status not in STATUSES:
         raise ValueError(f"database row {index} has invalid status")
-    request_id = _require_uuid(row["id"])
-    company_id = _require_text(row["company_id"], "company_id", 64)
-    if not COMPANY_RE.fullmatch(company_id):
-        raise ValueError("invalid company_id")
-    category_id = _require_text(row["category_id"], "category_id", 20)
-    if category_id not in CATEGORIES:
-        raise ValueError("invalid category_id")
-    candidate = {
-        "correction_request_id": request_id,
-        "company_id": company_id,
-        "category_id": category_id,
-        "current_text": _require_text(row["current_text"], "current_text", 5000),
-        "proposed_text": _require_text(row["proposed_text"], "proposed_text", 5000),
-        "scope_text": _require_text(row["scope_text"], "scope_text", 2000),
-        "evidence_url": _require_public_https_url(
-            row["source_url"], resolver, resolver_timeout_seconds, resolution_cache
-        ),
-        "observed_data_version": _require_data_version(row["observed_data_version"]),
-    }
+    candidate = _validate_candidate({
+        "correction_request_id": row["id"],
+        "company_id": row["company_id"],
+        "category_id": row["category_id"],
+        "current_text": row["current_text"],
+        "proposed_text": row["proposed_text"],
+        "scope_text": row["scope_text"],
+        "evidence_url": row["source_url"],
+        "observed_data_version": row["observed_data_version"],
+    }, resolver, resolver_timeout_seconds, resolution_cache)
     return status, candidate
 
 
@@ -609,8 +652,53 @@ def _parse_tar_number(field):
     return int(digits, 8)
 
 
+def _validate_candidate_member(descriptor, offset, size):
+    """Incrementally validate canonical ordered JSONL within one bounded member."""
+    digest = hashlib.sha256()
+    count = 0
+    previous_id = None
+    pending = bytearray()
+    remaining = size
+    member_offset = offset
+    try:
+        while remaining:
+            chunk = os.pread(descriptor, min(1024 * 1024, remaining), member_offset)
+            if not chunk:
+                raise OSError(errno.EIO, "snapshot candidates truncated")
+            digest.update(chunk)
+            pending.extend(chunk)
+            member_offset += len(chunk)
+            remaining -= len(chunk)
+            while True:
+                newline = pending.find(b"\n")
+                if newline < 0:
+                    if len(pending) > MAX_DB_ROW_BYTES:
+                        raise ValueError("snapshot candidate row exceeds byte limit")
+                    break
+                line = bytes(pending[:newline + 1])
+                del pending[:newline + 1]
+                if len(line) > MAX_DB_ROW_BYTES:
+                    raise ValueError("snapshot candidate row exceeds byte limit")
+                candidate = json.loads(line)
+                candidate = _validate_candidate(candidate)
+                if _canonical_json_bytes(candidate) != line:
+                    raise ValueError("snapshot candidate row is not canonical JSON")
+                request_id = candidate["correction_request_id"]
+                if previous_id is not None and request_id <= previous_id:
+                    raise ValueError("snapshot candidate IDs are not strictly increasing")
+                previous_id = request_id
+                count += 1
+                if count > MAX_CANDIDATES:
+                    raise ValueError("snapshot candidate count exceeds limit")
+        if pending:
+            raise ValueError("snapshot candidates are not JSONL")
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise OSError(errno.EINVAL, "invalid snapshot candidate row") from exc
+    return count, digest.hexdigest()
+
+
 def _validate_snapshot_artifact_fd(descriptor, expected_version=None, expected_digest=None):
-    """Validate the exact deterministic two-member tar through one held fd."""
+    """Validate every byte of the exact deterministic two-member tar."""
     metadata = os.fstat(descriptor)
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_ARTIFACT_BYTES:
         raise OSError(errno.EINVAL, "invalid snapshot artifact file")
@@ -621,60 +709,35 @@ def _validate_snapshot_artifact_fd(descriptor, expected_version=None, expected_d
 
     offset = 0
     manifest_raw = None
-    candidate_digest = hashlib.sha256()
-    candidate_count = 0
-    candidate_last = b""
+    candidate_digest = None
+    candidate_count = None
     for expected_name in ARTIFACT_MEMBER_NAMES:
         header = os.pread(descriptor, 512, offset)
         if len(header) != 512 or header == b"\0" * 512:
             raise OSError(errno.EINVAL, "invalid snapshot artifact inventory")
-        checksum_field = header[148:156]
-        checksum_header = bytearray(header)
-        checksum_header[148:156] = b"        "
         try:
-            checksum = _parse_tar_number(checksum_field)
             size = _parse_tar_number(header[124:136])
-            mode = _parse_tar_number(header[100:108])
-            uid = _parse_tar_number(header[108:116])
-            gid = _parse_tar_number(header[116:124])
-            mtime = _parse_tar_number(header[136:148])
-            name = header[:100].split(b"\0", 1)[0].decode("ascii")
-        except (UnicodeError, ValueError) as exc:
+        except ValueError as exc:
             raise OSError(errno.EINVAL, "invalid snapshot artifact header") from exc
-        if (
-            checksum != sum(checksum_header)
-            or name != expected_name
-            or header[156:157] not in (b"0", b"\0")
-            or header[157:257].strip(b"\0")
-            or header[257:263] != b"ustar\0"
-            or header[345:500].strip(b"\0")
-            or mode != 0o600 or uid != 0 or gid != 0 or mtime != 0
-            or (name == "manifest.json" and size > MAX_MANIFEST_BYTES)
-            or (name == "candidates.jsonl" and size > MAX_SNAPSHOT_BYTES)
-        ):
-            raise OSError(errno.EINVAL, "unsafe snapshot artifact member")
+        maximum = MAX_MANIFEST_BYTES if expected_name == "manifest.json" else MAX_SNAPSHOT_BYTES
+        if size > maximum or header != _tar_header(expected_name, size):
+            raise OSError(errno.EINVAL, "noncanonical snapshot artifact header")
         offset += 512
         if offset + size > metadata.st_size:
             raise OSError(errno.EINVAL, "truncated snapshot artifact member")
-        if name == "manifest.json":
+        if expected_name == "manifest.json":
             manifest_raw = os.pread(descriptor, size, offset)
             if len(manifest_raw) != size:
                 raise OSError(errno.EIO, "snapshot manifest truncated")
         else:
-            remaining = size
-            member_offset = offset
-            while remaining:
-                chunk = os.pread(descriptor, min(1024 * 1024, remaining), member_offset)
-                if not chunk:
-                    raise OSError(errno.EIO, "snapshot candidates truncated")
-                candidate_digest.update(chunk)
-                candidate_count += chunk.count(b"\n")
-                candidate_last = chunk[-1:]
-                member_offset += len(chunk)
-                remaining -= len(chunk)
-            if size and candidate_last != b"\n":
-                raise OSError(errno.EINVAL, "snapshot candidates are not JSONL")
-        offset += size + ((-size) % 512)
+            candidate_count, candidate_digest = _validate_candidate_member(
+                descriptor, offset, size
+            )
+        offset += size
+        padding = (-size) % 512
+        if padding and os.pread(descriptor, padding, offset) != b"\0" * padding:
+            raise OSError(errno.EINVAL, "noncanonical snapshot artifact padding")
+        offset += padding
 
     if os.pread(descriptor, 1024, offset) != b"\0" * 1024 or offset + 1024 != metadata.st_size:
         raise OSError(errno.EINVAL, "invalid snapshot artifact trailer or inventory")
@@ -686,6 +749,18 @@ def _validate_snapshot_artifact_fd(descriptor, expected_version=None, expected_d
         "artifact_kind", "candidate_count", "candidates_file", "container_format",
         "schema_version", "snapshot_sha256", "snapshot_version",
     }
+    manifest_sha256 = manifest.get("snapshot_sha256") if isinstance(manifest, dict) else None
+    manifest_version = manifest.get("snapshot_version") if isinstance(manifest, dict) else None
+    hash_matches = (
+        isinstance(manifest_sha256, str)
+        and isinstance(candidate_digest, str)
+        and HASH_RE.fullmatch(manifest_sha256) is not None
+        and hmac.compare_digest(manifest_sha256, candidate_digest)
+    )
+    version_valid = (
+        isinstance(manifest_version, str)
+        and SNAPSHOT_VERSION_RE.fullmatch(manifest_version) is not None
+    )
     if (
         not isinstance(manifest, dict)
         or set(manifest) != expected_keys
@@ -693,10 +768,13 @@ def _validate_snapshot_artifact_fd(descriptor, expected_version=None, expected_d
         or manifest.get("artifact_kind") != "approved_benefit_correction_offline_review_snapshot"
         or manifest.get("container_format") != "deterministic-ustar"
         or manifest.get("candidates_file") != "candidates.jsonl"
+        or type(manifest.get("schema_version")) is not int
         or manifest.get("schema_version") != 1
+        or type(manifest.get("candidate_count")) is not int
         or manifest.get("candidate_count") != candidate_count
-        or manifest.get("snapshot_sha256") != candidate_digest.hexdigest()
-        or (expected_version is not None and manifest.get("snapshot_version") != expected_version)
+        or not hash_matches
+        or not version_valid
+        or (expected_version is not None and manifest_version != expected_version)
     ):
         raise OSError(errno.EINVAL, "snapshot artifact manifest mismatch")
     return manifest

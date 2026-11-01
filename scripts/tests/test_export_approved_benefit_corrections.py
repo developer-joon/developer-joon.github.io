@@ -46,6 +46,35 @@ def row(request_id="10000000-0000-4000-8000-000000000001", **overrides):
     return value
 
 
+def write_artifact(
+    exporter, path, version, candidates_raw, candidate_count=None,
+    candidate_sha256=None,
+):
+    """Write a canonical container around caller-controlled candidate bytes."""
+    if candidate_count is None:
+        candidate_count = candidates_raw.count(b"\n")
+    manifest = exporter._canonical_json_bytes({
+        "artifact_kind": "approved_benefit_correction_offline_review_snapshot",
+        "candidate_count": candidate_count,
+        "candidates_file": "candidates.jsonl",
+        "container_format": "deterministic-ustar",
+        "schema_version": 1,
+        "snapshot_sha256": candidate_sha256 or hashlib.sha256(candidates_raw).hexdigest(),
+        "snapshot_version": version,
+    })
+    with path.open("wb") as artifact:
+        for name, raw in (("manifest.json", manifest), ("candidates.jsonl", candidates_raw)):
+            artifact.write(exporter._tar_header(name, len(raw)))
+            artifact.write(raw)
+            artifact.write(b"\0" * ((-len(raw)) % 512))
+        artifact.write(b"\0" * 1024)
+
+
+def rewrite_tar_checksum(header):
+    header[148:156] = b"        "
+    header[148:156] = f"{sum(header):06o}\0 ".encode("ascii")
+
+
 class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -930,6 +959,142 @@ while True:
                             archive.addfile(member, io.BytesIO(raw))
                 with self.subTest(case=case), self.assertRaises(OSError):
                     self.exporter.stream_review_candidates(malicious, version, io.BytesIO())
+
+    def test_review_rejects_invalid_candidate_rows_before_emitting_any_bytes(self):
+        version = "approved-2026-11-01-v1"
+        valid = self.build_snapshot([row()])[0]
+        invalid_rows = []
+        for field, value in (("email", "private@example.com"), ("status", "submitted"),
+                             ("unknown", "value")):
+            candidate = dict(valid)
+            candidate[field] = value
+            invalid_rows.append((field, candidate))
+        missing = dict(valid); missing.pop("company_id")
+        wrong_type = dict(valid); wrong_type["scope_text"] = 7
+        invalid_rows.extend((("missing", missing), ("type", wrong_type)))
+
+        with tempfile.TemporaryDirectory() as directory:
+            for label, candidate in invalid_rows:
+                with self.subTest(label=label):
+                    artifact = Path(directory) / f"{label}.tar"
+                    write_artifact(
+                        self.exporter, artifact, version,
+                        self.exporter._canonical_json_bytes(candidate),
+                    )
+                    output = io.BytesIO()
+                    with self.assertRaises(OSError):
+                        self.exporter.stream_review_candidates(artifact, version, output)
+                    self.assertEqual(b"", output.getvalue())
+
+    def test_review_rejects_noncanonical_duplicate_and_out_of_order_rows_without_output(self):
+        version = "approved-2026-11-01-v1"
+        first, second = list(self.build_snapshot([
+            row("10000000-0000-4000-8000-000000000001"),
+            row("10000000-0000-4000-8000-000000000002"),
+        ]))
+        cases = {
+            "noncanonical": (json.dumps(first) + "\n").encode("utf-8"),
+            "duplicate": self.exporter._canonical_json_bytes(first) * 2,
+            "out-of-order": (
+                self.exporter._canonical_json_bytes(second)
+                + self.exporter._canonical_json_bytes(first)
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for label, raw in cases.items():
+                with self.subTest(label=label):
+                    artifact = Path(directory) / f"{label}.tar"
+                    write_artifact(self.exporter, artifact, version, raw)
+                    output = io.BytesIO()
+                    with self.assertRaises(OSError):
+                        self.exporter.stream_review_candidates(artifact, version, output)
+                    self.assertEqual(b"", output.getvalue())
+
+    def test_review_late_row_and_manifest_mismatches_emit_nothing(self):
+        version = "approved-2026-11-01-v1"
+        first, second = list(self.build_snapshot([
+            row("10000000-0000-4000-8000-000000000001"),
+            row("10000000-0000-4000-8000-000000000002"),
+        ]))
+        invalid_last = dict(second); invalid_last["email"] = "private@example.com"
+        late_raw = (
+            self.exporter._canonical_json_bytes(first)
+            + self.exporter._canonical_json_bytes(invalid_last)
+        )
+        valid_raw = self.exporter._canonical_json_bytes(first)
+        cases = {
+            "late": (late_raw, None, None),
+            "count": (valid_raw, 2, None),
+            "hash": (valid_raw, None, "0" * 64),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for label, (raw, count, digest) in cases.items():
+                with self.subTest(label=label):
+                    artifact = Path(directory) / f"{label}.tar"
+                    write_artifact(
+                        self.exporter, artifact, version, raw,
+                        candidate_count=count, candidate_sha256=digest,
+                    )
+                    output = io.BytesIO()
+                    with self.assertRaises(OSError):
+                        self.exporter.stream_review_candidates(artifact, version, output)
+                    self.assertEqual(b"", output.getvalue())
+
+    def test_review_rejects_every_noncanonical_ustar_header_region(self):
+        version = "approved-2026-11-01-v1"
+        candidates = self.build_snapshot([row()])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            canonical = self.exporter.publish_snapshot(root, version, candidates).read_bytes()
+            regions = {
+                "name": 0, "mode": 100, "uid": 108, "gid": 116, "size": 124,
+                "mtime": 136, "checksum": 148, "typeflag": 156, "linkname": 157,
+                "magic": 257, "version": 263, "uname": 265, "gname": 297,
+                "devmajor": 329, "devminor": 337, "prefix": 345, "reserved": 500,
+            }
+            manifest_size = self.exporter._parse_tar_number(canonical[124:136])
+            header_offsets = {
+                "manifest": 0,
+                "candidates": 512 + manifest_size + ((-manifest_size) % 512),
+            }
+            for member, header_offset in header_offsets.items():
+                for label, index in regions.items():
+                    with self.subTest(member=member, region=label):
+                        mutated = bytearray(canonical)
+                        absolute_index = header_offset + index
+                        mutated[absolute_index] = (
+                            ord("1") if mutated[absolute_index] != ord("1") else ord("2")
+                        )
+                        if label != "checksum":
+                            header = bytearray(mutated[header_offset:header_offset + 512])
+                            rewrite_tar_checksum(header)
+                            mutated[header_offset:header_offset + 512] = header
+                        artifact = Path(directory) / f"header-{member}-{label}.tar"
+                        artifact.write_bytes(mutated)
+                        output = io.BytesIO()
+                        with self.assertRaises(OSError):
+                            self.exporter.stream_review_candidates(artifact, version, output)
+                        self.assertEqual(b"", output.getvalue())
+
+    def test_review_rejects_nonzero_padding_terminal_blocks_and_trailing_bytes(self):
+        version = "approved-2026-11-01-v1"
+        candidates = self.build_snapshot([row()])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"; self.provision(root, version)
+            canonical = bytearray(self.exporter.publish_snapshot(root, version, candidates).read_bytes())
+            manifest_size = self.exporter._parse_tar_number(canonical[124:136])
+            padding_index = 512 + manifest_size
+            cases = {}
+            padded = bytearray(canonical); padded[padding_index] = 1; cases["padding"] = padded
+            terminal = bytearray(canonical); terminal[-1] = 1; cases["terminal"] = terminal
+            cases["trailing"] = canonical + b"x"
+            for label, raw in cases.items():
+                with self.subTest(label=label):
+                    artifact = Path(directory) / f"{label}.tar"; artifact.write_bytes(raw)
+                    output = io.BytesIO()
+                    with self.assertRaises(OSError):
+                        self.exporter.stream_review_candidates(artifact, version, output)
+                    self.assertEqual(b"", output.getvalue())
 
     def test_eight_concurrent_processes_publish_one_exact_artifact(self):
         version = "approved-2026-11-01-v1"
