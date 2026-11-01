@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 const globalLinks = [
-  { label: '0 → 1', href: '/lab/', current: false },
-  { label: 'Blog', href: '/blog/', current: false },
-  { label: 'Community', href: '/community/', current: true },
-  { label: 'Shop', href: '/shop/', current: false },
-  { label: 'About', href: '/about', current: false },
+  { label: '0 → 1', href: '/lab/' },
+  { label: 'Blog', href: '/blog/' },
+  { label: 'Community', href: '/community/' },
+  { label: '기업 복지 탐색기', href: '/community/benefits/' },
+  { label: 'Shop', href: '/shop/' },
+  { label: 'About', href: '/about' },
 ] as const
 
 export function AppHeader() {
+  const onBenefitsRoute = window.location.pathname.startsWith('/community/benefits/')
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileNavigation, setMobileNavigation] = useState(() => window.matchMedia?.('(max-width: 1023px)').matches ?? true)
   const toggleRef = useRef<HTMLButtonElement>(null)
@@ -89,18 +91,23 @@ export function AppHeader() {
         </button>
         <nav ref={navigationRef} id="global-navigation" className={mobileNavigation && menuOpen ? 'global-navigation is-open' : 'global-navigation'} aria-label="주요 메뉴">
           <ul className="global-navigation__list">
-            {globalLinks.map((link) => (
-              <li key={link.href}>
-                <a
-                  className={link.current ? 'active-link' : undefined}
-                  href={link.href}
-                  aria-current={link.current ? 'page' : undefined}
-                  onClick={closeMenu}
-                >
-                  {link.label}
-                </a>
-              </li>
-            ))}
+            {globalLinks.map((link) => {
+              const current = link.href === '/community/benefits/'
+                ? onBenefitsRoute
+                : link.href === '/community/' && !onBenefitsRoute
+              return (
+                <li key={link.href}>
+                  <a
+                    className={current ? 'active-link' : undefined}
+                    href={link.href}
+                    aria-current={current ? 'page' : undefined}
+                    onClick={closeMenu}
+                  >
+                    {link.label}
+                  </a>
+                </li>
+              )
+            })}
           </ul>
         </nav>
       </div>

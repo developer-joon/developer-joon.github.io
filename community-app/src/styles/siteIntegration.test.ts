@@ -27,6 +27,7 @@ const tokens = read('src/styles/tokens.css')
 const globalCss = read('src/styles/global.css')
 const communityCss = read('src/styles/community.css')
 const jekyllHeaderScss = read('../_sass/_includes/_header.scss')
+const jekyllSettings = read('../_data/settings.yml')
 const entryHtml = [
   'index.html',
   'write/index.html',
@@ -330,6 +331,10 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('exposes the benefits explorer in the Jekyll menu with full-document navigation', () => {
+    expect(jekyllSettings).toMatch(/- title: "기업 복지 탐색기"\s+url: "\/community\/benefits\/"\s+no_ajax: true/)
+  })
+
   it('keeps the Community banner full width while wrapping its title and listing content', () => {
     const homeSource = read('src/pages/CommunityHomePage.tsx')
 

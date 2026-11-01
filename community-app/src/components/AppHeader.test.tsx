@@ -87,6 +87,7 @@ describe('AppHeader global shell', () => {
       ['0 → 1', '/lab/'],
       ['Blog', '/blog/'],
       ['Community', '/community/'],
+      ['기업 복지 탐색기', '/community/benefits/'],
       ['Shop', '/shop/'],
       ['About', '/about'],
     ])
@@ -94,7 +95,16 @@ describe('AppHeader global shell', () => {
     expect(header.firstElementChild).toHaveClass('community-header__wrap', 'community-wrap')
     const menuList = within(navigation).getByRole('list')
     expect(menuList).toHaveClass('global-navigation__list')
-    expect(within(menuList).getAllByRole('listitem')).toHaveLength(5)
+    expect(within(menuList).getAllByRole('listitem')).toHaveLength(6)
+  })
+
+  it('marks the benefits menu item current on benefits routes', () => {
+    window.history.replaceState({}, '', '/community/benefits/fit/')
+    render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
+
+    const navigation = screen.getByRole('navigation', { name: '주요 메뉴' })
+    expect(within(navigation).getByRole('link', { name: '기업 복지 탐색기' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).getByRole('link', { name: 'Community' })).not.toHaveAttribute('aria-current')
   })
 
   it('keeps account controls and identity outside the global header and navigation', () => {
@@ -123,13 +133,13 @@ describe('AppHeader global shell', () => {
     expect(toggle).toHaveAttribute('aria-controls', navigation.id)
     expect(toggle).not.toHaveTextContent(/menu|메뉴/i)
     expect(toggle.querySelector('.menu-toggle__icon')).toHaveAttribute('aria-hidden', 'true')
-    expect(within(navigation).getAllByRole('link')).toHaveLength(5)
+    expect(within(navigation).getAllByRole('link')).toHaveLength(6)
 
     fireEvent.click(toggle)
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(toggle).toHaveAccessibleName('주요 메뉴 닫기')
-    expect(within(navigation).getAllByRole('link')).toHaveLength(5)
+    expect(within(navigation).getAllByRole('link')).toHaveLength(6)
   })
 
   it('moves focus into the mobile menu, traps Tab, closes on Escape, and restores focus and scroll', () => {
@@ -181,7 +191,7 @@ describe('AppHeader global shell', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(document.body.style.overflow).toBe('auto')
     expect(screen.getByRole('navigation', { name: '주요 메뉴' })).not.toHaveClass('is-open')
-    expect(within(screen.getByRole('navigation', { name: '주요 메뉴' })).getAllByRole('link')).toHaveLength(5)
+    expect(within(screen.getByRole('navigation', { name: '주요 메뉴' })).getAllByRole('link')).toHaveLength(6)
 
     act(() => viewport.setMatches(true))
     fireEvent.click(toggle)
