@@ -137,6 +137,25 @@
 .benefits-workspace a {
   color: #88cfed;
 }
+.benefits-correction-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid #30425c;
+  background: #111f32;
+}
+.benefits-correction-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  padding: 8px 14px;
+  border: 1px solid #7ee8ce;
+  color: #7ee8ce;
+  font-weight: 700;
+  text-decoration: none;
+}
 .benefits-table-scroll {
   max-width: 100%;
   overflow-x: auto;

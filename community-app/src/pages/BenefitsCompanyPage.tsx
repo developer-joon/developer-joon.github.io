@@ -5,6 +5,7 @@ import { serializeQuery } from '../lib/benefitsQueryState'
 import type { ExplorerViewProps } from './BenefitsExplorerPage'
 import { CompanyEvidenceHeader } from '../components/benefits/CompanyEvidenceHeader'
 import { BenefitClaimGroup } from '../components/benefits/BenefitClaimGroup'
+import { BenefitsCorrectionLink } from '../components/benefits/BenefitsCorrectionLink'
 
 export function BenefitsCompanyPage({ manifest, listings, state, id }: { id: string } & ExplorerViewProps) {
   const company = listings.find((item) => item.company_id === id); const [data, setData] = useState<Detail>(); const [error, setError] = useState(false); const [attempt, setAttempt] = useState(0)
@@ -12,5 +13,5 @@ export function BenefitsCompanyPage({ manifest, listings, state, id }: { id: str
   useEffect(() => { if (!data || !categories.some((category) => `#${category}` === window.location.hash)) return; const section = document.getElementById(window.location.hash.slice(1)); section?.scrollIntoView?.(); section?.focus() }, [data])
   const back = <a href={`/community/benefits/${serializeQuery(state)}`}>복지 현황으로 돌아가기</a>
   if (!company) return <section><h2>기업을 찾을 수 없습니다</h2>{back}</section>
-  return <>{back}<CompanyEvidenceHeader company={company} version={manifest.data_version} />{error ? <section role="alert">상세 근거를 불러올 수 없습니다<button onClick={() => { setError(false); setAttempt((value) => value + 1) }}>상세 다시 시도</button></section> : !data ? <p role="status">상세 근거를 불러오고 있습니다.</p> : <>{categories.map((category) => <BenefitClaimGroup key={category} category={category} outcome={outcomeFor(company, category)} claims={data.claims.filter((claim) => claim.category_ids.includes(category))} />)}<p><a href="/community/benefits/methodology/#corrections">Community 정정 제보·댓글·신고 정책</a></p></>}</>
+  return <>{back}<CompanyEvidenceHeader company={company} version={manifest.data_version} /><p className="benefits-correction-action"><BenefitsCorrectionLink company={company} /> 공식 공개자료 URL과 실제 적용 범위를 함께 알려주세요.</p>{error ? <section role="alert">상세 근거를 불러올 수 없습니다<button onClick={() => { setError(false); setAttempt((value) => value + 1) }}>상세 다시 시도</button></section> : !data ? <p role="status">상세 근거를 불러오고 있습니다.</p> : <>{categories.map((category) => <BenefitClaimGroup key={category} category={category} outcome={outcomeFor(company, category)} claims={data.claims.filter((claim) => claim.category_ids.includes(category))} />)}<p><a href="/community/benefits/methodology/#corrections">정정 검토 기준 보기</a></p></>}</>
 }

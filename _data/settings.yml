@@ -15,6 +15,9 @@ menu_settings:
     - title: "Community"
       url: "/community/"
       no_ajax: true
+    - title: "기업 복지 탐색기"
+      url: "/community/benefits/"
+      no_ajax: true
     - title: "Shop"
       url: "/shop/"
     - title: "About"

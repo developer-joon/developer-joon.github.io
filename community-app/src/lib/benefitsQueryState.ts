@@ -7,6 +7,7 @@ export type QueryState = {
   q: string
   categories: Category[]
   statuses: ('confirmed'|'bounded'|'insufficient_evidence')[]
+  evidence: 'verified' | 'all'
   compare: string[]
   page: number
   country: string
@@ -17,7 +18,7 @@ export type QueryState = {
   notice: boolean
 }
 const companyIdPattern = /^(?:KR-CRN-\d{13}|US-CIK\d{10})$/
-const defaults: QueryState = { scope: 'all', q: '', categories: [], statuses: [], compare: [], page: 1, country: '', employment_type: '', role: '', preferred_categories: [], preset: 'parenting', notice: false }
+const defaults: QueryState = { scope: 'all', q: '', categories: [], statuses: [], evidence: 'verified', compare: [], page: 1, country: '', employment_type: '', role: '', preferred_categories: [], preset: 'parenting', notice: false }
 
 export function parseQuery(raw: string, ids?: string[]): QueryState {
   if (raw.length > 8000) return { ...defaults, notice: true }
@@ -30,6 +31,7 @@ export function parseQuery(raw: string, ids?: string[]): QueryState {
     return output
   }
   const scopeRaw = params.get('scope') ?? 'all'
+  const evidenceRaw = params.get('evidence') ?? 'verified'
   const presetRaw = params.get('preset') ?? 'parenting'
   const pageRaw = Number(params.get('page') ?? 1)
   const candidates = ids ?? (params.get('compare')?.split(',').filter((id) => companyIdPattern.test(id)) ?? [])
@@ -40,6 +42,7 @@ export function parseQuery(raw: string, ids?: string[]): QueryState {
     q: qRaw.trim().slice(0, 100),
     categories: list('categories', categories),
     statuses: list('statuses', ['confirmed','bounded','insufficient_evidence'] as const),
+    evidence: evidenceRaw === 'all' ? 'all' : 'verified',
     compare: list('compare', candidates, 4).filter((id) => companyIdPattern.test(id)),
     page: Number.isSafeInteger(pageRaw) && pageRaw > 0 ? Math.min(pageRaw, 10000) : 1,
     country: (params.get('country') ?? '').slice(0, 100),
@@ -49,7 +52,7 @@ export function parseQuery(raw: string, ids?: string[]): QueryState {
     preset: presets.includes(presetRaw as QueryState['preset']) ? presetRaw as QueryState['preset'] : 'parenting',
     notice: false,
   }
-  state.notice = notice || state.scope !== scopeRaw || state.preset !== presetRaw || state.page !== pageRaw || state.q !== qRaw
+  state.notice = notice || state.scope !== scopeRaw || state.evidence !== evidenceRaw || state.preset !== presetRaw || state.page !== pageRaw || state.q !== qRaw
   return state
 }
 
@@ -57,6 +60,7 @@ export function serializeQuery(state: QueryState) {
   const params = new URLSearchParams()
   if (state.scope !== 'all') params.set('scope', state.scope)
   if (state.q) params.set('q', state.q)
+  if (state.evidence === 'all') params.set('evidence', 'all')
   for (const key of ['categories','statuses','compare','preferred_categories'] as const) if (state[key].length) params.set(key, state[key].join(','))
   if (state.page > 1) params.set('page', String(state.page))
   for (const key of ['country','employment_type','role'] as const) if (state[key]) params.set(key, state[key])
@@ -69,11 +73,13 @@ export function presetCategories(preset: QueryState['preset']): Category[] {
 }
 
 export function filterBenefitsCompanies(companies: CompanyListing[], state: QueryState) {
+  const visibleCategories = state.categories.length ? state.categories : categories
   return companies.filter((company) =>
     (state.scope === 'all' || company.scope === state.scope) &&
     `${company.display_name} ${company.legal_name}`.toLocaleLowerCase().includes(state.q.toLocaleLowerCase()) &&
     (!state.country || company.registered_head_office_country === state.country || company.incorporation_country === state.country) &&
-    (!state.statuses.length || (state.categories.length ? state.categories : categories).some((category) => {
+    (state.evidence === 'all' || visibleCategories.some((category) => outcomeFor(company, category).kind === 'evidenced')) &&
+    (!state.statuses.length || visibleCategories.some((category) => {
       const outcome = outcomeFor(company, category)
       return state.statuses.includes(outcome.kind === 'evidenced' ? outcome.status : 'insufficient_evidence')
     })),

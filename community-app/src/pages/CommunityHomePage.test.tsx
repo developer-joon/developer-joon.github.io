@@ -71,9 +71,7 @@ describe('CommunityHomePage', () => {
     expect(listingHeading.parentElement).toContainElement(writeLink)
     expect(writeLink.parentElement).toContainElement(screen.getByRole('group', { name: '게시글 정렬' }))
     expect(screen.getByRole('region', { name: '계정 작업' })).not.toContainElement(writeLink)
-    const benefitsLink = screen.getByRole('link', { name: '기업 복지 탐색기' })
-    expect(benefitsLink).toHaveAttribute('href', '/community/benefits/')
-    expect(boardHeading.closest('section')).toContainElement(benefitsLink)
+    expect(boardHeading.closest('section')).not.toContainElement(screen.getByRole('link', { name: '기업 복지 탐색기' }))
   })
 
   it('shows one accessible session-expiry notice for concurrent recovered public reads', async () => {

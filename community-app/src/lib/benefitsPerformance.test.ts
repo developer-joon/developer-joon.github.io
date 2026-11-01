@@ -26,6 +26,6 @@ const companies: CompanyListing[] = Array.from({ length: 2000 }, (_, index) => (
 }))
 
 it('filters 2000 records without changing canonical order', () => {
-  const result = filterBenefitsCompanies(companies, parseQuery('?q=Company 1999'))
+  const result = filterBenefitsCompanies(companies, parseQuery('?q=Company+1999&evidence=all'))
   expect(result.map((company) => company.population_sequence)).toEqual([1999])
 })
