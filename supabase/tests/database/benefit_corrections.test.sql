@@ -19,8 +19,9 @@ insert into public.user_roles(user_id,role) values
 
 select has_table('public','benefit_correction_requests','dedicated correction request table exists');
 select has_table('public','benefit_correction_events','dedicated correction event table exists');
-select ok((select bool_and(relrowsecurity) from pg_class where oid=any(array['public.benefit_correction_requests'::regclass,'public.benefit_correction_events'::regclass])),'correction tables enable RLS');
-select ok((select bool_and(not has_table_privilege('anon',oid,'SELECT,INSERT,UPDATE,DELETE') and not has_table_privilege('authenticated',oid,'SELECT,INSERT,UPDATE,DELETE')) from pg_class where oid=any(array['public.benefit_correction_requests'::regclass,'public.benefit_correction_events'::regclass])),'browser roles have no direct correction table privileges');
+select has_table('public','benefit_correction_operator_rate_events','dedicated service-operator rate events exist');
+select ok((select bool_and(relrowsecurity) from pg_class where oid=any(array['public.benefit_correction_requests'::regclass,'public.benefit_correction_events'::regclass,'public.benefit_correction_operator_rate_events'::regclass])),'correction tables enable RLS');
+select ok((select bool_and(not has_table_privilege('anon',oid,'SELECT,INSERT,UPDATE,DELETE') and not has_table_privilege('authenticated',oid,'SELECT,INSERT,UPDATE,DELETE')) from pg_class where oid=any(array['public.benefit_correction_requests'::regclass,'public.benefit_correction_events'::regclass,'public.benefit_correction_operator_rate_events'::regclass])),'browser roles have no direct correction table privileges');
 
 select has_function('public','create_benefit_correction_request_v1',array['uuid','text','text','text','text','text','text','text'],'create correction RPC exists');
 select has_function('public','list_my_benefit_correction_requests_v1',array['integer','timestamp with time zone','uuid'],'own correction list RPC exists');
@@ -105,7 +106,7 @@ set local role authenticated;
 set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000003';
 insert into correction_results values ('queue',public.list_benefit_correction_queue_v1('active',20));
 select is((select jsonb_array_length(payload->'items') from correction_results where name='queue'),1,'admin sees active queue');
-select is((select jsonb_object_agg(key,true order by key) from correction_results,jsonb_object_keys(payload->'items'->0) key where name='queue'),'{"admin_response":true,"applied_at":true,"applied_data_version":true,"category_id":true,"company_id":true,"created_at":true,"current_text":true,"id":true,"observed_data_version":true,"proposed_text":true,"reviewed_at":true,"reviewer_id":true,"scope_text":true,"source_url":true,"status":true,"submitter_id":true,"updated_at":true}'::jsonb,'admin queue projection has exact operational keys');
+select is((select jsonb_object_agg(key,true order by key) from correction_results,jsonb_object_keys(payload->'items'->0) key where name='queue'),'{"admin_response":true,"applied_at":true,"applied_data_version":true,"category_id":true,"company_id":true,"created_at":true,"current_text":true,"id":true,"observed_data_version":true,"proposed_text":true,"reviewed_at":true,"scope_text":true,"source_url":true,"status":true,"updated_at":true}'::jsonb,'admin queue projection omits submitter and reviewer identifiers');
 select ok((select payload::text not like '%example.test%' and payload::text not like '%provider%' and payload::text not like '%token%' from correction_results where name='queue'),'admin queue leaks no email/provider/token data');
 select throws_ok($$select public.list_benefit_correction_queue_v1('bad')$$,'22023','invalid correction status filter','queue status filter is bounded');
 select throws_ok($$select public.list_benefit_correction_queue_v1('all',0)$$,'22023','invalid page limit','queue page limit is bounded');
@@ -125,8 +126,8 @@ select is((select count(*)::integer from public.rate_limit_events where user_id=
 
 insert into public.benefit_correction_requests(id,submitter_id,client_key,payload_fingerprint,company_id,category_id,current_text,proposed_text,scope_text,source_url,observed_data_version)
 values ('d4000000-0000-0000-0000-000000000001','d1000000-0000-0000-0000-000000000001','d2000000-0000-0000-0000-000000000080',repeat('b',32),'US-CIK0000320193','leave','Old leave','Proposed leave','US employees','https://example.com/leave','company-benefits-2026-10-31-v1');
-insert into public.benefit_correction_events(request_id,actor_id,operation,client_key,payload_fingerprint,action,from_status,to_status)
-values ('d4000000-0000-0000-0000-000000000001','d1000000-0000-0000-0000-000000000001','create','d2000000-0000-0000-0000-000000000080',repeat('b',32),'submitted',null,'submitted');
+insert into public.benefit_correction_events(request_id,actor_kind,actor_id,actor_snapshot,operation,client_key,payload_fingerprint,action,from_status,to_status)
+values ('d4000000-0000-0000-0000-000000000001','user','d1000000-0000-0000-0000-000000000001','d1000000-0000-0000-0000-000000000001','create','d2000000-0000-0000-0000-000000000080',repeat('b',32),'submitted',null,'submitted');
 set local role authenticated;
 set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000003';
 select is(public.review_benefit_correction_request_v1('d4000000-0000-0000-0000-000000000001','submitted','start_review','Reviewing rejection fixture','d3000000-0000-0000-0000-000000000016')->>'status','reviewing','second request enters review');
@@ -135,6 +136,18 @@ reset role;
 select ok((select status='rejected' and admin_response='Evidence does not support correction' and reviewer_id='d1000000-0000-0000-0000-000000000003' and reviewed_at is not null and applied_at is null from public.benefit_correction_requests where id='d4000000-0000-0000-0000-000000000001'),'rejected terminal fields are consistent');
 select throws_ok($$update public.benefit_correction_requests set status='applied',applied_data_version='company-benefits-2026-11-01-v2',applied_at=clock_timestamp() where id='d4000000-0000-0000-0000-000000000001'$$,'23514','illegal correction status transition','rejected request cannot transition to applied');
 select throws_ok($$update public.benefit_correction_requests set admin_response='rewritten' where id='d4000000-0000-0000-0000-000000000001'$$,'23514','terminal correction review fields are immutable','rejected admin response cannot be rewritten');
+set local role authenticated;
+set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000003';
+insert into correction_results values ('queue-page-1',public.list_benefit_correction_queue_v1('all',1));
+insert into correction_results values ('queue-page-2',public.list_benefit_correction_queue_v1(
+  'all',1,
+  ((select payload->'next_cursor'->>'created_at' from correction_results where name='queue-page-1')::timestamptz),
+  ((select payload->'next_cursor'->>'id' from correction_results where name='queue-page-1')::uuid)
+));
+select ok((select payload->>'has_more'='true' and jsonb_array_length(payload->'items')=1 from correction_results where name='queue-page-1'),'admin queue first keyset page has a continuation');
+select ok((select jsonb_array_length(payload->'items')=1 from correction_results where name='queue-page-2'),'admin queue traverses to the next keyset page');
+select isnt((select payload->'items'->0->>'id' from correction_results where name='queue-page-1'),(select payload->'items'->0->>'id' from correction_results where name='queue-page-2'),'admin queue keyset pages do not duplicate requests');
+reset role;
 set local role authenticated;
 set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000001';
 insert into correction_results values ('owner-page-1',public.list_my_benefit_correction_requests_v1(1));
@@ -150,33 +163,36 @@ select throws_ok(format('update public.benefit_correction_requests set applied_d
 select throws_ok(format('update public.benefit_correction_events set action=''tampered'' where request_id=%L',(select payload->>'id' from correction_results where name='created')),'23514','benefit correction events are append-only','audit UPDATE is rejected');
 select throws_ok(format('delete from public.benefit_correction_events where request_id=%L',(select payload->>'id' from correction_results where name='created')),'23514','benefit correction events are append-only','audit DELETE is rejected');
 select throws_ok($$truncate public.benefit_correction_events$$,'23514','benefit correction events are append-only','audit TRUNCATE is rejected');
+select throws_like($$delete from public.profiles where id='d1000000-0000-0000-0000-000000000003'$$,'%violates foreign key constraint%','deleting an audit actor is restricted');
+select ok((select bool_and(actor_kind='user' and actor_id is not null and actor_snapshot=actor_id::text) from public.benefit_correction_events where actor_id='d1000000-0000-0000-0000-000000000003'),'failed actor deletion leaves immutable audit attribution unchanged');
 
 grant all on correction_results to service_role;
+select set_config('request.jwt.claim.sub','',true);
 set local role service_role;
-set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000002';
-select throws_ok(format('select public.mark_benefit_correction_applied_v1(%L,''approved'',''company-benefits-2026-11-01-v2'',''d3000000-0000-0000-0000-000000000020'')',(select payload->>'id' from correction_results where name='created')),'42501','admin required','service role without database admin membership is not operator');
-set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000003';
+select ok(auth.uid() is null,'service operator invocation has no browser-user subject');
 select throws_ok($$select public.mark_benefit_correction_applied_v1('d4000000-0000-0000-0000-000000000001','approved','company-benefits-2026-11-01-v2','d3000000-0000-0000-0000-000000000019')$$,'40001','correction state changed','operator cannot apply a rejected request');
 insert into correction_results values ('applied',public.mark_benefit_correction_applied_v1(((select payload->>'id' from correction_results where name='created')::uuid),'approved','company-benefits-2026-11-01-v2','d3000000-0000-0000-0000-000000000020'));
 select is((select payload->>'status' from correction_results where name='applied'),'applied','operator marks approved request applied');
+select is((select jsonb_object_agg(key,true order by key) from correction_results,jsonb_object_keys(payload) key where name='applied'),'{"admin_response":true,"applied_at":true,"applied_data_version":true,"category_id":true,"company_id":true,"created_at":true,"current_text":true,"id":true,"observed_data_version":true,"proposed_text":true,"reviewed_at":true,"scope_text":true,"source_url":true,"status":true,"updated_at":true}'::jsonb,'operator response omits submitter and reviewer identifiers');
 select is(public.mark_benefit_correction_applied_v1(((select payload->>'id' from correction_results where name='created')::uuid),'approved','company-benefits-2026-11-01-v2','d3000000-0000-0000-0000-000000000020')->>'status','applied','operator application replays safely');
 select throws_ok(format('select public.mark_benefit_correction_applied_v1(%L,''approved'',''company-benefits-2026-11-02-v3'',''d3000000-0000-0000-0000-000000000020'')',(select payload->>'id' from correction_results where name='created')),'22023','client key reused with different payload','application client key cannot change payload');
 select throws_ok(format('select public.mark_benefit_correction_applied_v1(%L,''approved'',''bad-version'',''d3000000-0000-0000-0000-000000000021'')',(select payload->>'id' from correction_results where name='created')),'22023','invalid data version','applied version is validated');
 reset role;
 select ok((select status='applied' and reviewer_id='d1000000-0000-0000-0000-000000000003' and reviewed_at is not null and applied_data_version='company-benefits-2026-11-01-v2' and applied_at is not null from public.benefit_correction_requests where id=((select payload->>'id' from correction_results where name='created')::uuid)),'terminal fields remain consistent after application');
 select is((select count(*)::integer from public.benefit_correction_events where request_id=((select payload->>'id' from correction_results where name='created')::uuid) and action='applied'),1,'application replay emits one audit event');
-select is((select count(*)::integer from public.rate_limit_events where user_id='d1000000-0000-0000-0000-000000000003' and action='benefit_correction.apply'),1,'application replay consumes one operator rate slot');
+select ok((select actor_kind='service_role' and actor_id is null and actor_snapshot='service_role' from public.benefit_correction_events where request_id=((select payload->>'id' from correction_results where name='created')::uuid) and action='applied'),'service operator audit uses a non-user immutable actor snapshot');
+select is((select count(*)::integer from public.benefit_correction_operator_rate_events where actor_snapshot='service_role' and action='benefit_correction.apply'),1,'application replay consumes one service-operator rate slot');
 
 insert into public.rate_limit_events(user_id,action,idempotency_key)
 select 'd1000000-0000-0000-0000-000000000003','benefit_correction.review','review-saturated-'||g from generate_series(1,95) g;
-insert into public.rate_limit_events(user_id,action,idempotency_key)
-select 'd1000000-0000-0000-0000-000000000003','benefit_correction.apply','apply-saturated-'||g from generate_series(1,99) g;
+insert into public.benefit_correction_operator_rate_events(actor_snapshot,action,idempotency_key)
+select 'service_role','benefit_correction.apply','apply-saturated-'||g from generate_series(1,99) g;
 set local role authenticated;
 set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000003';
 select throws_like(format('select public.review_benefit_correction_request_v1(%L,''reviewing'',''approve'',''rate probe'',''d3000000-0000-0000-0000-000000000030'')',(select payload->>'id' from correction_results where name='created')),'%rate_limit_exceeded%','review rate limit is database-backed');
 reset role;
+select set_config('request.jwt.claim.sub','',true);
 set local role service_role;
-set local request.jwt.claim.sub='d1000000-0000-0000-0000-000000000003';
 select throws_like(format('select public.mark_benefit_correction_applied_v1(%L,''approved'',''company-benefits-2026-11-02-v3'',''d3000000-0000-0000-0000-000000000031'')',(select payload->>'id' from correction_results where name='created')),'%rate_limit_exceeded%','operator apply rate limit is database-backed');
 reset role;
 

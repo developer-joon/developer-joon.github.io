@@ -54,7 +54,9 @@ create table public.benefit_correction_requests (
 create table public.benefit_correction_events (
   id uuid primary key default gen_random_uuid(),
   request_id uuid not null references public.benefit_correction_requests(id) on delete restrict,
-  actor_id uuid references public.profiles(id) on delete set null,
+  actor_kind text not null,
+  actor_id uuid references public.profiles(id) on delete restrict,
+  actor_snapshot text not null,
   operation text not null,
   client_key uuid not null,
   payload_fingerprint text not null,
@@ -64,7 +66,11 @@ create table public.benefit_correction_events (
   response_text text,
   applied_data_version text,
   created_at timestamptz not null default pg_catalog.clock_timestamp(),
-  unique(actor_id,operation,client_key),
+  unique(actor_kind,actor_snapshot,operation,client_key),
+  constraint benefit_correction_events_actor_check check (
+    (actor_kind='user' and actor_id is not null and actor_snapshot=actor_id::text)
+    or (actor_kind='service_role' and actor_id is null and actor_snapshot='service_role')
+  ),
   constraint benefit_correction_events_operation_check check (operation in ('create','review','apply')),
   constraint benefit_correction_events_fingerprint_check check (payload_fingerprint ~ '^[0-9a-f]{32}$'),
   constraint benefit_correction_events_action_check check (action in ('submitted','start_review','additional_material_requested','approved','rejected','applied')),
@@ -81,6 +87,17 @@ create table public.benefit_correction_events (
   )
 );
 
+create table public.benefit_correction_operator_rate_events (
+  id uuid primary key default gen_random_uuid(),
+  actor_snapshot text not null,
+  action text not null,
+  idempotency_key text not null,
+  occurred_at timestamptz not null default pg_catalog.clock_timestamp(),
+  constraint benefit_correction_operator_rate_actor_check check (actor_snapshot='service_role'),
+  constraint benefit_correction_operator_rate_action_check check (action='benefit_correction.apply'),
+  constraint benefit_correction_operator_rate_key_check check (char_length(idempotency_key) between 1 and 200)
+);
+
 create index benefit_correction_requests_owner_created_idx
   on public.benefit_correction_requests(submitter_id,created_at desc,id desc);
 create index benefit_correction_requests_active_queue_idx
@@ -92,10 +109,13 @@ create index benefit_correction_requests_status_queue_idx
   on public.benefit_correction_requests(status,created_at desc,id desc);
 create index benefit_correction_events_request_idx
   on public.benefit_correction_events(request_id,created_at,id);
+create index benefit_correction_operator_rate_lookup_idx
+  on public.benefit_correction_operator_rate_events(actor_snapshot,action,occurred_at desc);
 
 alter table public.benefit_correction_requests enable row level security;
 alter table public.benefit_correction_events enable row level security;
-revoke all on table public.benefit_correction_requests,public.benefit_correction_events from public,anon,authenticated,service_role;
+alter table public.benefit_correction_operator_rate_events enable row level security;
+revoke all on table public.benefit_correction_requests,public.benefit_correction_events,public.benefit_correction_operator_rate_events from public,anon,authenticated,service_role;
 
 create function private.benefit_correction_text(p_value text,p_name text,p_max integer)
 returns text language plpgsql immutable set search_path='' as $$
@@ -176,9 +196,36 @@ $$;
 create function private.benefit_correction_admin_item(p_request_id uuid)
 returns jsonb language sql stable security definer set search_path='' as $$
   select private.benefit_correction_owner_item(r.id)||pg_catalog.jsonb_build_object(
-    'submitter_id',r.submitter_id,'reviewer_id',r.reviewer_id,'reviewed_at',r.reviewed_at)
+    'reviewed_at',r.reviewed_at)
   from public.benefit_correction_requests r where r.id=p_request_id
 $$;
+
+create function private.consume_benefit_correction_operator_rate_limit(
+  p_actor_snapshot text,p_action text,p_idempotency_key text
+) returns void language plpgsql volatile set search_path='' as $$
+declare v_rule record;
+begin
+  if p_actor_snapshot<>'service_role' or p_action<>'benefit_correction.apply' then
+    raise exception 'invalid benefit correction operator' using errcode='42501';
+  end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('benefit-correction:operator-rate:'||p_actor_snapshot||':'||p_action,0)
+  );
+  for v_rule in
+    select r.window_seconds,r.max_requests from public.rate_limit_rules r
+    where r.action=p_action and r.is_enabled order by r.window_seconds
+  loop
+    if (select count(*) from public.benefit_correction_operator_rate_events e
+        where e.actor_snapshot=p_actor_snapshot and e.action=p_action
+          and e.occurred_at>pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>v_rule.window_seconds))>=v_rule.max_requests then
+      raise sqlstate 'PGRST' using
+        message=pg_catalog.format('{"code":"rate_limit_exceeded","message":"Rate limit exceeded","details":%s,"hint":"Retry later"}',pg_catalog.to_json(p_action)::text),
+        detail=pg_catalog.jsonb_build_object('status',429,'headers',pg_catalog.jsonb_build_object('Retry-After',v_rule.window_seconds::text))::text;
+    end if;
+  end loop;
+  insert into public.benefit_correction_operator_rate_events(actor_snapshot,action,idempotency_key,occurred_at)
+  values(p_actor_snapshot,p_action,p_idempotency_key,pg_catalog.clock_timestamp());
+end $$;
 
 create function private.enforce_benefit_correction_request_update()
 returns trigger language plpgsql set search_path='' as $$
@@ -217,11 +264,6 @@ for each row execute function private.enforce_benefit_correction_request_update(
 create function private.enforce_benefit_correction_event_append_only()
 returns trigger language plpgsql set search_path='' as $$
 begin
-  if tg_op='UPDATE' and old.actor_id is not null and new.actor_id is null
-     and (pg_catalog.to_jsonb(new)-'actor_id')=(pg_catalog.to_jsonb(old)-'actor_id')
-     and not exists(select 1 from public.profiles p where p.id=old.actor_id) then
-    return new;
-  end if;
   raise exception 'benefit correction events are append-only' using errcode='23514';
 end $$;
 create trigger benefit_correction_events_append_only_row
@@ -259,8 +301,8 @@ begin
   perform private.consume_rate_limit(v_actor,'benefit_correction.create',p_client_key::text);
   insert into public.benefit_correction_requests(submitter_id,client_key,payload_fingerprint,company_id,category_id,current_text,proposed_text,scope_text,source_url,observed_data_version)
   values(v_actor,p_client_key,v_fingerprint,v_company,v_category,v_current,v_proposed,v_scope,v_url,v_version) returning * into v_request;
-  insert into public.benefit_correction_events(request_id,actor_id,operation,client_key,payload_fingerprint,action,from_status,to_status)
-  values(v_request.id,v_actor,'create',p_client_key,v_fingerprint,'submitted',null,'submitted');
+  insert into public.benefit_correction_events(request_id,actor_kind,actor_id,actor_snapshot,operation,client_key,payload_fingerprint,action,from_status,to_status)
+  values(v_request.id,'user',v_actor,v_actor::text,'create',p_client_key,v_fingerprint,'submitted',null,'submitted');
   return private.benefit_correction_owner_item(v_request.id);
 end $$;
 
@@ -338,8 +380,8 @@ begin
   else raise exception 'correction review action not allowed' using errcode='22023'; end if;
   v_now:=pg_catalog.clock_timestamp();
   update public.benefit_correction_requests set status=v_desired,admin_response=v_response,reviewer_id=v_actor,reviewed_at=v_now,updated_at=v_now where id=p_request_id;
-  insert into public.benefit_correction_events(request_id,actor_id,operation,client_key,payload_fingerprint,action,from_status,to_status,response_text)
-  values(p_request_id,v_actor,'review',p_client_key,v_fingerprint,v_event_action,v_request.status,v_desired,v_response);
+  insert into public.benefit_correction_events(request_id,actor_kind,actor_id,actor_snapshot,operation,client_key,payload_fingerprint,action,from_status,to_status,response_text)
+  values(p_request_id,'user',v_actor,v_actor::text,'review',p_client_key,v_fingerprint,v_event_action,v_request.status,v_desired,v_response);
   return private.benefit_correction_admin_item(p_request_id);
 end $$;
 
@@ -347,28 +389,31 @@ create function public.mark_benefit_correction_applied_v1(
   p_request_id uuid,p_expected_status text,p_applied_data_version text,p_client_key uuid
 ) returns jsonb language plpgsql volatile security definer set search_path='' as $$
 declare
-  v_actor uuid; v_version text; v_fingerprint text; v_event public.benefit_correction_events%rowtype;
+  v_actor_snapshot text:='service_role'; v_version text; v_fingerprint text; v_event public.benefit_correction_events%rowtype;
   v_request public.benefit_correction_requests%rowtype; v_now timestamptz;
 begin
-  perform private.require_read_committed(); v_actor:=private.require_admin();
+  perform private.require_read_committed();
+  if pg_catalog.current_setting('role',true)<>'service_role' then
+    raise exception 'service operator required' using errcode='42501';
+  end if;
   if p_client_key is null then raise exception 'client key is required' using errcode='22023'; end if;
   if p_expected_status is null or p_expected_status<>'approved' then raise exception 'invalid expected correction status' using errcode='22023'; end if;
   v_version:=private.benefit_correction_data_version(p_applied_data_version);
   v_fingerprint:=pg_catalog.md5(pg_catalog.jsonb_build_object('request_id',p_request_id,'expected_status',p_expected_status,'applied_data_version',v_version)::text);
-  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-correction:apply:'||v_actor::text||':'||p_client_key::text,0));
-  select * into v_event from public.benefit_correction_events where actor_id=v_actor and operation='apply' and client_key=p_client_key;
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-correction:apply:'||v_actor_snapshot||':'||p_client_key::text,0));
+  select * into v_event from public.benefit_correction_events where actor_kind='service_role' and actor_snapshot=v_actor_snapshot and operation='apply' and client_key=p_client_key;
   if found then
     if v_event.payload_fingerprint<>v_fingerprint then raise exception 'client key reused with different payload' using errcode='22023'; end if;
     return private.benefit_correction_admin_item(v_event.request_id);
   end if;
-  perform private.consume_rate_limit(v_actor,'benefit_correction.apply',p_client_key::text);
+  perform private.consume_benefit_correction_operator_rate_limit(v_actor_snapshot,'benefit_correction.apply',p_client_key::text);
   select * into v_request from public.benefit_correction_requests where id=p_request_id for update;
   if not found then raise exception 'correction request not found' using errcode='22023'; end if;
   if v_request.status is distinct from p_expected_status then raise exception 'correction state changed' using errcode='40001'; end if;
   v_now:=pg_catalog.clock_timestamp();
   update public.benefit_correction_requests set status='applied',applied_data_version=v_version,applied_at=v_now,updated_at=v_now where id=p_request_id;
-  insert into public.benefit_correction_events(request_id,actor_id,operation,client_key,payload_fingerprint,action,from_status,to_status,applied_data_version)
-  values(p_request_id,v_actor,'apply',p_client_key,v_fingerprint,'applied',v_request.status,'applied',v_version);
+  insert into public.benefit_correction_events(request_id,actor_kind,actor_id,actor_snapshot,operation,client_key,payload_fingerprint,action,from_status,to_status,applied_data_version)
+  values(p_request_id,'service_role',null,v_actor_snapshot,'apply',p_client_key,v_fingerprint,'applied',v_request.status,'applied',v_version);
   return private.benefit_correction_admin_item(p_request_id);
 end $$;
 
@@ -377,6 +422,7 @@ alter function private.benefit_correction_data_version(text) owner to postgres;
 alter function private.benefit_correction_source_url(text) owner to postgres;
 alter function private.benefit_correction_owner_item(uuid) owner to postgres;
 alter function private.benefit_correction_admin_item(uuid) owner to postgres;
+alter function private.consume_benefit_correction_operator_rate_limit(text,text,text) owner to postgres;
 alter function private.enforce_benefit_correction_request_update() owner to postgres;
 alter function private.enforce_benefit_correction_event_append_only() owner to postgres;
 alter function public.create_benefit_correction_request_v1(uuid,text,text,text,text,text,text,text) owner to postgres;
@@ -390,6 +436,7 @@ revoke all on function private.benefit_correction_data_version(text) from public
 revoke all on function private.benefit_correction_source_url(text) from public,anon,authenticated,service_role;
 revoke all on function private.benefit_correction_owner_item(uuid) from public,anon,authenticated,service_role;
 revoke all on function private.benefit_correction_admin_item(uuid) from public,anon,authenticated,service_role;
+revoke all on function private.consume_benefit_correction_operator_rate_limit(text,text,text) from public,anon,authenticated,service_role;
 revoke all on function private.enforce_benefit_correction_request_update() from public,anon,authenticated,service_role;
 revoke all on function private.enforce_benefit_correction_event_append_only() from public,anon,authenticated,service_role;
 revoke all on function public.create_benefit_correction_request_v1(uuid,text,text,text,text,text,text,text) from public,anon,authenticated,service_role;
