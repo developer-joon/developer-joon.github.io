@@ -11,6 +11,13 @@ describe('public benefits entry boundary', () => {
       'benefits/company/index.html',
       'benefits/methodology/index.html',
     ]) expect(source(path)).toContain('/src/benefits-main.tsx')
+    for (const path of [
+      'benefits/correction/index.html',
+      'benefits/my-corrections/index.html',
+    ]) {
+      expect(source(path)).toContain('/src/main.tsx')
+      expect(source(path)).not.toContain('/src/benefits-main.tsx')
+    }
     expect(existsSync(`${process.cwd()}/benefits/rankings/index.html`)).toBe(false)
   })
 

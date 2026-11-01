@@ -12,6 +12,8 @@ import { CommunityActions } from './components/CommunityActions'
 
 const BenefitsMethodologyPage = lazy(() => import('./pages/BenefitsMethodologyPage').then(m => ({ default: m.BenefitsMethodologyPage })))
 const BenefitsExplorerPage = lazy(() => import('./pages/BenefitsExplorerPage').then(m => ({ default: m.BenefitsExplorerPage })))
+const BenefitCorrectionPage = lazy(() => import('./pages/BenefitCorrectionPage').then(m => ({ default: m.BenefitCorrectionPage })))
+const MyBenefitCorrectionsPage = lazy(() => import('./pages/MyBenefitCorrectionsPage').then(m => ({ default: m.MyBenefitCorrectionsPage })))
 
 const PostDetailPage = lazy(async () => {
   const module = await import('./pages/PostDetailPage')
@@ -58,6 +60,12 @@ export function App({ pathname = window.location.pathname, search = window.locat
   if (benefitsRoute(pathname) === 'methodology') return <Suspense fallback={<LazyRouteFallback>조사 기준을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsMethodologyPage search={search} /></Suspense>
   if (benefitsRoute(pathname)) return <Suspense fallback={<LazyRouteFallback>복지 탐색기를 준비하고 있습니다.</LazyRouteFallback>}><BenefitsExplorerPage route={benefitsRoute(pathname)!} search={search} /></Suspense>
   if (auth.loading) return <LazyRouteFallback>로그인 상태를 확인하고 있습니다.</LazyRouteFallback>
+  if (normalizedPathname === '/community/benefits/correction') {
+    return <Suspense fallback={<LazyRouteFallback>수정 요청 화면을 준비하고 있습니다.</LazyRouteFallback>}><BenefitCorrectionPage search={search} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/benefits/my-corrections') {
+    return <Suspense fallback={<LazyRouteFallback>요청 내역을 준비하고 있습니다.</LazyRouteFallback>}><MyBenefitCorrectionsPage currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
   }

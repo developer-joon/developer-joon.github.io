@@ -15,4 +15,11 @@ describe('non-ranking benefits routes', () => {
   it('does not expose a rankings route', () => {
     expect(benefitsRoute('/community/benefits/rankings')).toBe(null)
   })
+
+  it.each([
+    '/community/benefits/correction',
+    '/community/benefits/my-corrections/',
+  ])('keeps authenticated route %s outside the public bundle', (path) => {
+    expect(benefitsRoute(path)).toBe(null)
+  })
 })
