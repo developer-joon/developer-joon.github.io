@@ -824,7 +824,16 @@ class BenefitsV2PackageTests(unittest.TestCase):
         ):
             errors = VALIDATOR_MODULE.validate_package(package_for("reference"))
         self.assertTrue(
-            any("cannot validate records" in error for error in errors), errors
+            any("invalid reference" in error for error in errors), errors
+        )
+        with mock.patch.object(
+            VALIDATOR_MODULE, "_read_authoritative_text", side_effect=unresolved_schema
+        ):
+            empty_errors = VALIDATOR_MODULE.validate_package(
+                package_for("no_public_info")
+            )
+        self.assertTrue(
+            any("invalid reference" in error for error in empty_errors), empty_errors
         )
 
         policy = copy.deepcopy(package_for("reference")["coverage_policy"])
@@ -866,11 +875,54 @@ class BenefitsV2PackageTests(unittest.TestCase):
             errors = VALIDATOR_MODULE.validate_package(package)
         self.assertTrue(any("category set mismatch" in error for error in errors), errors)
 
+        for weakened_routes in ([], ["official-government"]):
+            weakened = copy.deepcopy(package_for("no_public_info")["coverage_policy"])
+            weakened["category_routes"]["leave"] = weakened_routes
+
+            def weak_policy(repo_root, path, value=weakened):
+                if str(path).endswith("research-coverage-policies.json"):
+                    return json.dumps(value)
+                return original(repo_root, path)
+
+            package = package_for("no_public_info")
+            package["coverage_policy"] = weakened
+            with mock.patch.object(
+                VALIDATOR_MODULE, "_read_authoritative_text", side_effect=weak_policy
+            ):
+                weak_errors = VALIDATOR_MODULE.validate_package(package)
+            self.assertTrue(
+                any("mandatory routes" in error for error in weak_errors), weak_errors
+            )
+
         package = package_for("reference")
         package["attempts"][0]["query_or_locator"] = "abc\ud800"
         errors = VALIDATOR_MODULE.validate_package(package)
         self.assertTrue(
             any("cannot be canonically encoded" in error for error in errors), errors
+        )
+
+    def test_company_authority_requires_jurisdiction_and_selected_legal_entity(self):
+        original = VALIDATOR_MODULE._read_authoritative_text
+        ledger_path = ROOT / "docs/research/company-benefits/companies.jsonl"
+        lines = ledger_path.read_text(encoding="utf-8").splitlines()
+        first = json.loads(lines[0])
+        first.pop("selected_reporting_legal_entity")
+        lines[0] = json.dumps(first, ensure_ascii=False)
+
+        def malformed_company(repo_root, path):
+            if str(path).endswith("companies.jsonl"):
+                return "\n".join(lines)
+            return original(repo_root, path)
+
+        with mock.patch.object(
+            VALIDATOR_MODULE, "_read_authoritative_text", side_effect=malformed_company
+        ):
+            errors = VALIDATOR_MODULE.validate_package(
+                package_for("official_verified")
+            )
+        self.assertTrue(
+            any("lacks selected_reporting_legal_entity" in error for error in errors),
+            errors,
         )
 
     def test_scope_array_order_is_semantic_but_different_members_are_rejected(self):

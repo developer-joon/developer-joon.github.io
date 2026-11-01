@@ -40,6 +40,11 @@ BENEFIT_CATEGORIES = {
     "leave", "family", "health", "growth", "housing",
     "commute", "remote", "retirement", "meals", "inclusion",
 }
+MANDATORY_COVERAGE_ROUTES = {
+    "official-government",
+    "company-recruiting-media",
+    "other-public-web",
+}
 SCOPE_STATUS_BEST_TO_WORST = ("exact_entity", "bounded_entity", "group_only", "unresolved")
 CURRENTNESS_BEST_TO_WORST = ("current", "historical", "unknown")
 CONFLICT_SEVERITY = {"none": 0, "disclosed": 1, "contradictory": 2}
@@ -95,6 +100,38 @@ def _read_authoritative_text(repo_root, path):
         os.close(directory_fd)
 
 
+def _local_schema_reference_errors(schema):
+    errors = []
+
+    def resolve(reference):
+        if reference == "#":
+            return
+        if not reference.startswith("#/"):
+            errors.append(f"external reference is not allowed: {reference}")
+            return
+        target = schema
+        for raw_part in reference[2:].split("/"):
+            part = raw_part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(target, dict) or part not in target:
+                errors.append(f"unresolved reference: {reference}")
+                return
+            target = target[part]
+
+    def walk(value):
+        if isinstance(value, dict):
+            reference = value.get("$ref")
+            if isinstance(reference, str):
+                resolve(reference)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(schema)
+    return sorted(set(errors))
+
+
 def _schema_validators(repo_root, errors):
     schema_root = (
         Path(repo_root)
@@ -110,6 +147,13 @@ def _schema_validators(repo_root, errors):
                 _read_authoritative_text(repo_root, schema_root / filename)
             )
             Draft202012Validator.check_schema(schema)
+            reference_errors = _local_schema_reference_errors(schema)
+            if reference_errors:
+                errors.extend(
+                    f"authoritative schema {filename} has invalid reference: {error}"
+                    for error in reference_errors
+                )
+                continue
         except (OSError, UnicodeError, json.JSONDecodeError, SchemaError, TypeError, ValueError) as exc:
             errors.append(f"authoritative schema {filename} is invalid: {exc}")
             continue
@@ -215,8 +259,23 @@ def _company_ledger(repo_root, errors):
             errors.append(f"canonical company ledger line {line_number} is invalid: {exc}")
             continue
         company_id = company.get("company_id") if isinstance(company, dict) else None
+        jurisdiction = company.get("jurisdiction") if isinstance(company, dict) else None
+        legal_entity = (
+            company.get("selected_reporting_legal_entity")
+            if isinstance(company, dict)
+            else None
+        )
         if not isinstance(company_id, str) or not company_id:
             errors.append(f"canonical company ledger line {line_number} lacks company_id")
+        elif not isinstance(jurisdiction, str) or len(jurisdiction) != 2:
+            errors.append(
+                f"canonical company ledger line {line_number} lacks valid jurisdiction"
+            )
+        elif not isinstance(legal_entity, str) or not legal_entity:
+            errors.append(
+                f"canonical company ledger line {line_number} lacks "
+                "selected_reporting_legal_entity"
+            )
         elif company_id in companies:
             errors.append(f"canonical company ledger has duplicate company_id: {company_id}")
         else:
@@ -277,6 +336,10 @@ def _coverage_policy_errors(policy):
                     f"canonical coverage policy has invalid category routes: {category!r}"
                 )
                 continue
+            if not route_ids:
+                errors.append(
+                    f"canonical coverage policy category has no required routes: {category}"
+                )
             if any(not isinstance(route_id, str) for route_id in route_ids):
                 errors.append(
                     f"canonical coverage policy category has non-string route: {category}"
@@ -291,6 +354,17 @@ def _coverage_policy_errors(policy):
                         f"canonical coverage policy category references unknown route: "
                         f"{category}/{route_id}"
                     )
+            valid_route_ids = {
+                route_id for route_id in route_ids if isinstance(route_id, str)
+            }
+            missing_mandatory = sorted(
+                MANDATORY_COVERAGE_ROUTES - valid_route_ids
+            )
+            if missing_mandatory:
+                errors.append(
+                    f"canonical coverage policy category lacks mandatory routes: "
+                    f"{category}/{missing_mandatory}"
+                )
         category_keys = {
             category for category in category_routes if isinstance(category, str)
         }
