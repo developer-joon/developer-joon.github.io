@@ -5,11 +5,17 @@
   "allow_generator_synthesized_receipts": false,
   "completion_rule": "all_required_routes_have_valid_receipts",
   "receipt_schema": "schema/research-attempt.schema.json",
+  "cell_evidence_aggregation": {
+    "rule": "cell_equals_most_conservative_backing_value",
+    "scope_status_best_to_worst": ["exact_entity", "group_only", "unresolved"],
+    "currentness_best_to_worst": ["current", "historical", "unknown"]
+  },
   "shared_bulk_source_policy": {
     "default_allow_reuse": false,
     "sources": {
       "source::approved-shared-benefits-bulk": {
-        "require_per_entity_result_binding": true
+        "require_per_entity_result_binding": true,
+        "allowed_route_ids": ["company-recruiting-media"]
       }
     }
   },
@@ -17,7 +23,8 @@
     "official-government": {"route_kind": "official_government", "required": true},
     "company-recruiting-media": {"route_kind": "company_recruiting_major_media", "required": true},
     "other-public-web": {"route_kind": "other_public_web", "required": true},
-    "community-review": {"route_kind": "community_employee_review", "required": false}
+    "community-review": {"route_kind": "community_employee_review", "required": false},
+    "user-submission": {"route_kind": "user_submission", "required": false}
   },
   "category_routes": {
     "leave": ["official-government", "company-recruiting-media", "other-public-web"],

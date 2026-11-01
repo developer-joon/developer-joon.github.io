@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -37,9 +38,12 @@ def attempt(route_id, result="no_result", source_ids=None):
         "company-recruiting-media": "company_recruiting_major_media",
         "other-public-web": "other_public_web",
         "community-review": "community_employee_review",
+        "user-submission": "user_submission",
     }
     record["route_kind"] = kinds[route_id]
     record["source_ids"] = list(source_ids or [])
+    record["raw_response_sha256"] = hashlib.sha256(route_id.encode()).hexdigest()
+    record["capture_locator"] = f"https://captures.example/attempt/{route_id}"
     return bind_attempt(record)
 
 
@@ -263,6 +267,14 @@ class BenefitsV2PackageTests(unittest.TestCase):
                     bind_attempt(receipt)
                 self.assert_invalid(copied, "receipt reuse across cells")
 
+    def test_no_public_info_rejects_one_capture_copied_across_same_cell_routes(self):
+        package = package_for()
+        for receipt in package["attempts"][1:]:
+            receipt["capture_locator"] = package["attempts"][0]["capture_locator"]
+            receipt["raw_response_sha256"] = package["attempts"][0]["raw_response_sha256"]
+            bind_attempt(receipt)
+        self.assert_invalid(package, "receipt reuse across distinct routes")
+
     def test_allows_declared_shared_bulk_source_with_per_entity_binding(self):
         package = package_for("reference")
         add_shared_bulk_reference_cell(package)
@@ -274,6 +286,23 @@ class BenefitsV2PackageTests(unittest.TestCase):
         )
         bind_attempt(copied_binding["attempts"][1])
         self.assert_invalid(copied_binding, "shared bulk result binding mismatch")
+
+    def test_shared_bulk_binding_cannot_masquerade_as_a_different_route_kind(self):
+        package = package_for("reference")
+        add_shared_bulk_reference_cell(package)
+        package["cells"] = package["cells"][:1]
+        package["references"] = package["references"][:1]
+        package["attempts"] = package["attempts"][:1]
+        copied = copy.deepcopy(package["attempts"][0])
+        copied["route_id"] = "official-government"
+        copied["route_kind"] = "official_government"
+        copied["attempt_id"] = (
+            f"attempt::{copied['company_id']}::{copied['category_id']}::official-government"
+        )
+        bind_attempt(copied)
+        package["attempts"].append(copied)
+        package["cells"][0]["attempt_ids"].append(copied["attempt_id"])
+        self.assert_invalid(package, "receipt reuse across distinct routes")
 
     def test_rejects_wrong_source_tier_and_unresolved_sources(self):
         wrong = package_for("reference")
@@ -302,6 +331,26 @@ class BenefitsV2PackageTests(unittest.TestCase):
                 package = package_for("official_verified")
                 package[target][0]["scope_status"] = scope_status
                 self.assert_invalid(package, "exact_entity")
+
+    def test_cell_scope_and_currentness_equal_most_conservative_backing_value(self):
+        scope = package_for("reference")
+        scope["references"][0]["scope"]["status"] = "exact_entity"
+        scope["sources"][0]["scope_status"] = "group_only"
+        self.assert_invalid(scope, "cell scope_status exact_entity overstates backing scope group_only")
+
+        currentness = package_for("reference")
+        currentness["references"][0]["currentness"] = "historical"
+        currentness["sources"][0]["currentness"] = "unknown"
+        self.assert_invalid(currentness, "cell currentness current overstates backing currentness unknown")
+
+        reconciled = package_for("reference")
+        reconciled["references"][0]["scope"]["status"] = "exact_entity"
+        reconciled["sources"][0]["scope_status"] = "group_only"
+        reconciled["references"][0]["currentness"] = "historical"
+        reconciled["sources"][0]["currentness"] = "unknown"
+        reconciled["cells"][0]["scope_status"] = "group_only"
+        reconciled["cells"][0]["currentness"] = "unknown"
+        self.assert_valid(reconciled)
 
     def test_company_and_jurisdiction_must_match_canonical_ledger(self):
         unknown = package_for("reference")
@@ -385,6 +434,20 @@ class BenefitsV2PackageTests(unittest.TestCase):
         unfrozen = package_for("community_report")
         unfrozen["community_reports"][0].pop("frozen_snapshot")
         self.assert_invalid(unfrozen, "schema")
+
+    def test_moderated_user_submission_has_a_valid_route_and_unmoderated_cannot_publish(self):
+        approved = package_for("community_report")
+        report = approved["community_reports"][0]
+        report["source_tier"] = "user_submission"
+        approved["sources"][0]["source_tier"] = "user_submission"
+        approved["attempts"] = [attempt("user-submission", "source_found", [report["source_id"]])]
+        approved["cells"][0]["attempt_ids"] = [approved["attempts"][0]["attempt_id"]]
+        self.assert_valid(approved)
+
+        pending = copy.deepcopy(approved)
+        pending["community_reports"][0]["moderation"] = {"status": "pending"}
+        pending["community_reports"][0].pop("frozen_snapshot")
+        self.assert_invalid(pending, "community report must be approved")
 
     def test_reference_and_community_states_require_eligible_underlying_sources(self):
         reference = package_for("reference")

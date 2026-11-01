@@ -33,6 +33,8 @@ ID_FIELDS = {
 PACKAGE_FIELDS = {"coverage_policy", *ID_FIELDS}
 OFFICIAL_TIER = "official_government"
 ACCEPTABLE_EMPTY_RESULTS = {"no_result", "ineligible_source"}
+SCOPE_STATUS_BEST_TO_WORST = ("exact_entity", "group_only", "unresolved")
+CURRENTNESS_BEST_TO_WORST = ("current", "historical", "unknown")
 
 
 def _schema_validators():
@@ -128,6 +130,7 @@ def _valid_shared_bulk_binding(receipt, allowed_sources):
     return (
         isinstance(rule, dict)
         and rule.get("require_per_entity_result_binding") is True
+        and receipt.get("route_id") in rule.get("allowed_route_ids", [])
         and source_id in receipt.get("source_ids", [])
         and binding.get("company_id") == receipt.get("company_id")
         and binding.get("category_id") == receipt.get("category_id")
@@ -135,6 +138,12 @@ def _valid_shared_bulk_binding(receipt, allowed_sources):
         and bool(binding.get("result_locator"))
         and isinstance(binding.get("result_sha256"), str)
     )
+
+
+def _most_conservative(values, best_to_worst):
+    ranks = {value: index for index, value in enumerate(best_to_worst)}
+    known = [value for value in values if value in ranks]
+    return max(known, key=lambda value: ranks[value]) if known else None
 
 
 def validate_package(package):
@@ -247,6 +256,8 @@ def validate_package(package):
             source_id for receipt in bound_attempts for source_id in receipt.get("source_ids", [])
         }
         backing_conflicts = []
+        backing_scope_statuses = []
+        backing_currentness = []
         eligible_official_evidence = False
         for claim_id in cell.get("official_claim_ids", []):
             official_use[claim_id] += 1
@@ -262,6 +273,7 @@ def validate_package(package):
                 errors.append(f"{claim_id}: official claim must be publication eligible")
             if claim.get("conflict_status") != "none":
                 backing_conflicts.append((claim_id, claim.get("conflict_status")))
+            backing_scope_statuses.append(claim.get("scope_status"))
             if not _covers_jurisdiction(claim, cell.get("jurisdiction")):
                 errors.append(f"{claim_id}: evidence does not cover cell jurisdiction {cell.get('jurisdiction')}")
             for source_id in claim.get("source_ids", []):
@@ -281,6 +293,9 @@ def validate_package(package):
                     )
                 if source is not None and source.get("conflict_status") != "none":
                     backing_conflicts.append((source_id, source.get("conflict_status")))
+                if source is not None:
+                    backing_scope_statuses.append(source.get("scope_status"))
+                    backing_currentness.append(source.get("currentness"))
                 canonical_legal_entity = (
                     company.get("selected_reporting_legal_entity") if company is not None else None
                 )
@@ -341,8 +356,13 @@ def validate_package(package):
                 )
             if reference.get("conflict_status") != "none":
                 backing_conflicts.append((reference_id, reference.get("conflict_status")))
+            backing_scope_statuses.append(reference.get("scope", {}).get("status"))
+            backing_currentness.append(reference.get("currentness"))
             if source is not None and source.get("conflict_status") != "none":
                 backing_conflicts.append((source_id, source.get("conflict_status")))
+            if source is not None:
+                backing_scope_statuses.append(source.get("scope_status"))
+                backing_currentness.append(source.get("currentness"))
             if (
                 reference.get("publication_eligibility") == "eligible"
                 and source is not None
@@ -388,8 +408,13 @@ def validate_package(package):
                 )
             if report.get("conflict_status") != "none":
                 backing_conflicts.append((report_id, report.get("conflict_status")))
+            backing_scope_statuses.append(report.get("scope_status"))
+            backing_currentness.append(report.get("currentness"))
             if source is not None and source.get("conflict_status") != "none":
                 backing_conflicts.append((source_id, source.get("conflict_status")))
+            if source is not None:
+                backing_scope_statuses.append(source.get("scope_status"))
+                backing_currentness.append(source.get("currentness"))
             if (
                 report.get("publication_eligibility") == "eligible"
                 and isinstance(moderation, dict)
@@ -410,6 +435,27 @@ def validate_package(package):
                 f"{cell_id}: cell conflict_status none hides backing conflict "
                 f"{conflict_status} on {evidence_id}"
             )
+
+        if cell.get("state") != "no_public_info":
+            conservative_scope = _most_conservative(
+                backing_scope_statuses, SCOPE_STATUS_BEST_TO_WORST
+            )
+            if conservative_scope is not None and cell.get("scope_status") != conservative_scope:
+                errors.append(
+                    f"{cell_id}: cell scope_status {cell.get('scope_status')} overstates backing "
+                    f"scope {conservative_scope}"
+                )
+            conservative_currentness = _most_conservative(
+                backing_currentness, CURRENTNESS_BEST_TO_WORST
+            )
+            if (
+                conservative_currentness is not None
+                and cell.get("currentness") != conservative_currentness
+            ):
+                errors.append(
+                    f"{cell_id}: cell currentness {cell.get('currentness')} overstates backing "
+                    f"currentness {conservative_currentness}"
+                )
 
         if cell.get("state") == "official_verified":
             if not eligible_official_evidence:
@@ -477,8 +523,9 @@ def validate_package(package):
         for receipt in indexes["attempts"].values():
             uses[receipt.get(field)].append(receipt)
         for value, receipts in uses.items():
-            cells = {receipt.get("cell_id") for receipt in receipts}
-            if value is None or len(cells) < 2:
+            route_ids = {receipt.get("route_id") for receipt in receipts}
+            route_kinds = {receipt.get("route_kind") for receipt in receipts}
+            if value is None or len(receipts) < 2:
                 continue
             bindings = [receipt.get("shared_bulk_result_binding") for receipt in receipts]
             binding_keys = {
@@ -489,8 +536,15 @@ def validate_package(package):
             if not (
                 all(_valid_shared_bulk_binding(receipt, allowed_shared_sources) for receipt in receipts)
                 and len(binding_keys) == len(receipts)
+                and len(route_ids) == 1
+                and len(route_kinds) == 1
             ):
-                errors.append(f"{field} receipt reuse across cells is not permitted: {value}")
+                if len(route_ids) > 1 or len(route_kinds) > 1:
+                    errors.append(
+                        f"{field} receipt reuse across distinct routes is not permitted: {value}"
+                    )
+                else:
+                    errors.append(f"{field} receipt reuse across cells is not permitted: {value}")
 
     return errors
 

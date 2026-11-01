@@ -60,6 +60,8 @@ def base_cell(state="reference"):
         record["reference_ids"] = []
         record["community_report_ids"] = ["community::KR-CRN-1101112948086::leave::source::community-1"]
         record["reliability"] = "low"
+        record["currentness"] = "unknown"
+        record["scope_status"] = "unresolved"
     elif state == "no_public_info":
         record["reference_ids"] = []
         record["reliability"] = "none"
@@ -395,6 +397,22 @@ class V2ContractTests(unittest.TestCase):
         self.assertEqual(CATEGORIES, set(policy["category_routes"]))
         self.assertFalse(policy["allow_generator_synthesized_receipts"])
         self.assertEqual("all_required_routes_have_valid_receipts", policy["completion_rule"])
+        self.assertEqual(
+            {"route_kind": "user_submission", "required": False},
+            policy["routes"]["user-submission"],
+        )
+        self.assertNotIn(
+            "user-submission",
+            {route for routes in policy["category_routes"].values() for route in routes},
+        )
+        self.assertEqual(
+            ["exact_entity", "group_only", "unresolved"],
+            policy["cell_evidence_aggregation"]["scope_status_best_to_worst"],
+        )
+        self.assertEqual(
+            ["current", "historical", "unknown"],
+            policy["cell_evidence_aggregation"]["currentness_best_to_worst"],
+        )
         for category, routes in policy["category_routes"].items():
             with self.subTest(category=category):
                 self.assertGreaterEqual(len(routes), 3)
