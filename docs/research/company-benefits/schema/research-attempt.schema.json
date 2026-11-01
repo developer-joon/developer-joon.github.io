@@ -8,7 +8,7 @@
     "attempt_id", "cell_id", "company_id", "category_id", "jurisdiction",
     "coverage_policy_id", "route_id", "route_kind", "query_or_locator",
     "started_at", "completed_at", "result", "source_ids",
-    "raw_response_sha256", "capture_locator", "collector_version"
+    "raw_response_sha256", "capture_locator", "collector_version", "receipt_content_sha256"
   ],
   "properties": {
     "attempt_id": {"type": "string", "pattern": "^attempt::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}$"},
@@ -26,7 +26,20 @@
     "source_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^source::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}$"}},
     "raw_response_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "capture_locator": {"type": "string", "format": "uri", "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?(?:[/?#][^\\s]*)?$"},
-    "collector_version": {"type": "string", "pattern": "^[a-z][a-z0-9-]*/[0-9]+\\.[0-9]+\\.[0-9]+$"}
+    "collector_version": {"type": "string", "pattern": "^[a-z][a-z0-9-]*/[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "receipt_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "shared_bulk_result_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "company_id", "category_id", "result_locator", "result_sha256"],
+      "properties": {
+        "source_id": {"type": "string", "pattern": "^source::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}$"},
+        "company_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"},
+        "category_id": {"enum": ["leave", "family", "health", "growth", "housing", "commute", "remote", "retirement", "meals", "inclusion"]},
+        "result_locator": {"type": "string", "minLength": 3, "maxLength": 2000},
+        "result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
   },
   "allOf": [
     {

@@ -2,9 +2,10 @@
 """Validate a benefits-v2 evidence package across all of its ledgers."""
 
 import argparse
+import hashlib
 import json
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -86,6 +87,56 @@ def _covers_jurisdiction(record, jurisdiction):
     return isinstance(countries, list) and jurisdiction in countries
 
 
+def _receipt_content_sha256(receipt):
+    payload = {key: value for key, value in receipt.items() if key != "receipt_content_sha256"}
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _company_ledger(errors):
+    companies = {}
+    path = RESEARCH / "companies.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        errors.append(f"canonical company ledger cannot be read: {exc}")
+        return companies
+    for line_number, line in enumerate(lines, 1):
+        try:
+            company = json.loads(line)
+        except json.JSONDecodeError as exc:
+            errors.append(f"canonical company ledger line {line_number} is invalid: {exc}")
+            continue
+        company_id = company.get("company_id") if isinstance(company, dict) else None
+        if not isinstance(company_id, str) or not company_id:
+            errors.append(f"canonical company ledger line {line_number} lacks company_id")
+        elif company_id in companies:
+            errors.append(f"canonical company ledger has duplicate company_id: {company_id}")
+        else:
+            companies[company_id] = company
+    return companies
+
+
+def _valid_shared_bulk_binding(receipt, allowed_sources):
+    binding = receipt.get("shared_bulk_result_binding")
+    if not isinstance(binding, dict):
+        return False
+    source_id = binding.get("source_id")
+    rule = allowed_sources.get(source_id)
+    return (
+        isinstance(rule, dict)
+        and rule.get("require_per_entity_result_binding") is True
+        and source_id in receipt.get("source_ids", [])
+        and binding.get("company_id") == receipt.get("company_id")
+        and binding.get("category_id") == receipt.get("category_id")
+        and isinstance(binding.get("result_locator"), str)
+        and bool(binding.get("result_locator"))
+        and isinstance(binding.get("result_sha256"), str)
+    )
+
+
 def validate_package(package):
     """Return deterministic, human-readable validation errors for one package."""
     errors = []
@@ -119,6 +170,7 @@ def validate_package(package):
         ledger: _index(package[ledger], id_field, ledger, errors)
         for ledger, id_field in ID_FIELDS.items()
     }
+    companies = _company_ledger(errors)
     canonical_policy = json.loads((RESEARCH / "research-coverage-policies.json").read_text(encoding="utf-8"))
     if policy != canonical_policy:
         errors.append("package coverage_policy does not match canonical coverage policy")
@@ -126,6 +178,14 @@ def validate_package(package):
     policy_id = policy.get("policy_id")
     routes = policy.get("routes") if isinstance(policy.get("routes"), dict) else {}
     category_routes = policy.get("category_routes") if isinstance(policy.get("category_routes"), dict) else {}
+    shared_policy = policy.get("shared_bulk_source_policy")
+    allowed_shared_sources = (
+        shared_policy.get("sources", {})
+        if isinstance(shared_policy, dict)
+        and shared_policy.get("default_allow_reuse") is False
+        and isinstance(shared_policy.get("sources"), dict)
+        else {}
+    )
     if not isinstance(policy_id, str) or not policy_id:
         errors.append("coverage policy is missing policy_id")
 
@@ -136,6 +196,14 @@ def validate_package(package):
     source_use = Counter()
 
     for cell_id, cell in indexes["cells"].items():
+        company = companies.get(cell.get("company_id"))
+        if company is None:
+            errors.append(f"{cell_id}: company is absent from canonical company ledger")
+        elif cell.get("jurisdiction") != company.get("jurisdiction"):
+            errors.append(
+                f"{cell_id}: jurisdiction differs from canonical company ledger; "
+                f"expected {company.get('jurisdiction')}"
+            )
         expected_cell_id = f"cell::{cell.get('company_id')}::{cell.get('category_id')}"
         if cell_id != expected_cell_id:
             errors.append(f"{cell_id}: noncanonical cell_id; expected {expected_cell_id}")
@@ -150,6 +218,13 @@ def validate_package(package):
                 errors.append(f"{cell_id}: missing attempt {attempt_id}")
                 continue
             bound_attempts.append(receipt)
+            if receipt.get("receipt_content_sha256") != _receipt_content_sha256(receipt):
+                errors.append(f"{attempt_id}: receipt content hash mismatch")
+            if (
+                "shared_bulk_result_binding" in receipt
+                and not _valid_shared_bulk_binding(receipt, allowed_shared_sources)
+            ):
+                errors.append(f"{attempt_id}: shared bulk result binding mismatch")
             if not _same_cell(receipt, cell, include_jurisdiction=True) or receipt.get("coverage_policy_id") != policy_id:
                 errors.append(f"{attempt_id}: attempt binding mismatch for {cell_id}")
             expected_attempt_id = f"attempt::{cell.get('company_id')}::{cell.get('category_id')}::{receipt.get('route_id')}"
@@ -168,6 +243,10 @@ def validate_package(package):
                 elif source.get("source_tier") != receipt.get("route_kind"):
                     errors.append(f"{attempt_id}: source tier mismatch for {source_id}")
 
+        discovered_source_ids = {
+            source_id for receipt in bound_attempts for source_id in receipt.get("source_ids", [])
+        }
+        backing_conflicts = []
         eligible_official_evidence = False
         for claim_id in cell.get("official_claim_ids", []):
             official_use[claim_id] += 1
@@ -181,6 +260,8 @@ def validate_package(package):
                 errors.append(f"{claim_id}: official claim source tier mismatch")
             if claim.get("publication_eligibility") != "eligible":
                 errors.append(f"{claim_id}: official claim must be publication eligible")
+            if claim.get("conflict_status") != "none":
+                backing_conflicts.append((claim_id, claim.get("conflict_status")))
             if not _covers_jurisdiction(claim, cell.get("jurisdiction")):
                 errors.append(f"{claim_id}: evidence does not cover cell jurisdiction {cell.get('jurisdiction')}")
             for source_id in claim.get("source_ids", []):
@@ -194,6 +275,28 @@ def validate_package(package):
                     errors.append(f"{claim_id}: source scope mismatch for {source_id}")
                 if source is not None and not _covers_jurisdiction(source, cell.get("jurisdiction")):
                     errors.append(f"{source_id}: source does not cover cell jurisdiction {cell.get('jurisdiction')}")
+                if source_id not in discovered_source_ids:
+                    errors.append(
+                        f"{claim_id}: source {source_id} was not discovered by an attempt bound to {cell_id}"
+                    )
+                if source is not None and source.get("conflict_status") != "none":
+                    backing_conflicts.append((source_id, source.get("conflict_status")))
+                canonical_legal_entity = (
+                    company.get("selected_reporting_legal_entity") if company is not None else None
+                )
+                if (
+                    canonical_legal_entity is not None
+                    and claim.get("scope_status") == "exact_entity"
+                    and claim.get("scope", {}).get("legal_entities") != [canonical_legal_entity]
+                ):
+                    errors.append(f"{claim_id}: legal entity differs from canonical company ledger")
+                if (
+                    canonical_legal_entity is not None
+                    and source is not None
+                    and source.get("scope_status") == "exact_entity"
+                    and source.get("scope", {}).get("legal_entities") != [canonical_legal_entity]
+                ):
+                    errors.append(f"{source_id}: legal entity differs from canonical company ledger")
                 if (
                     source is not None
                     and claim.get("publication_eligibility") == "eligible"
@@ -207,6 +310,7 @@ def validate_package(package):
                 ):
                     eligible_official_evidence = True
 
+        eligible_reference_evidence = False
         for reference_id in cell.get("reference_ids", []):
             reference_use[reference_id] += 1
             reference = indexes["references"].get(reference_id)
@@ -231,7 +335,22 @@ def validate_package(package):
                 errors.append(f"{reference_id}: source scope mismatch for {source_id}")
             if source is not None and not _covers_jurisdiction(source, cell.get("jurisdiction")):
                 errors.append(f"{source_id}: source does not cover cell jurisdiction {cell.get('jurisdiction')}")
+            if source_id not in discovered_source_ids:
+                errors.append(
+                    f"{reference_id}: source {source_id} was not discovered by an attempt bound to {cell_id}"
+                )
+            if reference.get("conflict_status") != "none":
+                backing_conflicts.append((reference_id, reference.get("conflict_status")))
+            if source is not None and source.get("conflict_status") != "none":
+                backing_conflicts.append((source_id, source.get("conflict_status")))
+            if (
+                reference.get("publication_eligibility") == "eligible"
+                and source is not None
+                and source.get("publication_eligibility") == "eligible"
+            ):
+                eligible_reference_evidence = True
 
+        eligible_community_evidence = False
         for report_id in cell.get("community_report_ids", []):
             community_use[report_id] += 1
             report = indexes["community_reports"].get(report_id)
@@ -263,6 +382,34 @@ def validate_package(package):
                 errors.append(f"{report_id}: source scope mismatch for {source_id}")
             if source is not None and not _covers_jurisdiction(source, cell.get("jurisdiction")):
                 errors.append(f"{source_id}: source does not cover cell jurisdiction {cell.get('jurisdiction')}")
+            if source_id not in discovered_source_ids:
+                errors.append(
+                    f"{report_id}: source {source_id} was not discovered by an attempt bound to {cell_id}"
+                )
+            if report.get("conflict_status") != "none":
+                backing_conflicts.append((report_id, report.get("conflict_status")))
+            if source is not None and source.get("conflict_status") != "none":
+                backing_conflicts.append((source_id, source.get("conflict_status")))
+            if (
+                report.get("publication_eligibility") == "eligible"
+                and isinstance(moderation, dict)
+                and moderation.get("status") == "approved"
+                and isinstance(report.get("frozen_snapshot"), dict)
+                and source is not None
+                and source.get("publication_eligibility") == "eligible"
+            ):
+                eligible_community_evidence = True
+
+        if cell.get("state") == "reference" and not eligible_reference_evidence:
+            errors.append(f"{cell_id}: reference state requires eligible reference and source")
+        if cell.get("state") == "community_report" and not eligible_community_evidence:
+            errors.append(f"{cell_id}: community_report requires eligible report and source")
+        if cell.get("conflict_status") == "none" and backing_conflicts:
+            evidence_id, conflict_status = backing_conflicts[0]
+            errors.append(
+                f"{cell_id}: cell conflict_status none hides backing conflict "
+                f"{conflict_status} on {evidence_id}"
+            )
 
         if cell.get("state") == "official_verified":
             if not eligible_official_evidence:
@@ -324,6 +471,26 @@ def validate_package(package):
         countries = scope.get("countries", []) if isinstance(scope, dict) else []
         if source.get("publication_eligibility") == "eligible" and not countries:
             errors.append(f"{source_id}: eligible source lacks country scope")
+
+    for field in ("capture_locator", "raw_response_sha256"):
+        uses = defaultdict(list)
+        for receipt in indexes["attempts"].values():
+            uses[receipt.get(field)].append(receipt)
+        for value, receipts in uses.items():
+            cells = {receipt.get("cell_id") for receipt in receipts}
+            if value is None or len(cells) < 2:
+                continue
+            bindings = [receipt.get("shared_bulk_result_binding") for receipt in receipts]
+            binding_keys = {
+                json.dumps(binding, sort_keys=True, separators=(",", ":"))
+                for binding in bindings
+                if isinstance(binding, dict)
+            }
+            if not (
+                all(_valid_shared_bulk_binding(receipt, allowed_shared_sources) for receipt in receipts)
+                and len(binding_keys) == len(receipts)
+            ):
+                errors.append(f"{field} receipt reuse across cells is not permitted: {value}")
 
     return errors
 

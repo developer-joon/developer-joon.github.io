@@ -31,13 +31,13 @@
         "employment_types": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
       }
     },
-    "conflict_status": {"enum": ["none", "disclosed", "unresolved"]},
+    "conflict_status": {"enum": ["none", "disclosed", "unresolved", "contradictory"]},
     "publication_eligibility": {"enum": ["eligible", "ineligible"]}
   },
   "allOf": [
     {
       "if": {"properties": {"publication_eligibility": {"const": "eligible"}}},
-      "then": {"properties": {"conflict_status": {"enum": ["none", "disclosed"]}}}
+      "then": {"properties": {"conflict_status": {"enum": ["none", "disclosed", "unresolved", "contradictory"]}}}
     }
   ]
 }

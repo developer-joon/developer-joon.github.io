@@ -5,6 +5,14 @@
   "allow_generator_synthesized_receipts": false,
   "completion_rule": "all_required_routes_have_valid_receipts",
   "receipt_schema": "schema/research-attempt.schema.json",
+  "shared_bulk_source_policy": {
+    "default_allow_reuse": false,
+    "sources": {
+      "source::approved-shared-benefits-bulk": {
+        "require_per_entity_result_binding": true
+      }
+    }
+  },
   "routes": {
     "official-government": {"route_kind": "official_government", "required": true},
     "company-recruiting-media": {"route_kind": "company_recruiting_major_media", "required": true},

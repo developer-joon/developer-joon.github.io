@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -24,17 +25,25 @@ CATEGORIES = {
 HASH = "a" * 64
 
 
+def bind_attempt(record):
+    payload = {key: value for key, value in record.items() if key != "receipt_content_sha256"}
+    record["receipt_content_sha256"] = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return record
+
+
 def base_cell(state="reference"):
     record = {
-        "cell_id": "cell::KR-CRN-1234567890123::leave",
-        "company_id": "KR-CRN-1234567890123",
+        "cell_id": "cell::KR-CRN-1101112948086::leave",
+        "company_id": "KR-CRN-1101112948086",
         "category_id": "leave",
         "jurisdiction": "KR",
         "state": state,
         "coverage_policy_id": "coverage-policy-v2",
-        "attempt_ids": ["attempt::KR-CRN-1234567890123::leave::official-government"],
+        "attempt_ids": ["attempt::KR-CRN-1101112948086::leave::official-government"],
         "official_claim_ids": [],
-        "reference_ids": ["reference::KR-CRN-1234567890123::leave::source::example"],
+        "reference_ids": ["reference::KR-CRN-1101112948086::leave::source::example"],
         "community_report_ids": [],
         "reliability": "medium",
         "currentness": "current",
@@ -49,7 +58,7 @@ def base_cell(state="reference"):
         record["reliability"] = "high"
     elif state == "community_report":
         record["reference_ids"] = []
-        record["community_report_ids"] = ["community::KR-CRN-1234567890123::leave::source::community-1"]
+        record["community_report_ids"] = ["community::KR-CRN-1101112948086::leave::source::community-1"]
         record["reliability"] = "low"
     elif state == "no_public_info":
         record["reference_ids"] = []
@@ -62,10 +71,10 @@ def base_cell(state="reference"):
 
 
 def base_attempt(result="source_found"):
-    return {
-        "attempt_id": "attempt::KR-CRN-1234567890123::leave::official-government",
-        "cell_id": "cell::KR-CRN-1234567890123::leave",
-        "company_id": "KR-CRN-1234567890123",
+    return bind_attempt({
+        "attempt_id": "attempt::KR-CRN-1101112948086::leave::official-government",
+        "cell_id": "cell::KR-CRN-1101112948086::leave",
+        "company_id": "KR-CRN-1101112948086",
         "category_id": "leave",
         "jurisdiction": "KR",
         "coverage_policy_id": "coverage-policy-v2",
@@ -79,14 +88,14 @@ def base_attempt(result="source_found"):
         "raw_response_sha256": HASH,
         "capture_locator": "https://captures.example/attempt/1",
         "collector_version": "benefits-collector/2.0.0",
-    }
+    })
 
 
 def base_reference():
     return {
-        "reference_id": "reference::KR-CRN-1234567890123::leave::source::example",
-        "cell_id": "cell::KR-CRN-1234567890123::leave",
-        "company_id": "KR-CRN-1234567890123",
+        "reference_id": "reference::KR-CRN-1101112948086::leave::source::example",
+        "cell_id": "cell::KR-CRN-1101112948086::leave",
+        "company_id": "KR-CRN-1101112948086",
         "category_id": "leave",
         "source_id": "source::example",
         "source_tier": "company_recruiting_major_media",
@@ -98,7 +107,7 @@ def base_reference():
         "scope": {
             "status": "exact_entity",
             "countries": ["KR"],
-            "legal_entities": ["Example Korea Ltd."],
+            "legal_entities": ["(주)인텔리안테크놀로지스"],
             "roles": ["all_employees"],
             "employment_types": ["full_time"],
         },
@@ -110,9 +119,9 @@ def base_reference():
 
 def base_community():
     return {
-        "community_report_id": "community::KR-CRN-1234567890123::leave::source::community-1",
-        "cell_id": "cell::KR-CRN-1234567890123::leave",
-        "company_id": "KR-CRN-1234567890123",
+        "community_report_id": "community::KR-CRN-1101112948086::leave::source::community-1",
+        "cell_id": "cell::KR-CRN-1101112948086::leave",
+        "company_id": "KR-CRN-1101112948086",
         "category_id": "leave",
         "source_id": "source::community-1",
         "source_tier": "community_employee_review",
@@ -122,7 +131,7 @@ def base_community():
         "scope_status": "unresolved",
         "scope": {
             "countries": ["KR"],
-            "legal_entities": ["Example Korea Ltd."],
+            "legal_entities": ["(주)인텔리안테크놀로지스"],
             "roles": ["all_employees"],
             "employment_types": ["full_time"],
         },
@@ -155,7 +164,7 @@ def base_source():
         "scope_status": "exact_entity",
         "scope": {
             "countries": ["KR"],
-            "legal_entities": ["Example Korea Ltd."],
+            "legal_entities": ["(주)인텔리안테크놀로지스"],
             "roles": ["all_employees"],
             "employment_types": ["full_time"],
         },
@@ -252,6 +261,7 @@ class V2ContractTests(unittest.TestCase):
             ("attempt_id", "attempt 1"),
             ("category_id", "vacation"),
             ("raw_response_sha256", "ABC"),
+            ("receipt_content_sha256", "ABC"),
             ("completed_at", "yesterday"),
             ("capture_locator", "not a url"),
             ("capture_locator", "https://"),

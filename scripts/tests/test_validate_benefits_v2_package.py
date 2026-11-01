@@ -12,6 +12,7 @@ from scripts.tests.test_company_benefits_v2_contracts import (
     base_community,
     base_reference,
     base_source,
+    bind_attempt,
 )
 
 
@@ -30,7 +31,7 @@ def source(source_id="source::example", tier="other_public_web"):
 def attempt(route_id, result="no_result", source_ids=None):
     record = base_attempt(result)
     record["route_id"] = route_id
-    record["attempt_id"] = f"attempt::KR-CRN-1234567890123::leave::{route_id}"
+    record["attempt_id"] = f"attempt::KR-CRN-1101112948086::leave::{route_id}"
     kinds = {
         "official-government": "official_government",
         "company-recruiting-media": "company_recruiting_major_media",
@@ -39,7 +40,7 @@ def attempt(route_id, result="no_result", source_ids=None):
     }
     record["route_kind"] = kinds[route_id]
     record["source_ids"] = list(source_ids or [])
-    return record
+    return bind_attempt(record)
 
 
 def package_for(state="no_public_info"):
@@ -89,6 +90,7 @@ def package_for(state="no_public_info"):
             "source_tier": "official_government",
             "scope_status": "exact_entity",
             "scope": copy.deepcopy(src["scope"]),
+            "conflict_status": "none",
             "publication_eligibility": "eligible",
         }
         cell["attempt_ids"] = [receipt["attempt_id"]]
@@ -96,6 +98,48 @@ def package_for(state="no_public_info"):
         package["official_claims"] = [claim]
         package["sources"] = [src]
     return package
+
+
+def add_shared_bulk_reference_cell(package):
+    shared_id = "source::approved-shared-benefits-bulk"
+    package["sources"][0]["source_id"] = shared_id
+    package["references"][0]["source_id"] = shared_id
+    package["references"][0]["reference_id"] = (
+        f"reference::KR-CRN-1101112948086::leave::{shared_id}"
+    )
+    package["cells"][0]["reference_ids"] = [package["references"][0]["reference_id"]]
+    first_attempt = package["attempts"][0]
+    first_attempt["source_ids"] = [shared_id]
+    first_attempt["shared_bulk_result_binding"] = {
+        "source_id": shared_id,
+        "company_id": first_attempt["company_id"],
+        "category_id": "leave",
+        "result_locator": "row=company;category=leave",
+        "result_sha256": "b" * 64,
+    }
+    bind_attempt(first_attempt)
+
+    cell = copy.deepcopy(package["cells"][0])
+    cell["category_id"] = "health"
+    cell["cell_id"] = f"cell::{cell['company_id']}::health"
+    receipt = copy.deepcopy(first_attempt)
+    receipt["category_id"] = "health"
+    receipt["cell_id"] = cell["cell_id"]
+    receipt["attempt_id"] = f"attempt::{cell['company_id']}::health::company-recruiting-media"
+    receipt["shared_bulk_result_binding"]["category_id"] = "health"
+    receipt["shared_bulk_result_binding"]["result_locator"] = "row=company;category=health"
+    receipt["shared_bulk_result_binding"]["result_sha256"] = "c" * 64
+    bind_attempt(receipt)
+    reference = copy.deepcopy(package["references"][0])
+    reference["category_id"] = "health"
+    reference["cell_id"] = cell["cell_id"]
+    reference["reference_id"] = f"reference::{cell['company_id']}::health::{shared_id}"
+    cell["attempt_ids"] = [receipt["attempt_id"]]
+    cell["reference_ids"] = [reference["reference_id"]]
+    package["cells"].append(cell)
+    package["attempts"].append(receipt)
+    package["references"].append(reference)
+    return first_attempt, receipt
 
 
 class BenefitsV2PackageTests(unittest.TestCase):
@@ -200,6 +244,37 @@ class BenefitsV2PackageTests(unittest.TestCase):
         copied_reference["references"][0]["company_id"] = "KR-CRN-9999999999999"
         self.assert_invalid(copied_reference, "reference binding mismatch")
 
+    def test_receipt_content_hash_rejects_tampering(self):
+        package = package_for()
+        package["attempts"][0]["query_or_locator"] = "tampered query"
+        self.assert_invalid(package, "receipt content hash mismatch")
+
+    def test_rejects_copied_capture_or_response_across_cells(self):
+        package = package_for("reference")
+        first, second = add_shared_bulk_reference_cell(package)
+        for key in ("capture_locator", "raw_response_sha256"):
+            with self.subTest(key=key):
+                copied = copy.deepcopy(package)
+                copied["attempts"][1]["capture_locator"] = "https://captures.example/attempt/unique"
+                copied["attempts"][1]["raw_response_sha256"] = "d" * 64
+                copied["attempts"][1][key] = copied["attempts"][0][key]
+                for receipt in copied["attempts"]:
+                    receipt.pop("shared_bulk_result_binding")
+                    bind_attempt(receipt)
+                self.assert_invalid(copied, "receipt reuse across cells")
+
+    def test_allows_declared_shared_bulk_source_with_per_entity_binding(self):
+        package = package_for("reference")
+        add_shared_bulk_reference_cell(package)
+        self.assert_valid(package)
+
+        copied_binding = copy.deepcopy(package)
+        copied_binding["attempts"][1]["shared_bulk_result_binding"] = copy.deepcopy(
+            copied_binding["attempts"][0]["shared_bulk_result_binding"]
+        )
+        bind_attempt(copied_binding["attempts"][1])
+        self.assert_invalid(copied_binding, "shared bulk result binding mismatch")
+
     def test_rejects_wrong_source_tier_and_unresolved_sources(self):
         wrong = package_for("reference")
         wrong["sources"][0]["source_tier"] = "other_public_web"
@@ -209,12 +284,41 @@ class BenefitsV2PackageTests(unittest.TestCase):
         unresolved["sources"] = []
         self.assert_invalid(unresolved, "missing source")
 
+    def test_every_evidence_source_must_have_attempt_lineage_for_its_cell(self):
+        for state, ledger in (
+            ("official_verified", "official_claims"),
+            ("reference", "references"),
+            ("community_report", "community_reports"),
+        ):
+            with self.subTest(state=state):
+                package = package_for(state)
+                package["attempts"][0]["source_ids"] = ["source::unrelated"]
+                bind_attempt(package["attempts"][0])
+                self.assert_invalid(package, "not discovered by an attempt bound to")
+
     def test_official_verified_requires_exact_entity_claim_and_source_scope(self):
         for target in ("official_claims", "sources"):
             for scope_status in ("group_only", "unresolved"):
                 package = package_for("official_verified")
                 package[target][0]["scope_status"] = scope_status
                 self.assert_invalid(package, "exact_entity")
+
+    def test_company_and_jurisdiction_must_match_canonical_ledger(self):
+        unknown = package_for("reference")
+        unknown["cells"][0]["company_id"] = "KR-CRN-9999999999999"
+        self.assert_invalid(unknown, "company is absent from canonical company ledger")
+
+        wrong_country = package_for("reference")
+        wrong_country["cells"][0]["jurisdiction"] = "US"
+        wrong_country["references"][0]["scope"]["countries"] = ["US"]
+        wrong_country["sources"][0]["scope"]["countries"] = ["US"]
+        self.assert_invalid(wrong_country, "jurisdiction differs from canonical company ledger")
+
+    def test_exact_entity_official_evidence_must_name_canonical_legal_entity(self):
+        for target in ("official_claims", "sources"):
+            package = package_for("official_verified")
+            package[target][0]["scope"]["legal_entities"] = ["Example Holdings Group"]
+            self.assert_invalid(package, "legal entity differs from canonical company ledger")
 
     def test_rejects_source_less_official_claim(self):
         package = package_for("official_verified")
@@ -229,14 +333,14 @@ class BenefitsV2PackageTests(unittest.TestCase):
 
     def test_rejects_forged_reference_identity(self):
         package = package_for("reference")
-        forged = "reference::KR-CRN-1234567890123::health::source::example"
+        forged = "reference::KR-CRN-1101112948086::health::source::example"
         package["references"][0]["reference_id"] = forged
         package["cells"][0]["reference_ids"] = [forged]
         self.assert_invalid(package, "noncanonical reference_id")
 
     def test_rejects_forged_community_report_identity(self):
         package = package_for("community_report")
-        forged = "community::KR-CRN-1234567890123::health::source::community-1"
+        forged = "community::KR-CRN-1101112948086::health::source::community-1"
         package["community_reports"][0]["community_report_id"] = forged
         package["cells"][0]["community_report_ids"] = [forged]
         self.assert_invalid(package, "noncanonical community_report_id")
@@ -281,6 +385,33 @@ class BenefitsV2PackageTests(unittest.TestCase):
         unfrozen = package_for("community_report")
         unfrozen["community_reports"][0].pop("frozen_snapshot")
         self.assert_invalid(unfrozen, "schema")
+
+    def test_reference_and_community_states_require_eligible_underlying_sources(self):
+        reference = package_for("reference")
+        reference["sources"][0]["publication_eligibility"] = "ineligible"
+        self.assert_invalid(reference, "reference state requires eligible reference and source")
+
+        ineligible_reference = package_for("reference")
+        ineligible_reference["references"][0]["publication_eligibility"] = "ineligible"
+        self.assert_invalid(ineligible_reference, "reference state requires eligible reference and source")
+
+        community = package_for("community_report")
+        community["sources"][0]["publication_eligibility"] = "ineligible"
+        self.assert_invalid(community, "community_report requires eligible report and source")
+
+    def test_cell_cannot_hide_conflicts_from_backing_evidence_or_sources(self):
+        for state, target in (
+            ("official_verified", "official_claims"),
+            ("official_verified", "sources"),
+            ("reference", "references"),
+            ("reference", "sources"),
+            ("community_report", "community_reports"),
+            ("community_report", "sources"),
+        ):
+            with self.subTest(state=state, target=target):
+                package = package_for(state)
+                package[target][0]["conflict_status"] = "contradictory"
+                self.assert_invalid(package, "cell conflict_status none hides backing conflict")
 
     def test_schema_validation_uses_draft_2020_12_contracts(self):
         package = package_for("reference")
