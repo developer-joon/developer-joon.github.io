@@ -58,7 +58,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
     @staticmethod
     def snapshot_root(directory):
         root = Path(directory) / "snapshots"
-        root.mkdir()
+        root.mkdir(mode=0o700)
         return root
 
     def authenticated_marker(self, root, version, key=None, candidates=None):
@@ -228,6 +228,21 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         self.assertNotIn(b"8.8.8.8", left)
         self.assertNotIn(b"1.1.1.1", right)
 
+    def test_same_normalized_hostname_is_resolved_once_per_snapshot(self):
+        calls = multiprocessing.Value("i", 0)
+
+        def resolver(hostname):
+            with calls.get_lock():
+                calls.value += 1
+            self.assertEqual("example.com", hostname)
+            return ["93.184.216.34"]
+
+        self.build_snapshot([
+            row(source_url="https://EXAMPLE.com/first"),
+            row("10000000-0000-4000-8000-000000000002", source_url="https://example.com/second"),
+        ], resolver=resolver)
+        self.assertEqual(1, calls.value)
+
     def test_canonical_order_and_hash_are_deterministic(self):
         second = row("10000000-0000-4000-8000-000000000002", company_id="US-CIK0000320193")
         first = row()
@@ -250,6 +265,56 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
             self.assertEqual("tampered\n", (target / "candidates.jsonl").read_text(encoding="utf-8"))
             self.assertFalse(any(path.name.startswith(".approved-2026-11-01-v1-") for path in root.iterdir()))
+
+    def test_publish_rejects_permissive_or_wrong_owner_output_root(self):
+        candidates = self.build_snapshot([row()])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            root.mkdir(mode=0o777)
+            root.chmod(0o777)
+            with self.assertRaisesRegex(OSError, "output root"):
+                self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
+            self.assertEqual([], list(root.iterdir()))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.snapshot_root(directory)
+            original_geteuid = self.exporter.os.geteuid
+            self.exporter.os.geteuid = lambda: original_geteuid() + 1
+            try:
+                with self.assertRaisesRegex(OSError, "output root"):
+                    self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
+            finally:
+                self.exporter.os.geteuid = original_geteuid
+            self.assertEqual([], list(root.iterdir()))
+
+    def test_output_root_replacement_is_detected_before_publication(self):
+        candidates = self.build_snapshot([row()])
+        version = "approved-2026-11-01-v1"
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.snapshot_root(directory)
+            original_fsync = self.exporter._fsync_directory_fd
+            replaced = False
+
+            def replace_root_after_staging_fsync(descriptor):
+                nonlocal replaced
+                original_fsync(descriptor)
+                try:
+                    os.stat("candidates.jsonl", dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    return
+                if not replaced:
+                    replaced = True
+                    root.rename(root.with_name("displaced-root"))
+                    root.mkdir(mode=0o700)
+
+            self.exporter._fsync_directory_fd = replace_root_after_staging_fsync
+            try:
+                with self.assertRaisesRegex(OSError, "output root|staging"):
+                    self.exporter.publish_snapshot(root, version, candidates)
+            finally:
+                self.exporter._fsync_directory_fd = original_fsync
+            self.assertTrue(replaced)
+            self.assertFalse((root / version).exists())
 
     def test_atomic_noreplace_rename_refuses_even_an_empty_existing_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -720,6 +785,30 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                     self.exporter._read_tombstone_key_bytes = original_read
                     self.exporter.os.geteuid = original_geteuid
 
+    def test_publication_wipes_mutable_authentication_key_on_success_and_failure(self):
+        candidates = self.build_snapshot([row()])
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
+                root = self.snapshot_root(directory)
+                key = bytearray(b"k" * self.exporter.TOMBSTONE_KEY_BYTES)
+                original_load = self.exporter._load_tombstone_authentication_key
+                original_noreplace = self.exporter._rename_noreplace
+                self.exporter._load_tombstone_authentication_key = lambda _root: key
+                if fail:
+                    self.exporter._rename_noreplace = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        OSError(errno.EIO, "forced publication failure")
+                    )
+                try:
+                    if fail:
+                        with self.assertRaises(OSError):
+                            self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
+                    else:
+                        self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
+                finally:
+                    self.exporter._load_tombstone_authentication_key = original_load
+                    self.exporter._rename_noreplace = original_noreplace
+                self.assertEqual(bytearray(len(key)), key)
+
     def test_concurrent_retries_of_tombstone_converge_without_leftovers(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
@@ -1045,26 +1134,17 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 self.exporter.verify_applied_version_binding(path, "company-benefits-2026-11-02-v1", digest)
 
-    def test_psql_transport_is_injectable_read_only_bounded_and_has_no_sensitive_projection(self):
+    def test_psql_transport_streams_bounded_rows_and_has_no_sensitive_projection(self):
         calls = []
-
-        class Process:
-            returncode = 0
-
-            def communicate(self, input, timeout):
-                calls.append(("communicate", input, timeout))
-                return "[]\n", ""
 
         def process_factory(command, **kwargs):
             calls.append((command, kwargs))
-            return Process()
+            program = "import sys; query=sys.stdin.buffer.read(); sys.stdout.buffer.write(b'" + json.dumps(row()).replace("'", "\\'") + "\\n')"
+            return subprocess.Popen([sys.executable, "-c", program], **kwargs)
 
-        self.assertEqual(
-            [],
-            self.exporter.fetch_rows_with_psql(
-                process_factory=process_factory, timeout_seconds=7.5
-            ),
-        )
+        self.assertEqual([row()], self.exporter.fetch_rows_with_psql(
+            process_factory=process_factory, timeout_seconds=7.5
+        ))
         command, kwargs = calls[0]
         self.assertEqual("psql", command[0])
         self.assertNotIn("--dbname", command)
@@ -1072,51 +1152,74 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
         self.assertEqual(subprocess.PIPE, kwargs["stdout"])
         self.assertEqual(subprocess.PIPE, kwargs["stderr"])
         self.assertTrue(kwargs["start_new_session"])
-        _, query, timeout = calls[1]
-        self.assertEqual(7.5, timeout)
+        query = self.exporter.APPROVED_QUERY
         self.assertIn("repeatable read read only", query)
         self.assertIn("where r.status='approved'", query)
+        self.assertIn(f"limit {self.exporter.MAX_CANDIDATES + 1}", query.lower())
+        self.assertNotIn("jsonb_agg", query.lower())
         for sensitive in (
             "submitter_id", "reviewer_id", "admin_response", "client_key",
             "payload_fingerprint", "benefit_correction_events",
         ):
             self.assertNotIn(sensitive, query)
 
-    def test_psql_timeout_terminates_then_kills_and_reports_no_credentials(self):
-        group_signals = []
-
-        class StalledProcess:
-            returncode = None
-            pid = 424242
-            stdin = None
-            stdout = None
-            stderr = None
-
-            def __init__(self):
-                self.calls = []
-
-            def communicate(self, input=None, timeout=None):
-                self.calls.append(("communicate", input, timeout))
-                if group_signals and group_signals[-1] == signal.SIGKILL:
-                    self.returncode = -9
-                    return "", "contains password=secret"
-                raise subprocess.TimeoutExpired("psql", timeout)
-
-        process = StalledProcess()
-        original_killpg = self.exporter.os.killpg
-        self.exporter.os.killpg = lambda pid, sent_signal: group_signals.append(sent_signal)
+    def test_psql_rejects_max_rows_plus_one_without_validating_all_rows(self):
+        original_limit = self.exporter.MAX_CANDIDATES
+        self.exporter.MAX_CANDIDATES = 2
+        program = "import sys; sys.stdin.buffer.read(); sys.stdout.write(" + repr(
+            "\n".join(json.dumps(row(f"10000000-0000-4000-8000-{index:012d}")) for index in range(1, 4)) + "\n"
+        ) + ")"
         try:
-            with self.assertRaisesRegex(RuntimeError, "timed out") as raised:
+            with self.assertRaisesRegex(ValueError, "candidate limit"):
                 self.exporter.fetch_rows_with_psql(
-                    process_factory=lambda *_args, **_kwargs: process,
-                    timeout_seconds=0.01,
-                    kill_grace_seconds=0.01,
+                    process_factory=lambda _command, **kwargs: subprocess.Popen(
+                        [sys.executable, "-c", program], **kwargs
+                    )
                 )
         finally:
-            self.exporter.os.killpg = original_killpg
-        self.assertEqual("approved correction read timed out", str(raised.exception))
-        self.assertEqual([signal.SIGTERM, signal.SIGKILL], group_signals)
-        self.assertEqual(-9, process.returncode)
+            self.exporter.MAX_CANDIDATES = original_limit
+
+    def test_psql_rejects_oversized_stdout_line_and_stderr_flood(self):
+        cases = [
+            ("import sys; sys.stdin.buffer.read(); sys.stdout.buffer.write(b'x'*200000)", "stdout"),
+            ("import sys; sys.stdin.buffer.read(); sys.stderr.buffer.write(b'x'*200000)", "stderr"),
+        ]
+        for program, diagnostic in cases:
+            with self.subTest(stream=diagnostic):
+                with self.assertRaisesRegex(RuntimeError, diagnostic):
+                    self.exporter.fetch_rows_with_psql(
+                        process_factory=lambda _command, program=program, **kwargs: subprocess.Popen(
+                            [sys.executable, "-c", program], **kwargs
+                        ),
+                        timeout_seconds=1,
+                    )
+
+    def test_psql_rejects_wrong_keys_before_returning_rows(self):
+        invalid = row(unexpected="secret")
+        program = "import sys; sys.stdin.buffer.read(); sys.stdout.write(" + repr(json.dumps(invalid) + "\n") + ")"
+        with self.assertRaisesRegex(ValueError, "unexpected fields"):
+            self.exporter.fetch_rows_with_psql(
+                process_factory=lambda _command, **kwargs: subprocess.Popen(
+                    [sys.executable, "-c", program], **kwargs
+                )
+            )
+
+    def test_unsupported_preflight_leaves_no_output_or_control_artifacts(self):
+        candidates = self.build_snapshot([row()])
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "snapshots"
+            original = self.exporter._preflight_publication_platform
+            self.exporter._preflight_publication_platform = lambda _root: (_ for _ in ()).throw(
+                OSError(errno.ENOTSUP, "unsupported publication platform")
+            )
+            try:
+                with self.assertRaisesRegex(OSError, "unsupported"):
+                    self.exporter.publish_snapshot(root, "approved-2026-11-01-v1", candidates)
+            finally:
+                self.exporter._preflight_publication_platform = original
+            self.assertFalse(root.exists())
+            self.assertFalse((base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME).exists())
 
     def test_psql_timeout_kills_pipe_holding_descendants_with_a_bounded_deadline(self):
         launched = []

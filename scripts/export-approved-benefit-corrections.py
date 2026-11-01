@@ -15,13 +15,16 @@ import ipaddress
 import json
 import multiprocessing
 import os
+import platform
 import re
 import secrets
+import selectors
 import signal
 import socket
 import stat
 import subprocess
 import sys
+import time
 import unicodedata
 import uuid
 from pathlib import Path
@@ -49,6 +52,10 @@ DATA_VERSION_RE = re.compile(r"^company-benefits-[0-9]{4}-[0-9]{2}-[0-9]{2}-v[1-
 SNAPSHOT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_CANDIDATES = 100_000
+# JSON may escape each accepted Unicode code point as two UTF-16 ``\u`` pairs.
+# This cap is derived from every projected text limit plus fixed JSON overhead.
+MAX_DB_ROW_BYTES = (5000 + 5000 + 2000 + 2048 + 100 + 64 + 36 + 20 + 16) * 12 + 1024
+MAX_PSQL_STDERR_BYTES = 64 * 1024
 MAX_MANIFEST_BYTES = 10 * 1024 * 1024
 MAX_DNS_ANSWERS = 64
 DEFAULT_DNS_TIMEOUT_SECONDS = 2.0
@@ -64,9 +71,9 @@ TOMBSTONE_KEY_BYTES = 32
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
-APPROVED_QUERY = r"""
+APPROVED_QUERY = rf"""
 begin isolation level repeatable read read only;
-select coalesce(jsonb_agg(jsonb_build_object(
+select jsonb_build_object(
   'id',r.id,
   'company_id',r.company_id,
   'category_id',r.category_id,
@@ -76,9 +83,16 @@ select coalesce(jsonb_agg(jsonb_build_object(
   'source_url',r.source_url,
   'observed_data_version',r.observed_data_version,
   'status',r.status
-) order by r.id),'[]'::jsonb)::text
-from public.benefit_correction_requests r
-where r.status='approved';
+)::text
+from (
+  select id,company_id,category_id,current_text,proposed_text,scope_text,
+         source_url,observed_data_version,status
+  from public.benefit_correction_requests r
+  where r.status='approved'
+  order by id
+  limit {MAX_CANDIDATES + 1}
+) r
+order by r.id;
 commit;
 """
 
@@ -215,7 +229,7 @@ def _ascii_hostname(hostname):
     return ascii_host
 
 
-def _require_public_https_url(value, resolver, resolver_timeout_seconds):
+def _require_public_https_url(value, resolver, resolver_timeout_seconds, resolution_cache):
     value = _require_text(value, "source_url", 2048)
     if any(character.isspace() or ord(character) < 32 for character in value):
         raise ValueError("invalid public evidence URL")
@@ -245,7 +259,9 @@ def _require_public_https_url(value, resolver, resolver_timeout_seconds):
         or ascii_host.endswith((".localhost", ".local", ".internal", ".test", ".invalid"))
     ):
         raise ValueError("invalid public evidence URL")
-    answers = _bounded_resolve(ascii_host, resolver, resolver_timeout_seconds)
+    answers = resolution_cache.get(ascii_host)
+    if answers is None:
+        answers = _bounded_resolve(ascii_host, resolver, resolver_timeout_seconds)
     for answer in answers:
         if not isinstance(answer, str):
             raise ValueError("invalid public evidence URL")
@@ -266,10 +282,11 @@ def _require_public_https_url(value, resolver, resolver_timeout_seconds):
         )
         if prohibited or mapped_prohibited:
             raise ValueError("invalid public evidence URL")
+    resolution_cache[ascii_host] = tuple(answers)
     return value
 
 
-def _validate_row(row, index, resolver, resolver_timeout_seconds):
+def _validate_row(row, index, resolver, resolver_timeout_seconds, resolution_cache):
     if not isinstance(row, dict):
         raise ValueError(f"database row {index} must be an object")
     unknown = set(row) - DB_FIELDS
@@ -296,7 +313,7 @@ def _validate_row(row, index, resolver, resolver_timeout_seconds):
         "proposed_text": _require_text(row["proposed_text"], "proposed_text", 5000),
         "scope_text": _require_text(row["scope_text"], "scope_text", 2000),
         "evidence_url": _require_public_https_url(
-            row["source_url"], resolver, resolver_timeout_seconds
+            row["source_url"], resolver, resolver_timeout_seconds, resolution_cache
         ),
         "observed_data_version": _require_data_version(row["observed_data_version"]),
     }
@@ -312,8 +329,11 @@ def build_snapshot(rows, resolver=None, resolver_timeout_seconds=DEFAULT_DNS_TIM
     by_id = {}
     seen_rows = {}
     resolver = resolver or _system_resolver
+    resolution_cache = {}
     for index, row in enumerate(rows):
-        status, candidate = _validate_row(row, index, resolver, resolver_timeout_seconds)
+        status, candidate = _validate_row(
+            row, index, resolver, resolver_timeout_seconds, resolution_cache
+        )
         request_id = candidate["correction_request_id"]
         validated = (status, candidate)
         prior_row = seen_rows.get(request_id)
@@ -495,14 +515,115 @@ def _fsync_directory_fd(descriptor):
     os.fsync(descriptor)
 
 
+def _renameat2_function():
+    libc = ctypes.CDLL(None, use_errno=True)
+    function = getattr(libc, "renameat2", None)
+    if function is None:
+        raise OSError(errno.ENOTSUP, "Linux renameat2 is unavailable")
+    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    return function
+
+
+def _preflight_publication_platform(output_root):
+    """Fail before artifact creation unless Linux primitives work on the target FS."""
+    if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
+        raise OSError(errno.ENOTSUP, "unsupported publication platform")
+    root = Path(output_root).absolute()
+    parent_fd = os.open(
+        root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    probe_fd = None
+    try:
+        parent_metadata = os.fstat(parent_fd)
+        if (
+            parent_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(parent_metadata.st_mode) & 0o022
+            or not _root_path_still_names_fd(root.parent, parent_fd)
+        ):
+            raise OSError(errno.EPERM, "output root parent is not private")
+        try:
+            probe_fd = os.open(
+                root.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError:
+            probe_fd = os.dup(parent_fd)
+        function = _renameat2_function()
+        nonce = secrets.token_hex(16).encode("ascii")
+        missing_a = b".benefit-export-preflight-a-" + nonce
+        missing_b = b".benefit-export-preflight-b-" + nonce
+        for flag, operation in ((1, "no-replace"), (2, "exchange")):
+            ctypes.set_errno(0)
+            result = function(probe_fd, missing_a, probe_fd, missing_b, flag)
+            error_number = ctypes.get_errno()
+            if result == 0 or error_number != errno.ENOENT:
+                raise OSError(
+                    errno.ENOTSUP,
+                    f"renameat2 {operation} is unsupported on output filesystem",
+                )
+    finally:
+        if probe_fd is not None:
+            os.close(probe_fd)
+        os.close(parent_fd)
+
+
+def _open_secure_output_root(output_root):
+    """Create/open an exact private root and prove its descriptor/name binding."""
+    root = Path(output_root).absolute()
+    parent = root.parent
+    parent_fd = os.open(
+        parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        parent_metadata = os.fstat(parent_fd)
+        if (
+            not _secure_owned_mode(parent_metadata, stat.S_ISDIR, stat.S_IMODE(parent_metadata.st_mode))
+            or stat.S_IMODE(parent_metadata.st_mode) & 0o022
+            or not _root_path_still_names_fd(parent, parent_fd)
+        ):
+            raise OSError(errno.EPERM, "output root parent is not private")
+        try:
+            os.mkdir(root.name, 0o700, dir_fd=parent_fd)
+            _fsync_directory_fd(parent_fd)
+        except FileExistsError:
+            pass
+        root_fd = os.open(
+            root.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        try:
+            opened = os.fstat(root_fd)
+            named = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+            if (
+                not _secure_owned_mode(opened, stat.S_ISDIR, 0o700)
+                or not _secure_owned_mode(named, stat.S_ISDIR, 0o700)
+                or not _same_inode(opened, named)
+                or not _root_path_still_names_fd(root, root_fd)
+            ):
+                raise OSError(errno.EPERM, "invalid output root")
+            return root, root_fd, opened
+        except Exception:
+            os.close(root_fd)
+            raise
+    finally:
+        os.close(parent_fd)
+
+
+def _secure_output_root_binding(root, root_fd, expected):
+    current = os.fstat(root_fd)
+    return (
+        _secure_owned_mode(current, stat.S_ISDIR, 0o700)
+        and _same_inode(expected, current)
+        and _root_path_still_names_fd(root, root_fd)
+    )
+
+
 def _rename_noreplace(source, target, source_dir_fd=-100, target_dir_fd=-100):
     """Atomically publish a directory without replacing any existing target."""
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise OSError(errno.ENOTSUP, "atomic no-replace rename is unavailable")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
+    renameat2 = _renameat2_function()
     result = renameat2(
         source_dir_fd,
         os.fsencode(source),
@@ -520,12 +641,7 @@ def _rename_noreplace(source, target, source_dir_fd=-100, target_dir_fd=-100):
 
 def _rename_exchange(source, target, source_dir_fd=-100, target_dir_fd=-100):
     """Atomically exchange two existing names without an unsafe fallback."""
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise OSError(errno.ENOTSUP, "atomic exchange rename is unavailable")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
+    renameat2 = _renameat2_function()
     result = renameat2(
         source_dir_fd,
         os.fsencode(source),
@@ -749,14 +865,22 @@ def _load_tombstone_authentication_key(output_root):
                 )
             try:
                 if created:
-                    key = secrets.token_bytes(TOMBSTONE_KEY_BYTES)
-                    view = memoryview(key)
-                    while view:
-                        written = os.write(key_fd, view)
-                        view = view[written:]
-                    os.fsync(key_fd)
-                    _fsync_directory_fd(control_fd)
-                    os.lseek(key_fd, 0, os.SEEK_SET)
+                    # CPython's entropy APIs return an immutable bytes object;
+                    # copy immediately into mutable storage and drop that brief
+                    # unavoidable immutable value before subsequent key use.
+                    generated = secrets.token_bytes(TOMBSTONE_KEY_BYTES)
+                    generated_buffer = bytearray(generated)
+                    del generated
+                    try:
+                        view = memoryview(generated_buffer)
+                        while view:
+                            written = os.write(key_fd, view)
+                            view = view[written:]
+                        os.fsync(key_fd)
+                        _fsync_directory_fd(control_fd)
+                        os.lseek(key_fd, 0, os.SEEK_SET)
+                    finally:
+                        generated_buffer[:] = b"\x00" * len(generated_buffer)
                 key_metadata = os.fstat(key_fd)
                 if not _tombstone_key_metadata_valid(
                     parent,
@@ -783,10 +907,10 @@ def _load_tombstone_authentication_key(output_root):
                         raise OSError(
                             errno.ESTALE, "tombstone authentication key changed"
                         )
-                    return bytes(key_buffer)
-                finally:
-                    if isinstance(key_buffer, bytearray):
-                        key_buffer[:] = b"\x00" * len(key_buffer)
+                    return key_buffer
+                except Exception:
+                    key_buffer[:] = b"\x00" * len(key_buffer)
+                    raise
             finally:
                 os.close(key_fd)
         finally:
@@ -1295,31 +1419,28 @@ def publish_snapshot(output_root, snapshot_version, candidates):
     """Transactionally publish or idempotently accept an immutable snapshot."""
     if not isinstance(snapshot_version, str) or not SNAPSHOT_VERSION_RE.fullmatch(snapshot_version):
         raise ValueError("invalid snapshot version")
-    root = Path(output_root)
-    root.mkdir(parents=True, exist_ok=True)
-    authentication_key = _load_tombstone_authentication_key(root)
+    _preflight_publication_platform(output_root)
+    root, root_fd, root_metadata = _open_secure_output_root(output_root)
+    authentication_key = None
     target = root / snapshot_version
     expected = _expected_files(snapshot_version, candidates)
     snapshot_identity = _tombstone_snapshot_identity(expected)
-    root_fd = os.open(
-        root,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-    )
     staging_name = f".{snapshot_version}-{uuid.uuid4().hex}"
     staging_metadata = None
     staging_files = {}
     tombstone = None
     try:
+        authentication_key = _load_tombstone_authentication_key(root)
         try:
             os.stat(snapshot_version, dir_fd=root_fd, follow_symlinks=False)
         except FileNotFoundError:
             pass
         else:
-            if _root_path_still_names_fd(root, root_fd) and _directory_matches(
+            if _secure_output_root_binding(root, root_fd, root_metadata) and _directory_matches(
                 root_fd, snapshot_version, expected
             ):
                 return target
-            if _root_path_still_names_fd(root, root_fd):
+            if _secure_output_root_binding(root, root_fd, root_metadata):
                 tombstone = _open_verified_tombstone(
                     root_fd,
                     snapshot_version,
@@ -1328,7 +1449,7 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                     snapshot_identity,
                 )
             if tombstone is None:
-                if _root_path_still_names_fd(root, root_fd) and _directory_matches(
+                if _secure_output_root_binding(root, root_fd, root_metadata) and _directory_matches(
                     root_fd, snapshot_version, expected
                 ):
                     return target
@@ -1359,6 +1480,8 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                 finally:
                     os.close(file_fd)
             _fsync_directory_fd(staging_fd)
+            if not _secure_output_root_binding(root, root_fd, root_metadata):
+                raise OSError(errno.ESTALE, "output root changed before publication")
             if tombstone is not None:
                 if not _publish_staging_over_tombstone(
                     root_fd,
@@ -1383,7 +1506,7 @@ def publish_snapshot(output_root, snapshot_version, candidates):
                         staging_files,
                     )
                 except FileExistsError:
-                    if _root_path_still_names_fd(root, root_fd) and _directory_matches(
+                    if _secure_output_root_binding(root, root_fd, root_metadata) and _directory_matches(
                         root_fd, snapshot_version, expected
                     ):
                         return target
@@ -1392,7 +1515,7 @@ def publish_snapshot(output_root, snapshot_version, candidates):
             os.close(staging_fd)
         _fsync_directory_fd(root_fd)
         if (
-            not _root_path_still_names_fd(root, root_fd)
+            not _secure_output_root_binding(root, root_fd, root_metadata)
             or not _directory_matches(
                 root_fd,
                 snapshot_version,
@@ -1414,15 +1537,19 @@ def publish_snapshot(output_root, snapshot_version, candidates):
             )
         return target
     finally:
-        if tombstone is not None:
-            os.close(tombstone[0])
-        _remove_staging(
-            root_fd,
-            staging_name,
-            expected,
-            expected_directory=staging_metadata,
-        )
-        os.close(root_fd)
+        try:
+            if tombstone is not None:
+                os.close(tombstone[0])
+            _remove_staging(
+                root_fd,
+                staging_name,
+                expected,
+                expected_directory=staging_metadata,
+            )
+        finally:
+            os.close(root_fd)
+            if isinstance(authentication_key, bytearray):
+                authentication_key[:] = b"\x00" * len(authentication_key)
 
 
 def load_json_rows(path):
@@ -1463,12 +1590,73 @@ def load_resolver_fixture(path):
     return resolve
 
 
+def _terminate_psql_process_group(process, grace_seconds):
+    """Boundedly terminate the whole psql session without draining its pipes."""
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(process, stream_name, None)
+        if stream is not None and stream_name == "stdin":
+            try:
+                stream.close()
+            except OSError:
+                pass
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        pass
+    # Escalate the group even when the direct child exited: descendants may
+    # still own inherited pipe descriptors or continue producing output.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            pass
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(process, stream_name, None)
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
+def _parse_psql_row(raw, index):
+    if not raw or len(raw) > MAX_DB_ROW_BYTES:
+        raise RuntimeError("approved correction stdout line exceeded byte limit")
+    try:
+        row = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("malformed psql response") from exc
+    if not isinstance(row, dict):
+        raise ValueError(f"database row {index} must be an object")
+    unknown = set(row) - DB_FIELDS
+    missing = DB_FIELDS - set(row)
+    if unknown:
+        raise ValueError(f"database row {index} has unexpected fields: {sorted(unknown)}")
+    if missing:
+        raise ValueError(f"database row {index} is missing fields: {sorted(missing)}")
+    return row
+
+
 def fetch_rows_with_psql(
     process_factory=subprocess.Popen,
     timeout_seconds=DEFAULT_PSQL_TIMEOUT_SECONDS,
     kill_grace_seconds=DEFAULT_PROCESS_KILL_GRACE_SECONDS,
 ):
-    """Read the exact approved projection using psql's configured connection."""
+    """Incrementally read bounded JSONL using psql's configured connection."""
     for value in (timeout_seconds, kill_grace_seconds):
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
             raise ValueError("invalid psql timeout")
@@ -1478,56 +1666,94 @@ def fetch_rows_with_psql(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
         )
     except OSError as exc:
         raise RuntimeError("approved correction read failed") from exc
+    query = APPROVED_QUERY.encode("utf-8")
+    deadline = time.monotonic() + timeout_seconds
+    stdout_limit = (MAX_CANDIDATES + 1) * (MAX_DB_ROW_BYTES + 1) + 1024
+    rows = []
+    stdout_buffer = bytearray()
+    stdout_bytes = 0
+    stderr_bytes = 0
+    selector = selectors.DefaultSelector()
     try:
-        stdout, _stderr = process.communicate(input=APPROVED_QUERY, timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.communicate(timeout=kill_grace_seconds)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                process.communicate(timeout=kill_grace_seconds)
-            except subprocess.TimeoutExpired:
-                # A descendant that escaped the process group may still hold a
-                # captured pipe.  Never let that prevent reaping the direct
-                # child or turn cleanup into an unbounded wait.
-                for stream_name in ("stdin", "stdout", "stderr"):
-                    stream = getattr(process, stream_name, None)
-                    if stream is not None:
-                        try:
-                            stream.close()
-                        except OSError:
-                            pass
-                try:
-                    process.wait(timeout=kill_grace_seconds)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is None:
+                raise RuntimeError("approved correction read failed")
+            os.set_blocking(stream.fileno(), False)
+        selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        query_offset = 0
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("approved correction read timed out")
+            events = selector.select(remaining)
+            if not events:
+                raise RuntimeError("approved correction read timed out")
+            for key, _mask in events:
+                stream = key.fileobj
+                if key.data == "stdin":
                     try:
-                        process.wait(timeout=kill_grace_seconds)
-                    except subprocess.TimeoutExpired:
-                        pass
+                        written = os.write(stream.fileno(), query[query_offset:])
+                    except BrokenPipeError:
+                        written = 0
+                        query_offset = len(query)
+                    query_offset += written
+                    if query_offset == len(query):
+                        selector.unregister(stream)
+                        stream.close()
+                    continue
+                try:
+                    chunk = os.read(stream.fileno(), 64 * 1024)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    continue
+                if key.data == "stderr":
+                    stderr_bytes += len(chunk)
+                    if stderr_bytes > MAX_PSQL_STDERR_BYTES:
+                        raise RuntimeError("approved correction stderr exceeded byte limit")
+                    continue
+                stdout_bytes += len(chunk)
+                if stdout_bytes > stdout_limit:
+                    raise RuntimeError("approved correction stdout exceeded byte limit")
+                stdout_buffer.extend(chunk)
+                while True:
+                    newline = stdout_buffer.find(b"\n")
+                    if newline < 0:
+                        if len(stdout_buffer) > MAX_DB_ROW_BYTES:
+                            raise RuntimeError("approved correction stdout line exceeded byte limit")
+                        break
+                    raw = bytes(stdout_buffer[:newline])
+                    del stdout_buffer[:newline + 1]
+                    if len(rows) >= MAX_CANDIDATES:
+                        raise ValueError("database response exceeds candidate limit")
+                    rows.append(_parse_psql_row(raw, len(rows)))
+        if stdout_buffer:
+            if len(rows) >= MAX_CANDIDATES:
+                raise ValueError("database response exceeds candidate limit")
+            rows.append(_parse_psql_row(bytes(stdout_buffer), len(rows)))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("approved correction read timed out")
+        process.wait(timeout=remaining)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_psql_process_group(process, kill_grace_seconds)
         raise RuntimeError("approved correction read timed out") from exc
+    except Exception:
+        _terminate_psql_process_group(process, kill_grace_seconds)
+        raise
+    finally:
+        selector.close()
     if process.returncode != 0:
         raise RuntimeError("approved correction read failed")
-    lines = [line for line in stdout.splitlines() if line.strip()]
-    if len(lines) != 1:
-        raise ValueError("malformed psql response")
-    try:
-        return json.loads(lines[0])
-    except json.JSONDecodeError as exc:
-        raise ValueError("malformed psql response") from exc
+    return rows
 
 
 def verify_applied_version_binding(manifest_path, applied_version, verified_manifest_sha256):
@@ -1590,6 +1816,9 @@ def main(argv=None):
         if args.command == "export":
             if args.resolver_json and not args.input_json:
                 raise ValueError("--resolver-json requires --input-json")
+            # Check platform/filesystem support before DB/DNS work and before
+            # creating the output root or persistent control key.
+            _preflight_publication_platform(args.output_root)
             rows = (
                 load_json_rows(args.input_json)
                 if args.input_json
@@ -1599,6 +1828,7 @@ def main(argv=None):
             candidates = build_snapshot(
                 rows, resolver=resolver, resolver_timeout_seconds=args.dns_timeout_seconds
             )
+            del rows
             target = publish_snapshot(args.output_root, args.snapshot_version, candidates)
             raw = canonical_jsonl(candidates)
             result = {
