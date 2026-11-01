@@ -960,6 +960,177 @@ while True:
                 with self.subTest(case=case), self.assertRaises(OSError):
                     self.exporter.stream_review_candidates(malicious, version, io.BytesIO())
 
+    def test_review_rejects_candidate_mutated_during_copy_even_when_source_is_restored(self):
+        version = "approved-2026-11-01-v1"
+        original_candidate = self.build_snapshot([row()])[0]
+        alternate_candidate = dict(original_candidate)
+        alternate_candidate["proposed_text"] = "Tampered benefit"
+        original_raw = self.exporter._canonical_json_bytes(original_candidate)
+        alternate_raw = self.exporter._canonical_json_bytes(alternate_candidate)
+        self.assertEqual(len(original_raw), len(alternate_raw))
+
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "race.tar"
+            write_artifact(self.exporter, artifact, version, original_raw)
+            archive = artifact.read_bytes()
+            manifest_size = self.exporter._parse_tar_number(archive[124:136])
+            candidate_header_offset = 512 + manifest_size + ((-manifest_size) % 512)
+            candidate_offset = candidate_header_offset + 512
+            writer_fd = os.open(artifact, os.O_RDWR | os.O_CLOEXEC)
+            original_pread = self.exporter.os.pread
+            candidate_reads = 0
+
+            def mutate_for_copy(descriptor, size, offset):
+                nonlocal candidate_reads
+                if offset == candidate_offset and size == len(original_raw):
+                    candidate_reads += 1
+                    if candidate_reads == 2:
+                        os.pwrite(writer_fd, alternate_raw, candidate_offset)
+                        copied = original_pread(descriptor, size, offset)
+                        os.pwrite(writer_fd, original_raw, candidate_offset)
+                        return copied
+                return original_pread(descriptor, size, offset)
+
+            self.exporter.os.pread = mutate_for_copy
+            output = io.BytesIO()
+            try:
+                with self.assertRaises(OSError):
+                    self.exporter.stream_review_candidates(artifact, version, output)
+            finally:
+                self.exporter.os.pread = original_pread
+                os.close(writer_fd)
+            self.assertEqual(2, candidate_reads)
+            self.assertEqual(b"", output.getvalue())
+
+    def test_review_rejects_truncated_or_expanded_anonymous_copy_without_output(self):
+        version = "approved-2026-11-01-v1"
+        candidates_raw = self.exporter.canonical_jsonl(self.build_snapshot([row()]))
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "copy-size.tar"
+            write_artifact(self.exporter, artifact, version, candidates_raw)
+            original_write_all = self.exporter._write_all
+            for label, mutate in (
+                ("truncated", lambda chunk: chunk[:-1]),
+                ("expanded", lambda chunk: chunk + b"x"),
+            ):
+                with self.subTest(label=label):
+                    def write_changed(descriptor, chunk):
+                        return original_write_all(descriptor, mutate(bytes(chunk)))
+
+                    setattr(self.exporter, "_write_all", write_changed)
+                    output = io.BytesIO()
+                    try:
+                        with self.assertRaises(OSError):
+                            self.exporter.stream_review_candidates(artifact, version, output)
+                    finally:
+                        setattr(self.exporter, "_write_all", original_write_all)
+                    self.assertEqual(b"", output.getvalue())
+
+    def test_review_rejects_source_header_mutation_after_first_validation_without_output(self):
+        version = "approved-2026-11-01-v1"
+        candidates_raw = self.exporter.canonical_jsonl(self.build_snapshot([row()]))
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "header-race.tar"
+            write_artifact(self.exporter, artifact, version, candidates_raw)
+            writer_fd = os.open(artifact, os.O_RDWR | os.O_CLOEXEC)
+            original_validate = self.exporter._validate_snapshot_artifact_fd
+            validations = 0
+
+            def mutate_after_first_validation(descriptor, *args, **kwargs):
+                nonlocal validations
+                result = original_validate(descriptor, *args, **kwargs)
+                validations += 1
+                if validations == 1:
+                    header = bytearray(os.pread(writer_fd, 512, 0))
+                    header[0] = ord("x")
+                    rewrite_tar_checksum(header)
+                    os.pwrite(writer_fd, header, 0)
+                return result
+
+            setattr(self.exporter, "_validate_snapshot_artifact_fd", mutate_after_first_validation)
+            output = io.BytesIO()
+            try:
+                with self.assertRaises(OSError):
+                    self.exporter.stream_review_candidates(artifact, version, output)
+            finally:
+                setattr(self.exporter, "_validate_snapshot_artifact_fd", original_validate)
+                os.close(writer_fd)
+            self.assertEqual(1, validations)
+            self.assertEqual(b"", output.getvalue())
+
+    def test_review_near_limit_copy_is_bounded_and_repeatable_at_manifest_hash(self):
+        version = "approved-2026-11-01-v1"
+        original_limit = self.exporter.MAX_SNAPSHOT_BYTES
+        setattr(self.exporter, "MAX_SNAPSHOT_BYTES", 1024 * 1024)
+        try:
+            rows = [
+                row(
+                    f"10000000-0000-4000-8000-{index:012d}",
+                    current_text="c" * 5000,
+                    proposed_text="p" * 5000,
+                    scope_text="s" * 2000,
+                )
+                for index in range(1, 80)
+            ]
+            candidates_raw = self.exporter.canonical_jsonl(self.build_snapshot(rows))
+            self.assertGreater(len(candidates_raw), self.exporter.MAX_SNAPSHOT_BYTES * 9 // 10)
+
+            class HashingOutput:
+                def __init__(self):
+                    self.digest = hashlib.sha256()
+                    self.bytes_written = 0
+
+                def write(self, chunk):
+                    self.digest.update(chunk)
+                    self.bytes_written += len(chunk)
+                    return len(chunk)
+
+            with tempfile.TemporaryDirectory() as directory:
+                artifact = Path(directory) / "near-limit.tar"
+                write_artifact(self.exporter, artifact, version, candidates_raw)
+                outputs = []
+                tracemalloc.start()
+                try:
+                    for _ in range(2):
+                        sink = HashingOutput()
+                        manifest = self.exporter.stream_review_candidates(artifact, version, sink)
+                        outputs.append((sink, manifest))
+                    _current, peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
+                self.assertLess(peak, 8 * 1024 * 1024)
+                for sink, manifest in outputs:
+                    self.assertEqual(len(candidates_raw), sink.bytes_written)
+                    self.assertEqual(manifest["snapshot_sha256"], sink.digest.hexdigest())
+        finally:
+            setattr(self.exporter, "MAX_SNAPSHOT_BYTES", original_limit)
+
+    def test_review_handles_short_output_writes_and_surfaces_sink_failure(self):
+        version = "approved-2026-11-01-v1"
+        candidates_raw = self.exporter.canonical_jsonl(self.build_snapshot([row()]))
+
+        class ShortOutput:
+            def __init__(self):
+                self.raw = bytearray()
+
+            def write(self, chunk):
+                written = min(7, len(chunk))
+                self.raw.extend(chunk[:written])
+                return written
+
+        class FailingOutput:
+            def write(self, _chunk):
+                raise BrokenPipeError(errno.EPIPE, "closed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "output.tar"
+            write_artifact(self.exporter, artifact, version, candidates_raw)
+            short = ShortOutput()
+            self.exporter.stream_review_candidates(artifact, version, short)
+            self.assertEqual(candidates_raw, bytes(short.raw))
+            with self.assertRaises(BrokenPipeError):
+                self.exporter.stream_review_candidates(artifact, version, FailingOutput())
+
     def test_review_rejects_invalid_candidate_rows_before_emitting_any_bytes(self):
         version = "approved-2026-11-01-v1"
         valid = self.build_snapshot([row()])[0]

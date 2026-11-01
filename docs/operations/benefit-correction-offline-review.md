@@ -58,7 +58,7 @@ python3 scripts/export-approved-benefit-corrections.py review-jsonl \
   > /private/review/candidates.jsonl
 ```
 
-This command rejects non-regular paths, unsafe names, duplicates, links, extra/missing members, non-canonical manifests, size violations, digest/count mismatches, and pathname replacement. It validates and streams from the same held descriptor.
+This command rejects non-regular paths, unsafe names, duplicates, links, extra/missing members, non-canonical manifests, size violations, digest/count mismatches, and pathname replacement. One complete archive-validation pass binds the manifest to the exact candidate byte offset and size. The command copies only that bound range from the held source fd into an anonymous `O_TMPFILE`, incrementally counts and hashes the copy, then reruns the full JSONL schema/privacy/canonical-order/UUID/count/hash validator against the copy. It writes stdout only after the copy matches the first-pass manifest and bound size, and streams stdout from that validated copy rather than reparsing or rereading mutable source headers. A source race therefore fails before the first output byte; sink failures can still leave partial output and are reported to the caller.
 
 For a credential-free rehearsal only, supply a private synthetic DB-response fixture:
 

@@ -29,7 +29,9 @@ import tempfile
 import time
 import unicodedata
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import urlsplit
 
 
@@ -85,6 +87,18 @@ ARTIFACT_MEMBER_NAMES = ("manifest.json", "candidates.jsonl")
 PUBLICATION_KEY_BYTES = 32
 MAX_ARTIFACT_BYTES = MAX_SNAPSHOT_BYTES + MAX_MANIFEST_BYTES + 4096
 AT_EMPTY_PATH = 0x1000
+
+
+@dataclass(frozen=True)
+class _ValidatedSnapshotArtifact:
+    """Immutable binding produced by one complete archive validation pass."""
+
+    manifest: object
+    candidates_offset: int
+    candidates_size: int
+    candidate_count: int
+    candidate_sha256: str
+
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
@@ -585,6 +599,21 @@ def _same_inode(left, right):
     )
 
 
+def _review_source_state(metadata):
+    """Bind source mutation indicators while excluding read-updated atime."""
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
 def _write_all(descriptor, raw):
     view = memoryview(raw)
     while view:
@@ -711,6 +740,8 @@ def _validate_snapshot_artifact_fd(descriptor, expected_version=None, expected_d
     manifest_raw = None
     candidate_digest = None
     candidate_count = None
+    candidate_offset = None
+    candidate_size = None
     for expected_name in ARTIFACT_MEMBER_NAMES:
         header = os.pread(descriptor, 512, offset)
         if len(header) != 512 or header == b"\0" * 512:
@@ -730,6 +761,8 @@ def _validate_snapshot_artifact_fd(descriptor, expected_version=None, expected_d
             if len(manifest_raw) != size:
                 raise OSError(errno.EIO, "snapshot manifest truncated")
         else:
+            candidate_offset = offset
+            candidate_size = size
             candidate_count, candidate_digest = _validate_candidate_member(
                 descriptor, offset, size
             )
@@ -777,7 +810,17 @@ def _validate_snapshot_artifact_fd(descriptor, expected_version=None, expected_d
         or (expected_version is not None and manifest_version != expected_version)
     ):
         raise OSError(errno.EINVAL, "snapshot artifact manifest mismatch")
-    return manifest
+    assert candidate_offset is not None
+    assert candidate_size is not None
+    assert candidate_count is not None
+    assert candidate_digest is not None
+    return _ValidatedSnapshotArtifact(
+        manifest=MappingProxyType(manifest),
+        candidates_offset=candidate_offset,
+        candidates_size=candidate_size,
+        candidate_count=candidate_count,
+        candidate_sha256=candidate_digest,
+    )
 
 
 def _fsync_directory_fd(descriptor):
@@ -1251,15 +1294,14 @@ def publish_snapshot(output_root, snapshot_version, candidates):
         os.close(root_fd)
 
 
-def _artifact_candidates_range(descriptor):
-    manifest_header = os.pread(descriptor, 512, 0)
-    manifest_size = _parse_tar_number(manifest_header[124:136])
-    candidate_header_offset = 512 + manifest_size + ((-manifest_size) % 512)
-    candidate_header = os.pread(descriptor, 512, candidate_header_offset)
-    if len(candidate_header) != 512:
-        raise OSError(errno.EINVAL, "invalid snapshot artifact inventory")
-    candidate_size = _parse_tar_number(candidate_header[124:136])
-    return candidate_header_offset + 512, candidate_size
+def _write_output_all(output, chunk):
+    """Honor short writes and surface sink failures after validation."""
+    remaining = memoryview(chunk)
+    while remaining:
+        written = output.write(remaining)
+        if not isinstance(written, int) or written <= 0:
+            raise OSError(errno.EIO, "review output write failed")
+        remaining = remaining[written:]
 
 
 def stream_review_candidates(artifact_path, snapshot_version, output):
@@ -1268,34 +1310,79 @@ def stream_review_candidates(artifact_path, snapshot_version, output):
         raise ValueError("invalid snapshot version")
     path = Path(artifact_path).absolute()
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    copy_fd = None
+    parent_fd = None
     try:
         opened = os.fstat(descriptor)
         named = path.lstat()
         if not stat.S_ISREG(opened.st_mode) or not _same_inode(opened, named):
             raise OSError(errno.EPERM, "invalid snapshot artifact path")
-        manifest = _validate_snapshot_artifact_fd(descriptor, snapshot_version)
-        offset, remaining = _artifact_candidates_range(descriptor)
-        with tempfile.TemporaryFile(mode="w+b") as review_copy:
-            while remaining:
-                chunk = os.pread(descriptor, min(1024 * 1024, remaining), offset)
-                if not chunk:
-                    raise OSError(errno.EIO, "snapshot candidates truncated")
-                review_copy.write(chunk)
-                offset += len(chunk)
-                remaining -= len(chunk)
-            # Revalidate after copying. Output begins only after the source fd,
-            # its full content, and its pathname binding are proved unchanged.
-            _validate_snapshot_artifact_fd(descriptor, snapshot_version)
-            if not _same_inode(opened, path.lstat()):
-                raise OSError(errno.ESTALE, "snapshot artifact path changed during review")
-            review_copy.seek(0)
-            while True:
-                chunk = review_copy.read(1024 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-        return manifest
+        validated = _validate_snapshot_artifact_fd(descriptor, snapshot_version)
+
+        parent_fd = os.open(
+            path.parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        copy_fd = os.open(
+            ".", os.O_RDWR | os.O_TMPFILE | os.O_CLOEXEC, 0o600, dir_fd=parent_fd
+        )
+        os.fchmod(copy_fd, 0o600)
+        source_offset = validated.candidates_offset
+        remaining = validated.candidates_size
+        copied_bytes = 0
+        copied_digest = hashlib.sha256()
+        while remaining:
+            chunk = os.pread(descriptor, min(1024 * 1024, remaining), source_offset)
+            if not chunk:
+                raise OSError(errno.EIO, "snapshot candidates truncated")
+            _write_all(copy_fd, chunk)
+            copied_digest.update(chunk)
+            copied_bytes += len(chunk)
+            source_offset += len(chunk)
+            remaining -= len(chunk)
+
+        copy_metadata = os.fstat(copy_fd)
+        copied_sha256 = copied_digest.hexdigest()
+        if (
+            copied_bytes != validated.candidates_size
+            or copy_metadata.st_size != validated.candidates_size
+            or not hmac.compare_digest(copied_sha256, validated.candidate_sha256)
+        ):
+            raise OSError(errno.ESTALE, "snapshot candidate copy does not match validated source")
+        copied_count, revalidated_sha256 = _validate_candidate_member(
+            copy_fd, 0, validated.candidates_size
+        )
+        if (
+            copied_count != validated.candidate_count
+            or copied_count != validated.manifest["candidate_count"]
+            or not hmac.compare_digest(revalidated_sha256, validated.candidate_sha256)
+            or not hmac.compare_digest(
+                revalidated_sha256, validated.manifest["snapshot_sha256"]
+            )
+        ):
+            raise OSError(errno.ESTALE, "snapshot candidate copy validation mismatch")
+
+        # This mutable-source check is defense in depth. Output correctness is
+        # bound to the already validated anonymous copy above.
+        if _validate_snapshot_artifact_fd(descriptor, snapshot_version) != validated:
+            raise OSError(errno.ESTALE, "snapshot artifact changed during review")
+        if _review_source_state(os.fstat(descriptor)) != _review_source_state(opened):
+            raise OSError(errno.ESTALE, "snapshot artifact metadata changed during review")
+        if not _same_inode(opened, path.lstat()):
+            raise OSError(errno.ESTALE, "snapshot artifact path changed during review")
+
+        os.lseek(copy_fd, 0, os.SEEK_SET)
+        while True:
+            chunk = os.read(copy_fd, 1024 * 1024)
+            if not chunk:
+                break
+            _write_output_all(output, chunk)
+        return validated.manifest
     finally:
+        if copy_fd is not None:
+            os.close(copy_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
         os.close(descriptor)
 
 
