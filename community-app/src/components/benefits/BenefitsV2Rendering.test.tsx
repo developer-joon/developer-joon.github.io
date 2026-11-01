@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 import { BenefitsHeatmapTable } from './BenefitsHeatmapTable'
@@ -20,13 +20,19 @@ const researched = (
   category_id,
   state,
   source_tiers,
+  official_claim_ids: state === 'official_verified' ? ['official::claim-1', 'official::claim-2'] : [],
+  reference_ids: state === 'reference' ? ['reference::record-1'] : [],
+  community_report_ids: state === 'community_report' ? ['community::report-1', 'community::report-2', 'community::report-3'] : [],
   official_claim_count: state === 'official_verified' ? 2 : 0,
   reference_count: state === 'reference' ? 1 : 0,
   community_report_count: state === 'community_report' ? 3 : 0,
   reliability: state === 'official_verified' ? 'high' : state === 'reference' ? 'medium' : state === 'community_report' ? 'low' : 'none',
-  currentness: 'current',
-  scope_status: 'exact_entity',
+  currentness: state === 'no_public_info' ? 'unknown' : 'current',
+  scope_status: state === 'no_public_info' ? 'unresolved' : 'exact_entity',
   conflict_status: 'none',
+  publication_eligibility: state === 'official_verified' ? 'official_claim' : state === 'reference' ? 'reference_only' : state === 'community_report' ? 'community_only' : 'discovery_only',
+  assessed_at: '2026-11-01T00:00:00Z',
+  ...(state === 'no_public_info' ? { coverage_complete: true } : {}),
   scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'], tenure_conditions: [] },
   last_checked_at: '2026-11-01T00:00:00Z',
   ...overrides,
@@ -34,7 +40,7 @@ const researched = (
 const researchedCompany = (index: number): CompanyListing => ({
   ...company(index),
   category_outcomes: categories.map((category, offset) => {
-    if (offset === 0) return researched(category, 'official_verified', ['official_government'], { community_report_count: 2 })
+    if (offset === 0) return researched(category, 'official_verified', ['official_government', 'user_submission'], { community_report_ids: ['community::report-1', 'community::report-2'], community_report_count: 2 })
     if (offset === 1) return researched(category, 'reference', ['company_recruiting_major_media'], { currentness: 'historical', scope_status: 'group_only' })
     if (offset === 2) return researched(category, 'reference', ['other_public_web'], { scope_status: 'unresolved', conflict_status: 'contradictory' })
     if (offset === 3) return researched(category, 'community_report', ['community_employee_review', 'user_submission'])
@@ -58,14 +64,28 @@ it('renders every source tier and state warning without combining official and c
   expect(screen.getByText('공식 확인')).toBeVisible()
   expect(screen.getByText('채용·언론 참고')).toBeVisible()
   expect(screen.getByText('기타 공개자료')).toBeVisible()
-  expect(screen.getByText('커뮤니티 보고')).toBeVisible()
+  expect(screen.getAllByText('커뮤니티 보고').length).toBeGreaterThan(0)
   expect(screen.getByText('공개 정보 없음')).toBeVisible()
   expect(screen.getByText('과거 정보')).toBeVisible()
-  expect(screen.getByText('적용 범위 미확인')).toBeVisible()
+  expect(screen.getAllByText('적용 범위 미확인').length).toBeGreaterThan(0)
   expect(screen.getByText('정보 상충')).toBeVisible()
   expect(screen.getByText('공식 근거 2건')).toBeVisible()
   expect(screen.getByText('커뮤니티 보고 2건')).toBeVisible()
   expect(screen.queryByText(/총 4건/)).not.toBeInTheDocument()
+})
+
+it('exposes structured heatmap state, counts, currentness, scope, date and conflict context', () => {
+  render(<BenefitsHeatmapTable companies={[researchedCompany(1)]} selectedCategories={['health']} compare={[]} toggle={() => undefined} link={() => '#'} />)
+  const link = screen.getByRole('link', { name: 'Test 1 건강·보험 참고 정보' })
+  expect(link).toHaveAttribute('aria-describedby')
+  const description = document.getElementById(link.getAttribute('aria-describedby')!)
+  expect(description).toHaveTextContent('출처 계층: 기타 공개자료')
+  expect(description).toHaveTextContent('공식 근거 0건; 참고 자료 1건; 커뮤니티 보고 0건')
+  expect(description).toHaveTextContent('현재성: 현재 정보')
+  expect(description).toHaveTextContent('범위: 적용 범위 미확인; 국가: KR')
+  expect(description).toHaveTextContent('확인일: 2026-11-01')
+  expect(description).toHaveTextContent('경고: 정보 상충')
+  expect(within(link).getByRole('list')).toBeVisible()
 })
 
 it('shows reliability, currentness, scope and conflict semantics in category detail', () => {

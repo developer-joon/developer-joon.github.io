@@ -34,7 +34,7 @@ export function BenefitSourceBadges({ outcome, metadata = false }: { outcome: Ca
 
 export function BenefitEvidenceCounts({ outcome }: { outcome: CategoryOutcome }) {
   if (!isResearchedOutcome(outcome)) return outcome.kind === 'evidenced' ? <span>공식 claim {outcome.claim_count}건</span> : null
-  return <span className="benefits-evidence-counts" aria-label="근거 유형별 건수">
+  return <span className="benefits-evidence-counts">
     {outcome.official_claim_count > 0 && <span>공식 근거 {outcome.official_claim_count}건</span>}
     {outcome.reference_count > 0 && <span>참고 자료 {outcome.reference_count}건</span>}
     {outcome.community_report_count > 0 && <span>커뮤니티 보고 {outcome.community_report_count}건</span>}

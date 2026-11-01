@@ -167,11 +167,19 @@ export function assertCompanyDetailEvidence(listing: CompanyListing, detail: Det
       const claims = detail.claims.filter((claim) => claim.category_ids.includes(category))
       if (claims.length !== listed.claim_count) throw new Error('결과와 claim 개수 불일치')
     }
-    if ('state' in listed) {
+    if (isResearchedOutcome(listed)) {
+      if (listed.official_claim_count !== listed.official_claim_ids.length || listed.reference_count !== listed.reference_ids.length || listed.community_report_count !== listed.community_report_ids.length) throw new Error('결과와 근거 ID 개수 불일치')
       const official = detail.official_claims?.filter((claim) => claim.category_id === category).map((claim) => claim.claim_id) ?? []
       const references = detail.references?.filter((record) => record.category_id === category).map((record) => record.reference_id) ?? []
       const community = detail.community_reports?.filter((record) => record.category_id === category).map((record) => record.community_report_id) ?? []
-      if (JSON.stringify(official) !== JSON.stringify(listed.official_claim_ids) || JSON.stringify(references) !== JSON.stringify(listed.reference_ids) || JSON.stringify(community) !== JSON.stringify(listed.community_report_ids)) throw new Error('cell/evidence ID inventory 불일치')
+      if (detail.official_claims !== undefined && (JSON.stringify(official) !== JSON.stringify(listed.official_claim_ids) || JSON.stringify(references) !== JSON.stringify(listed.reference_ids) || JSON.stringify(community) !== JSON.stringify(listed.community_report_ids))) throw new Error('cell/evidence ID inventory 불일치')
+      if (detail.official_claims === undefined) {
+        const claims = detail.claims.filter((claim) => claim.category_ids.includes(category))
+        if (listed.state !== 'official_verified' && claims.length > 0) throw new Error('하위 계층 상태에 공식 claim 포함')
+        const claimIds = claims.map((claim) => claim.claim_id).sort()
+        const expectedIds = [...listed.official_claim_ids].sort()
+        if (claimIds.length !== expectedIds.length || claimIds.some((id, index) => id !== expectedIds[index])) throw new Error('결과와 claim ID 불일치')
+      }
     }
   }
   if (detail.artifact_protocol === 'vNext') {
