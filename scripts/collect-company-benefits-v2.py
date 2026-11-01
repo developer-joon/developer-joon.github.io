@@ -4,10 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
+
+from jsonschema import Draft202012Validator, FormatChecker
 
 from company_benefits_collectors import (
     BatchCheckpoint,
@@ -44,6 +49,13 @@ def _read_json(path: Path):
 def _canonical_companies(path: Path) -> dict[str, dict[str, object]]:
     companies: dict[str, dict[str, object]] = {}
     try:
+        schema = json.loads((RESEARCH / "schema" / "company.schema.json").read_text(encoding="utf-8"))
+        protocol = json.loads((RESEARCH / "population-protocol.json").read_text(encoding="utf-8"))
+        seed = protocol["canonical_selection"]["seed"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise CollectorError(f"cannot load canonical company authority contracts: {exc}") from exc
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as exc:
         raise CollectorError(f"cannot read canonical company ledger: {exc}") from exc
@@ -54,6 +66,25 @@ def _canonical_companies(path: Path) -> dict[str, dict[str, object]]:
             raise CollectorError(f"invalid canonical company ledger line {number}: {exc}") from exc
         if not isinstance(value, dict) or not isinstance(value.get("company_id"), str):
             raise CollectorError(f"invalid canonical company ledger line {number}")
+        errors = list(validator.iter_errors(value))
+        if errors:
+            raise CollectorError(
+                f"canonical company ledger line {number} fails company.schema.json: {errors[0].message}"
+            )
+        fields = (seed, value.get("jurisdiction"), value.get("registry_id"), value.get("legal_name"))
+        if not all(isinstance(item, str) and item.strip() for item in fields):
+            raise CollectorError(f"canonical company ledger line {number} lacks hash identity fields")
+        normalized = [
+            unicodedata.normalize("NFC", str(item)).strip() for item in fields
+        ]
+        normalized[3] = re.sub(r"\s+", " ", normalized[3])
+        expected_hash = hashlib.sha256(json.dumps(
+            normalized, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")).hexdigest()
+        if value.get("selection_hash") != expected_hash:
+            raise CollectorError(f"canonical company ledger line {number} has a selection_hash mismatch")
+        if value.get("selected_reporting_legal_entity") != value.get("legal_name"):
+            raise CollectorError(f"canonical company ledger line {number} has a substituted legal entity")
         company_id = value["company_id"]
         if company_id in companies:
             raise CollectorError(f"duplicate canonical company: {company_id}")
@@ -101,7 +132,6 @@ def _expand_requests(requests, companies: dict[str, dict[str, object]], max_item
             jurisdiction=jurisdiction,
             legal_name=legal_name,
             canonical_legal_entity=legal_entity,
-            official_domain=canonical.get("official_domain") if isinstance(canonical.get("official_domain"), str) else None,
         )
         for route_id in route_ids:
             key = (company_id, category_id, canonical_route_id(route_id))
@@ -127,7 +157,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="JSON array of canonical company/category/route requests")
     parser.add_argument("output", type=Path, help="collector discovery artifact JSON to write atomically")
-    parser.add_argument("--companies", type=Path, default=RESEARCH / "companies.jsonl")
     parser.add_argument("--coverage-policy", type=Path, default=RESEARCH / "research-coverage-policies.json")
     parser.add_argument("--capture-root", type=Path, default=DEFAULT_CAPTURE_ROOT,
                         help="repository-external content-addressed capture directory")
@@ -151,7 +180,7 @@ def main(argv=None) -> int:
         if args.max_items < 1 or args.max_items > 1000:
             raise CollectorError("--max-items must be between 1 and 1000")
         requests = _read_json(args.input)
-        companies = _canonical_companies(args.companies)
+        companies = _canonical_companies(RESEARCH / "companies.jsonl")
         items = _expand_requests(requests, companies, args.max_items)
         policy_contract = _read_json(args.coverage_policy)
         input_hash = batch_input_sha256(items)

@@ -10,6 +10,6 @@
 4. Call `discovery_to_review_package(...)` with those decisions. Conversion fails unless every discovery attempt is bound exactly once.
 5. Only after conversion run `scripts/validate-benefits-v2-package.py`. The authoritative package validator is not applicable to raw collector output.
 
-An `official-company` request uses an official domain only when that authority is present in canonical reviewed company data. Batch input cannot override it. When canonical data has no domain, the collector uses a legal-entity-bound generic official-company query and does not invent a host.
+An `official-company` request is constructed only from the schema-validated canonical ledger's company ID and selected legal entity plus the route terms. It never accepts or invents an official-domain authority and never adds a `site:` restriction. The CLI always reads the repository's canonical `companies.jsonl`; alternate company authority cannot be supplied.
 
-DNS, each connection/read operation, retries, and the total fetch have explicit bounds. Signed or credential-bearing URLs and persisted strings are rejected.
+DNS and HTTPS deadline workers are forcibly reaped within a bounded cleanup window, including workers that ignore SIGTERM. Signed or credential-bearing URLs, headers, wire/decoded bodies, coverage policy values, checkpoints, captures, and review-package subtrees are rejected rather than sanitized.

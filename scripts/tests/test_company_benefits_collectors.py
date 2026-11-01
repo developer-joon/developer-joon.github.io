@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -64,13 +65,12 @@ class CollectorTests(unittest.TestCase):
             jurisdiction="KR",
             legal_name="(주)인텔리안테크놀로지스",
             canonical_legal_entity="(주)인텔리안테크놀로지스",
-            official_domain="intelliantech.com",
         )
 
     def test_canonical_queries_and_ids_are_deterministic_and_scope_bound(self):
         query = collectors.canonical_query(self.company, "leave", "official-company")
         self.assertEqual(
-            '"(주)인텔리안테크놀로지스" "KR-CRN-1101112948086" "leave" site:intelliantech.com',
+            '"(주)인텔리안테크놀로지스" "KR-CRN-1101112948086" "leave" "benefits"',
             query,
         )
         first = collectors.attempt_id(self.company.company_id, "leave", "official-company")
@@ -128,7 +128,7 @@ class CollectorTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(collectors.SecurityError):
                 collectors.validate_public_https_url(url, resolver=public)
 
-    def test_official_query_uses_canonical_entity_and_strict_optional_authority(self):
+    def test_official_query_uses_only_canonical_company_identity(self):
         without_domain = collectors.CompanyAuthority(
             company_id=self.company.company_id,
             jurisdiction="KR",
@@ -137,37 +137,28 @@ class CollectorTests(unittest.TestCase):
         )
         query = collectors.canonical_query(without_domain, "leave", "official-company")
         self.assertIn('"Canonical Legal Entity Ltd"', query)
-        self.assertIn('"official company"', query)
+        self.assertIn('"benefits"', query)
         self.assertNotIn("site:", query)
-        for bad in ("example.com evil", 'example.com"', "example.com?x=1", "example.com/#x", "-bad.com", "bad-.com", "localhost"):
-            company = collectors.CompanyAuthority(**{**without_domain.__dict__, "official_domain": bad})
-            with self.subTest(domain=bad), self.assertRaises(collectors.CollectorError):
-                collectors.canonical_query(company, "leave", "official-company")
+        with self.assertRaises(TypeError):
+            collectors.CompanyAuthority(**{**without_domain.__dict__, "official_domain": "attacker.example"})
+        for field, value in (
+            ("canonical_legal_entity", 'Canonical" site:attacker.example'),
+            ("company_id", 'KR-CRN-safe" site:attacker.example'),
+        ):
+            authority = collectors.CompanyAuthority(**{**without_domain.__dict__, field: value})
+            with self.subTest(field=field), self.assertRaises(collectors.CollectorError):
+                collectors.canonical_query(authority, "leave", "official-company")
 
-    def test_cli_rejects_batch_official_domain_override_and_uses_canonical_authority(self):
+    def test_cli_rejects_noncanonical_company_authority_and_has_no_company_override(self):
         cli = load_cli()
-        companies = {
-            self.company.company_id: {
-                "company_id": self.company.company_id,
-                "jurisdiction": "KR",
-                "legal_name": "Canonical Co",
-                "selected_reporting_legal_entity": "Canonical Co Ltd",
-                "official_domain": "canonical.example",
-            }
-        }
-        with self.assertRaises(cli.CollectorError):
-            cli._expand_requests([{
-                "company_id": self.company.company_id,
-                "category_id": "leave",
-                "route_ids": ["official-company"],
-                "official_domain": "attacker.example",
-            }], companies, 10)
-        items = cli._expand_requests([{
-            "company_id": self.company.company_id,
-            "category_id": "leave",
-            "route_ids": ["official-company"],
-        }], companies, 10)
-        self.assertEqual("canonical.example", items[0]["company"].official_domain)
+        canonical_path = ROOT / "docs" / "research" / "company-benefits" / "companies.jsonl"
+        first = json.loads(canonical_path.read_text(encoding="utf-8").splitlines()[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            alternate = Path(tmp) / "companies.jsonl"
+            alternate.write_text(json.dumps({**first, "official_domain": "attacker.example"}) + "\n")
+            with self.assertRaises(cli.CollectorError):
+                cli._canonical_companies(alternate)
+        self.assertNotIn("--companies", cli.build_parser().format_help())
 
     def test_redirects_are_bounded_and_revalidated(self):
         start = "https://example.com/start"
@@ -323,6 +314,7 @@ class CollectorTests(unittest.TestCase):
                 b'https://example.com/?X-Goog-Signature=secret',
                 b'<script>window.config = {"api_key":"super-secret-value"};</script>',
                 b'<a href="https://example.com/?%73ig=abc123">link</a>',
+                b'Authorization: Bearer abc.def.ghi',
             ):
                 result = collectors.FetchResult(
                     requested_url="https://example.com/", final_url="https://example.com/",
@@ -334,6 +326,30 @@ class CollectorTests(unittest.TestCase):
                         self.company, "leave", "official-company", "query", result, store,
                         started_at="2026-11-01T01:00:00Z", completed_at="2026-11-01T01:00:01Z",
                     )
+
+    def test_capture_rejects_bearer_secrets_in_headers_and_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = collectors.CaptureStore(Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT)
+            result = collectors.FetchResult(
+                requested_url="https://example.com/", final_url="https://example.com/",
+                url_chain=["https://example.com/"], status=404,
+                headers={"content-type": "text/html", "authorization": "Bearer abc.def.ghi"}, body=b"missing",
+            )
+            with self.assertRaises(collectors.SecurityError):
+                collectors.build_records(
+                    self.company, "leave", "official-company", "query", result, store,
+                    started_at="2026-11-01T01:00:00Z", completed_at="2026-11-01T01:00:01Z",
+                )
+
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            with self.assertRaises(collectors.SecurityError):
+                collectors.collect_batch(
+                    items, transport=FakeTransport({url: [response(404)]}), capture_store=store,
+                    checkpoint=collectors.BatchCheckpoint(Path(tmp) / "checkpoint.json", collectors.batch_input_sha256(items)),
+                    resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+                    coverage_policy={"authorization": "Bearer policy.secret.value"},
+                )
 
     def test_secure_directory_open_is_descriptor_relative_during_ancestor_swap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -390,7 +406,9 @@ class CollectorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "checkpoint.json"
             checkpoint = collectors.BatchCheckpoint(path, "a" * 64)
-            checkpoint.record("attempt::one", {"result": "no_result", "authorization": "Bearer secret"})
+            with self.assertRaises(collectors.SecurityError):
+                checkpoint.record("attempt::one", {"result": "no_result", "authorization": "Bearer secret"})
+            checkpoint.record("attempt::one", {"result": "no_result"})
             raw = path.read_text()
             self.assertNotIn("secret", raw)
             loaded = collectors.BatchCheckpoint(path, "a" * 64)
@@ -562,6 +580,34 @@ class CollectorTests(unittest.TestCase):
             with self.assertRaises(collectors.CollectorError):
                 collectors.discovery_to_review_package(artifact, [wrong_scope])
 
+    def test_discovery_conversion_recomputes_receipt_and_source_bindings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            artifact = collectors.collect_batch(
+                items, transport=FakeTransport({url: [response(200, b"benefits")]}),
+                capture_store=collectors.CaptureStore(Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT),
+                checkpoint=collectors.BatchCheckpoint(Path(tmp) / "checkpoint.json", collectors.batch_input_sha256(items)),
+                resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+            )
+            attempt = artifact["attempts"][0]
+            cell = {"cell_id": attempt["cell_id"], "company_id": attempt["company_id"],
+                    "category_id": attempt["category_id"], "attempt_ids": [attempt["attempt_id"]]}
+
+            stale_receipt = copy.deepcopy(artifact)
+            stale_receipt["attempts"][0]["started_at"] = "2026-11-01T00:00:00Z"
+            unsigned = {key: value for key, value in stale_receipt.items() if key != "artifact_content_sha256"}
+            stale_receipt["artifact_content_sha256"] = hashlib.sha256(collectors._canonical_json(unsigned)).hexdigest()
+            with self.assertRaisesRegex(collectors.CollectorError, "receipt content hash"):
+                collectors.discovery_to_review_package(stale_receipt, [cell])
+
+            stale_source = copy.deepcopy(artifact)
+            stale_source["sources"][0]["content_sha256"] = "0" * 64
+            unsigned = {key: value for key, value in stale_source.items() if key != "artifact_content_sha256"}
+            stale_source["artifact_content_sha256"] = hashlib.sha256(collectors._canonical_json(unsigned)).hexdigest()
+            with self.assertRaisesRegex(collectors.CollectorError, "source binding"):
+                collectors.discovery_to_review_package(stale_source, [cell])
+
     def test_dns_and_total_deadlines_fail_closed_deterministically(self):
         url = "https://example.com/"
         started = time.monotonic()
@@ -589,6 +635,45 @@ class CollectorTests(unittest.TestCase):
                 policy=collectors.FetchPolicy(retries=0, total_timeout=1.0, dns_timeout=0.1),
                 resolver=lambda h, p: ["93.184.216.34"], monotonic=clock,
             )
+
+    def test_deadline_cleanup_kills_sigterm_ignoring_dns_and_https_workers(self):
+        def assert_reaped(pid_path, action):
+            started = time.monotonic()
+            with self.assertRaises(collectors.TransientFetchError):
+                action()
+            self.assertLess(time.monotonic() - started, 0.2)
+            pid = int(pid_path.read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dns_pid = Path(tmp) / "dns.pid"
+
+            def stubborn_resolver(host, port):
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                dns_pid.write_text(str(os.getpid()))
+                time.sleep(10)
+                return ["93.184.216.34"]
+
+            assert_reaped(dns_pid, lambda: collectors.validate_public_https_url(
+                "https://example.com/", resolver=stubborn_resolver, dns_timeout=0.02,
+            ))
+
+            https_pid = Path(tmp) / "https.pid"
+
+            class StubbornConnection:
+                def __init__(self, *args, **kwargs): pass
+                def connect(self):
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                    https_pid.write_text(str(os.getpid()))
+                    time.sleep(10)
+                def close(self): pass
+
+            with mock.patch.object(collectors, "_PinnedHTTPSConnection", StubbornConnection):
+                assert_reaped(https_pid, lambda: collectors.SecureHTTPTransport().request(
+                    "https://example.com/", connect_timeout=1, read_timeout=1,
+                    max_wire_bytes=100, total_timeout=0.1, resolved_ip="93.184.216.34",
+                ))
 
     def test_batch_rejects_adapters_that_alias_the_same_policy_route(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -626,6 +711,7 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("--dns-timeout", completed.stdout)
         self.assertIn("--total-timeout", completed.stdout)
         self.assertIn("discovery artifact", completed.stdout.lower())
+        self.assertNotIn("--companies", completed.stdout)
 
 
 if __name__ == "__main__":

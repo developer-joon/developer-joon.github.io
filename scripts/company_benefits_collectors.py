@@ -48,6 +48,7 @@ SENSITIVE_RECORD_KEYS = SENSITIVE_QUERY_KEYS | {
 }
 SECRET_TEXT_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"(?i)\b(?:token|password|secret|credential)[\"']?\s*[:=]\s*[\"']?[^\s&#;\"']+"),
     re.compile(r"(?i)\b(?:api[_-]?key|x-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|oauth[_-]?token|client[_-]?secret|authorization)[\"']?\s*[:=]\s*[\"']?[^\s&#;\"']+"),
     re.compile(r"(?i)\b(?:x-amz-[a-z0-9-]+|x-goog-[a-z0-9-]+|signature|sig|awsaccesskeyid|googleaccessid)[\"']?\s*[:=]\s*[\"']?[^\s&#;\"']+"),
     re.compile(r"\b(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{12,}|sk_(?:live|test)_[A-Za-z0-9]{12,})\b"),
@@ -82,14 +83,12 @@ class CompanyAuthority:
     jurisdiction: str
     legal_name: str
     canonical_legal_entity: str
-    official_domain: str | None = None
 
 
 @dataclass(frozen=True)
 class Route:
     route_kind: str
     terms: tuple[str, ...]
-    official_domain_only: bool = False
     policy_route_id: str | None = None
 
 
@@ -97,7 +96,6 @@ ROUTES: Mapping[str, Route] = {
     "official-company": Route(
         "company_recruiting_major_media",
         ("benefits",),
-        True,
         "company-recruiting-media",
     ),
     "official-government": Route("official_government", ("benefits", "regulator", "government")),
@@ -179,6 +177,23 @@ def _resolver_worker(connection, resolver, host: str, port: int) -> None:
         connection.close()
 
 
+def _stop_and_reap(process) -> None:
+    """Bound cleanup without allowing a SIGTERM-ignoring child to survive."""
+    try:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=0.02)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.05)
+        if process.is_alive():
+            raise RuntimeError("worker could not be reaped after SIGKILL")
+        process.join(timeout=0)
+    finally:
+        if not process.is_alive():
+            process.close()
+
+
 def _resolve_bounded(
     resolver: Callable[[str, int], Sequence[str]], host: str, port: int, timeout: float
 ) -> list[str]:
@@ -191,15 +206,18 @@ def _resolve_bounded(
         raise TransientFetchError("bounded DNS workers are unavailable") from exc
     parent, child = context.Pipe(duplex=False)
     process = context.Process(target=_resolver_worker, args=(child, resolver, host, port), daemon=True)
-    process.start()
+    try:
+        process.start()
+    except BaseException as exc:
+        parent.close()
+        child.close()
+        process.close()
+        raise TransientFetchError("DNS worker could not start") from exc
     child.close()
     try:
         if not parent.poll(timeout):
-            process.terminate()
-            process.join(timeout=1)
             raise TransientFetchError(f"DNS lookup timed out for {host}")
         ok, payload = parent.recv()
-        process.join(timeout=1)
         if not ok:
             raise TransientFetchError(f"DNS lookup failed for {host}: {payload}")
         return [str(value) for value in payload]
@@ -207,9 +225,7 @@ def _resolve_bounded(
         raise TransientFetchError(f"DNS worker failed for {host}") from exc
     finally:
         parent.close()
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=1)
+        _stop_and_reap(process)
 
 
 def _public_ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
@@ -365,15 +381,18 @@ class SecureHTTPTransport:
         process = context.Process(
             target=_https_request_worker, args=(child, arguments), daemon=True
         )
-        process.start()
+        try:
+            process.start()
+        except BaseException as exc:
+            parent.close()
+            child.close()
+            process.close()
+            raise TransientFetchError("HTTPS worker could not start") from exc
         child.close()
         try:
             if not parent.poll(timeout):
-                process.terminate()
-                process.join(timeout=1)
                 raise TransientFetchError("total HTTPS request deadline exceeded")
             kind, payload = parent.recv()
-            process.join(timeout=1)
             if kind == "ok" and isinstance(payload, TransportResponse):
                 return payload
             if kind == "security":
@@ -385,9 +404,7 @@ class SecureHTTPTransport:
             raise TransientFetchError("HTTPS worker failed") from exc
         finally:
             parent.close()
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=1)
+            _stop_and_reap(process)
 
     def _request_direct(
         self,
@@ -471,7 +488,7 @@ def _safe_headers(headers: Mapping[str, str]) -> dict[str, str]:
     for key, value in sorted(headers.items(), key=lambda item: str(item[0]).lower()):
         lowered = str(key).lower()
         if lowered in SENSITIVE_RECORD_KEYS:
-            continue
+            raise SecurityError(f"credential response header is prohibited: {lowered}")
         text = str(value)
         _assert_no_secrets(text)
         safe[lowered] = text
@@ -495,6 +512,7 @@ def _bounded_decompress(data: bytes, *, wbits: int, limit: int) -> bytes:
 def _decode_body(response: TransportResponse, policy: FetchPolicy) -> bytes:
     if len(response.body) > policy.max_wire_bytes:
         raise FetchError("response exceeds wire byte limit")
+    _assert_no_secrets(response.body.decode("utf-8", errors="ignore"))
     headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
     encoding = headers.get("content-encoding", "").strip().lower()
     try:
@@ -588,6 +606,8 @@ def fetch_bounded(
             )
         }
         response = _request_with_retries(current, transport, policy, answers, deadline, monotonic)
+        _safe_headers(response.headers)
+        _assert_no_secrets(response.body.decode("utf-8", errors="ignore"))
         chain.append(current)
         if response.status in REDIRECT_STATUSES:
             location = next(
@@ -624,41 +644,31 @@ def fetch_bounded(
     raise FetchError("redirect limit exceeded")
 
 
-def _canonical_hostname(value: str) -> str:
-    if not isinstance(value, str) or value != value.strip() or not value or len(value) > 253:
-        raise CollectorError("invalid official domain")
-    if any(character.isspace() or character in "\"'/?#@:\\" for character in value):
-        raise CollectorError("invalid official domain")
-    try:
-        domain = value.rstrip(".").lower().encode("idna").decode("ascii")
-    except UnicodeError as exc:
-        raise CollectorError("invalid official domain") from exc
-    labels = domain.split(".")
-    if len(labels) < 2 or domain == "localhost" or any(
-        not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
-        or re.fullmatch(r"[a-z0-9-]+", label) is None
-        for label in labels
-    ):
-        raise CollectorError("invalid official domain")
-    return domain
-
-
 def canonical_query(company: CompanyAuthority, category_id: str, route_id: str) -> str:
     if route_id not in ROUTES:
         raise CollectorError(f"unknown route: {route_id}")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,220}", company.company_id) is None:
+        raise CollectorError("invalid canonical company identity")
+    if re.fullmatch(r"[A-Z]{2}", company.jurisdiction) is None:
+        raise CollectorError("invalid canonical company jurisdiction")
+    for value in (company.legal_name, company.canonical_legal_entity):
+        if (
+            not isinstance(value, str)
+            or value != value.strip()
+            or not value
+            or len(value) > 500
+            or any(character in value for character in ('"', "\\", "\r", "\n", "\x00"))
+        ):
+            raise CollectorError("invalid canonical legal entity")
+    if re.fullmatch(r"[a-z][a-z0-9-]{2,63}", category_id) is None:
+        raise CollectorError("invalid category identity")
     route = ROUTES[route_id]
     parts = [
         f'"{company.canonical_legal_entity}"',
         f'"{company.company_id}"',
         f'"{category_id}"',
     ]
-    if route.official_domain_only:
-        if company.official_domain:
-            parts.append(f"site:{_canonical_hostname(company.official_domain)}")
-        else:
-            parts.extend(('"official company"', '"benefits"'))
-    else:
-        parts.extend(f'"{term}"' for term in route.terms)
+    parts.extend(f'"{term}"' for term in route.terms)
     return " ".join(parts)
 
 
@@ -893,6 +903,7 @@ class CaptureStore:
             raise CollectorError("capture is not valid JSON") from exc
         if not isinstance(value, dict):
             raise CollectorError("capture is not an object")
+        _assert_no_secrets(value)
         return value
 
 
@@ -903,6 +914,13 @@ def _capture_envelope(
     query: str,
     result: FetchResult,
 ) -> dict[str, object]:
+    _assert_no_secrets({
+        "query_or_locator": query,
+        "requested_url": result.requested_url,
+        "final_url": result.final_url,
+        "url_chain": result.url_chain,
+        "headers": dict(result.headers),
+    })
     body_text = result.body.decode("utf-8", errors="ignore")
     _assert_no_secrets(body_text)
     try:
@@ -1061,18 +1079,6 @@ def _atomic_json(path: Path, value: object) -> None:
         os.close(directory_fd)
 
 
-def _without_secrets(value: object) -> object:
-    if isinstance(value, dict):
-        return {
-            str(key): _without_secrets(item)
-            for key, item in value.items()
-            if str(key).lower() not in SENSITIVE_RECORD_KEYS
-        }
-    if isinstance(value, list):
-        return [_without_secrets(item) for item in value]
-    return value
-
-
 class BatchCheckpoint:
     def __init__(self, path: Path, input_sha256: str):
         self.path = _path_without_traversal(path, CheckpointError)
@@ -1101,9 +1107,8 @@ class BatchCheckpoint:
         self.completed = completed
 
     def record(self, key: str, result: object) -> None:
-        clean = _without_secrets(result)
-        _assert_no_secrets(clean)
-        self.completed[key] = clean
+        _assert_no_secrets(result)
+        self.completed[key] = result
         value: dict[str, object] = {
             "format_version": 1,
             "input_sha256": self.input_sha256,
@@ -1163,6 +1168,7 @@ def _validate_resumed_entry(
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     if not isinstance(prior, dict) or set(prior) != {"receipt", "source"}:
         raise CheckpointError("checkpoint entry has unsupported fields")
+    _assert_no_secrets(prior)
     receipt = prior.get("receipt")
     source = prior.get("source")
     if not isinstance(receipt, dict):
@@ -1221,6 +1227,7 @@ def _validate_resumed_entry(
         body = base64.b64decode(str(response.get("body_base64", "")), validate=True)
     except (ValueError, TypeError) as exc:
         raise CheckpointError("checkpoint capture body encoding is invalid") from exc
+    _assert_no_secrets(body.decode("utf-8", errors="ignore"))
     if response.get("body_sha256") != hashlib.sha256(body).hexdigest():
         raise CheckpointError("checkpoint capture body hash mismatch")
     status = response.get("status")
@@ -1272,6 +1279,7 @@ def collect_batch(
     now: Callable[[], str],
     coverage_policy: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    _assert_no_secrets(coverage_policy or {})
     ordered = sorted(
         list(items),
         key=lambda item: (
@@ -1353,8 +1361,92 @@ def collect_batch(
         "attempts": attempts,
         "sources": sources,
     }
+    _assert_no_secrets(artifact)
     artifact["artifact_content_sha256"] = hashlib.sha256(_canonical_json(artifact)).hexdigest()
     return artifact
+
+
+def _validate_discovery_bindings(
+    attempts: list[object], sources: list[object]
+) -> tuple[dict[object, dict[str, object]], dict[object, dict[str, object]]]:
+    attempt_by_id: dict[object, dict[str, object]] = {}
+    source_by_id: dict[object, dict[str, object]] = {}
+    _assert_no_secrets({"attempts": attempts, "sources": sources})
+    for attempt in attempts:
+        if not isinstance(attempt, dict) or _schema_errors("research-attempt.schema.json", attempt):
+            raise CollectorError("discovery artifact has an invalid attempt")
+        unsigned_receipt = {
+            key: value for key, value in attempt.items() if key != "receipt_content_sha256"
+        }
+        if attempt.get("receipt_content_sha256") != hashlib.sha256(
+            _canonical_json(unsigned_receipt)
+        ).hexdigest():
+            raise CollectorError("discovery receipt content hash mismatch")
+        company_id = attempt.get("company_id")
+        category_id = attempt.get("category_id")
+        route_id = attempt.get("route_id")
+        if not all(isinstance(value, str) for value in (company_id, category_id, route_id)):
+            raise CollectorError("discovery receipt scope binding is malformed")
+        assert isinstance(company_id, str) and isinstance(category_id, str) and isinstance(route_id, str)
+        if route_id not in ROUTES or canonical_route_id(route_id) != route_id:
+            raise CollectorError("discovery receipt route binding is invalid")
+        if (
+            attempt.get("attempt_id") != attempt_id(company_id, category_id, route_id)
+            or attempt.get("cell_id") != f"cell::{company_id}::{category_id}"
+            or attempt.get("coverage_policy_id") != COVERAGE_POLICY_ID
+            or attempt.get("route_kind") != ROUTES[route_id].route_kind
+        ):
+            raise CollectorError("discovery receipt scope binding mismatch")
+        digest = attempt.get("raw_response_sha256")
+        locator = attempt.get("capture_locator")
+        if not isinstance(digest, str) or not isinstance(locator, str):
+            raise CollectorError("discovery capture binding is malformed")
+        parsed_locator = urllib.parse.urlsplit(locator)
+        if (
+            parsed_locator.scheme != "https"
+            or parsed_locator.query
+            or parsed_locator.fragment
+            or parsed_locator.path.rstrip("/").split("/")[-1] != digest
+        ):
+            raise CollectorError("discovery capture binding mismatch")
+        identifier = attempt.get("attempt_id")
+        if identifier in attempt_by_id:
+            raise CollectorError("discovery artifact has duplicate attempts")
+        attempt_by_id[identifier] = attempt
+    for source in sources:
+        if not isinstance(source, dict) or _schema_errors("source-v2.schema.json", source):
+            raise CollectorError("discovery artifact has an invalid source")
+        identifier = source.get("source_id")
+        if identifier in source_by_id:
+            raise CollectorError("discovery artifact has duplicate sources")
+        source_by_id[identifier] = source
+    source_owners: dict[object, dict[str, object]] = {}
+    for attempt in attempt_by_id.values():
+        ids = attempt.get("source_ids")
+        if not isinstance(ids, list):
+            raise CollectorError("discovery receipt source binding is malformed")
+        expected_count = 1 if attempt.get("result") == "source_found" else 0
+        if len(ids) != expected_count:
+            raise CollectorError("discovery receipt source binding mismatch")
+        for identifier in ids:
+            if identifier not in source_by_id or identifier in source_owners:
+                raise CollectorError("discovery artifact has missing, orphan, or multiply-bound sources")
+            source_owners[identifier] = attempt
+    if set(source_owners) != set(source_by_id):
+        raise CollectorError("discovery artifact has missing or orphan sources")
+    for identifier, source in source_by_id.items():
+        owner = source_owners[identifier]
+        expected_identifier = source_id(
+            str(owner["company_id"]), str(owner["category_id"]), str(owner["route_id"]),
+            str(source.get("url")), str(source.get("content_sha256")),
+        )
+        if (
+            identifier != expected_identifier
+            or source.get("source_tier") != owner.get("route_kind")
+            or source.get("retrieved_at") != owner.get("completed_at")
+        ):
+            raise CollectorError("discovery source binding mismatch")
+    return attempt_by_id, source_by_id
 
 
 def discovery_to_review_package(
@@ -1368,6 +1460,7 @@ def discovery_to_review_package(
     """Cross the review boundary only after every attempt is bound to a decided cell."""
     if artifact.get("artifact_type") != "company-benefits-collector-discovery":
         raise CollectorError("not a collector discovery artifact")
+    _assert_no_secrets(artifact)
     if _schema_errors("collector-discovery-artifact.schema.json", artifact):
         raise CollectorError("collector discovery artifact fails its schema")
     unsigned = {key: value for key, value in artifact.items() if key != "artifact_content_sha256"}
@@ -1377,29 +1470,7 @@ def discovery_to_review_package(
     sources = artifact.get("sources")
     if not isinstance(attempts, list) or not isinstance(sources, list):
         raise CollectorError("discovery artifact records are malformed")
-    attempt_by_id: dict[object, dict[str, object]] = {}
-    source_by_id: dict[object, dict[str, object]] = {}
-    for attempt in attempts:
-        if not isinstance(attempt, dict) or _schema_errors("research-attempt.schema.json", attempt):
-            raise CollectorError("discovery artifact has an invalid attempt")
-        identifier = attempt.get("attempt_id")
-        if identifier in attempt_by_id:
-            raise CollectorError("discovery artifact has duplicate attempts")
-        attempt_by_id[identifier] = attempt
-    for source in sources:
-        if not isinstance(source, dict) or _schema_errors("source-v2.schema.json", source):
-            raise CollectorError("discovery artifact has an invalid source")
-        identifier = source.get("source_id")
-        if identifier in source_by_id:
-            raise CollectorError("discovery artifact has duplicate sources")
-        source_by_id[identifier] = source
-    bound_source_ids = {
-        source_id_value
-        for attempt in attempt_by_id.values()
-        for source_id_value in attempt.get("source_ids", [])
-    }
-    if bound_source_ids != set(source_by_id):
-        raise CollectorError("discovery artifact has missing or orphan sources")
+    attempt_by_id, _ = _validate_discovery_bindings(attempts, sources)
     attempt_ids = set(attempt_by_id)
     bound: set[object] = set()
     for cell in cell_decisions:
@@ -1419,7 +1490,7 @@ def discovery_to_review_package(
             bound.add(identifier)
     if bound != attempt_ids:
         raise CollectorError("review decisions must bind every discovery attempt")
-    return {
+    package = {
         "coverage_policy": dict(artifact.get("coverage_policy") or {}),
         "cells": [dict(cell) for cell in cell_decisions],
         "attempts": list(attempts),
@@ -1428,3 +1499,5 @@ def discovery_to_review_package(
         "community_reports": [dict(value) for value in community_reports],
         "sources": list(sources),
     }
+    _assert_no_secrets(package)
+    return package
