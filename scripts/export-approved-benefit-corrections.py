@@ -75,6 +75,11 @@ TOMBSTONE_VERSION = 2
 TOMBSTONE_CONTROL_DIRECTORY_NAME = ".approved-benefit-correction-export-control"
 TOMBSTONE_KEY_NAME = "tombstone-authentication.key"
 TOMBSTONE_KEY_BYTES = 32
+CAPABILITY_CONTROL_DIRECTORY_NAME = ".approved-benefit-correction-export-capabilities"
+CAPABILITY_PROBE_CONTENTS = {
+    "source": b"approved-benefit-correction-export-capability-source-v1\n",
+    "target": b"approved-benefit-correction-export-capability-target-v1\n",
+}
 
 # The projection deliberately omits submitter/reviewer identity, audit events,
 # provider metadata, tokens, email, and the moderator's internal response.
@@ -738,7 +743,7 @@ def _preflight_cleanup_hook(_stage, _context):
 
 
 def _cleanup_metadata_matches(current, expected):
-    """Match every attribute relied on before destructive probe cleanup."""
+    """Match every security-relevant attribute of persistent control state."""
     return (
         current.st_dev,
         current.st_ino,
@@ -756,22 +761,102 @@ def _cleanup_metadata_matches(current, expected):
     )
 
 
-def _preflight_cleanup_error(root, probe_name, detail, residue_fd=None):
-    residue = root / probe_name if probe_name else root
-    if residue_fd is not None:
-        try:
-            residue = Path(os.readlink(f"/proc/self/fd/{residue_fd}"))
-        except OSError:
-            pass
+def _preflight_cleanup_error(root, _probe_name, detail, residue_fd=None):
+    residue = root / CAPABILITY_CONTROL_DIRECTORY_NAME
     return OSError(
         errno.ESTALE,
-        f"capability preflight cleanup uncertain ({detail}); manual cleanup required; "
-        f"foreign entries and exporter residue preserved at {residue}",
+        f"capability control state uncertain ({detail}); manual recovery required; "
+        f"capability control and every foreign inode preserved at {residue}",
     )
 
 
+def _open_capability_member(control_fd, name, expected):
+    """Open or initialize one persistent probe without ever replacing a name."""
+    created = False
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=control_fd,
+        )
+        created = True
+    except FileExistsError:
+        descriptor = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=control_fd
+        )
+    try:
+        if created:
+            _write_expected_file(descriptor, expected)
+            os.fsync(descriptor)
+            _fsync_directory_fd(control_fd)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+        raw = bytearray()
+        while len(raw) <= len(expected):
+            chunk = os.read(descriptor, len(expected) + 1 - len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        metadata = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=control_fd, follow_symlinks=False)
+        raw = bytes(raw)
+        if (
+            raw not in CAPABILITY_PROBE_CONTENTS.values()
+            or not _secure_owned_mode(metadata, stat.S_ISREG, 0o600)
+            or metadata.st_nlink != 1
+            or not _cleanup_metadata_matches(named, metadata)
+        ):
+            raise OSError(errno.EPERM, f"invalid capability control member {name}")
+        return raw, metadata
+    finally:
+        os.close(descriptor)
+
+
+def _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities):
+    """Return canonical/reversed only for the two captured persistent inodes."""
+    try:
+        if set(os.listdir(control_fd)) != set(CAPABILITY_PROBE_CONTENTS):
+            return None
+        named_control = os.stat(
+            CAPABILITY_CONTROL_DIRECTORY_NAME,
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not _cleanup_metadata_matches(os.fstat(control_fd), control_metadata)
+            or not _cleanup_metadata_matches(named_control, control_metadata)
+            or not _secure_output_root_binding(root, root_fd, root_metadata)
+        ):
+            return None
+        observed = {}
+        for name in CAPABILITY_PROBE_CONTENTS:
+            raw, metadata = _read_regular_file_at(control_fd, name)
+            if not _secure_owned_mode(metadata, stat.S_ISREG, 0o600) or metadata.st_nlink != 1:
+                return None
+            observed[name] = (raw, metadata)
+        source_identity = identities["source"]
+        target_identity = identities["target"]
+        if (
+            observed["source"][0] == CAPABILITY_PROBE_CONTENTS["source"]
+            and _same_inode(observed["source"][1], source_identity)
+            and observed["target"][0] == CAPABILITY_PROBE_CONTENTS["target"]
+            and _same_inode(observed["target"][1], target_identity)
+        ):
+            return "canonical"
+        if (
+            observed["source"][0] == CAPABILITY_PROBE_CONTENTS["target"]
+            and _same_inode(observed["source"][1], target_identity)
+            and observed["target"][0] == CAPABILITY_PROBE_CONTENTS["source"]
+            and _same_inode(observed["target"][1], source_identity)
+        ):
+            return "reversed"
+    except OSError:
+        return None
+    return None
+
+
 def _preflight_publication_platform(output_root):
-    """Prove rename semantics with real entries in the exact private output FS."""
+    """Prove rename semantics using bounded persistent, non-destructive state."""
     if platform.system() != "Linux" or "fork" not in multiprocessing.get_all_start_methods():
         raise OSError(errno.ENOTSUP, "unsupported publication platform")
     root = Path(output_root).absolute()
@@ -779,16 +864,7 @@ def _preflight_publication_platform(output_root):
         root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
     root_fd = None
-    probe_fd = None
-    root_created = False
-    root_metadata = None
-    probe_metadata = None
-    file_metadata = []
-    exchange_completed = False
-    nonce = secrets.token_hex(16)
-    probe_name = f".benefit-export-preflight-{nonce}"
-    names = ("source", "target")
-    contents = (b"preflight-source", b"preflight-target")
+    control_fd = None
     try:
         parent_metadata = os.fstat(parent_fd)
         if (
@@ -802,7 +878,6 @@ def _preflight_publication_platform(output_root):
             raise OSError(errno.ESTALE, "output root parent changed while locking")
         try:
             os.mkdir(root.name, 0o700, dir_fd=parent_fd)
-            root_created = True
             _fsync_directory_fd(parent_fd)
         except FileExistsError:
             pass
@@ -820,151 +895,95 @@ def _preflight_publication_platform(output_root):
         ):
             raise OSError(errno.EPERM, "invalid output root")
 
-        os.mkdir(probe_name, 0o700, dir_fd=root_fd)
-        _fsync_directory_fd(root_fd)
-        probe_fd = os.open(
-            probe_name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
-        )
-        fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        probe_metadata = os.fstat(probe_fd)
-        named_probe = os.stat(probe_name, dir_fd=root_fd, follow_symlinks=False)
-        if (
-            not _secure_owned_mode(probe_metadata, stat.S_ISDIR, 0o700)
-            or not _cleanup_metadata_matches(named_probe, probe_metadata)
-        ):
-            raise OSError(errno.EPERM, "invalid capability probe directory")
-
-        for name, raw in zip(names, contents):
-            descriptor = os.open(
-                name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600,
-                dir_fd=probe_fd,
+        try:
+            os.mkdir(CAPABILITY_CONTROL_DIRECTORY_NAME, 0o700, dir_fd=root_fd)
+            _fsync_directory_fd(root_fd)
+        except FileExistsError:
+            pass
+        try:
+            control_fd = os.open(
+                CAPABILITY_CONTROL_DIRECTORY_NAME,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=root_fd,
             )
-            try:
-                _write_expected_file(descriptor, raw)
-                os.fsync(descriptor)
-                metadata = os.fstat(descriptor)
-                if not _secure_owned_mode(metadata, stat.S_ISREG, 0o600) or metadata.st_nlink != 1:
-                    raise OSError(errno.EPERM, "invalid capability probe file")
-                file_metadata.append(metadata)
-            finally:
-                os.close(descriptor)
-        _fsync_directory_fd(probe_fd)
+        except OSError as exc:
+            raise _preflight_cleanup_error(
+                root, None, f"control directory cannot be opened: {exc}"
+            ) from exc
+        fcntl.flock(control_fd, fcntl.LOCK_EX)
+        control_metadata = os.fstat(control_fd)
+        named_control = os.stat(
+            CAPABILITY_CONTROL_DIRECTORY_NAME, dir_fd=root_fd, follow_symlinks=False
+        )
+        if (
+            not _secure_owned_mode(control_metadata, stat.S_ISDIR, 0o700)
+            or not _cleanup_metadata_matches(named_control, control_metadata)
+        ):
+            raise _preflight_cleanup_error(root, None, "control directory changed")
+
+        try:
+            opened_members = {
+                name: _open_capability_member(control_fd, name, raw)
+                for name, raw in CAPABILITY_PROBE_CONTENTS.items()
+            }
+        except OSError as exc:
+            raise _preflight_cleanup_error(
+                root, None, f"control member cannot be authenticated: {exc}"
+            ) from exc
+        identities = {}
+        for expected_name, expected_raw in CAPABILITY_PROBE_CONTENTS.items():
+            matches = [metadata for raw, metadata in opened_members.values() if raw == expected_raw]
+            if len(matches) != 1:
+                raise _preflight_cleanup_error(root, None, "duplicated or missing probe identity")
+            identities[expected_name] = matches[0]
+        context = {"root": root, "root_fd": root_fd, "probe_fd": control_fd}
+        state = _capability_state(
+            root, root_fd, root_metadata, control_fd, control_metadata, identities
+        )
+        if state is None:
+            raise _preflight_cleanup_error(root, None, "foreign or invalid inventory")
 
         function = _renameat2_function()
+        if state == "reversed":
+            _preflight_cleanup_hook("before_restart_restore", context)
+            ctypes.set_errno(0)
+            if function(control_fd, b"source", control_fd, b"target", 2) != 0:
+                raise OSError(ctypes.get_errno(), "capability restart restoration failed")
+            _fsync_directory_fd(control_fd)
+            if _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities) != "canonical":
+                raise _preflight_cleanup_error(root, None, "restart restoration changed foreign state")
+
         ctypes.set_errno(0)
-        result = function(probe_fd, names[0].encode(), probe_fd, names[1].encode(), 1)
+        result = function(control_fd, b"source", control_fd, b"target", 1)
         error_number = ctypes.get_errno()
         if result == 0 or error_number != errno.EEXIST:
             raise OSError(errno.ENOTSUP, "renameat2 no-replace is unsupported on output filesystem")
-        for index, (name, raw) in enumerate(zip(names, contents)):
-            current_raw, current = _read_regular_file_at(probe_fd, name)
-            if current_raw != raw or not _same_inode(current, file_metadata[index]):
-                raise OSError(errno.ENOTSUP, "renameat2 no-replace semantics are incorrect")
+        if _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities) != "canonical":
+            raise _preflight_cleanup_error(root, None, "no-replace changed control state")
 
+        _preflight_cleanup_hook("before_test_exchange", context)
         ctypes.set_errno(0)
-        result = function(probe_fd, names[0].encode(), probe_fd, names[1].encode(), 2)
+        result = function(control_fd, b"source", control_fd, b"target", 2)
         if result != 0:
             raise OSError(errno.ENOTSUP, "renameat2 exchange is unsupported on output filesystem")
-        exchange_completed = True
-        for index, (name, raw) in enumerate(zip(names, reversed(contents))):
-            current_raw, current = _read_regular_file_at(probe_fd, name)
-            if current_raw != raw or not _same_inode(current, file_metadata[1 - index]):
-                raise OSError(errno.ENOTSUP, "renameat2 exchange semantics are incorrect")
-        _fsync_directory_fd(probe_fd)
+        _fsync_directory_fd(control_fd)
+        _preflight_cleanup_hook("after_test_exchange", context)
+        if _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities) != "reversed":
+            raise _preflight_cleanup_error(root, None, "exchange changed foreign state")
+
+        _preflight_cleanup_hook("before_canonical_restore", context)
+        ctypes.set_errno(0)
+        if function(control_fd, b"source", control_fd, b"target", 2) != 0:
+            raise OSError(errno.ENOTSUP, "renameat2 canonical restoration failed")
+        _fsync_directory_fd(control_fd)
+        if _capability_state(root, root_fd, root_metadata, control_fd, control_metadata, identities) != "canonical":
+            raise _preflight_cleanup_error(root, None, "canonical restoration changed foreign state")
     finally:
-        cleanup_error = None
-        context = {
-            "root": root,
-            "root_fd": root_fd,
-            "probe_name": probe_name,
-            "probe_fd": probe_fd,
-            "names": names,
-        }
-        if probe_fd is not None:
-            try:
-                _preflight_cleanup_hook("before_probe_cleanup", context)
-                if len(file_metadata) != len(names) or set(os.listdir(probe_fd)) != set(names):
-                    raise _preflight_cleanup_error(root, probe_name, "probe inventory changed")
-                if probe_metadata is None or not _cleanup_metadata_matches(
-                    os.fstat(probe_fd), probe_metadata
-                ):
-                    raise _preflight_cleanup_error(root, probe_name, "probe descriptor changed")
-                named_probe = os.stat(
-                    probe_name, dir_fd=root_fd, follow_symlinks=False
-                )
-                if not _cleanup_metadata_matches(named_probe, probe_metadata):
-                    raise _preflight_cleanup_error(root, probe_name, "probe pathname changed")
-                expected_metadata = (
-                    tuple(reversed(file_metadata))
-                    if exchange_completed
-                    else tuple(file_metadata)
-                )
-                for name, expected in zip(names, expected_metadata):
-                    current = os.stat(name, dir_fd=probe_fd, follow_symlinks=False)
-                    if not _cleanup_metadata_matches(current, expected):
-                        raise _preflight_cleanup_error(
-                            root, probe_name, f"probe member {name} changed"
-                        )
-                for name, expected in zip(names, expected_metadata):
-                    current = os.stat(name, dir_fd=probe_fd, follow_symlinks=False)
-                    if not _cleanup_metadata_matches(current, expected):
-                        raise _preflight_cleanup_error(
-                            root, probe_name, f"probe member {name} changed before unlink"
-                        )
-                    os.unlink(name, dir_fd=probe_fd)
-                _fsync_directory_fd(probe_fd)
-                _preflight_cleanup_hook("before_probe_directory_cleanup", context)
-                if os.listdir(probe_fd):
-                    raise _preflight_cleanup_error(root, probe_name, "probe directory is not empty")
-                if not _cleanup_metadata_matches(os.fstat(probe_fd), probe_metadata):
-                    raise _preflight_cleanup_error(root, probe_name, "probe descriptor changed")
-                named_probe = os.stat(
-                    probe_name, dir_fd=root_fd, follow_symlinks=False
-                )
-                if not _cleanup_metadata_matches(named_probe, probe_metadata):
-                    raise _preflight_cleanup_error(root, probe_name, "probe pathname changed")
-                os.rmdir(probe_name, dir_fd=root_fd)
-                _fsync_directory_fd(root_fd)
-            except OSError as exc:
-                cleanup_error = _preflight_cleanup_error(
-                    root, probe_name, str(exc), residue_fd=probe_fd
-                )
-            finally:
-                os.close(probe_fd)
-                probe_fd = None
+        if control_fd is not None:
+            os.close(control_fd)
         if root_fd is not None:
-            try:
-                if cleanup_error is None and root_created:
-                    _preflight_cleanup_hook("before_root_cleanup", context)
-                    if os.listdir(root_fd):
-                        raise _preflight_cleanup_error(root, probe_name, "output root is not empty")
-                    current_root = os.fstat(root_fd)
-                    if (
-                        root_metadata is None
-                        or not _cleanup_metadata_matches(current_root, root_metadata)
-                        or not _root_path_still_names_fd(root, root_fd)
-                    ):
-                        raise _preflight_cleanup_error(root, probe_name, "output root pathname changed")
-                    named_root = os.stat(
-                        root.name, dir_fd=parent_fd, follow_symlinks=False
-                    )
-                    if not _cleanup_metadata_matches(named_root, root_metadata):
-                        raise _preflight_cleanup_error(root, probe_name, "output root pathname changed")
-                    os.rmdir(root.name, dir_fd=parent_fd)
-                    _fsync_directory_fd(parent_fd)
-            except OSError as exc:
-                cleanup_error = _preflight_cleanup_error(
-                    root, probe_name, str(exc), residue_fd=root_fd
-                )
-            finally:
-                os.close(root_fd)
+            os.close(root_fd)
         os.close(parent_fd)
-        if cleanup_error is not None:
-            raise cleanup_error
 
 
 def _open_secure_output_root(output_root):
@@ -1092,64 +1111,9 @@ def _root_path_still_names_fd(root, root_fd):
     )
 
 
-def _remove_directory_contents(directory_fd):
-    """Remove a directory tree through descriptors without following links."""
-    for name in os.listdir(directory_fd):
-        try:
-            os.unlink(name, dir_fd=directory_fd)
-            continue
-        except FileNotFoundError:
-            continue
-        except IsADirectoryError:
-            pass
-        child_fd = os.open(
-            name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=directory_fd,
-        )
-        try:
-            opened_child = os.fstat(child_fd)
-            _remove_directory_contents(child_fd)
-            named_child = os.stat(
-                name, dir_fd=directory_fd, follow_symlinks=False
-            )
-            if not stat.S_ISDIR(named_child.st_mode) or not _same_inode(
-                opened_child, named_child
-            ):
-                raise OSError(errno.ESTALE, "staging member changed during cleanup")
-        finally:
-            os.close(child_fd)
-        os.rmdir(name, dir_fd=directory_fd)
-
-
 def _remove_staging(root_fd, staging_name, _expected_names, expected_directory=None):
-    if expected_directory is None:
-        return
-    try:
-        staging_fd = os.open(
-            staging_name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            dir_fd=root_fd,
-        )
-    except FileNotFoundError:
-        return
-    try:
-        if expected_directory is not None and not _same_inode(
-            os.fstat(staging_fd), expected_directory
-        ):
-            return
-        _remove_directory_contents(staging_fd)
-    finally:
-        os.close(staging_fd)
-    try:
-        current = os.stat(staging_name, dir_fd=root_fd, follow_symlinks=False)
-        if expected_directory is not None and not _same_inode(
-            current, expected_directory
-        ):
-            return
-        os.rmdir(staging_name, dir_fd=root_fd)
-    except FileNotFoundError:
-        pass
+    """Preserve unpublished state; Linux has no atomic compare-and-delete API."""
+    return
 
 
 def _read_tombstone_key_bytes(descriptor):
@@ -1494,7 +1458,7 @@ def _remove_exact_open_directory(
     expected,
     expected_files,
 ):
-    """Remove only an exact opened sentinel directory at its verified name."""
+    """Preserve a sentinel: pathname deletion cannot be inode-conditional."""
     if not _directory_fd_matches(
         root_fd,
         name,
@@ -1504,20 +1468,7 @@ def _remove_exact_open_directory(
         expected_files=expected_files,
     ):
         raise OSError(errno.ESTALE, "sentinel cleanup identity changed")
-    for member_name, member_metadata in expected_files.items():
-        current = os.stat(
-            member_name, dir_fd=directory_fd, follow_symlinks=False
-        )
-        if not stat.S_ISREG(current.st_mode) or not _same_inode(
-            current, member_metadata
-        ):
-            raise OSError(errno.ESTALE, "sentinel member identity changed")
-        os.unlink(member_name, dir_fd=directory_fd)
-    if os.listdir(directory_fd) or not _directory_binding_matches(
-        root_fd, name, directory_fd, expected_directory
-    ):
-        raise OSError(errno.ESTALE, "sentinel cleanup binding changed")
-    os.rmdir(name, dir_fd=root_fd)
+    return
 
 
 def _rollback_published_directory(
@@ -1605,18 +1556,8 @@ def _rollback_published_directory(
                             errno.ESTALE,
                             "published snapshot validation failed; rollback tombstone changed",
                         )
-                    _remove_directory_contents(captured_fd)
-                    if not _directory_binding_matches(
-                        root_fd,
-                        quarantine_name,
-                        captured_fd,
-                        captured_directory,
-                    ):
-                        raise OSError(
-                            errno.ESTALE,
-                            "published snapshot validation failed; quarantine identity changed",
-                        )
-                    os.rmdir(quarantine_name, dir_fd=root_fd)
+                    # Preserve the invalid publication under its quarantine name.
+                    # Linux pathname removal cannot atomically require this inode.
                     _fsync_directory_fd(root_fd)
                     return
 

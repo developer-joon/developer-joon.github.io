@@ -449,7 +449,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 self.exporter._fsync_directory_fd = original_fsync
 
             self.assertFalse((root / version).exists())
-            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
             target = self.exporter.publish_snapshot(root, version, candidates)
             self.assertTrue((target / "manifest.json").is_file())
 
@@ -594,7 +594,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 {"candidates.jsonl", "manifest.json"},
                 {path.name for path in target.iterdir()},
             )
-            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
 
     def test_forged_or_malformed_tombstones_are_mismatches(self):
         candidates = self.build_snapshot([row()])
@@ -810,7 +810,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                     self.exporter._rename_noreplace = original_noreplace
                 self.assertEqual(bytearray(len(key)), key)
 
-    def test_concurrent_retries_of_tombstone_converge_without_leftovers(self):
+    def test_concurrent_retries_converge_and_preserve_displaced_control_state(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
@@ -844,7 +844,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
                 {"candidates.jsonl", "manifest.json"},
                 {path.name for path in target.iterdir()},
             )
-            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
 
     def test_tombstone_retry_restores_foreign_target_winning_exchange_race(self):
         candidates = self.build_snapshot([row()])
@@ -900,9 +900,9 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             self.assertTrue(raced)
             self.assertEqual(b"foreign data", (target / "foreign-marker").read_bytes())
             self.assertTrue((root / "original-tombstone").is_dir())
-            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
 
-    def test_retry_exchange_removes_displaced_owned_tombstone_after_foreign_replacement(self):
+    def test_retry_exchange_preserves_displaced_tombstone_after_foreign_replacement(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"
         with tempfile.TemporaryDirectory() as directory:
@@ -955,7 +955,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
 
             self.assertTrue(replaced)
             self.assertEqual(b"foreign data", (target / "foreign-marker").read_bytes())
-            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
 
     def test_rollback_exchange_restores_replacement_arriving_after_validation(self):
         candidates = self.build_snapshot([row()])
@@ -1046,7 +1046,7 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             self.assertTrue(replaced)
             self.assertEqual(replacement_marker, (target / "replacement-marker").read_bytes())
             self.assertFalse(any("quarantine" in path.name for path in root.iterdir()))
-            self.assertFalse(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
+            self.assertTrue(any(path.name.startswith(f".{version}-") for path in root.iterdir()))
 
     def test_rollback_fails_closed_when_atomic_exchange_is_unavailable(self):
         candidates = self.build_snapshot([row()])
@@ -1117,6 +1117,43 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             finally:
                 os.close(root_fd)
             self.assertEqual("attacker", replacement.read_text(encoding="utf-8"))
+
+    def test_publication_cleanup_never_calls_pathname_unlink_or_rmdir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.snapshot_root(directory)
+            staging = root / ".snapshot-staging"
+            staging.mkdir(mode=0o700)
+            member = staging / "manifest.json"
+            member.write_text("ours", encoding="utf-8")
+            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            staging_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
+            original_unlink = self.exporter.os.unlink
+            original_rmdir = self.exporter.os.rmdir
+            calls = []
+            self.exporter.os.unlink = lambda *args, **kwargs: calls.append(("unlink", args, kwargs))
+            self.exporter.os.rmdir = lambda *args, **kwargs: calls.append(("rmdir", args, kwargs))
+            try:
+                self.exporter._remove_staging(
+                    root_fd,
+                    staging.name,
+                    {member.name},
+                    expected_directory=staging.stat(),
+                )
+                self.exporter._remove_exact_open_directory(
+                    root_fd,
+                    staging.name,
+                    staging_fd,
+                    staging.stat(),
+                    {member.name: member.read_bytes()},
+                    {member.name: member.stat()},
+                )
+            finally:
+                self.exporter.os.unlink = original_unlink
+                self.exporter.os.rmdir = original_rmdir
+                os.close(staging_fd)
+                os.close(root_fd)
+            self.assertEqual([], calls)
+            self.assertEqual("ours", member.read_text(encoding="utf-8"))
 
     def test_applied_version_binding_requires_independently_verified_manifest_hash(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1283,8 +1320,8 @@ for index in range(1000):
                         resolver=self.public_resolver,
                         process_factory=process_factory,
                     )
-                self.assertFalse(output_root.exists())
-                self.assertEqual([], list(base.iterdir()))
+                self.assertTrue(output_root.is_dir())
+                self.assert_canonical_capability_control(output_root)
         finally:
             self.exporter.MAX_SNAPSHOT_BYTES = original_limit
         self.assertEqual(1, len(launched))
@@ -1332,7 +1369,23 @@ for index in range(1000):
             self.assertFalse(root.exists())
             self.assertFalse((base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME).exists())
 
-    def test_preflight_rejects_false_enoent_without_leaving_probe_artifacts(self):
+    def capability_control(self, root):
+        return root / self.exporter.CAPABILITY_CONTROL_DIRECTORY_NAME
+
+    def assert_canonical_capability_control(self, root):
+        control = self.capability_control(root)
+        self.assertEqual(
+            set(self.exporter.CAPABILITY_PROBE_CONTENTS),
+            {entry.name for entry in control.iterdir()},
+        )
+        for name, expected in self.exporter.CAPABILITY_PROBE_CONTENTS.items():
+            entry = control / name
+            self.assertEqual(expected, entry.read_bytes())
+            metadata = entry.stat()
+            self.assertEqual(0o600, metadata.st_mode & 0o777)
+            self.assertEqual(1, metadata.st_nlink)
+
+    def test_preflight_rejects_false_enoent_and_preserves_persistent_control(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "snapshots"
@@ -1349,16 +1402,20 @@ for index in range(1000):
                     self.exporter._preflight_publication_platform(root)
             finally:
                 self.exporter._renameat2_function = original
-            self.assertFalse(root.exists())
-            self.assertEqual([], list(base.iterdir()))
+            self.assertTrue(root.is_dir())
+            self.assertTrue(self.capability_control(root).is_dir())
 
-    def test_preflight_proves_real_noreplace_and_exchange_semantics(self):
+    def test_preflight_proves_semantics_and_keeps_bounded_canonical_control(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "snapshots"
-            self.exporter._preflight_publication_platform(root)
-            self.assertFalse(root.exists())
-            self.assertEqual([], list(base.iterdir()))
+            for _ in range(20):
+                self.exporter._preflight_publication_platform(root)
+                self.assert_canonical_capability_control(root)
+            self.assertEqual(
+                [self.exporter.CAPABILITY_CONTROL_DIRECTORY_NAME],
+                [entry.name for entry in root.iterdir()],
+            )
 
     def test_preflight_fixture_is_inside_exact_private_output_root(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1372,7 +1429,9 @@ for index in range(1000):
                 self.assertEqual(source_fd, target_fd)
                 probe_path = Path(os.readlink(f"/proc/self/fd/{source_fd}"))
                 self.assertEqual(root, probe_path.parent)
-                self.assertTrue(probe_path.name.startswith(".benefit-export-preflight-"))
+                self.assertEqual(
+                    self.exporter.CAPABILITY_CONTROL_DIRECTORY_NAME, probe_path.name
+                )
                 self.assertEqual(0o700, os.fstat(source_fd).st_mode & 0o777)
                 return real_function(source_fd, source, target_fd, target, flags)
 
@@ -1381,9 +1440,8 @@ for index in range(1000):
                 self.exporter._preflight_publication_platform(root)
             finally:
                 self.exporter._renameat2_function = original
-            self.assertEqual([1, 2], observed)
-            self.assertFalse(root.exists())
-            self.assertEqual([], list(Path(directory).iterdir()))
+            self.assertEqual([1, 2, 2], observed)
+            self.assert_canonical_capability_control(root)
 
     def test_preflight_fails_closed_for_unsupported_filesystem_errors(self):
         for unsupported_errno in (errno.ENOSYS, errno.EOPNOTSUPP, errno.EINVAL):
@@ -1403,143 +1461,152 @@ for index in range(1000):
                         self.exporter._preflight_publication_platform(root)
                 finally:
                     self.exporter._renameat2_function = original
-                self.assertFalse(root.exists())
-                self.assertEqual([], list(base.iterdir()))
+                self.assertTrue(root.is_dir())
+                self.assertTrue(self.capability_control(root).is_dir())
 
-    def _run_adversarial_preflight_cleanup(
-        self,
-        mutate,
-        verify,
-        *,
-        preexisting_root=False,
-        stage="before_probe_cleanup",
-    ):
-        candidates = self.build_snapshot([row()])
+    def test_preflight_never_calls_unlink_or_rmdir_at_destructive_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            self.exporter._preflight_publication_platform(root)
+            original_unlink = self.exporter.os.unlink
+            original_rmdir = self.exporter.os.rmdir
+            calls = []
+            self.exporter.os.unlink = lambda *args, **kwargs: calls.append(("unlink", args, kwargs))
+            self.exporter.os.rmdir = lambda *args, **kwargs: calls.append(("rmdir", args, kwargs))
+            try:
+                for _ in range(5):
+                    self.exporter._preflight_publication_platform(root)
+            finally:
+                self.exporter.os.unlink = original_unlink
+                self.exporter.os.rmdir = original_rmdir
+            self.assertEqual([], calls)
+            self.assert_canonical_capability_control(root)
+
+    def test_preflight_restart_restores_interrupted_exchange(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            original = self.exporter._preflight_cleanup_hook
+
+            def interrupt(stage, _context):
+                if stage == "after_test_exchange":
+                    raise RuntimeError("simulated interruption")
+
+            self.exporter._preflight_cleanup_hook = interrupt
+            try:
+                with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                    self.exporter._preflight_publication_platform(root)
+            finally:
+                self.exporter._preflight_cleanup_hook = original
+            control = self.capability_control(root)
+            self.assertEqual(
+                self.exporter.CAPABILITY_PROBE_CONTENTS["target"],
+                (control / "source").read_bytes(),
+            )
+            self.exporter._preflight_publication_platform(root)
+            self.assert_canonical_capability_control(root)
+
+    def test_preflight_foreign_insertion_fails_closed_without_deletion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            self.exporter._preflight_publication_platform(root)
+            foreign = self.capability_control(root) / "foreign"
+            foreign.write_bytes(b"foreign inode")
+            with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
+                self.exporter._preflight_publication_platform(root)
+            self.assertEqual(b"foreign inode", foreign.read_bytes())
+
+    def test_preflight_hardlinked_member_fails_closed_and_preserves_both_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            self.exporter._preflight_publication_platform(root)
+            control = self.capability_control(root)
+            outside = root / "foreign-hardlink"
+            os.link(control / "source", outside, follow_symlinks=False)
+            with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
+                self.exporter._preflight_publication_platform(root)
+            self.assertTrue((control / "source").is_file())
+            self.assertTrue(outside.is_file())
+            self.assertEqual(2, outside.stat().st_nlink)
+
+    def test_preflight_replaced_member_at_exchange_boundary_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            self.exporter._preflight_publication_platform(root)
+            original = self.exporter._preflight_cleanup_hook
+            displaced = self.capability_control(root) / "displaced-source"
+
+            def replace(stage, context):
+                if stage != "before_test_exchange":
+                    return
+                control = self.capability_control(root)
+                (control / "source").rename(displaced)
+                (control / "source").write_bytes(b"foreign replacement")
+                (control / "source").chmod(0o600)
+
+            self.exporter._preflight_cleanup_hook = replace
+            try:
+                with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
+                    self.exporter._preflight_publication_platform(root)
+            finally:
+                self.exporter._preflight_cleanup_hook = original
+            self.assertEqual(b"foreign replacement", (self.capability_control(root) / "target").read_bytes())
+            self.assertEqual(
+                self.exporter.CAPABILITY_PROBE_CONTENTS["source"], displaced.read_bytes()
+            )
+
+    def test_preflight_replaced_control_directory_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "snapshots"
+            self.exporter._preflight_publication_platform(root)
+            original = self.exporter._preflight_cleanup_hook
+            displaced = root / "displaced-capability-control"
+
+            def replace(stage, _context):
+                if stage != "before_test_exchange":
+                    return
+                self.capability_control(root).rename(displaced)
+                replacement = self.capability_control(root)
+                replacement.mkdir(mode=0o700)
+                (replacement / "foreign-marker").write_bytes(b"foreign directory")
+
+            self.exporter._preflight_cleanup_hook = replace
+            try:
+                with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
+                    self.exporter._preflight_publication_platform(root)
+            finally:
+                self.exporter._preflight_cleanup_hook = original
+            self.assertEqual(
+                b"foreign directory",
+                (self.capability_control(root) / "foreign-marker").read_bytes(),
+            )
+            self.assertTrue(displaced.is_dir())
+            self.assertFalse((root / "approved-2026-11-01-v1").exists())
+
+    def test_preflight_replaced_output_root_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "snapshots"
-            if preexisting_root:
+            self.exporter._preflight_publication_platform(root)
+            original = self.exporter._preflight_cleanup_hook
+            displaced = base / "displaced-output-root"
+
+            def replace(stage, _context):
+                if stage != "before_test_exchange":
+                    return
+                root.rename(displaced)
                 root.mkdir(mode=0o700)
-            original_hook = self.exporter._preflight_cleanup_hook
-            observed = {}
+                (root / "foreign-marker").write_bytes(b"foreign root")
 
-            def hook(current_stage, context):
-                if current_stage == stage:
-                    observed.update(mutate(base, root, context) or {})
-
-            self.exporter._preflight_cleanup_hook = hook
+            self.exporter._preflight_cleanup_hook = replace
             try:
-                with self.assertRaisesRegex(
-                    OSError, "manual cleanup required.*residue"
-                ) as caught:
-                    self.exporter.publish_snapshot(
-                        root, "approved-2026-11-01-v1", candidates
-                    )
-                observed["diagnostic"] = str(caught.exception)
+                with self.assertRaisesRegex(OSError, "manual recovery.*capability control"):
+                    self.exporter._preflight_publication_platform(root)
             finally:
-                self.exporter._preflight_cleanup_hook = original_hook
-
+                self.exporter._preflight_cleanup_hook = original
+            self.assertEqual(b"foreign root", (root / "foreign-marker").read_bytes())
+            self.assertTrue((displaced / self.exporter.CAPABILITY_CONTROL_DIRECTORY_NAME).is_dir())
             self.assertFalse((root / "approved-2026-11-01-v1").exists())
-            self.assertFalse(
-                (base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME).exists()
-            )
-            verify(base, root, observed)
-
-    def test_preflight_cleanup_preserves_replaced_probe_file_and_fails_closed(self):
-        def replace_probe(_base, _root, context):
-            name = context["names"][0]
-            os.unlink(name, dir_fd=context["probe_fd"])
-            replacement = os.open(
-                name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=context["probe_fd"],
-            )
-            try:
-                os.write(replacement, b"foreign replacement")
-                os.fsync(replacement)
-            finally:
-                os.close(replacement)
-            return {"probe_name": context["probe_name"], "file_name": name}
-
-        def verify_replacement(base, root, observed):
-            replacement = root / observed["probe_name"] / observed["file_name"]
-            self.assertEqual(b"foreign replacement", replacement.read_bytes())
-            self.assertTrue(root.exists())
-            self.assertTrue(base.exists())
-
-        self._run_adversarial_preflight_cleanup(
-            replace_probe, verify_replacement, preexisting_root=True
-        )
-
-    def test_preflight_cleanup_preserves_hardlinked_probe_and_fails_closed(self):
-        def hardlink_probe(_base, _root, context):
-            linked_name = "foreign-hardlink"
-            os.link(
-                context["names"][0],
-                linked_name,
-                src_dir_fd=context["probe_fd"],
-                dst_dir_fd=context["root_fd"],
-                follow_symlinks=False,
-            )
-            return {"probe_name": context["probe_name"], "linked_name": linked_name}
-
-        def verify_hardlink(_base, root, observed):
-            probe = root / observed["probe_name"]
-            self.assertTrue((root / observed["linked_name"]).is_file())
-            self.assertEqual(2, (root / observed["linked_name"]).stat().st_nlink)
-            self.assertTrue((probe / "source").is_file())
-
-        self._run_adversarial_preflight_cleanup(hardlink_probe, verify_hardlink)
-
-    def test_preflight_cleanup_preserves_foreign_insertion_and_fails_closed(self):
-        def insert_foreign(_base, _root, context):
-            foreign_name = "foreign-insertion"
-            descriptor = os.open(
-                foreign_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=context["probe_fd"],
-            )
-            try:
-                os.write(descriptor, b"foreign insertion")
-            finally:
-                os.close(descriptor)
-            return {"probe_name": context["probe_name"], "foreign_name": foreign_name}
-
-        def verify_insertion(_base, root, observed):
-            foreign = root / observed["probe_name"] / observed["foreign_name"]
-            self.assertEqual(b"foreign insertion", foreign.read_bytes())
-
-        self._run_adversarial_preflight_cleanup(
-            insert_foreign,
-            verify_insertion,
-            stage="before_probe_directory_cleanup",
-        )
-
-    def test_preflight_cleanup_preserves_replaced_probe_directory(self):
-        def replace_probe_directory(_base, root, context):
-            displaced = root / "exporter-probe-residue"
-            (root / context["probe_name"]).rename(displaced)
-            replacement = root / context["probe_name"]
-            replacement.mkdir(mode=0o700)
-            (replacement / "foreign-marker").write_bytes(b"foreign probe directory")
-            return {"displaced": displaced, "probe_name": context["probe_name"]}
-
-        def verify_probe_replacement(_base, root, observed):
-            replacement = root / observed["probe_name"]
-            self.assertEqual(
-                b"foreign probe directory",
-                (replacement / "foreign-marker").read_bytes(),
-            )
-            self.assertTrue(observed["displaced"].is_dir())
-            self.assertIn(str(observed["displaced"]), observed["diagnostic"])
-
-        self._run_adversarial_preflight_cleanup(
-            replace_probe_directory,
-            verify_probe_replacement,
-            stage="before_probe_directory_cleanup",
-        )
+            self.assertFalse((root / self.exporter.TOMBSTONE_MARKER_NAME).exists())
 
     def test_preflight_never_removes_preexisting_output_root(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1549,25 +1616,7 @@ for index in range(1000):
             self.exporter._preflight_publication_platform(root)
             after = root.stat()
             self.assertEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
-            self.assertEqual([], list(root.iterdir()))
-
-    def test_preflight_cleanup_preserves_replacement_output_root_and_owned_residue(self):
-        def replace_root(base, root, context):
-            displaced = base / "exporter-residue"
-            root.rename(displaced)
-            root.mkdir(mode=0o700)
-            (root / "foreign-marker").write_bytes(b"foreign root")
-            return {"displaced": displaced, "probe_name": context["probe_name"]}
-
-        def verify_root_replacement(_base, root, observed):
-            self.assertEqual(b"foreign root", (root / "foreign-marker").read_bytes())
-            self.assertTrue(observed["displaced"].is_dir())
-            self.assertEqual([], list(observed["displaced"].iterdir()))
-            self.assertIn(str(observed["displaced"]), observed["diagnostic"])
-
-        self._run_adversarial_preflight_cleanup(
-            replace_root, verify_root_replacement, stage="before_root_cleanup"
-        )
+            self.assert_canonical_capability_control(root)
 
     def test_psql_timeout_kills_pipe_holding_descendants_with_a_bounded_deadline(self):
         launched = []
