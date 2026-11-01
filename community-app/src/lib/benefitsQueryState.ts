@@ -91,7 +91,7 @@ export function conditionGroup(company: CompanyListing, state: QueryState): { gr
   const wanted = state.preferred_categories.length ? state.preferred_categories : presetCategories(state.preset)
   const outcomes = wanted.map((category) => outcomeFor(company, category))
   if (!outcomes.length || outcomes.every((outcome) => outcome.kind === 'insufficient_evidence')) return { group: 'insufficient_evidence', reasons: wanted.map((category) => `${category}: 게시 가능한 근거 부족`) }
-  const evidenced = outcomes.filter((outcome) => outcome.kind === 'evidenced')
+  const evidenced = outcomes.filter((outcome): outcome is Extract<typeof outcome, { scope: unknown }> => outcome.kind === 'evidenced' && 'scope' in outcome)
   const mismatch = evidenced.some((outcome) => (state.country && outcome.scope.countries.length > 0 && !outcome.scope.countries.includes(state.country)) || (state.role && outcome.scope.roles.length > 0 && !outcome.scope.roles.includes(state.role)) || (state.employment_type && outcome.scope.employment_types.length > 0 && !outcome.scope.employment_types.includes(state.employment_type)))
   if (mismatch) return { group: 'scope_mismatch', reasons: ['선택한 국가·직군·고용형태가 공개 적용 범위와 다릅니다.'] }
   const unknown = evidenced.some((outcome) => (state.country && outcome.scope.countries.length === 0) || (state.role && outcome.scope.roles.length === 0) || (state.employment_type && outcome.scope.employment_types.length === 0))

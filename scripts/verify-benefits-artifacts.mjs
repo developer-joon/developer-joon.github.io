@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
-import { manifestSchema, listingChunkSchema, detailSchema, methodologySchema, categories, assertCompanyDetailEvidence, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
+import { manifestSchema, listingChunkSchema, detailSchema, methodologySchema, categories, assertCompanyDetailEvidence, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
 
 const forbiddenText = [/fixture-v1/i, /"fixture"\s*:\s*true/i, /example-\d{3}/i, /example\.org/i, /rankings\.json/i, /rankings_url/i, /\/benefits\/rankings\//i, /가상 별빛|가상 검증기업|예시 데이터|모든 기업·정책·점수는 가상/]
 const forbiddenKey = /score|rank|percentile|coverage(?:_percent)?|fitScore|rankOrder/i
@@ -76,6 +76,7 @@ export async function verifyBenefitsArtifacts(root) {
     companies.push(...chunk.companies)
   }
   assertListingOutcomes(companies)
+  assertExplicitCellInventory(companies, manifest)
   if (companies.length !== 2000 || companies.some((company, index) => company.population_sequence !== index + 1)) throw Error('benefits canonical population mismatch')
   companies.forEach((company) => byId.set(company.company_id, company))
   for (const [id, descriptor] of Object.entries(manifest.company_shards)) {

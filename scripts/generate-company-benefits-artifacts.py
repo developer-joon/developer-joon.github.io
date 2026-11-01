@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 import tempfile
+from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -297,8 +298,26 @@ def _assemble_inputs(root, taxonomy, taxonomy_sha256):
         "protocol_sha256": sha256(protocol_path.read_bytes()),
         "effective_selection_sha256": sha256(effective_path.read_bytes()),
     }
+    cells = read_jsonl(root / series.V2_LEDGER_FILES["cells"])
+    cells_by_company = {}
+    for cell in cells:
+        cells_by_company.setdefault(cell["company_id"], {})[cell["category_id"]] = cell
+    expected_categories = {item["id"] for item in taxonomy["categories"]}
+    if (len(cells) != 20000 or set(cells_by_company) != set(company_map)
+            or any(set(company_cells) != expected_categories
+                   for company_cells in cells_by_company.values())):
+        raise ValueError("v2 artifact requires exact 2,000-company × 10-category explicit cell equality")
+    state_counts = Counter(cell["state"] for cell in cells)
+    expected_states = ("official_verified", "reference", "community_report", "no_public_info")
+    if set(state_counts) - set(expected_states):
+        raise ValueError("v2 artifact contains an unsupported cell state")
+    ledger_sha256 = {
+        filename: sha256((root / filename).read_bytes())
+        for filename in series.V2_LEDGER_FILES.values()
+    }
     return (companies, company_map, claims_by_company, gaps_by_company, source_map, assignment_map,
-            claim_reviews, protocol_binding)
+            claim_reviews, protocol_binding, cells_by_company,
+            {state: state_counts.get(state, 0) for state in expected_states}, ledger_sha256)
 
 
 def validate_inputs(root, taxonomy, taxonomy_sha256):
@@ -343,7 +362,7 @@ def unknown_projection(value, fallback):
     return {"kind": "unknown", "reason": fallback}
 
 
-def build_company(company, population_sequence, claims, gap, taxonomy, assignments, source_map):
+def build_company(company, population_sequence, claims, gap, taxonomy, assignments, source_map, cells):
     type_map = {item["id"]: item for item in taxonomy["benefit_types"]}
     category_ids = [item["id"] for item in taxonomy["categories"]]
     projections = []
@@ -396,41 +415,30 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
         projections.append(projection)
         for category_id in categories:
             category_claims[category_id].append((claim, type_ids, limitations))
-    unknown = next((claim for claim in claims if claim.get("status") == "unknown"), None)
     outcomes = []
     for category_id in category_ids:
-        evidence = category_claims[category_id]
-        if evidence:
-            claim_ids = list(dict.fromkeys(item[0]["claim_id"] for item in evidence))
-            type_ids = list(dict.fromkeys(type_id for _, assigned, _ in evidence for type_id in assigned if type_map[type_id]["category_id"] == category_id))
-            limitations = list(dict.fromkeys(code for _, _, codes in evidence for code in codes))
-            scopes = [item[0]["application_scope"] for item in evidence]
-            outcomes.append({
-                "kind": "evidenced",
-                "category_id": category_id,
-                "status": "bounded" if limitations or any(bounded_claim(item[0]) for item in evidence) else "confirmed",
-                "claim_count": len(claim_ids),
-                "benefit_type_count": len(type_ids),
-                "scope": {
-                    "countries": list(dict.fromkeys(value for scope in scopes for value in scope["countries"])),
-                    "legal_entities": list(dict.fromkeys(value for scope in scopes for value in scope["legal_entities"])),
-                    "roles": list(dict.fromkeys(value for scope in scopes for value in scope["roles"])),
-                    "employment_types": list(dict.fromkeys(value for scope in scopes for value in scope["employment_types"])),
-                    "tenure_conditions": list(dict.fromkeys(scope["tenure_condition"] for scope in scopes)),
-                },
-                "limitation_codes": limitations,
-                "last_checked_at": max(item[0]["prepublication_checked_at"] for item in evidence),
-            })
-        else:
-            searched_ids = (unknown or {}).get("searched_source_ids", []) or (gap or {}).get("searched_official_source_ids", [])
-            outcomes.append({
-                "kind": "insufficient_evidence",
-                "category_id": category_id,
-                "reason_code": (gap or {}).get("reason_code", "searched_not_found" if unknown else "not_researched"),
-                "nonabsence_notice": NONABSENCE_NOTICE,
-                "searched_source_ids": searched_ids,
-                "searched_at": (unknown or {}).get("searched_at", (gap or {}).get("searched_at")),
-            })
+        cell = cells.get(category_id)
+        if cell is None:
+            raise ValueError(f"{company['company_id']}:{category_id}: missing explicit cell")
+        outcome = {
+            key: cell[key] for key in (
+                "category_id", "state", "reliability", "currentness", "scope_status",
+                "conflict_status", "publication_eligibility", "assessed_at",
+                "official_claim_ids", "reference_ids", "community_report_ids",
+            )
+        }
+        outcome.update({
+            "kind": "insufficient_evidence" if cell["state"] == "no_public_info" else "evidenced",
+            "status": "bounded" if cell["scope_status"] != "exact_entity" or cell["reliability"] in {"low", "none"} else "confirmed",
+            "claim_count": len(cell["official_claim_ids"]),
+            "benefit_type_count": 0,
+            "scope": {"countries": [], "legal_entities": [], "roles": [], "employment_types": [], "tenure_conditions": []},
+            "limitation_codes": [], "last_checked_at": cell["assessed_at"],
+            "reason_code": "searched_not_found", "searched_source_ids": [], "searched_at": cell["assessed_at"],
+        })
+        if cell["state"] == "no_public_info":
+            outcome["nonabsence_notice"] = NONABSENCE_NOTICE
+        outcomes.append(outcome)
     listing = {
         "company_id": company["company_id"],
         "population_sequence": population_sequence,
@@ -461,7 +469,7 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
         "employment_evidence_scope": company.get("employment_evidence_scope", ""),
         "employment_boundary_note": company.get("employment_boundary_note", ""),
     }
-    return {"listing": listing, "company": detail_company, "category_outcomes": outcomes, "claims": projections}
+    return {"listing": listing, "company": detail_company, "category_outcomes": outcomes, "claims": []}
 
 
 def public_taxonomy(taxonomy):
@@ -491,7 +499,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
         raise ValueError("data version is unsafe")
     parse_time(generated_at, "generated_at")
     (companies, _, claims_by_company, gaps_by_company, source_map, assignments,
-     claim_reviews, protocol_binding) = inputs
+     claim_reviews, protocol_binding, cells_by_company, state_counts, ledger_sha256) = inputs
     output_root = Path(output_root)
     output_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output_root.name}-", dir=output_root.parent))
@@ -524,6 +532,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
                 taxonomy,
                 assignments,
                 source_map,
+                cells_by_company.get(company_id, {}),
             )
             details[company_id] = detail
             listing.append(detail["listing"])
@@ -566,7 +575,6 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
             for detail in details.values()
             for source_id in (
                 [item["source_id"] for claim in detail["claims"] for item in claim["source_evidence"]]
-                + [source_id for outcome in detail["category_outcomes"] if outcome["kind"] == "insufficient_evidence" for source_id in outcome["searched_source_ids"]]
             )
         })
         public_sources = [{
@@ -602,6 +610,9 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
             "listing_chunk_size": 50,
             "listing_chunk_count": 40,
             "category_count": 10,
+            "cell_count": 20000,
+            "cell_state_counts": state_counts,
+            "ledger_sha256": ledger_sha256,
             "listing_chunks": listing_descriptors,
             "company_shards": shard_descriptors,
             "sources": sources_descriptor,

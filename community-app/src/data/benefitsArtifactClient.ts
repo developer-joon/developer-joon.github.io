@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { assertCompanyDetailEvidence, assertListingOutcomes, detailSchema, listingChunkSchema, manifestSchema, methodologySchema, type CompanyListing, type Manifest } from '../types/benefits'
+import { assertCompanyDetailEvidence, assertExplicitCellInventory, assertListingOutcomes, detailSchema, listingChunkSchema, manifestSchema, methodologySchema, type CompanyListing, type Manifest } from '../types/benefits'
 
 const RESPONSE_LIMIT = 12_000_000
 const SHARD_LIMIT = 256_000
@@ -88,6 +88,7 @@ export class BenefitsArtifactClient {
     if (failure) throw failure
     const companies = results.flat(); if (companies.length !== manifest.company_count) throw new Error('회사 개수 불일치')
     assertListingOutcomes(companies)
+    assertExplicitCellInventory(companies, manifest)
     return companies
   }
 

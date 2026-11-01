@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { claimSchema, manifestSchema } from './benefits'
+import { claimSchema, manifestSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema } from './benefits'
 
 function validManifest() {
   const descriptor = { url: 'community/data/company-benefits/v2/taxonomy.json', sha256: 'a'.repeat(64), record_count: 10, byte_count: 100 }
@@ -11,11 +11,26 @@ function validManifest() {
     generated_at: '2026-10-31T00:00:00Z',
     protocol: { protocol_id: 'company-benefits-population-v4', protocol_version: '4.0.0', protocol_sha256: 'b'.repeat(64), effective_selection_sha256: 'c'.repeat(64) },
     taxonomy_version: 'benefit-taxonomy-v1', company_count: 2000, listing_chunk_size: 50, listing_chunk_count: 40, category_count: 10,
+    cell_count: 20000,
+    cell_state_counts: { official_verified: 1, reference: 2, community_report: 3, no_public_info: 19994 },
+    ledger_sha256: Object.fromEntries(['company-category-cells.jsonl', 'research-attempts.jsonl', 'official-claims-v2.jsonl', 'reference-records.jsonl', 'community-benefit-reports.jsonl', 'sources-v2.jsonl'].map((name, index) => [name, String(index).repeat(64)])),
     taxonomy: descriptor, sources: { ...descriptor, url: 'community/data/company-benefits/v2/sources.json' }, methodology: { ...descriptor, url: 'community/data/company-benefits/v2/methodology.json' },
     listing_chunks: Array.from({ length: 40 }, (_, i) => ({ ...descriptor, url: `community/data/company-benefits/v2/listings/companies-${String(i + 1).padStart(2, '0')}.json`, chunk_index: i + 1, first_sequence: i * 50 + 1, last_sequence: i * 50 + 50, record_count: 50 })),
     company_shards: Object.fromEntries(Array.from({ length: 2000 }, (_, i) => { const id = `KR-CRN-${String(i + 1).padStart(13, '0')}`; return [id, { ...descriptor, url: `community/data/company-benefits/v2/companies/${id}.json`, company_id: id, record_count: 1 }] })),
   }
 }
+
+it('accepts all four explicit cell states and rejects not_researched', () => {
+  const base = { category_id: 'leave', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: [], reference_ids: [], community_report_ids: [], kind: 'evidenced', status: 'confirmed', claim_count: 0, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z', reason_code: 'searched_not_found', searched_source_ids: [], searched_at: '2026-11-01T00:00:00Z' }
+  const outcomes = [
+    { ...base, state: 'official_verified', reliability: 'high', publication_eligibility: 'official_claim', official_claim_ids: ['official::' + 'a'.repeat(64)] },
+    { ...base, state: 'reference', reliability: 'medium', publication_eligibility: 'reference_only', reference_ids: ['reference::record-1'] },
+    { ...base, state: 'community_report', reliability: 'low', publication_eligibility: 'community_only', community_report_ids: ['community::report-1'] },
+    { ...base, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only', nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.' },
+  ]
+  outcomes.forEach((outcome) => expect(categoryOutcomeSchema.safeParse(outcome).success).toBe(true))
+  expect(categoryOutcomeSchema.safeParse({ ...base, state: 'not_researched' }).success).toBe(false)
+})
 
 it('accepts schema v2 and rejects ranking semantics', () => {
   const manifest = validManifest()

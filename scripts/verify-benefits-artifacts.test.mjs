@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { assertExactArtifactInventory, assertNoBenefitsFixtureLeaks } from './verify-benefits-artifacts.mjs'
+import { assertExplicitCellInventory, categories } from '../community-app/src/types/benefits.ts'
 
 const descriptor = (url) => ({ url })
 const manifest = (version = 'release-v9') => ({
@@ -58,3 +59,11 @@ test('rejects internal review diagnostics in public artifacts', () => fixture(as
     /internal review/i,
   )
 }))
+
+test('vNext inventory rejects legacy outcomes and mismatched state totals', () => {
+  const explicit = categories.map((category_id) => ({ category_id, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', conflict_status: 'none', publication_eligibility: 'discovery_only', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: [], reference_ids: [], community_report_ids: [], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.' }))
+  const vNext = { cell_count: 10, cell_state_counts: { official_verified: 0, reference: 0, community_report: 0, no_public_info: 10 } }
+  assert.doesNotThrow(() => assertExplicitCellInventory([{ category_outcomes: explicit }], vNext))
+  assert.throws(() => assertExplicitCellInventory([{ category_outcomes: explicit }], { ...vNext, cell_state_counts: { ...vNext.cell_state_counts, no_public_info: 9 } }), /inventory/)
+  assert.throws(() => assertExplicitCellInventory([{ category_outcomes: [{ kind: 'insufficient_evidence' }] }], vNext), /legacy/)
+})

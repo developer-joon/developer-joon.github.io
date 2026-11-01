@@ -760,11 +760,21 @@ def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
     assert manifest["listing_chunk_size"] == 50
     assert manifest["listing_chunk_count"] == 40
     assert manifest["category_count"] == 10
+    assert manifest["cell_count"] == 20000
+    assert manifest["cell_state_counts"] == {
+        "official_verified": 0, "reference": 0,
+        "community_report": 0, "no_public_info": 20000,
+    }
+    assert manifest["ledger_sha256"] == {
+        filename: file_digest(tmp_path / "research" / filename)
+        for filename in series.V2_LEDGER_FILES.values()
+    }
     assert manifest["protocol"]["protocol_id"] == "company-benefits-population-v4"
     assert set(manifest) == {
         "schema_version", "artifact_kind", "data_version", "fixture", "generated_at", "protocol",
         "taxonomy_version", "company_count", "listing_chunk_size", "listing_chunk_count", "category_count",
-        "taxonomy", "sources", "methodology", "listing_chunks", "company_shards",
+        "cell_count", "cell_state_counts", "ledger_sha256", "taxonomy", "sources", "methodology",
+        "listing_chunks", "company_shards",
     }
     assert len(manifest["listing_chunks"]) == 40
     assert len(manifest["company_shards"]) == 2000
@@ -779,18 +789,30 @@ def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
         assert payload["company"]["company_id"] == company_id
     first_descriptor = manifest["company_shards"][fixture["companies"][0]["company_id"]]
     first_detail = json.loads((version / first_descriptor["url"].removeprefix(prefix)).read_text())
-    claim = first_detail["claims"][0]
-    assert set(claim) == {
-        "claim_id", "benefit_type_ids", "category_ids", "benefit_name", "detail",
-        "research_status", "current_validity", "evidence_grade", "application_scope",
-        "limitation_codes", "publication_date", "checked_at", "source_evidence",
-    }
+    assert first_detail["claims"] == []
     outcomes = first_detail["category_outcomes"]
     assert {item["category_id"] for item in outcomes} == {item["id"] for item in json.loads(TAXONOMY.read_text())["categories"]}
-    assert any(item["kind"] == "evidenced" for item in outcomes)
-    assert all("zero" not in item and "status" not in item for item in outcomes if item["kind"] == "insufficient_evidence")
+    assert all(item["state"] == "no_public_info" for item in outcomes)
+    assert all(item["reliability"] == "none" and item["currentness"] == "unknown" for item in outcomes)
+    assert all(item["scope_status"] == "unresolved" and item["conflict_status"] == "none" for item in outcomes)
+    assert not any("not_researched" in json.dumps(item) for item in outcomes)
     assert not [key for raw in snapshot(first).values() if raw.endswith(b"\n") for key in forbidden_keys(json.loads(raw))]
     assert not [key for raw in snapshot(first).values() if raw.endswith(b"\n") for key in internal_review_keys(json.loads(raw))]
+
+
+def test_generator_refuses_to_overwrite_existing_version_tree(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    output = tmp_path / "immutable-output"
+    first = run_generator(research, output)
+    assert first.returncode == 0, first.stderr
+    before = snapshot(output)
+
+    second = run_generator(research, output)
+
+    assert second.returncode == 1
+    assert "already exists" in second.stderr.casefold()
+    assert snapshot(output) == before
 
 
 def test_generator_rejects_pending_historical_and_fixture_inputs(tmp_path):
