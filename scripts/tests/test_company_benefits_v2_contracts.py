@@ -17,6 +17,7 @@ CONTRACT_FILES = (
     "reference-record.schema.json",
     "community-benefit-report.schema.json",
     "source-v2.schema.json",
+    "series-progress.schema.json",
 )
 CATEGORIES = {
     "leave", "family", "health", "growth", "housing",
@@ -229,6 +230,90 @@ class V2ContractTests(unittest.TestCase):
         if not (RESEARCH / "research-coverage-policies.json").is_file():
             missing.append("research-coverage-policies.json")
         self.assertEqual([], missing)
+
+    def progress_entry(self, batch_id, status="pending"):
+        entry = {
+            "batch_id": batch_id,
+            "scope": "domestic" if batch_id.startswith("domestic") else "international",
+            "batch_number": int(batch_id[-2:]),
+            "status": status,
+            "company_list_sha256": HASH,
+            "claim_count": 0,
+            "no_claim_count": 0,
+        }
+        if status == "approved":
+            entry.update(approved_at="2026-11-01T00:00:00Z", reviewer_ids=["reviewer-1"])
+        return entry
+
+    def progress(self, version=None):
+        entries = [
+            self.progress_entry(f"{scope}-{number:02d}")
+            for scope in ("domestic", "international") for number in range(1, 41)
+        ]
+        result = {
+            "manifest_version": "1",
+            "status": "in_progress",
+            "company_list_sha256": HASH,
+            "total_companies": 2000,
+            "total_batches": 80,
+            "batches": entries,
+        }
+        if version is not None:
+            result["progress_version"] = version
+        return result
+
+    def test_progress_schema_retains_wholly_legacy_approved_ledger_as_explicit_v1(self):
+        progress = self.progress("1")
+        progress["batches"][0] = self.progress_entry("domestic-01", "approved")
+        self.assert_valid("series-progress.schema.json", progress)
+
+    def test_progress_schema_rejects_mixed_legacy_and_v2_approved_entries(self):
+        progress = self.progress()
+        progress["total_cells"] = 20000
+        progress["batches"][0] = self.progress_entry("domestic-01", "approved")
+        progress["batches"][1] = self.progress_entry("domestic-02", "approved")
+        progress["batches"][1].update(
+            cell_count=250,
+            cell_set_sha256=HASH,
+            v2_ledger_sha256={name: HASH for name in (
+                "company-category-cells.jsonl", "research-attempts.jsonl",
+                "official-claims-v2.jsonl", "reference-records.jsonl",
+                "community-benefit-reports.jsonl", "sources-v2.jsonl",
+            )},
+        )
+        self.assert_invalid("series-progress.schema.json", progress)
+
+    def test_progress_schema_enforces_v2_approved_and_pending_shapes(self):
+        progress = self.progress("2")
+        progress["total_cells"] = 20000
+        for entry in progress["batches"]:
+            entry["cell_count"] = 0
+        approved = self.progress_entry("domestic-01", "approved")
+        approved.update(
+            cell_count=250,
+            cell_set_sha256=HASH,
+            v2_ledger_sha256={name: HASH for name in (
+                "company-category-cells.jsonl", "research-attempts.jsonl",
+                "official-claims-v2.jsonl", "reference-records.jsonl",
+                "community-benefit-reports.jsonl", "sources-v2.jsonl",
+            )},
+        )
+        progress["batches"][0] = approved
+        self.assert_valid("series-progress.schema.json", progress)
+        for mutation in ("approved_count", "approved_hashes", "pending_count", "pending_hash", "incomplete_completion"):
+            invalid = copy.deepcopy(progress)
+            if mutation == "approved_count":
+                invalid["batches"][0]["cell_count"] = 0
+            elif mutation == "approved_hashes":
+                invalid["batches"][0].pop("v2_ledger_sha256")
+            elif mutation == "pending_count":
+                invalid["batches"][1]["cell_count"] = 250
+            elif mutation == "pending_hash":
+                invalid["batches"][1]["cell_set_sha256"] = HASH
+            else:
+                invalid["status"] = "complete"
+            with self.subTest(mutation=mutation):
+                self.assert_invalid("series-progress.schema.json", invalid)
 
     def test_all_cell_states_are_representable(self):
         for state in ("official_verified", "reference", "community_report", "no_public_info"):

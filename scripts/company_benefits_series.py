@@ -367,16 +367,70 @@ def v2_ledger_sha256(records):
     return result
 
 
-def validate_persisted_v2_hashes(root, batches=None, progress=None):
+def progress_contract_version(progress):
+    """Return the active progress contract and reject ambiguous v1/v2 mixtures."""
+    if not isinstance(progress, dict) or not isinstance(progress.get("batches"), list):
+        raise ValueError("series progress must be an object with batch entries")
+    entries = progress["batches"]
+    v2_entry_fields = {"cell_count", "cell_set_sha256", "v2_ledger_sha256"}
+    has_v2_signal = (progress.get("progress_version") == "2" or "total_cells" in progress
+                     or any(isinstance(entry, dict) and set(entry) & v2_entry_fields for entry in entries))
+    version = progress.get("progress_version")
+    if version not in {None, "1", "2"}:
+        raise ValueError("series progress version must be 1 or 2")
+    if version == "1" and has_v2_signal:
+        raise ValueError("legacy v1 progress cannot contain or mix with v2 cell contracts")
+    if not has_v2_signal:
+        return "1"
+    if progress.get("total_cells") != 20000:
+        raise ValueError("v2 progress requires total_cells=20000")
+    if len(entries) != 80:
+        raise ValueError("v2 progress requires the complete 80-batch partition")
+
+    ledger_names = set(V2_LEDGER_FILES.values())
+    approved_count = 0
+    cell_count = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("v2 progress batch entries must be objects")
+        batch_id = entry.get("batch_id", "unknown-batch")
+        status = entry.get("status")
+        if status == "approved":
+            approved_count += 1
+            count = entry.get("cell_count")
+            cell_count += count if isinstance(count, int) and not isinstance(count, bool) else 0
+            hashes = entry.get("v2_ledger_sha256")
+            if (count != 250 or isinstance(count, bool)
+                    or not HASH_PATTERN.fullmatch(str(entry.get("cell_set_sha256", "")))
+                    or not isinstance(hashes, dict) or set(hashes) != ledger_names
+                    or any(not HASH_PATTERN.fullmatch(str(value)) for value in hashes.values())):
+                raise ValueError(f"{batch_id}: v2 approved batch requires exactly 250 cells and all six ledger hashes; legacy approved entries cannot coexist")
+        elif status == "pending":
+            if (entry.get("cell_count") != 0 or "cell_set_sha256" in entry
+                    or "v2_ledger_sha256" in entry):
+                raise ValueError(f"{batch_id}: v2 pending batch requires zero cells and no v2 hashes")
+        else:
+            raise ValueError(f"{batch_id}: invalid v2 progress status")
+    if progress.get("status") == "complete" and (approved_count != 80 or cell_count != 20000):
+        raise ValueError("v2 completion requires exactly 80 approved batches and 20,000 cells")
+    return "2"
+
+
+def validate_persisted_v2_hashes(root, batches=None, progress=None, v2_transition=False):
     """Reject approved-ledger drift before any operation can regenerate progress hashes."""
     root = Path(root)
     batches = batches if batches is not None else read_jsonl(root / "series-batches.jsonl")
     if progress is None:
         progress = json.loads((root / "series-progress.json").read_text(encoding="utf-8"))
+    if progress_contract_version(progress) == "1":
+        if v2_transition and any(entry.get("status") == "approved" for entry in progress.get("batches", [])
+                                 if isinstance(entry, dict)):
+            raise ValueError("v2 transition requires every approved batch to use the v2 cell/hash contract; approved legacy entries cannot coexist")
+        return
     batch_map = {batch.get("batch_id"): batch for batch in batches}
     records = read_v2_batch_records(root)
     for entry in progress.get("batches", []):
-        if entry.get("status") != "approved" or not entry.get("cell_count", 0):
+        if entry.get("status") != "approved":
             continue
         batch = batch_map.get(entry.get("batch_id"))
         if batch is None or entry.get("v2_ledger_sha256") != v2_ledger_sha256(v2_batch_slice(records, batch)):
@@ -524,6 +578,7 @@ def build_progress(root, batches, approved_batch_ids, approved_at, reviewer_id, 
         claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
     gaps_by_company = _company_gap_map(gaps)
     v2_records = read_v2_batch_records(root)
+    v2_progress = any(v2_records.values())
     v2_cells = v2_records["cells"]
     v2_cells_by_company = {}
     for cell in v2_cells:
@@ -542,29 +597,35 @@ def build_progress(root, batches, approved_batch_ids, approved_at, reviewer_id, 
             "company_list_sha256": batch["company_list_sha256"],
             "claim_count": claim_count,
             "no_claim_count": no_claim_count,
-            "cell_count": sum(len(v2_cells_by_company.get(company_id, [])) for company_id in company_ids) if approved else 0,
         }
+        if v2_progress:
+            entry["cell_count"] = sum(len(v2_cells_by_company.get(company_id, [])) for company_id in company_ids) if approved else 0
         if approved:
             timestamp = approved_at.get(batch["batch_id"]) if isinstance(approved_at, dict) else approved_at
             reviewers = reviewer_id.get(batch["batch_id"]) if isinstance(reviewer_id, dict) else reviewer_id
             if isinstance(reviewers, str):
                 reviewers = [reviewers]
             batch_cells = [cell for company_id in company_ids for cell in v2_cells_by_company.get(company_id, [])]
+            if v2_progress and len(batch_cells) != BATCH_SIZE * len(V2_CATEGORIES):
+                raise ValueError(f"{batch['batch_id']}: v2 approved batch requires exactly 250 cells before progress publication")
             entry.update(approved_at=timestamp, reviewer_ids=sorted(reviewers or []))
-            if batch_cells:
+            if v2_progress:
                 entry["cell_set_sha256"] = v2_cell_set_sha256(batch_cells)
                 entry["v2_ledger_sha256"] = v2_ledger_sha256(v2_batch_slice(v2_records, batch))
         entries.append(entry)
     all_ids = [company_id for batch in batches for company_id in batch["company_ids"]]
-    return {
+    progress = {
         "manifest_version": MANIFEST_VERSION,
+        "progress_version": "2" if v2_progress else "1",
         "status": status,
         "company_list_sha256": company_list_sha256(all_ids),
         "total_companies": 2000,
         "total_batches": 80,
-        "total_cells": 20000,
         "batches": entries,
     }
+    if v2_progress:
+        progress["total_cells"] = 20000
+    return progress
 
 
 def materialize_contract(root, approved_batch_ids, approved_at, reviewer_id, status="in_progress"):
@@ -681,9 +742,15 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         errors.append(f"invalid series progress: {exc}")
         return
     legacy_top = {"manifest_version", "status", "company_list_sha256", "total_companies", "total_batches", "batches"}
-    allowed_top = legacy_top | {"total_cells"}
-    v2_progress = "total_cells" in progress
-    if set(progress) not in (legacy_top, allowed_top) or progress.get("manifest_version") != MANIFEST_VERSION or progress.get("status") not in {"in_progress", "complete"}:
+    allowed_top = legacy_top | {"progress_version", "total_cells"}
+    try:
+        v2_progress = progress_contract_version(progress) == "2"
+    except ValueError as exc:
+        errors.append(str(exc))
+        v2_progress = "total_cells" in progress or progress.get("progress_version") == "2"
+    valid_top_shapes = (legacy_top, legacy_top | {"progress_version"},
+                        legacy_top | {"total_cells"}, allowed_top)
+    if set(progress) not in valid_top_shapes or progress.get("manifest_version") != MANIFEST_VERSION or progress.get("status") not in {"in_progress", "complete"}:
         errors.append("series progress schema or status is invalid")
     entries = progress.get("batches", [])
     if not isinstance(entries, list) or len(entries) != 80:
@@ -764,7 +831,7 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
                 errors.append(f"{batch['batch_id']}: pending batch must have no published claims, reviews, or company gaps")
             if entry.get("claim_count") != 0 or entry.get("no_claim_count") != 0:
                 errors.append(f"{batch['batch_id']}: pending batch counts must be zero")
-            if batch_cells or entry.get("cell_count") != 0:
+            if v2_progress and (batch_cells or entry.get("cell_count") != 0):
                 errors.append(f"{batch['batch_id']}: pending batch must have no v2 cells")
             continue
         expected_cell_keys = {(company_id, category) for company_id in batch["company_ids"] for category in V2_CATEGORIES}

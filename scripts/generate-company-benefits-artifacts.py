@@ -149,6 +149,7 @@ def fixture_marker(value):
 def validate_inputs(root, taxonomy, taxonomy_sha256):
     series = load_verifier().company_benefits_series
     progress = read_json(root / "series-progress.json")
+    series.progress_contract_version(progress)
     entries = progress.get("batches")
     if progress.get("status") != "complete" or progress.get("total_companies") != 2000 or progress.get("total_batches") != 80:
         raise ValueError("series progress must be complete for exactly 2,000 companies and 80 batches")

@@ -32,6 +32,7 @@ class SeriesIntegrationTests(unittest.TestCase):
         self.input = Path(self.tmp.name) / "input"
         self.input.mkdir()
         self.fixture = FrozenFixture(self.root)
+        self.module.series.materialize_contract(self.root, set(), {}, {})
         batches = self.module.series.read_jsonl(self.root / "series-batches.jsonl")
         self.batch = next(item for item in batches if item["batch_id"] == "domestic-02")
         self.v2_records = no_public_info_records(self.batch, self.fixture.companies)
@@ -147,7 +148,18 @@ class SeriesIntegrationTests(unittest.TestCase):
         current.pop("cell_count", None)
         progress_path.write_text(json.dumps(progress), encoding="utf-8")
         self.package()
-        with self.assertRaisesRegex(ValueError, "pending"):
+        with self.assertRaisesRegex(ValueError, "pending|v2 transition"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_v2_transition_when_another_approved_batch_is_legacy(self):
+        progress_path = self.root / "series-progress.json"
+        progress = json.loads(progress_path.read_text())
+        legacy = next(item for item in progress["batches"] if item["batch_id"] == "domestic-01")
+        legacy.update(status="approved", approved_at="2026-10-20T00:00:00Z", reviewer_ids=["legacy-reviewer"])
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+        self.package()
+
+        with self.assertRaisesRegex(ValueError, "legacy|v2 transition"):
             self.module.load_package(self.input, self.root)
 
     def test_rejects_prior_approved_v2_tampering_before_hash_regeneration(self):

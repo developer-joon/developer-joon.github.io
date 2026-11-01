@@ -227,6 +227,30 @@ class SeriesContractTests(unittest.TestCase):
         errors = self.errors()
         self.assertTrue(any("250-cell set and hash" in error for error in errors), errors[:20])
 
+    def test_persisted_v2_preflight_rejects_approved_legacy_batch_mixed_with_valid_v2_batch(self):
+        batches = self.series.read_jsonl(self.root / "series-batches.jsonl")
+        second = next(item for item in batches if item["batch_id"] == "domestic-02")
+        records = no_public_info_records(second, self.fixture.companies)
+        for ledger, filename in V2_FILES.items():
+            self.series.write_jsonl(self.root / filename, records[ledger])
+
+        progress = json.loads((self.root / "series-progress.json").read_text())
+        first_entry = next(item for item in progress["batches"] if item["batch_id"] == "domestic-01")
+        for field in ("cell_count", "cell_set_sha256", "v2_ledger_sha256"):
+            first_entry.pop(field, None)
+        second_entry = next(item for item in progress["batches"] if item["batch_id"] == "domestic-02")
+        second_entry.update(
+            status="approved",
+            approved_at="2026-10-22T00:00:00Z",
+            reviewer_ids=["carol"],
+            cell_count=250,
+            cell_set_sha256=self.series.v2_cell_set_sha256(records["cells"]),
+            v2_ledger_sha256=self.series.v2_ledger_sha256(records),
+        )
+
+        with self.assertRaisesRegex(ValueError, "mixed|legacy|v2"):
+            self.series.validate_persisted_v2_hashes(self.root, batches, progress)
+
     def test_partial_approved_batch_is_rejected(self):
         self.fixture.claims.pop()
         self.fixture.reviews.pop()

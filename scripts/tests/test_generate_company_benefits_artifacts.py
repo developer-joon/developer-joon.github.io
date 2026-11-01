@@ -459,6 +459,31 @@ def test_artifact_generation_rejects_gap_without_preserved_official_source_id_ro
     assert not (tmp_path / "output").exists()
 
 
+def test_artifact_publication_rejects_mixed_legacy_and_v2_approved_progress_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["progress_version"] = "2"
+    progress["total_cells"] = 20000
+    progress["batches"][1].update(
+        cell_count=250,
+        cell_set_sha256="a" * 64,
+        v2_ledger_sha256={name: "b" * 64 for name in (
+            "company-category-cells.jsonl", "research-attempts.jsonl",
+            "official-claims-v2.jsonl", "reference-records.jsonl",
+            "community-benefit-reports.jsonl", "sources-v2.jsonl",
+        )},
+    )
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "mixed-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert "legacy" in result.stderr.casefold() or "250" in result.stderr
+    assert not output.exists()
+
+
 def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
     fixture = make_research_fixture(tmp_path / "research")
     first = tmp_path / "first"

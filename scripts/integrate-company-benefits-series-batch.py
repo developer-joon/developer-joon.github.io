@@ -213,7 +213,7 @@ def load_package(input_dir, research_root):
             or manifest.get("replacement_events_sha256") != batch.get("replacement_events_sha256")):
         raise ValueError("batch effective sequence or replacement-event binding is stale")
     progress = json.loads((research_root / "series-progress.json").read_text(encoding="utf-8"))
-    series.validate_persisted_v2_hashes(research_root, list(batches.values()), progress)
+    series.validate_persisted_v2_hashes(research_root, list(batches.values()), progress, v2_transition=True)
     current = next((item for item in progress["batches"] if item["batch_id"] == batch["batch_id"]), None)
     if current is None or current.get("status") != "pending" or current.get("cell_count", 0) != 0:
         raise ValueError("v2 batch is not pending or already contains v2 cells")
