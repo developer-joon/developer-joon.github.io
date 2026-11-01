@@ -201,6 +201,37 @@ class CollectorTests(unittest.TestCase):
                     resolver=resolve,
                 )
 
+    def test_safe_response_headers_have_a_deterministic_aggregate_byte_bound(self):
+        fixed = len("content-type".encode()) + len("text/html".encode()) + len("x-fill".encode())
+        at_limit = {
+            "Content-Type": "text/html",
+            "X-Fill": "한" * ((collectors.MAX_SAFE_RESPONSE_HEADER_BYTES - fixed) // 3),
+        }
+        remainder = collectors.MAX_SAFE_RESPONSE_HEADER_BYTES - sum(
+            len(str(name).lower().encode("utf-8")) + len(str(value).encode("utf-8"))
+            for name, value in at_limit.items()
+        )
+        at_limit["X-Fill"] += "x" * remainder
+        self.assertEqual("text/html", collectors._safe_headers(at_limit)["content-type"])
+        with self.assertRaisesRegex(collectors.FetchError, "headers exceed aggregate byte limit"):
+            collectors._safe_headers({**at_limit, "X-Over": "x"})
+        with self.assertRaisesRegex(collectors.FetchError, "headers exceed aggregate byte limit"):
+            collectors._safe_header_items([
+                ("X-Repeated", "x" * (collectors.MAX_SAFE_RESPONSE_HEADER_BYTES // 2)),
+                ("X-Repeated", "x" * (collectors.MAX_SAFE_RESPONSE_HEADER_BYTES // 2)),
+            ])
+
+        oversized_with_secret = {**at_limit, "X-Over": "x", "Authorization": "Bearer abc.def.ghi"}
+        with self.assertRaises(collectors.SecurityError):
+            collectors._safe_headers(oversized_with_secret)
+
+        legacy_headers = {"content-type": "text/html", "x-legacy": "h" * 3_000_000}
+        self.assertIs(legacy_headers, collectors._validate_resumed_headers(legacy_headers))
+        with self.assertRaisesRegex(collectors.CheckpointError, "headers exceed legacy byte limit"):
+            collectors._validate_resumed_headers({
+                "x-legacy": "h" * (collectors.MAX_LEGACY_CAPTURE_HEADER_BYTES + 1)
+            })
+
     def test_retries_are_finite_and_only_retry_transient_failures(self):
         url = "https://example.com/"
         policy = collectors.FetchPolicy(retries=2, retry_backoff_seconds=0)
@@ -510,6 +541,106 @@ class CollectorTests(unittest.TestCase):
                 with mock.patch.object(json, "loads", side_effect=AssertionError("must not parse")):
                     with self.assertRaisesRegex(collectors.CollectorError, "byte limit"):
                         store.read(digest)
+
+    def test_capture_store_bounds_actual_canonical_envelope_bytes_before_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store:
+                prefix_bytes = len(collectors._canonical_json({"padding": ""}))
+                at_limit = {"padding": "x" * (collectors.MAX_CAPTURE_ENVELOPE_BYTES - prefix_bytes)}
+                raw = collectors._canonical_json(at_limit)
+                self.assertEqual(collectors.MAX_CAPTURE_ENVELOPE_BYTES, len(raw))
+                digest, _ = store.put(at_limit)
+                self.assertEqual(at_limit, store.read(digest))
+
+                escaped_and_multibyte = {
+                    "padding": ("\n한" * (collectors.MAX_CAPTURE_ENVELOPE_BYTES // 4)) + "x"
+                }
+                self.assertGreater(
+                    len(collectors._canonical_json(escaped_and_multibyte)),
+                    collectors.MAX_CAPTURE_ENVELOPE_BYTES,
+                )
+                before = sorted(path.relative_to(store.root) for path in store.root.rglob("*"))
+                with self.assertRaisesRegex(collectors.CollectorError, "capture envelope exceeds byte limit"):
+                    store.put(escaped_and_multibyte)
+                self.assertEqual(before, sorted(path.relative_to(store.root) for path in store.root.rglob("*")))
+
+    def test_capture_overflow_publishes_neither_capture_nor_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            capture_root = Path(tmp) / "captures"
+            checkpoint_path = Path(tmp) / "checkpoint.json"
+            policy = collectors.FetchPolicy(
+                max_wire_bytes=13_000_000, max_decoded_bytes=13_000_000, retries=0
+            )
+            with collectors.CaptureStore(
+                capture_root, "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store, collectors.BatchCheckpoint(
+                checkpoint_path, collectors.batch_input_sha256(items)
+            ) as checkpoint:
+                with self.assertRaisesRegex(collectors.CollectorError, "capture envelope exceeds byte limit"):
+                    collectors.collect_batch(
+                        items, transport=FakeTransport({url: [response(200, b"x" * 13_000_000)]}),
+                        capture_store=store, checkpoint=checkpoint, policy=policy,
+                        resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+                    )
+                self.assertEqual({}, checkpoint.completed)
+            self.assertFalse(checkpoint_path.exists())
+            self.assertEqual([], [path for path in capture_root.rglob("*") if path.is_file()])
+
+    def test_resume_reads_legacy_large_headers_up_to_full_envelope_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{"company": self.company, "category_id": "leave", "route_id": "official-company", "locator": url}]
+            body = b"x" * 4_000_000
+            transport = FakeTransport({url: [response(
+                200, gzip.compress(body),
+                {"content-type": "text/html; charset=utf-8", "content-encoding": "gzip"},
+            )]})
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store, collectors.BatchCheckpoint(
+                Path(tmp) / "checkpoint.json", collectors.batch_input_sha256(items)
+            ) as checkpoint:
+                collectors.collect_batch(
+                    items, transport=transport, capture_store=store, checkpoint=checkpoint,
+                    resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+                )
+                key = collectors.attempt_id(self.company.company_id, "leave", "official-company")
+                prior = copy.deepcopy(checkpoint.completed[key])
+                assert isinstance(prior, dict)
+                receipt = prior.get("receipt")
+                assert isinstance(receipt, dict)
+                digest_value = receipt.get("raw_response_sha256")
+                assert isinstance(digest_value, str)
+                capture = store.read(digest_value)
+                response_value = capture.get("response")
+                assert isinstance(response_value, dict)
+                headers = response_value.get("headers")
+                assert isinstance(headers, dict)
+                headers["x-legacy-padding"] = "h" * 3_000_000
+                response_value["body_base64"] = base64.b64encode(body).decode("ascii")
+                response_value["body_sha256"] = hashlib.sha256(body).hexdigest()
+                raw = collectors._canonical_json(capture)
+                self.assertGreater(len(raw), 7_857_624)
+                self.assertLessEqual(len(raw), collectors.MAX_CAPTURE_ENVELOPE_BYTES)
+                digest, locator = store.put(capture)
+                receipt["raw_response_sha256"] = digest
+                receipt["capture_locator"] = locator
+                receipt["receipt_content_sha256"] = hashlib.sha256(collectors._canonical_json({
+                    name: value for name, value in receipt.items() if name != "receipt_content_sha256"
+                })).hexdigest()
+                checkpoint.completed[key] = prior
+
+                resumed_transport = FakeTransport({})
+                artifact = collectors.collect_batch(
+                    items, transport=resumed_transport, capture_store=store, checkpoint=checkpoint,
+                    resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+                )
+                self.assertEqual([], resumed_transport.calls)
+                self.assertEqual("source_found", artifact["attempts"][0]["result"])
 
     def test_checkpoint_rejects_embedded_secrets_symlinks_special_files_and_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:

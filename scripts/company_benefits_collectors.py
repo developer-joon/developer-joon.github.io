@@ -57,8 +57,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_ROOT = REPOSITORY_ROOT / "docs" / "research" / "company-benefits" / "schema"
 MAX_CAPTURE_ENVELOPE_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
-_CAPTURE_FIXED_OVERHEAD_BYTES = 256 * 1024
-_CAPTURE_HEADER_OVERHEAD_BYTES = 256 * 1024
+MAX_SAFE_RESPONSE_HEADER_BYTES = 256 * 1024
+MAX_LEGACY_CAPTURE_HEADER_BYTES = 4 * 1024 * 1024
 
 
 class CollectorError(ValueError):
@@ -490,6 +490,7 @@ class SecureHTTPTransport:
                 },
             )
             response = connection.getresponse()
+            headers = _safe_header_items(response.getheaders())
             length = response.getheader("Content-Length")
             if length is not None:
                 try:
@@ -513,7 +514,6 @@ class SecureHTTPTransport:
             body = b"".join(chunks)
             if len(body) > max_wire_bytes:
                 raise FetchError("response exceeds wire byte limit")
-            headers = {key.lower(): value for key, value in response.getheaders()}
             return TransportResponse(response.status, headers, body, peer_ip)
         except (TimeoutError, socket.timeout, ssl.SSLError, OSError, http.client.HTTPException) as exc:
             if isinstance(exc, FetchError):
@@ -523,16 +523,48 @@ class SecureHTTPTransport:
             connection.close()
 
 
-def _safe_headers(headers: Mapping[str, str]) -> dict[str, str]:
+def _safe_header_items(headers: Iterable[tuple[object, object]]) -> dict[str, str]:
     safe: dict[str, str] = {}
-    for key, value in sorted(headers.items(), key=lambda item: str(item[0]).lower()):
+    aggregate_bytes = 0
+    for key, value in headers:
         lowered = str(key).lower()
         if lowered in SENSITIVE_RECORD_KEYS:
             raise SecurityError(f"credential response header is prohibited: {lowered}")
         text = str(value)
         _assert_no_secrets(text)
-        safe[lowered] = text
+        try:
+            aggregate_bytes += len(lowered.encode("utf-8")) + len(text.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise FetchError("response header is not valid UTF-8 text") from exc
+        safe[lowered] = f"{safe[lowered]}, {text}" if lowered in safe else text
+    if aggregate_bytes > MAX_SAFE_RESPONSE_HEADER_BYTES:
+        raise FetchError("response headers exceed aggregate byte limit")
     return safe
+
+
+def _safe_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return _safe_header_items(sorted(headers.items(), key=lambda item: str(item[0]).lower()))
+
+
+def _validate_resumed_headers(headers: object) -> dict[str, str]:
+    if not isinstance(headers, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in headers.items()
+    ):
+        raise CheckpointError("checkpoint capture headers are malformed")
+    try:
+        aggregate_bytes = sum(
+            len(key.lower().encode("utf-8")) + len(value.encode("utf-8"))
+            for key, value in headers.items()
+        )
+        _assert_no_secrets(headers)
+    except UnicodeEncodeError as exc:
+        raise CheckpointError("checkpoint capture header is not valid UTF-8 text") from exc
+    except SecurityError as exc:
+        raise CheckpointError(f"checkpoint capture headers cannot be validated: {exc}") from exc
+    if aggregate_bytes > MAX_LEGACY_CAPTURE_HEADER_BYTES:
+        raise CheckpointError("checkpoint capture headers exceed legacy byte limit")
+    return headers
 
 
 _CONTENT_TYPE_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
@@ -996,6 +1028,8 @@ class CaptureStore:
         self._ensure_open()
         _assert_no_secrets(value)
         raw = _canonical_json(value)
+        if len(raw) > MAX_CAPTURE_ENVELOPE_BYTES:
+            raise CollectorError("capture envelope exceeds byte limit")
         digest = hashlib.sha256(raw).hexdigest()
         name = f"{digest}.json"
         directory_fd = self._digest_directory(digest)
@@ -1345,18 +1379,6 @@ def _schema_errors(name: str, value: object) -> list[str]:
     return [error.message for error in validator.iter_errors(value)]
 
 
-def _capture_envelope_max_bytes(policy: FetchPolicy) -> int:
-    base64_body = 4 * ((policy.max_decoded_bytes + 2) // 3)
-    wire_allowance = min(policy.max_wire_bytes, MAX_CAPTURE_ENVELOPE_BYTES)
-    derived = (
-        _CAPTURE_FIXED_OVERHEAD_BYTES
-        + _CAPTURE_HEADER_OVERHEAD_BYTES
-        + wire_allowance
-        + base64_body
-    )
-    return min(MAX_CAPTURE_ENVELOPE_BYTES, derived)
-
-
 def _validate_resumed_entry(
     prior: object,
     *,
@@ -1399,7 +1421,7 @@ def _validate_resumed_entry(
     if not isinstance(digest, str) or receipt.get("capture_locator") != capture_store.base_url + digest:
         raise CheckpointError("checkpoint receipt capture binding mismatch")
     try:
-        capture = capture_store.read(digest, max_bytes=_capture_envelope_max_bytes(policy))
+        capture = capture_store.read(digest, max_bytes=MAX_CAPTURE_ENVELOPE_BYTES)
         validation_deadline = time.monotonic() + policy.total_timeout
         locator_canonical = _canonical_public_https_target(locator)
         canonical_locator = locator_canonical.url
@@ -1482,9 +1504,7 @@ def _validate_resumed_entry(
         raise CheckpointError("checkpoint capture body encoding is invalid") from exc
     if len(body) > policy.max_decoded_bytes:
         raise CheckpointError("checkpoint capture body exceeds byte limit")
-    headers = response.get("headers")
-    if not isinstance(headers, dict):
-        raise CheckpointError("checkpoint capture headers are malformed")
+    headers = _validate_resumed_headers(response.get("headers"))
     try:
         _assert_body_has_no_secrets(body, headers)
     except CollectorError as exc:
