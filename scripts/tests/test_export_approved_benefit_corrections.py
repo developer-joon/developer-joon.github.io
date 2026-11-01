@@ -671,6 +671,55 @@ class ExportApprovedBenefitCorrectionsTests(unittest.TestCase):
             finally:
                 self.exporter._read_tombstone_key_bytes = original_read
 
+    def test_tombstone_key_revalidates_metadata_after_read(self):
+        def chmod_key(_base, control, key_path):
+            key_path.chmod(0o644)
+
+        def add_hardlink(_base, control, key_path):
+            os.link(key_path, control / "extra-key-link")
+
+        def chmod_control(_base, control, _key_path):
+            control.chmod(0o755)
+
+        def replace_control(base, control, _key_path):
+            control.rename(base / "displaced-control")
+            control.mkdir(mode=0o700)
+
+        original_geteuid = self.exporter.os.geteuid
+
+        def change_effective_owner(_base, _control, _key_path):
+            self.exporter.os.geteuid = lambda: original_geteuid() + 1
+
+        races = {
+            "key mode": chmod_key,
+            "key hardlink": add_hardlink,
+            "control mode": chmod_control,
+            "control replacement": replace_control,
+            "effective owner": change_effective_owner,
+        }
+        for label, mutate in races.items():
+            with self.subTest(race=label), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root = self.snapshot_root(directory)
+                expected = self.exporter._load_tombstone_authentication_key(root)
+                control = base / self.exporter.TOMBSTONE_CONTROL_DIRECTORY_NAME
+                key_path = control / self.exporter.TOMBSTONE_KEY_NAME
+                original_read = self.exporter._read_tombstone_key_bytes
+
+                def mutate_during_read(descriptor):
+                    raw = original_read(descriptor)
+                    self.assertEqual(expected, raw)
+                    mutate(base, control, key_path)
+                    return raw
+
+                self.exporter._read_tombstone_key_bytes = mutate_during_read
+                try:
+                    with self.assertRaises(OSError):
+                        self.exporter._load_tombstone_authentication_key(root)
+                finally:
+                    self.exporter._read_tombstone_key_bytes = original_read
+                    self.exporter.os.geteuid = original_geteuid
+
     def test_concurrent_retries_of_tombstone_converge_without_leftovers(self):
         candidates = self.build_snapshot([row()])
         version = "approved-2026-11-01-v1"

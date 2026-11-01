@@ -639,15 +639,15 @@ def _remove_staging(root_fd, staging_name, _expected_names, expected_directory=N
 
 
 def _read_tombstone_key_bytes(descriptor):
-    chunks = []
+    key = bytearray()
     remaining = TOMBSTONE_KEY_BYTES + 1
     while remaining:
         chunk = os.read(descriptor, remaining)
         if not chunk:
             break
-        chunks.append(chunk)
+        key.extend(chunk)
         remaining -= len(chunk)
-    return b"".join(chunks)
+    return key
 
 
 def _secure_owned_mode(metadata, file_type, mode):
@@ -655,6 +655,42 @@ def _secure_owned_mode(metadata, file_type, mode):
         file_type(metadata.st_mode)
         and metadata.st_uid == os.geteuid()
         and stat.S_IMODE(metadata.st_mode) == mode
+    )
+
+
+def _tombstone_key_metadata_valid(
+    parent,
+    parent_fd,
+    control_fd,
+    expected_control,
+    key_fd,
+    expected_key,
+):
+    """Revalidate key and control metadata through held descriptors and names."""
+    current_control = os.fstat(control_fd)
+    named_control = os.stat(
+        TOMBSTONE_CONTROL_DIRECTORY_NAME,
+        dir_fd=parent_fd,
+        follow_symlinks=False,
+    )
+    current_key = os.fstat(key_fd)
+    named_key = os.stat(
+        TOMBSTONE_KEY_NAME, dir_fd=control_fd, follow_symlinks=False
+    )
+    return (
+        _secure_owned_mode(current_control, stat.S_ISDIR, 0o700)
+        and _secure_owned_mode(named_control, stat.S_ISDIR, 0o700)
+        and _same_inode(expected_control, current_control)
+        and _same_inode(current_control, named_control)
+        and _secure_owned_mode(current_key, stat.S_ISREG, 0o600)
+        and _secure_owned_mode(named_key, stat.S_ISREG, 0o600)
+        and current_key.st_nlink == 1
+        and named_key.st_nlink == 1
+        and current_key.st_size == TOMBSTONE_KEY_BYTES
+        and named_key.st_size == TOMBSTONE_KEY_BYTES
+        and _same_inode(expected_key, current_key)
+        and _same_inode(current_key, named_key)
+        and _root_path_still_names_fd(parent, parent_fd)
     )
 
 
@@ -722,29 +758,35 @@ def _load_tombstone_authentication_key(output_root):
                     _fsync_directory_fd(control_fd)
                     os.lseek(key_fd, 0, os.SEEK_SET)
                 key_metadata = os.fstat(key_fd)
-                if (
-                    not _secure_owned_mode(key_metadata, stat.S_ISREG, 0o600)
-                    or key_metadata.st_nlink != 1
+                if not _tombstone_key_metadata_valid(
+                    parent,
+                    parent_fd,
+                    control_fd,
+                    control_metadata,
+                    key_fd,
+                    key_metadata,
                 ):
                     raise OSError(errno.EPERM, "invalid tombstone authentication key")
-                key = _read_tombstone_key_bytes(key_fd)
-                named_key = os.stat(
-                    TOMBSTONE_KEY_NAME, dir_fd=control_fd, follow_symlinks=False
-                )
-                current_control = os.stat(
-                    TOMBSTONE_CONTROL_DIRECTORY_NAME,
-                    dir_fd=parent_fd,
-                    follow_symlinks=False,
-                )
-                if (
-                    len(key) != TOMBSTONE_KEY_BYTES
-                    or not stat.S_ISREG(named_key.st_mode)
-                    or not _same_inode(key_metadata, named_key)
-                    or not _same_inode(control_metadata, current_control)
-                    or not _root_path_still_names_fd(parent, parent_fd)
-                ):
-                    raise OSError(errno.ESTALE, "tombstone authentication key changed")
-                return key
+                key_buffer = _read_tombstone_key_bytes(key_fd)
+                try:
+                    if (
+                        len(key_buffer) != TOMBSTONE_KEY_BYTES
+                        or not _tombstone_key_metadata_valid(
+                            parent,
+                            parent_fd,
+                            control_fd,
+                            control_metadata,
+                            key_fd,
+                            key_metadata,
+                        )
+                    ):
+                        raise OSError(
+                            errno.ESTALE, "tombstone authentication key changed"
+                        )
+                    return bytes(key_buffer)
+                finally:
+                    if isinstance(key_buffer, bytearray):
+                        key_buffer[:] = b"\x00" * len(key_buffer)
             finally:
                 os.close(key_fd)
         finally:
