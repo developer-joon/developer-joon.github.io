@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from scripts.tests.benefits_test_fixture import FrozenFixture
+from scripts.tests.benefits_v2_batch_fixture import V2_FILES, no_public_info_records
 
 ROOT = Path(__file__).resolve().parents[2]
 SERIES_MODULE = ROOT / "scripts" / "company_benefits_series.py"
@@ -31,6 +32,11 @@ class SeriesContractTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.fixture = FrozenFixture(self.root)
+        batch = next(item for item in self.series.read_jsonl(self.root / "series-batches.jsonl")
+                     if item["batch_id"] == "domestic-01")
+        v2_records = no_public_info_records(batch, self.fixture.companies)
+        for ledger, filename in V2_FILES.items():
+            self.series.write_jsonl(self.root / filename, v2_records[ledger])
         self.series.materialize_contract(self.root, approved_batch_ids={"domestic-01"},
                                          approved_at="2026-10-21T00:00:00Z", reviewer_id="bob")
 

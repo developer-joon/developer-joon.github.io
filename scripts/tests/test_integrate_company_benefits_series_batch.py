@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from scripts.tests.benefits_test_fixture import FrozenFixture
+from scripts.tests.benefits_v2_batch_fixture import V2_FILES, no_public_info_records
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "scripts" / "integrate-company-benefits-series-batch.py"
@@ -33,6 +34,7 @@ class SeriesIntegrationTests(unittest.TestCase):
         self.fixture = FrozenFixture(self.root)
         batches = self.module.series.read_jsonl(self.root / "series-batches.jsonl")
         self.batch = next(item for item in batches if item["batch_id"] == "domestic-02")
+        self.v2_records = no_public_info_records(self.batch, self.fixture.companies)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -45,6 +47,7 @@ class SeriesIntegrationTests(unittest.TestCase):
     def package(self, claims=None, sources=None, reviews=None, gaps=None, checks=None, status="approved"):
         values = {"sources.jsonl": sources or [], "claims.jsonl": claims or [], "reviews.jsonl": reviews or [],
                   "gaps.jsonl": gaps or [], "checks.jsonl": checks or []}
+        values.update({filename: self.v2_records[ledger] for ledger, filename in V2_FILES.items()})
         artifacts = {name: self.write_jsonl(name, records) for name, records in values.items()}
         manifest = {"schema_version": "1", "batch_id": self.batch["batch_id"],
                     "company_list_sha256": self.batch["company_list_sha256"], "status": status,

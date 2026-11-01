@@ -19,13 +19,22 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import company_benefits_series as series
 
-PACKAGE_FILES = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl")
+PACKAGE_FILES = (
+    "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl",
+    *series.V2_LEDGER_FILES.values(),
+)
 PACKAGE_MEMBERS = ("batch.json", *PACKAGE_FILES)
 COLLISION_FIELDS = {
     "sources.jsonl": "source_id",
     "claims.jsonl": "claim_id",
     "reviews.jsonl": "review_id",
     "checks.jsonl": "source_id",
+    "company-category-cells.jsonl": "cell_id",
+    "research-attempts.jsonl": "attempt_id",
+    "official-claims-v2.jsonl": "claim_id",
+    "reference-records.jsonl": "reference_id",
+    "community-benefit-reports.jsonl": "community_report_id",
+    "sources-v2.jsonl": "source_id",
 }
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,7 +108,7 @@ def _validate_package_path(path):
         raise ValueError(f"package path aliases through a symlink: {path}")
     actual = {item.name for item in resolved.iterdir()}
     if actual != set(PACKAGE_MEMBERS):
-        raise ValueError(f"package must contain exactly batch.json and five artifacts: {path}")
+        raise ValueError(f"package must contain exactly batch.json and eleven artifacts: {path}")
     for item in resolved.iterdir():
         if item.is_symlink() or not item.is_file():
             raise ValueError(f"package members must be regular files without symlinks: {item}")
@@ -295,9 +304,10 @@ def _completion_counts(progress):
     entries = progress.get("batches", [])
     approved = sum(item.get("status") == "approved" for item in entries)
     accounted = sum(item.get("claim_count", 0) + item.get("no_claim_count", 0) for item in entries)
-    if progress.get("status") != "complete" or approved != 80 or accounted != 2000:
-        raise ValueError(f"completion gate failed: {approved}/80 approved and {accounted}/2000 accounted")
-    return approved, accounted
+    cells = sum(item.get("cell_count", 0) for item in entries)
+    if progress.get("status") != "complete" or approved != 80 or accounted != 2000 or cells != 20000:
+        raise ValueError(f"completion gate failed: {approved}/80 approved, {accounted}/2000 accounted, and {cells}/20000 cells")
+    return approved, accounted, cells
 
 
 def _integrate_series_locked(manifest_path, research_root, receipt_path, freeze_anchor_receipt,
@@ -310,7 +320,8 @@ def _integrate_series_locked(manifest_path, research_root, receipt_path, freeze_
         active_progress = json.loads((research_root / "series-progress.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         active_progress = {}
-    if active_progress.get("status") == "complete":
+    active_cells = sum(item.get("cell_count", 0) for item in active_progress.get("batches", []))
+    if active_progress.get("status") == "complete" and active_cells == 20000:
         raise ValueError("series is already complete; duplicate ingestion is prohibited")
     before = tree_manifest(research_root)
     before_digest = sha256(canonical_json(before))
@@ -342,7 +353,7 @@ def _integrate_series_locked(manifest_path, research_root, receipt_path, freeze_
         for package in validated.packages:
             integrate_one(package.path, staged, **arguments)
         progress = finalize_series(staged, validated.packages, **arguments)
-        approved, accounted = _completion_counts(progress)
+        approved, accounted, cells = _completion_counts(progress)
         errors = verify_staged(staged, **arguments)
         if errors:
             raise ValueError("final authoritative staged verification failed:\n" + "\n".join(errors))
@@ -357,6 +368,7 @@ def _integrate_series_locked(manifest_path, research_root, receipt_path, freeze_
             "after_tree_sha256": sha256(canonical_json(after)),
             "approved_batches": approved,
             "accounted_companies": accounted,
+            "explicit_cells": cells,
             "draft_count": 81,
             "inputs": {
                 "manifest": str(Path(manifest_path).resolve()),

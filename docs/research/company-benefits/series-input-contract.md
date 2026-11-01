@@ -12,12 +12,20 @@ Research producers submit exactly one review-pending candidate directory:
 ├── sources.jsonl
 ├── claims.jsonl
 ├── gaps.jsonl
-└── review-requests.jsonl
+├── review-requests.jsonl
+├── company-category-cells.jsonl
+├── research-attempts.jsonl
+├── official-claims-v2.jsonl
+├── reference-records.jsonl
+├── community-benefit-reports.jsonl
+└── sources-v2.jsonl
 ```
 
-`candidate.json` has `schema_version`, the canonical `batch_id`, all three canonical batch hashes (`company_list_sha256`, `effective_sequence_sha256`, and `replacement_events_sha256`), `status: review_pending`, `researcher_id`, and exact byte hashes for the four JSONL artifacts. The ledgers are in canonical 25-company order. Each company has claims or one `company-gap::<company-id>`, never both, and every outcome has one canonical `pending_independent_review` request. Pending requests are routing records, not reviews, and can never be copied into the production review ledger.
+`candidate.json` has `schema_version`, the canonical `batch_id`, all three canonical batch hashes (`company_list_sha256`, `effective_sequence_sha256`, and `replacement_events_sha256`), `status: review_pending`, `researcher_id`, and exact byte hashes for all ten JSONL artifacts. The v2 cell ledger must equal—not merely count to—the canonical Cartesian product of the batch's 25 selected company IDs and the ten categories `leave,family,health,growth,housing,commute,remote,retirement,meals,inclusion`. Missing, duplicate, or substituted cells fail before review. The ledgers are in canonical company/category order. Each company also has legacy claims or one `company-gap::<company-id>`, never both, and every legacy outcome has one canonical `pending_independent_review` request. Pending requests are routing records, not reviews, and can never be copied into the production review ledger.
 
-Candidate claims are immutable review inputs, not final publication records. They follow the final benefit-claim schema except that `prepublication_checked_at` is omitted and prohibited for every candidate status. That field is post-review gate state: promotion derives it for each factual claim from the latest successful exact check among that claim's bound positive sources. The compiler does not synthesize it. Candidate source and final URLs must be HTTPS, and `retained_file` provenance is rejected at candidate validation because the six-file integration format cannot carry its evidence file.
+Every explicit cell binds its real attempt receipts and any v2 official claims, references, or community reports. The production `validate-benefits-v2-package.py` contract is applied unchanged after the batch set gate: IDs, content hashes, source discovery, same-cell bindings, coverage-policy routes, and orphan detection all fail closed. A capture or response copied across cells is prohibited unless it carries the policy's explicit per-entity shared-bulk binding. Community evidence is accepted only when it is eligible, moderator-approved, frozen, and bound to the same cell. The compiler sorts and hashes supplied records but never generates attempts, evidence, or `no_public_info` cells.
+
+Candidate claims are immutable review inputs, not final publication records. They follow the final benefit-claim schema except that `prepublication_checked_at` is omitted and prohibited for every candidate status. That field is post-review gate state: promotion derives it for each factual claim from the latest successful exact check among that claim's bound positive sources. The compiler does not synthesize it. Candidate source and final URLs must be HTTPS, and `retained_file` provenance is rejected at candidate validation because the approved-package format cannot carry its evidence file.
 
 Mutable SEC submissions responses may use the single `official_identity_projection` provenance mode. It is restricted to official regulator/register sources and identity-only `supported_fields`; it can never appear in a factual claim's positive `source_ids`. The source declares `normalization: {algorithm: sec-submissions-identity, version: "1", projection_sha256}` and uses that projection digest as `content_sha256`. Version 1 canonicalizes only the live response's top-level `cik`, `name`, and `ein` as UTF-8 canonical JSON bytes `{"cik":"<10-digit zero-padded CIK>","legal_name":"<exact name>","ein":"<exact EIN>"}`. Unrelated filing-array changes therefore do not invalidate identity evidence, while any CIK, legal-name, or EIN drift does. No normalized prose, benefit statement, quote, filing section, or caller-selected field set is allowed.
 
@@ -28,7 +36,7 @@ python scripts/validate-company-benefits-series-candidate.py <candidate-dir> \
   --research-root docs/research/company-benefits
 ```
 
-For heterogeneous scratch output, use the separate deterministic compiler. It accepts only `draft.json`, `sources.jsonl`, `claims.jsonl`, and `gaps.jsonl`, canonicalizes order, generates pending requests, hashes the result, and then invokes the production candidate validator:
+For heterogeneous scratch output, use the separate deterministic compiler. It accepts `draft.json`, the three legacy input ledgers, and all six v2 ledgers; canonicalizes order; generates only legacy pending review requests; hashes the result; and invokes the production candidate validator. It does not synthesize v2 records:
 
 ```bash
 python scripts/compile-company-benefits-series-candidate.py <scratch-dir> <candidate-dir> \
@@ -65,14 +73,20 @@ python scripts/promote-company-benefits-series-candidate.py \
 ├── claims.jsonl
 ├── reviews.jsonl
 ├── gaps.jsonl
-└── checks.jsonl
+├── checks.jsonl
+├── company-category-cells.jsonl
+├── research-attempts.jsonl
+├── official-claims-v2.jsonl
+├── reference-records.jsonl
+├── community-benefit-reports.jsonl
+└── sources-v2.jsonl
 ```
 
 No package may include PDFs, screenshots, archives, raw responses, `evidence_path`, `evidence_file`, or `retained_file` provenance. A `nonpublishable_metadata` source follows `schema/nonpublishable-source.schema.json`: it explicitly records route quality, publication ineligibility, the nonpublication reason, entity-binding status, metadata-only retention, and reuse status. It cannot retain or assert a body, quote, content hash, expected marker, locator, or legal-entity applicability. Such a source may document a gap search route only; claim and unknown-claim source rules remain unchanged.
 
-`batch.json` follows `schema/series-input.schema.json`. It binds the three canonical hashes and the exact bytes of all five final JSONL artifacts. Its `review_audit` preserves the reviewer-approved candidate manifest/artifact hashes and the external review/check hashes; the final `claims.jsonl` hash separately binds promotion's deterministic gate-field injection, so the audit does not imply that reviewers approved a field which did not yet exist. It is created only by promotion with `status: approved`, `reviewer_id`, and `approved_at`; empty JSONL artifacts are zero-byte files and use the SHA-256 of zero bytes.
+`batch.json` follows `schema/series-input.schema.json`. It binds the three canonical hashes and the exact bytes of all eleven final JSONL artifacts. Its `review_audit` preserves the reviewer-approved candidate manifest/artifact hashes and the external review/check hashes; the final `claims.jsonl` hash separately binds promotion's deterministic gate-field injection, so the audit does not imply that reviewers approved a field which did not yet exist. It is created only by promotion with `status: approved`, `reviewer_id`, and `approved_at`; empty JSONL artifacts are zero-byte files and use the SHA-256 of zero bytes.
 
-The five ledgers use the existing source, claim, and review contracts plus these batch rules:
+The legacy and v2 ledgers use their existing source, claim, review, and evidence contracts plus these batch rules:
 
 - every claim and explicit company gap belongs to one of the manifest's 25 company IDs;
 - every company has at least one approved claim or exactly one `company-gap::<company-id>` gap, never both;
@@ -83,6 +97,7 @@ The five ledgers use the existing source, claim, and review contracts plus these
 - every used official source ID has exactly one current check after review; each factual claim's `prepublication_checked_at` equals the latest successful check timestamp among its positive sources; a repeated source ID replaces its older check only when strictly newer with the entire source tuple unchanged, while multiple source IDs may legitimately share one URL;
 - source, claim, review, and gap IDs cannot collide with any already integrated batch;
 - raw evidence files and unapproved, partial, stale, or pre-review packages fail closed.
+- each approved progress entry records `cell_count: 250` and a deterministic `cell_set_sha256`; pending entries record zero and cannot retain v2 cells. Whole-series completion requires exactly 20,000 explicit cells.
 
 ## Validation and integration
 

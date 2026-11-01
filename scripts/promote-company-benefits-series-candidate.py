@@ -12,7 +12,11 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-FINAL_FILES = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl")
+FINAL_FILES = (
+    "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl",
+    "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
+    "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl",
+)
 REVIEW_FILES = {"review-bundle.json", "reviews.jsonl", "checks.jsonl"}
 HASH = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +171,8 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
         "sources.jsonl": records["sources.jsonl"], "claims.jsonl": promoted_claims,
         "reviews.jsonl": reviews, "gaps.jsonl": records["gaps.jsonl"], "checks.jsonl": checks,
     }
+    for name in validator.V2_FILES:
+        values[name] = records[name]
     with tempfile.TemporaryDirectory(prefix="benefits-promotion-", dir=output_dir.parent) as temporary:
         staged = Path(temporary) / "package"
         staged.mkdir()

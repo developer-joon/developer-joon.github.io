@@ -20,10 +20,13 @@
         "candidate_manifest_sha256": {"$ref": "#/$defs/hash"},
         "candidate_artifacts": {
           "type": "object", "additionalProperties": false,
-          "required": ["sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl"],
+          "required": ["sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl", "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl", "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl"],
           "properties": {
             "sources.jsonl": {"$ref": "#/$defs/hash"}, "claims.jsonl": {"$ref": "#/$defs/hash"},
-            "gaps.jsonl": {"$ref": "#/$defs/hash"}, "review-requests.jsonl": {"$ref": "#/$defs/hash"}
+            "gaps.jsonl": {"$ref": "#/$defs/hash"}, "review-requests.jsonl": {"$ref": "#/$defs/hash"},
+            "company-category-cells.jsonl": {"$ref": "#/$defs/hash"}, "research-attempts.jsonl": {"$ref": "#/$defs/hash"},
+            "official-claims-v2.jsonl": {"$ref": "#/$defs/hash"}, "reference-records.jsonl": {"$ref": "#/$defs/hash"},
+            "community-benefit-reports.jsonl": {"$ref": "#/$defs/hash"}, "sources-v2.jsonl": {"$ref": "#/$defs/hash"}
           }
         },
         "review_artifacts": {
@@ -37,11 +40,14 @@
     },
     "artifacts": {
       "type": "object", "additionalProperties": false,
-      "required": ["sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl"],
+      "required": ["sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl", "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl", "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl"],
       "properties": {
         "sources.jsonl": {"$ref": "#/$defs/hash"}, "claims.jsonl": {"$ref": "#/$defs/hash"},
         "reviews.jsonl": {"$ref": "#/$defs/hash"}, "gaps.jsonl": {"$ref": "#/$defs/hash"},
-        "checks.jsonl": {"$ref": "#/$defs/hash"}
+        "checks.jsonl": {"$ref": "#/$defs/hash"},
+        "company-category-cells.jsonl": {"$ref": "#/$defs/hash"}, "research-attempts.jsonl": {"$ref": "#/$defs/hash"},
+        "official-claims-v2.jsonl": {"$ref": "#/$defs/hash"}, "reference-records.jsonl": {"$ref": "#/$defs/hash"},
+        "community-benefit-reports.jsonl": {"$ref": "#/$defs/hash"}, "sources-v2.jsonl": {"$ref": "#/$defs/hash"}
       }
     }
   },

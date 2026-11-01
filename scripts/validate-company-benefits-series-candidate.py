@@ -10,7 +10,12 @@ import re
 from pathlib import Path
 
 CANDIDATE_FILES = ("sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl")
-ALLOWED_FILES = {"candidate.json", *CANDIDATE_FILES}
+V2_FILES = (
+    "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
+    "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl",
+)
+ALL_ARTIFACT_FILES = (*CANDIDATE_FILES, *V2_FILES)
+ALLOWED_FILES = {"candidate.json", *ALL_ARTIFACT_FILES}
 HASH = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_FIELDS = {"request_id", "target_type", "target_id", "researcher_id", "status"}
 GAP_FIELDS = {"audit_id", "company_id", "disposition", "reason", "searched_official_source_ids",
@@ -109,7 +114,7 @@ def validate_candidate(candidate_dir, research_root):
         raise ValueError("candidate package directory is missing")
     actual = {path.name for path in candidate_dir.iterdir()}
     if actual != ALLOWED_FILES or any(not path.is_file() for path in candidate_dir.iterdir()):
-        raise ValueError("candidate package must contain exactly candidate.json and four canonical JSONL files")
+        raise ValueError("candidate package must contain exactly candidate.json and ten canonical JSONL files")
     try:
         manifest = json.loads((candidate_dir / "candidate.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -125,16 +130,21 @@ def validate_candidate(candidate_dir, research_root):
         if not HASH.fullmatch(str(manifest.get(field, ""))) or manifest.get(field) != batch.get(field):
             raise ValueError(f"candidate strict batch hash mismatch: {field}")
     artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, dict) or set(artifacts) != set(CANDIDATE_FILES):
-        raise ValueError("candidate manifest must hash the four exact artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(ALL_ARTIFACT_FILES):
+        raise ValueError("candidate manifest must hash the ten exact v1/v2 artifacts")
     records = {}
-    for name in CANDIDATE_FILES:
+    for name in ALL_ARTIFACT_FILES:
         raw = (candidate_dir / name).read_bytes()
         if artifacts.get(name) != sha256(raw):
             raise ValueError(f"candidate artifact hash mismatch: {name}")
         records[name] = read_jsonl(candidate_dir / name)
 
     verifier = _load_verifier()
+    v2_records = {
+        ledger: records[filename]
+        for ledger, filename in verifier.company_benefits_series.V2_LEDGER_FILES.items()
+    }
+    verifier.company_benefits_series.validate_v2_package_records(v2_records, batch, research_root)
     metadata_ids = _validate_sources(records["sources.jsonl"], verifier)
     sources = {item["source_id"]: item for item in records["sources.jsonl"]}
     claims, gaps, requests = records["claims.jsonl"], records["gaps.jsonl"], records["review-requests.jsonl"]

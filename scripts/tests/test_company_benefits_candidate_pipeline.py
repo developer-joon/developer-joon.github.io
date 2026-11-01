@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from scripts.tests.benefits_test_fixture import audited_source
+from scripts.tests.benefits_v2_batch_fixture import no_public_info_records, write_records
 
 ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = ROOT / "scripts" / "validate-company-benefits-series-candidate.py"
@@ -53,12 +54,14 @@ class CandidatePipelineTests(unittest.TestCase):
         self.root.mkdir()
         self.candidate.mkdir()
         self.review.mkdir()
-        self.company_ids = [f"KR-CRN-{index:013d}" for index in range(25)]
-        self.batch = {
-            "manifest_version": "1", "batch_id": "domestic-02", "scope": "domestic", "batch_number": 2,
-            "company_list_sha256": digest(json_bytes(self.company_ids)), "effective_sequence_sha256": "a" * 64,
-            "replacement_events_sha256": "b" * 64, "company_ids": self.company_ids,
-        }
+        research = ROOT / "docs" / "research" / "company-benefits"
+        batches = [json.loads(line) for line in (research / "series-batches.jsonl").read_text().splitlines()]
+        self.batch = next(item for item in batches if item["batch_id"] == "domestic-02")
+        self.company_ids = self.batch["company_ids"]
+        companies = [json.loads(line) for line in (research / "companies.jsonl").read_text().splitlines()]
+        selected = [company for company in companies if company["company_id"] in set(self.company_ids)]
+        (self.root / "companies.jsonl").write_bytes(jsonl_bytes(selected))
+        self.v2_records = no_public_info_records(self.batch, selected)
         (self.root / "series-batches.jsonl").write_bytes(jsonl_bytes([self.batch]))
         for name in ("source-registry.jsonl", "benefit-claims.jsonl", "reviews.jsonl",
                      "series-research-gaps.jsonl", "series-prepublication-checks.jsonl"):
@@ -107,6 +110,7 @@ class CandidatePipelineTests(unittest.TestCase):
             raw = jsonl_bytes(records[name])
             (self.candidate / name).write_bytes(raw)
             artifacts[name] = digest(raw)
+        artifacts.update(write_records(self.candidate, self.v2_records, jsonl_bytes))
         manifest = {
             "schema_version": "1", "batch_id": self.batch["batch_id"],
             "company_list_sha256": self.batch["company_list_sha256"],
@@ -300,6 +304,18 @@ class CandidatePipelineTests(unittest.TestCase):
         (self.candidate / "candidate.json").write_bytes(json_bytes(manifest))
         with self.assertRaisesRegex(ValueError, "artifact hash"):
             self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_candidate_hashes_every_v2_ledger(self):
+        for filename in (
+            "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
+            "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl",
+        ):
+            with self.subTest(filename=filename):
+                original = (self.candidate / filename).read_bytes()
+                (self.candidate / filename).write_bytes(original + b"\n")
+                with self.assertRaisesRegex(ValueError, f"artifact hash mismatch: {filename}"):
+                    self.validator.validate_candidate(self.candidate, self.root)
+                (self.candidate / filename).write_bytes(original)
 
     def test_requires_claim_gap_exclusivity_and_exact_one_pending_target(self):
         self.gaps.pop()
@@ -518,6 +534,7 @@ class CandidatePipelineTests(unittest.TestCase):
         (scratch / "sources.jsonl").write_bytes(jsonl_bytes(list(reversed(self.sources))))
         (scratch / "claims.jsonl").write_bytes(jsonl_bytes(self.claims))
         (scratch / "gaps.jsonl").write_bytes(jsonl_bytes(list(reversed(self.gaps))))
+        write_records(scratch, self.v2_records, jsonl_bytes)
         self.compiler.compile_candidate(scratch, compiled, self.root)
         first = {path.name: path.read_bytes() for path in compiled.iterdir()}
         self.compiler.compile_candidate(scratch, compiled, self.root)
@@ -553,7 +570,9 @@ class CandidatePipelineTests(unittest.TestCase):
     def test_promotion_emits_exact_existing_six_file_package_deterministically(self):
         self.write_review_bundle()
         self.promoter.promote(self.candidate, self.review, self.output, self.root)
-        expected = {"batch.json", "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl"}
+        expected = {"batch.json", "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl",
+                    "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
+                    "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl"}
         self.assertEqual(expected, {p.name for p in self.output.iterdir()})
         first = {p.name: p.read_bytes() for p in self.output.iterdir()}
         self.promoter.promote(self.candidate, self.review, self.output, self.root)

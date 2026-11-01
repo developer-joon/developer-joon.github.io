@@ -17,7 +17,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import company_benefits_series as series
 
-FILES = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl")
+FILES = (
+    "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl",
+    *series.V2_LEDGER_FILES.values(),
+)
 ALLOWED_FILES = {"batch.json", *FILES}
 TARGETS = {
     "sources.jsonl": "source-registry.jsonl",
@@ -25,10 +28,12 @@ TARGETS = {
     "reviews.jsonl": "reviews.jsonl",
     "gaps.jsonl": "series-research-gaps.jsonl",
     "checks.jsonl": "series-prepublication-checks.jsonl",
+    **{filename: filename for filename in series.V2_LEDGER_FILES.values()},
 }
 ID_FIELDS = {
     "sources.jsonl": "source_id", "claims.jsonl": "claim_id", "reviews.jsonl": "review_id",
     "gaps.jsonl": "audit_id", "checks.jsonl": "source_id",
+    **{filename: series.V2_ID_FIELDS[ledger] for ledger, filename in series.V2_LEDGER_FILES.items()},
 }
 LEDGER_TARGETS = tuple(TARGETS.values()) + ("series-progress.json", "series-batches.jsonl")
 TRANSACTION_DIRNAME = ".company-benefits-series-batch-transaction"
@@ -98,7 +103,7 @@ def load_package(input_dir, research_root):
     input_dir, research_root = Path(input_dir), Path(research_root)
     actual = {path.name for path in input_dir.iterdir()}
     if actual != ALLOWED_FILES or any(not path.is_file() for path in input_dir.iterdir()):
-        raise ValueError("unexpected input or evidence file; package must contain only batch.json and five JSONL artifacts")
+        raise ValueError("unexpected input or evidence file; package must contain only batch.json and eleven JSONL artifacts")
     try:
         manifest = json.loads((input_dir / "batch.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -119,8 +124,8 @@ def load_package(input_dir, research_root):
         raise ValueError("batch effective sequence or replacement-event binding is stale")
     progress = json.loads((research_root / "series-progress.json").read_text(encoding="utf-8"))
     current = next((item for item in progress["batches"] if item["batch_id"] == batch["batch_id"]), None)
-    if current is None or current.get("status") != "pending":
-        raise ValueError("batch is not pending")
+    if current is None or current.get("cell_count", 0) != 0:
+        raise ValueError("v2 batch is not pending")
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != set(FILES):
@@ -128,7 +133,8 @@ def load_package(input_dir, research_root):
     review_audit = manifest.get("review_audit")
     if review_audit is not None:
         audit_fields = {"candidate_manifest_sha256", "candidate_artifacts", "review_artifacts"}
-        candidate_files = {"sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl"}
+        candidate_files = {"sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl",
+                           *series.V2_LEDGER_FILES.values()}
         review_files = {"reviews.jsonl", "checks.jsonl"}
         if (not isinstance(review_audit, dict) or set(review_audit) != audit_fields
                 or not re.fullmatch(r"[0-9a-f]{64}", str(review_audit.get("candidate_manifest_sha256", "")))
@@ -155,9 +161,11 @@ def load_package(input_dir, research_root):
     verifier.validate_sources(records["sources.jsonl"], source_errors)
     if source_errors:
         raise ValueError("incoming source schema validation failed:\n" + "\n".join(source_errors))
+    v2_records = {ledger: records[filename] for ledger, filename in series.V2_LEDGER_FILES.items()}
+    series.validate_v2_package_records(v2_records, batch, research_root)
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
-    for name in ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl"):
+    for name in ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", *series.V2_LEDGER_FILES.values()):
         field = ID_FIELDS[name]
         incoming_ids = {item[field] for item in records[name]}
         existing_ids = {item.get(field) for item in existing[name]}
