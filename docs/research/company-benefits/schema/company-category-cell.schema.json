@@ -32,7 +32,7 @@
   "allOf": [
     {
       "if": {"properties": {"state": {"const": "official_verified"}}},
-      "then": {"properties": {"official_claim_ids": {"minItems": 1}, "reliability": {"enum": ["high", "medium"]}}}
+      "then": {"properties": {"official_claim_ids": {"minItems": 1}, "reliability": {"enum": ["high", "medium"]}, "scope_status": {"const": "exact_entity"}}}
     },
     {
       "if": {"properties": {"state": {"const": "reference"}}},

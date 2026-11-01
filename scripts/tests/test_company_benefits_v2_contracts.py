@@ -119,6 +119,12 @@ def base_community():
         "reliability": "low",
         "currentness": "unknown",
         "scope_status": "unresolved",
+        "scope": {
+            "countries": ["KR"],
+            "legal_entities": ["Example Korea Ltd."],
+            "roles": ["all_employees"],
+            "employment_types": ["full_time"],
+        },
         "conflict_status": "none",
         "moderation": {
             "status": "approved",
@@ -146,6 +152,12 @@ def base_source():
         "reliability": "medium",
         "currentness": "current",
         "scope_status": "exact_entity",
+        "scope": {
+            "countries": ["KR"],
+            "legal_entities": ["Example Korea Ltd."],
+            "roles": ["all_employees"],
+            "employment_types": ["full_time"],
+        },
         "conflict_status": "none",
         "publication_eligibility": "eligible",
     }
@@ -211,6 +223,12 @@ class V2ContractTests(unittest.TestCase):
         no_info["community_report_ids"] = ["community::forbidden"]
         cases.append(no_info)
         for record in cases:
+            self.assert_invalid("company-category-cell.schema.json", record)
+
+    def test_official_verified_cell_requires_exact_entity_scope(self):
+        for scope_status in ("group_only", "unresolved"):
+            record = base_cell("official_verified")
+            record["scope_status"] = scope_status
             self.assert_invalid("company-category-cell.schema.json", record)
 
     def test_no_public_info_requires_policy_attempt_and_complete_bindings(self):
@@ -313,6 +331,15 @@ class V2ContractTests(unittest.TestCase):
         record["moderation"]["note"] = "unknown"
         self.assert_invalid("community-benefit-report.schema.json", record)
 
+    def test_community_requires_strict_scope_dimensions(self):
+        for field in ("countries", "legal_entities", "roles", "employment_types"):
+            record = base_community()
+            record["scope"].pop(field)
+            self.assert_invalid("community-benefit-report.schema.json", record)
+        record = base_community()
+        record["scope"]["countries"] = ["Korea"]
+        self.assert_invalid("community-benefit-report.schema.json", record)
+
     def test_source_v2_represents_every_tier_and_quality_dimension(self):
         tiers = (
             "official_government", "company_recruiting_major_media", "other_public_web",
@@ -337,6 +364,15 @@ class V2ContractTests(unittest.TestCase):
             self.assert_invalid("source-v2.schema.json", record)
         record = base_source()
         record["extra"] = "forbidden"
+        self.assert_invalid("source-v2.schema.json", record)
+
+    def test_source_v2_requires_strict_scope_dimensions(self):
+        for field in ("countries", "legal_entities", "roles", "employment_types"):
+            record = base_source()
+            record["scope"].pop(field)
+            self.assert_invalid("source-v2.schema.json", record)
+        record = base_source()
+        record["scope"]["employment_types"] = []
         self.assert_invalid("source-v2.schema.json", record)
 
     def test_coverage_policy_is_category_specific_and_fail_closed(self):

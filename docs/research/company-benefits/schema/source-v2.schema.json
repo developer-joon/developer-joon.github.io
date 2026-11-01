@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": [
     "source_id", "source_tier", "title", "url", "retrieved_at", "content_sha256",
-    "reliability", "currentness", "scope_status", "conflict_status",
+    "reliability", "currentness", "scope_status", "scope", "conflict_status",
     "publication_eligibility"
   ],
   "properties": {
@@ -20,6 +20,17 @@
     "reliability": {"enum": ["high", "medium", "low", "unrated"]},
     "currentness": {"enum": ["current", "historical", "unknown"]},
     "scope_status": {"enum": ["exact_entity", "group_only", "unresolved"]},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["countries", "legal_entities", "roles", "employment_types"],
+      "properties": {
+        "countries": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z]{2}$"}},
+        "legal_entities": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "roles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "employment_types": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
     "conflict_status": {"enum": ["none", "disclosed", "unresolved"]},
     "publication_eligibility": {"enum": ["eligible", "ineligible"]}
   },
