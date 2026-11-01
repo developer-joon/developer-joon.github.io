@@ -566,6 +566,104 @@ class CollectorTests(unittest.TestCase):
                     store.put(escaped_and_multibyte)
                 self.assertEqual(before, sorted(path.relative_to(store.root) for path in store.root.rglob("*")))
 
+    def test_resume_rejects_raw_under_limit_when_canonical_envelope_exceeds_limit_without_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            url = "https://example.com/benefits"
+            items = [{
+                "company": self.company,
+                "category_id": "leave",
+                "route_id": "official-company",
+                "locator": url,
+            }]
+            checkpoint_path = Path(tmp) / "checkpoint.json"
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store, collectors.BatchCheckpoint(
+                checkpoint_path, collectors.batch_input_sha256(items)
+            ) as checkpoint:
+                collectors.collect_batch(
+                    items, transport=FakeTransport({url: [response(404, b"missing")]}),
+                    capture_store=store, checkpoint=checkpoint,
+                    resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+                )
+                key = collectors.attempt_id(self.company.company_id, "leave", "official-company")
+                prior = copy.deepcopy(checkpoint.completed[key])
+
+                count = 2_800_000
+                raw = (
+                    b'{"padding":"' + b"x" * 771 + b'","values":['
+                    + b"1e3," * (count - 1) + b"1e3]}"
+                )
+                self.assertEqual(11_200_796, len(raw))
+                self.assertEqual(19_600_796, len(raw) + 3 * count)
+                digest = hashlib.sha256(raw).hexdigest()
+                shard = store.root / digest[:2]
+                shard.mkdir(exist_ok=True)
+                (shard / f"{digest}.json").write_bytes(raw)
+
+                receipt = prior["receipt"]
+                assert isinstance(receipt, dict)
+                receipt["raw_response_sha256"] = digest
+                receipt["capture_locator"] = store.base_url + digest
+                receipt["receipt_content_sha256"] = hashlib.sha256(collectors._canonical_json({
+                    name: value for name, value in receipt.items() if name != "receipt_content_sha256"
+                })).hexdigest()
+                checkpoint.completed[key] = prior
+                completed_before = copy.deepcopy(checkpoint.completed)
+                checkpoint_bytes_before = checkpoint_path.read_bytes()
+                resumed_transport = FakeTransport({})
+
+                with self.assertRaisesRegex(
+                    collectors.CheckpointError,
+                    "checkpoint capture cannot be validated: capture envelope exceeds byte limit",
+                ):
+                    collectors.collect_batch(
+                        items, transport=resumed_transport, capture_store=store, checkpoint=checkpoint,
+                        resolver=lambda h, p: ["93.184.216.34"], now=lambda: "2026-11-01T01:00:00Z",
+                    )
+
+                self.assertEqual([], resumed_transport.calls)
+                self.assertEqual(completed_before, checkpoint.completed)
+                self.assertEqual(checkpoint_bytes_before, checkpoint_path.read_bytes())
+
+    def test_capture_read_normalizes_canonical_type_and_encoding_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with collectors.CaptureStore(
+                Path(tmp) / "captures", "https://captures.invalid/sha256/", repository_root=ROOT
+            ) as store:
+                for label, raw, message in (
+                    ("malformed JSON", b'{"value":', "capture is not valid JSON"),
+                    (
+                        "non-finite number",
+                        b'{"value":1e999}',
+                        "capture cannot be canonically serialized",
+                    ),
+                    (
+                        "invalid UTF-8 text",
+                        b'{"value":"\\ud800"}',
+                        "capture cannot be canonically serialized",
+                    ),
+                ):
+                    digest = hashlib.sha256(raw).hexdigest()
+                    shard = store.root / digest[:2]
+                    shard.mkdir(exist_ok=True)
+                    (shard / f"{digest}.json").write_bytes(raw)
+                    with self.subTest(label=label), self.assertRaisesRegex(
+                        collectors.CollectorError, message
+                    ):
+                        store.read(digest)
+
+                raw = b"{}"
+                digest = hashlib.sha256(raw).hexdigest()
+                shard = store.root / digest[:2]
+                shard.mkdir(exist_ok=True)
+                (shard / f"{digest}.json").write_bytes(raw)
+                with mock.patch.object(json, "loads", return_value={"value": object()}):
+                    with self.assertRaisesRegex(
+                        collectors.CollectorError, "capture cannot be canonically serialized"
+                    ):
+                        store.read(digest)
+
     def test_capture_overflow_publishes_neither_capture_nor_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             url = "https://example.com/benefits"

@@ -841,7 +841,41 @@ def source_id(company_id: str, category_id: str, route_id: str, url: str, conten
 
 
 def _canonical_json(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    buffer = bytearray()
+    for chunk in _canonical_json_chunks(value):
+        buffer.extend(chunk)
+    return bytes(buffer)
+
+
+def _canonical_json_chunks(value: object) -> Iterable[bytes]:
+    encoder = json.JSONEncoder(
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    for chunk in encoder.iterencode(value):
+        yield chunk.encode("utf-8")
+
+
+def _capture_canonical_json(value: object, *, materialize: bool) -> bytes | None:
+    # iterencode keeps expansion spread across tokens (for example 1e3 ->
+    # 1000.0) from becoming a second unbounded serialization. On reads, the
+    # bounded raw JSON input also bounds the size of any single string token.
+    buffer = bytearray() if materialize else None
+    total = 0
+    try:
+        for chunk in _canonical_json_chunks(value):
+            total += len(chunk)
+            if total > MAX_CAPTURE_ENVELOPE_BYTES:
+                raise CollectorError("capture envelope exceeds byte limit")
+            if buffer is not None:
+                buffer.extend(chunk)
+    except CollectorError:
+        raise
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+        raise CollectorError("capture cannot be canonically serialized") from exc
+    return bytes(buffer) if buffer is not None else None
 
 
 def _utc_timestamp(value: str) -> str:
@@ -1027,9 +1061,8 @@ class CaptureStore:
     def put(self, value: Mapping[str, object]) -> tuple[str, str]:
         self._ensure_open()
         _assert_no_secrets(value)
-        raw = _canonical_json(value)
-        if len(raw) > MAX_CAPTURE_ENVELOPE_BYTES:
-            raise CollectorError("capture envelope exceeds byte limit")
+        raw = _capture_canonical_json(value, materialize=True)
+        assert raw is not None
         digest = hashlib.sha256(raw).hexdigest()
         name = f"{digest}.json"
         directory_fd = self._digest_directory(digest)
@@ -1095,6 +1128,7 @@ class CaptureStore:
             raise CollectorError("capture is not valid JSON") from exc
         if not isinstance(value, dict):
             raise CollectorError("capture is not an object")
+        _capture_canonical_json(value, materialize=False)
         _assert_no_secrets(value)
         return value
 
