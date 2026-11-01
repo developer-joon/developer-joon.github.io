@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company-benefits-effective-selection-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "protocol_version", "freeze_manifest_sha256", "effective_manifest_sha256", "domestic_effective_sequence_sha256", "international_effective_sequence_sha256", "replacement_events_sha256", "candidate_effective_sha256", "review_status", "issued_at"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "protocol_version": {"type": "string", "minLength": 1},
+    "freeze_manifest_sha256": {"$ref": "#/$defs/hash"},
+    "effective_manifest_sha256": {"$ref": "#/$defs/hash"},
+    "domestic_effective_sequence_sha256": {"$ref": "#/$defs/hash"},
+    "international_effective_sequence_sha256": {"$ref": "#/$defs/hash"},
+    "replacement_events_sha256": {"$ref": "#/$defs/hash"},
+    "candidate_effective_sha256": {"$ref": "#/$defs/hash"},
+    "review_status": {"const": "approved"},
+    "issued_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

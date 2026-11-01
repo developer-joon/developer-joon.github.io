@@ -17,3 +17,4 @@ community-app/coverage/
 
 __pycache__/
 *.py[cod]
+.worktrees/

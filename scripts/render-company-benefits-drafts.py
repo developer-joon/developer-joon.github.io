@@ -63,7 +63,8 @@ def load_verifier():
     return module
 
 
-def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_anchor_receipt=None):
+def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_anchor_receipt=None,
+                 effective_selection_receipt=None):
     root = Path(root)
     output_dir = Path(output_dir)
     if scope not in {"domestic", "international"}:
@@ -75,7 +76,8 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     protocol_path = root / "population-protocol.json"
     protocol = read_json(protocol_path) if protocol_path.is_file() else {}
     as_of = as_of or datetime.now(timezone.utc).date()
-    errors = verifier.verify_workspace(root, as_of=as_of, freeze_anchor_receipt=freeze_anchor_receipt)
+    errors = verifier.verify_workspace(root, as_of=as_of, freeze_anchor_receipt=freeze_anchor_receipt,
+                                       effective_selection_receipt=effective_selection_receipt)
     if errors:
         raise ValueError("workspace verification failed:\n" + "\n".join(errors))
 
@@ -84,10 +86,16 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     sources = read_jsonl(root / "source-registry.jsonl")
     reviews = read_jsonl(root / "reviews.jsonl")
     company_map = {company["company_id"]: company for company in companies}
-    effective = read_jsonl(root / "population" / f"{scope}-effective-selected.jsonl")
-    scoped = [company_map[record["company_id"]] for record in effective]
-    start = (batch_number - 1) * 25
-    batch = scoped[start:start + 25]
+    batch_id = f"{scope}-{batch_number:02d}"
+    manifests = {item["batch_id"]: item for item in read_jsonl(root / "series-batches.jsonl")}
+    manifest = manifests.get(batch_id)
+    if manifest is None:
+        raise ValueError("unknown canonical series batch")
+    progress = read_json(root / "series-progress.json")
+    progress_entry = next((item for item in progress.get("batches", []) if item.get("batch_id") == batch_id), None)
+    if progress_entry is None or progress_entry.get("status") != "approved":
+        raise ValueError(f"batch {batch_id} is pending and cannot be rendered")
+    batch = [company_map[company_id] for company_id in manifest["company_ids"]]
     if len(batch) != 25:
         raise ValueError("a complete batch requires exactly 25 companies")
     if any(c.get("scope") != scope for c in batch):
@@ -99,7 +107,10 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     claims_by_company = {company_id: [] for company_id in company_ids}
     approved_claim_ids = {
         review["claim_id"] for review in reviews
-        if review.get("decision") == "approved" and review.get("researcher_id") != review.get("reviewer_id")
+        if review.get("claim_id")
+        and not review.get("record_id")
+        and review.get("decision") == "approved"
+        and review.get("researcher_id") != review.get("reviewer_id")
     }
     for claim in claims:
         if claim.get("company_id") in claims_by_company and claim.get("claim_id") in approved_claim_ids:
@@ -115,7 +126,6 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     if missing_sources:
         raise ValueError(f"missing source records for: {', '.join(missing_sources)}")
 
-    batch_id = f"{scope}-{batch_number:02d}"
     parts = [HEADER.format(batch_id=batch_id, scope=scope, protocol_id=protocol.get("protocol_id", ""))]
     status_labels = {
         "confirmed": "확인됨", "limited": "범위 제한 확인", "past": "과거 확인",
@@ -151,6 +161,49 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     return output
 
 
+def render_hub(root, output_dir):
+    root, output_dir = Path(root), Path(output_dir)
+    progress = read_json(root / "series-progress.json")
+    entries = progress.get("batches", [])
+    approved = [item for item in entries if item.get("status") == "approved"]
+    approved_companies = len(approved) * 25
+    domestic = sum(item.get("scope") == "domestic" for item in approved)
+    international = sum(item.get("scope") == "international" for item in approved)
+    reviewed_at = max((item.get("approved_at", "") for item in approved), default="없음")
+    links = "\n".join(
+        f"- [{item['batch_id']} 25개 법인]({item['batch_id']}.md)"
+        for item in approved
+    ) or "- 승인된 배치 없음"
+    text = f"""---
+status: draft
+protocol_id: company-benefits-population-v4
+series_status: {progress.get('status', '')}
+---
+
+# 대기업 복지 검증 시리즈 — 검토용 허브
+
+> 작성 순서는 순위가 아닙니다. 확인 불가는 복지가 없다는 뜻이 아닙니다.
+> 모집단은 동일한 공식 근거 경계에서 보고된 인원 100명 미만 법인과 기준일 이전 폐업·해산·청산완료·합병소멸 법인을 제외합니다. 공식 근거가 모든 법인을 완전하게 포괄한다는 뜻은 아닙니다.
+
+- 승인 배치: {len(approved)}/80
+- 승인 회사: {approved_companies}/2000
+- 국내 진행: {domestic}/40 배치 ({domestic * 25}/1000 법인)
+- 해외 진행: {international}/40 배치 ({international * 25}/1000 법인)
+- 마지막 배치 승인일: {reviewed_at}
+
+## 승인된 검토 초안
+
+{links}
+
+공개 공식 근거를 확보하지 못한 회사도 승인된 배치 목록에서 제외하지 않습니다. 이는 복지가 없다는 뜻이 아닙니다.
+전체 시리즈 완료 전 기존 탐색기 화면은 fixture이며 실제 완료 모집단을 뜻하지 않습니다.
+"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = output_dir / "hub.md"
+    output.write_text(text, encoding="utf-8", newline="\n")
+    return output
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root")
@@ -159,8 +212,11 @@ def main(argv=None):
     parser.add_argument("batch_number", type=int)
     parser.add_argument("--as-of", type=date.fromisoformat, help="render/freshness date (default: current UTC date)")
     parser.add_argument("--freeze-anchor-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT"))
+    parser.add_argument("--effective-selection-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_EFFECTIVE_SELECTION_RECEIPT"))
     args = parser.parse_args(argv)
-    output = render_batch(Path(args.root), Path(args.output_dir), args.scope, args.batch_number, as_of=args.as_of, freeze_anchor_receipt=args.freeze_anchor_receipt)
+    output = render_batch(Path(args.root), Path(args.output_dir), args.scope, args.batch_number, as_of=args.as_of,
+                          freeze_anchor_receipt=args.freeze_anchor_receipt,
+                          effective_selection_receipt=args.effective_selection_receipt)
     print(output)
     return 0
 

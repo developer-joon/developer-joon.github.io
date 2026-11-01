@@ -1,57 +1,12 @@
 import { categories, categoryLabels } from '../../types/benefits'
-import {
-  presets,
-  presetLabels,
-  type QueryState,
-} from '../../lib/benefitsQueryState'
-export function FitPresetPicker({
-  state,
-  update,
-}: {
-  state: QueryState
-  update: (p: Partial<QueryState>) => void
-}) {
-  return (
-    <>
-      <label>
-        생활 우선순위
-        <select
-          value={state.preset}
-          onChange={(e) =>
-            update({ preset: e.target.value as QueryState['preset'], page: 1 })
-          }
-        >
-          {presets.map((p, i) => (
-            <option key={p} value={p}>
-              {presetLabels[i]}
-            </option>
-          ))}
-        </select>
-      </label>
-      {state.preset === 'custom' && (
-        <fieldset>
-          <legend>분야별 중요도 · 0~5</legend>
-          {categories.map((c) => (
-            <label key={c}>
-              {categoryLabels[c]} 중요도
-              <input
-                type="range"
-                min="0"
-                max="5"
-                step="1"
-                value={state.weights[c] ?? 0}
-                onChange={(e) =>
-                  update({
-                    weights: { ...state.weights, [c]: Number(e.target.value) },
-                    page: 1,
-                  })
-                }
-              />
-              <output>{state.weights[c] ?? 0}</output>
-            </label>
-          ))}
-        </fieldset>
-      )}
-    </>
-  )
+import { presets, presetLabels, type QueryState } from '../../lib/benefitsQueryState'
+
+export function FitPresetPicker({ state, update }: { state: QueryState; update: (patch: Partial<QueryState>) => void }) {
+  return <div className="benefits-fit-conditions">
+    <label>조건 묶음<select value={state.preset} onChange={(event) => update({ preset: event.target.value as QueryState['preset'], page: 1 })}>{presets.map((preset, index) => <option key={preset} value={preset}>{presetLabels[index]}</option>)}</select></label>
+    <label>국가<input value={state.country} onChange={(event) => update({ country: event.target.value, page: 1 })} placeholder="예: KR" /></label>
+    <label>고용형태<input value={state.employment_type} onChange={(event) => update({ employment_type: event.target.value, page: 1 })} /></label>
+    <label>직군<input value={state.role} onChange={(event) => update({ role: event.target.value, page: 1 })} /></label>
+    {state.preset === 'custom' && <fieldset><legend>선호 분야</legend>{categories.map((category) => <label key={category}><input type="checkbox" checked={state.preferred_categories.includes(category)} onChange={(event) => update({ preferred_categories: event.target.checked ? [...state.preferred_categories, category] : state.preferred_categories.filter((value) => value !== category), page: 1 })} />{categoryLabels[category]}</label>)}</fieldset>}
+  </div>
 }

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company-benefits-series-progress.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest_version", "status", "company_list_sha256", "total_companies", "total_batches", "batches"],
+  "properties": {
+    "manifest_version": {"const": "1"},
+    "status": {"enum": ["in_progress", "complete"]},
+    "company_list_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "total_companies": {"const": 2000},
+    "total_batches": {"const": 80},
+    "batches": {"type": "array", "minItems": 80, "maxItems": 80, "items": {"$ref": "#/$defs/entry"}}
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["batch_id", "scope", "batch_number", "status", "company_list_sha256", "claim_count", "no_claim_count"],
+      "properties": {
+        "batch_id": {"type": "string"}, "scope": {"enum": ["domestic", "international"]},
+        "batch_number": {"type": "integer", "minimum": 1, "maximum": 40},
+        "status": {"enum": ["pending", "approved"]},
+        "company_list_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "claim_count": {"type": "integer", "minimum": 0}, "no_claim_count": {"type": "integer", "minimum": 0},
+        "approved_at": {"type": "string", "format": "date-time"},
+        "reviewer_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "allOf": [{"if": {"properties": {"status": {"const": "approved"}}}, "then": {"required": ["approved_at", "reviewer_ids"]}, "else": {"not": {"anyOf": [{"required": ["approved_at"]}, {"required": ["reviewer_ids"]}]}}}]
+    }
+  }
+}

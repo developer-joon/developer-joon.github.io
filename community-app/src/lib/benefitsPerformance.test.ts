@@ -1,27 +1,31 @@
 import { expect, it } from 'vitest'
-import { index } from '../test/benefitsFixture'
-import { indexSchema } from '../types/benefits'
+import type { CompanyListing } from '../types/benefits'
 import { filterBenefitsCompanies, parseQuery } from './benefitsQueryState'
-const companies = Array.from({ length: 2000 }, (_, i) => ({
-  ...index.companies[i % 56],
-  company_id: `example-${String(i + 1).padStart(3, '0')}`,
-  display_name: `가상 검증기업 ${i + 1}`,
-}))
-it('supports 2000 strictly validated fictional index records', () => {
-  expect(
-    indexSchema.safeParse({ data_version: 'fixture-v1', companies }).success,
-  ).toBe(true)
+
+const insufficient = (category_id: CompanyListing['category_outcomes'][number]['category_id']) => ({
+  kind: 'insufficient_evidence' as const,
+  category_id,
+  reason_code: 'not_researched' as const,
+  nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.' as const,
+  searched_source_ids: [],
+  searched_at: null,
 })
-it('measures in-memory search and filters at the release capacity', () => {
-  const state = parseQuery(
-    '?q=가상 검증기업 1999',
-    companies.map((c) => c.company_id),
-  )
-  const start = performance.now()
-  const result = filterBenefitsCompanies(companies, state)
-  const elapsed = performance.now() - start
-  expect(result.map((c) => c.company_id)).toEqual(['example-1999'])
-  console.info(
-    `Benefits 2000-company search/filter: ${elapsed.toFixed(2)} ms; ${result.length} matching record.`,
-  )
+const cats = ['leave','family','health','growth','housing','commute','remote','retirement','meals','inclusion'] as const
+const companies: CompanyListing[] = Array.from({ length: 2000 }, (_, index) => ({
+  company_id: index < 1000 ? `KR-CRN-${String(index + 1).padStart(13, '0')}` as const : `US-CIK${String(index + 1).padStart(10, '0')}` as const,
+  population_sequence: index + 1,
+  legal_name: `Company ${index + 1}`,
+  display_name: `Company ${index + 1}`,
+  scope: index < 1000 ? 'domestic' : 'international',
+  jurisdiction: index < 1000 ? 'KR' : 'US',
+  incorporation_country: index < 1000 ? 'KR' : 'US',
+  registered_head_office_country: index < 1000 ? 'KR' : 'US',
+  selected_reporting_legal_entity: `Company ${index + 1}`,
+  sector: 'non_financial',
+  category_outcomes: cats.map(insufficient),
+}))
+
+it('filters 2000 records without changing canonical order', () => {
+  const result = filterBenefitsCompanies(companies, parseQuery('?q=Company 1999'))
+  expect(result.map((company) => company.population_sequence)).toEqual([1999])
 })

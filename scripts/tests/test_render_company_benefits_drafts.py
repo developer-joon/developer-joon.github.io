@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import tempfile
 import unittest
 from unittest import mock
@@ -60,6 +61,27 @@ class RendererTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "external freeze-anchor receipt"):
             self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29))
 
+    def test_renderer_rejects_pending_batch(self):
+        verifier = self.renderer.load_verifier()
+        verify_workspace = verifier.verify_workspace
+        anchors = self.approved_freeze_anchors
+        verifier.verify_workspace = lambda *args, **kwargs: verify_workspace(*args, **kwargs, approved_freeze_anchors=anchors)
+        with mock.patch.object(self.renderer, "load_verifier", return_value=verifier):
+            with self.assertRaisesRegex(ValueError, "pending"):
+                self.renderer.render_batch(self.root, self.out, "domestic", 2, as_of=date(2026, 10, 29))
+
+    def test_hub_reports_actual_approved_progress(self):
+        progress_path = self.root / "series-progress.json"
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        second = next(item for item in progress["batches"] if item["batch_id"] == "domestic-02")
+        second.update(status="approved", approved_at="2026-10-22T00:00:00Z", reviewer_ids=["carol"])
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+        output = self.renderer.render_hub(self.root, self.out)
+        text = output.read_text(encoding="utf-8")
+        self.assertIn("승인 배치: 2/80", text)
+        self.assertIn("승인 회사: 50/2000", text)
+        self.assertNotIn("25/1000", text)
+
     def test_renderer_validates_freshness_at_render_date_not_protocol_cutoff(self):
         self.fixture.claims[0]["publication_date"] = "2026-01-01"
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
@@ -102,11 +124,73 @@ class RendererTests(unittest.TestCase):
 
     def test_company_without_claim_renders_nonabsence_gap_without_claim_or_score(self):
         company_id = self.fixture.current["domestic"][0]["company_id"]
+        official_route_id = f"gap-route-{company_id}"
+        official_route = {
+            "record_type": "nonpublishable_metadata",
+            "source_id": official_route_id,
+            "title": "Exact entity official route",
+            "owner": self.fixture.current["domestic"][0]["legal_name"],
+            "source_type": "official_company_report",
+            "jurisdiction": "KR",
+            "url": f"https://official.invalid/entity/{company_id}",
+            "checked_at": "2026-10-20T02:00:00Z",
+            "route_quality": "exact_entity",
+            "publication_eligible": False,
+            "nonpublication_reason": "Exact-entity discovery metadata is not publishable benefit evidence.",
+            "entity_binding_status": "exact_entity",
+            "retention_mode": "metadata_only",
+            "reuse_status": "discovery_only",
+            "access_observation": {
+                "status": 200,
+                "final_url": f"https://official.invalid/entity/{company_id}",
+                "access_wall": "none",
+            },
+        }
+        self.fixture.sources.append(official_route)
         removed_ids = {item["claim_id"] for item in self.fixture.claims if item["company_id"] == company_id}
         self.fixture.claims = [item for item in self.fixture.claims if item["claim_id"] not in removed_ids]
         self.fixture.reviews = [item for item in self.fixture.reviews if item["claim_id"] not in removed_ids]
+        self.fixture.reviews.append({
+            "review_id": f"review::company-gap::{company_id}",
+            "record_id": f"company-gap::{company_id}",
+            "researcher_id": "gap-researcher",
+            "reviewer_id": "bob",
+            "decision": "approved",
+            "reviewed_at": "2026-10-20T03:00:00Z",
+            "issues": [],
+            "resolution": "approved nonclaim outcome",
+            "quote_entailment_confirmed": True,
+        })
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
+        self.fixture.write_jsonl("source-registry.jsonl", self.fixture.sources)
+        self.fixture.write_jsonl("series-research-gaps.jsonl", [{
+            "audit_id": f"company-gap::{company_id}", "company_id": company_id,
+            "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
+            "searched_official_source_ids": [official_route_id], "searched_official_urls": [],
+            "nonabsence_wording": "복지가 없다는 뜻이 아닙니다.",
+        }])
+        used_source_ids = {
+            source_id
+            for claim in self.fixture.claims
+            for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])
+        }
+        checks = [
+            json.loads(line)
+            for line in (self.root / "series-prepublication-checks.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip() and json.loads(line).get("source_id") in used_source_ids
+        ]
+        checks.append({
+            "source_id": official_route_id,
+            "url": official_route["url"],
+            **official_route["access_observation"],
+            "checked_at": "2026-10-20T04:00:00Z",
+        })
+        self.fixture.write_jsonl("series-prepublication-checks.jsonl", checks)
+        from scripts import company_benefits_series
+        company_benefits_series.materialize_contract(
+            self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "bob"
+        )
 
         text = self.render().read_text(encoding="utf-8")
 

@@ -1,106 +1,13 @@
-import {
-  categories,
-  categoryLabels,
-  type Company,
-  type Rankings,
-  type Category,
-  type Detail,
-} from '../../types/benefits'
-import { fitScore } from '../../lib/benefitsScoring'
-import { ClaimApplicability } from './ClaimApplicability'
+import { categoryLabels, type CompanyListing } from '../../types/benefits'
+import { conditionGroup, type ConditionGroup, type QueryState } from '../../lib/benefitsQueryState'
 
-export type FitResult = {
-  company: Company
-  rows: Rankings['rows']
-  fit: ReturnType<typeof fitScore>
+const groupLabels: Record<ConditionGroup, string> = { matches_visible_scope: '공개 범위와 조건 일치', scope_mismatch: '공개 범위와 조건 불일치', scope_unknown: '적용 범위 미상', insufficient_evidence: '근거 부족' }
+export function buildConditionResults(companies: CompanyListing[], state: QueryState) {
+  const order: ConditionGroup[] = ['matches_visible_scope','scope_mismatch','scope_unknown','insufficient_evidence']
+  return order.flatMap((group) => companies.map((company) => ({ company, ...conditionGroup(company, state) })).filter((result) => result.group === group))
 }
-
-export function buildFitResults(
-  companies: Company[],
-  rankings: Rankings,
-  weights: Partial<Record<Category, number>>,
-) {
-  const rowsByCompany = new Map<string, Rankings['rows']>()
-  for (const row of rankings.rows) {
-    if (!row.eligible) continue
-    const rows = rowsByCompany.get(row.company_id) ?? []
-    rows.push(row)
-    rowsByCompany.set(row.company_id, rows)
-  }
-  return companies
-    .map((company): FitResult => {
-      const rows = rowsByCompany.get(company.company_id) ?? []
-      return {
-        company,
-        rows,
-        fit: fitScore(
-          weights,
-          Object.fromEntries(rows.map((row) => [row.category, row.score])),
-        ),
-      }
-    })
-    .sort(
-      (a, b) =>
-        (b.fit.score ?? -1) - (a.fit.score ?? -1) ||
-        a.company.company_id.localeCompare(b.company.company_id),
-    )
-}
-
-export function FitResultList({
-  results,
-  details,
-  weights,
-  link,
-  totalResults,
-}: {
-  results: FitResult[]
-  details?: Detail[]
-  weights: Partial<Record<Category, number>>
-  link: (id: string) => string
-  totalResults: number
-}) {
-  const wanted = categories.filter((c) => (weights[c] ?? 0) > 0)
-  return (
-    <div>
-      {results.map(({ company, rows, fit }) => (
-        <article className="benefits-result" key={company.company_id}>
-          <h3>
-            <a href={link(company.company_id)}>{company.display_name}</a> ·{' '}
-            {fit.score === null ? '자료 부족' : `일치도 ${fit.score}%`}
-          </h3>
-          <p>
-            비교 가능한 분야 {fit.comparable}/{fit.requested} · 근거 coverage{' '}
-            {Math.round(company.source_coverage * 100)}%
-          </p>
-          <ul>
-            {wanted.map((category) => {
-              const claims = details &&
-                details
-                  .find(
-                    (detail) => detail.company_id === company.company_id,
-                  )
-                  ?.claims.filter((claim) => claim.category === category)
-              return (
-                <li key={category}>
-                  {categoryLabels[category]} ·{' '}
-                  {rows.some((row) => row.category === category)
-                    ? `일치한 우선순위 · 확인된 복지 claim ${company.category_summaries[category].confirmed_count}건`
-                    : '판단 자료 부족 · 확인되지 않거나 평가에서 제외된 조건'}
-                  {claims ? (
-                    <ClaimApplicability claims={claims} />
-                  ) : (
-                    <small>적용 범위 근거를 불러오는 중입니다.</small>
-                  )}
-                </li>
-              )
-            })}
-          </ul>
-        </article>
-      ))}
-      {totalResults > 50 && (
-        <p>조건 일치 결과 상위 50개를 표시합니다. 필터로 범위를 좁혀 주세요.</p>
-      )}
-      {!results.length && <p>검색 결과가 없습니다</p>}
-    </div>
-  )
+export function FitResultList({ companies, state, link }: { companies: CompanyListing[]; state: QueryState; link: (id: string) => string }) {
+  const results = buildConditionResults(companies, state)
+  const start = (state.page - 1) * 50
+  return <div>{results.slice(start, start + 50).map(({ company, group, reasons }) => <article className="benefits-result" data-company-id={company.company_id} key={company.company_id}><h3><a href={link(company.company_id)}>{company.display_name}</a></h3><strong>{groupLabels[group]}</strong><ul>{reasons.map((reason) => <li key={reason}>{reason.startsWith('leave:') ? `${categoryLabels.leave}:${reason.split(':')[1]}` : reason}</li>)}</ul></article>)}{results.length > 50 && <p>페이지당 최대 50개 기업을 표시합니다.</p>}{!results.length && <p>검색 결과가 없습니다.</p>}</div>
 }

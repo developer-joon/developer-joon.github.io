@@ -3,6 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from scripts import company_benefits_series
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RESEARCH_ROOT = REPOSITORY_ROOT / "docs" / "research" / "company-benefits"
 PANEL = ["US", "CA", "MX", "BR", "AR", "GB", "FR", "DE", "IT", "TR", "RU", "AU", "CN", "IN", "ID", "JP", "SA", "ZA"]
@@ -61,7 +63,7 @@ class ContractFixture:
         self.protocol = json.loads((RESEARCH_ROOT / "population-protocol.json").read_text(encoding="utf-8"))
         self.protocol.update({
             "protocol_id": "company-benefits-population-synthetic-test",
-            "version": "3.1.1",
+            "version": "4.0.0",
             "status": "approved",
             "approval": {"approved_by": "owner", "approved_at": "2026-10-21T00:00:00Z"},
         })
@@ -117,13 +119,14 @@ class ContractFixture:
                 "scope": scope, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name,
                 "selected_reporting_legal_entity": legal_name, "registered_head_office_country": jurisdiction,
                 "financial_consolidation_parent": {"status":"unknown","reason":"Not established by test population evidence."}, "ultimate_parent": {"status":"unknown","reason":"Not established by test population evidence."}, "benefit_policy_owner": legal_name,
-                "related_company_exception": None, "entity_status": "active", "sector": "non_financial",
+                "related_company_exception": None, "entity_status": "active_at_cutoff", "sector": "non_financial",
+                "active_at_cutoff": {"status": "no_official_cessation_evidence", "cutoff_at": self.protocol["cutoff_at"], "evidence_source_ids": [source_id]},
                 "employment_evidence_scope": "filing_entity_total", "employment_boundary_note": "Test evidence does not establish payroll employer or benefit scope.",
                 "scale_source_precedence_rank": 1,
                 "source_availability": [],
                 "scale_metric": {"type": "revenue", "value": 200000000000 if scope == "domestic" else 2000000000, "currency": "KRW" if scope == "domestic" else "USD", "original_value": 200000000000 if scope == "domestic" else 2000000000, "original_currency": "KRW" if scope == "domestic" else "USD", "conversion": None, "fiscal_year_end": "2025-12-31", "financial_scope": "standalone", "source_ids": [source_id]},
                 "scale_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};metric=revenue", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00" if scope == "international" else None, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "metric": "revenue", "value": 200000000000 if scope == "domestic" else 2000000000, "currency": "KRW" if scope == "domestic" else "USD"},
-                "employer_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};field=employees", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00" if scope == "international" else None, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "employee_count": 10, "quote": "The registrant employed 10 people."},
+                "employer_evidence": {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"row:{index};field=employees", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00" if scope == "international" else None, "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "fiscal_period_end": "2025-12-31", "employee_count": 100, "quote": "The registrant employed 100 people."},
             }
             if scope == "international":
                 common = {"source_id": source_id, "url": self.protocol["registered_sources"][jurisdiction][0]["endpoint"], "locator": f"sub.txt:row={index}", "content_sha256": "a" * 64, "hash_provenance": "observed_response", "retrieved_at": "2026-10-20T00:00:00Z", "filing_date": "2026-01-15", "accepted_at": "2026-01-15T12:00:00-05:00", "accession": f"test-{index}", "registry_id": f"{scope[:1]}-{index:06d}", "legal_name": legal_name, "quote": "countryinc=US | stprinc=DE | countryba=US | stprba=NY"}
@@ -146,11 +149,24 @@ class ContractFixture:
     def approved_freeze_anchors(self):
         return {self.protocol["version"]: sha((self.population / "freeze-manifest.json").read_bytes())}
 
+    def approved_effective_anchors(self):
+        if not self.events:
+            return {}
+        scope = self.events[-1]["scope"]
+        return {self.protocol["version"]: {
+            "effective_manifest_sha256": sha((self.population / "effective-selection-manifest.json").read_bytes()),
+            "domestic_effective_sequence_sha256": sha((self.population / "domestic-effective-selected.jsonl").read_bytes()),
+            "international_effective_sequence_sha256": sha((self.population / "international-effective-selected.jsonl").read_bytes()),
+            "replacement_events_sha256": sha((self.population / "effective-selection-events.jsonl").read_bytes()),
+            "candidate_effective_sha256": sha((self.population / f"{scope}-effective-selected.jsonl").read_bytes()),
+        }}
+
     def replacement_event(self, scope="domestic", excluded_index=-1):
         old = self.current[scope]
         excluded = old[excluded_index]
         replacement = next(record for record in self.eligible[scope] if record["company_id"] not in {item["company_id"] for item in old})
-        new = sorted([record for record in old if record["company_id"] != excluded["company_id"]] + [replacement], key=lambda item: item["selection_hash"])
+        new = list(old)
+        new[excluded_index] = replacement
         event = {
             "event_id": "event-1", "protocol_version": self.protocol["version"], "scope": scope,
             "exclusion_reason": "entity_ineligible", "exclusion_details": "Official registry shows the entity no longer qualifies.",
@@ -173,7 +189,7 @@ class ContractFixture:
         path.write_bytes(jsonl_bytes(values))
 
     def refresh_manifests(self):
-        freeze_paths = ["population-protocol.json", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl", "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/international-coverage-gaps.json", "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl"]
+        freeze_paths = ["population-protocol.json", "population/candidate-manifest.json", "population/exclusion-ledger.jsonl", "population/domestic-eligible.jsonl", "population/international-eligible.jsonl", "population/domestic-selected.jsonl", "population/international-selected.jsonl", "population/domestic-reserve.jsonl", "population/international-reserve.jsonl", "population/international-coverage-gaps.json", "population/source-artifact-bindings.jsonl", "population/source-artifacts.jsonl"]
         for name in ('independent-sec-workforce-reviews.jsonl', 'acquisition-audit-manifest.json'):
             source = RESEARCH_ROOT / 'population' / name
             (self.population / name).write_bytes(source.read_bytes())
@@ -197,10 +213,13 @@ class ContractFixture:
         self.write_jsonl("source-registry.jsonl", self.sources)
         for scope in ("domestic", "international"):
             self.write_jsonl(f"population/{scope}-eligible.jsonl", self.eligible[scope])
+            self.write_jsonl(f"population/{scope}-reserve.jsonl", self.eligible[scope][1000:])
             self.write_jsonl(f"population/{scope}-selected.jsonl", self.selected[scope])
             self.write_jsonl(f"population/{scope}-initial-effective-selected.jsonl", self.selected[scope])
             self.write_jsonl(f"population/{scope}-effective-selected.jsonl", self.current[scope])
         self.write_jsonl("population/effective-selection-events.jsonl", self.events)
+        self.write_json("population/candidate-manifest.json", {"protocol_version": "4.0.0", "workforce_minimum": 100, "candidate_counts": {"domestic": 1001, "international": 1001}, "eligible_counts": {"domestic": 1001, "international": 1001}, "selected_counts": {"domestic": 1000, "international": 1000}, "reserve_counts": {"domestic": 1, "international": 1}, "exclusion_reason_codes": ["workforce_below_minimum", "workforce_missing_or_ambiguous", "entity_ceased_before_cutoff"]})
+        self.write_jsonl("population/exclusion-ledger.jsonl", [])
         artifacts = [{"artifact_id":"derived-test-ledger","kind":"derived","locator":"synthetic fixture","sha256":"d"*64}]
         for source in self.sources:
             if "revenue" in source.get("supported_fields", []) or "total_assets" in source.get("supported_fields", []) or "employee_evidence" in source.get("supported_fields", []):
@@ -218,7 +237,35 @@ class ContractFixture:
         self.write_jsonl("benefit-claims.jsonl", self.claims)
         self.write_jsonl("reviews.jsonl", self.reviews)
         self.write_jsonl("corrections.jsonl", [])
+        for relative in (
+            "series-historical-audit.jsonl",
+            "series-historical-audit-manifest.json",
+            "schema/series-historical-audit.schema.json",
+            "population/history/protocol-3.1.1/population-protocol.json",
+            "population/history/protocol-3.1.1/freeze-manifest.json",
+        ):
+            destination = self.root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((RESEARCH_ROOT / relative).read_bytes())
         self.refresh_manifests()
+        try:
+            checks = self.root / "series-prepublication-checks.jsonl"
+            previous_checks = {item.get("source_id"): item for item in company_benefits_series.read_jsonl(checks)}
+            if checks.exists():
+                checks.unlink()
+            company_benefits_series.materialize_contract(
+                self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "bob"
+            )
+            regenerated = {item.get("source_id"): item for item in company_benefits_series.read_jsonl(checks)}
+            unknown_source_ids = {source_id for claim in self.claims if claim.get("status") == "unknown"
+                                  for source_id in claim.get("searched_source_ids", [])}
+            for source_id in unknown_source_ids:
+                if source_id in previous_checks:
+                    regenerated[source_id] = previous_checks[source_id]
+            company_benefits_series.write_jsonl(checks, [regenerated[key] for key in sorted(regenerated)])
+        except ValueError:
+            # Mutation tests intentionally write invalid population sizes; the verifier must report them.
+            pass
 
 
 # Backwards-compatible test helper name while callers migrate.

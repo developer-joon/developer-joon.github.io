@@ -279,7 +279,7 @@ describe('Jekyll visual contract', () => {
     expect(toggleIcon['margin-left']).toBe('8px')
   })
 
-  it('uses matching inline mobile link boxes and block desktop link boxes in both shells', () => {
+  it('uses matching 56px mobile tap targets and compact desktop link boxes in both shells', () => {
     const mobileNavigationLink = computedDeclarations(['global-navigation'], 'a', 390)
     const desktopNavigationLink = computedDeclarations(['global-navigation'], 'a', 1024)
     const largeDesktopNavigationLink = computedDeclarations(['global-navigation'], 'a', 1220)
@@ -287,9 +287,14 @@ describe('Jekyll visual contract', () => {
     const baseMenuLinkBlock = menuLinkBlock.split('@include mq(tabletl)')[0]
     const desktopMenuLinkBlock = extractScssBlock(menuLinkBlock, '@include mq(tabletl)')
 
-    expect(mobileNavigationLink.display).toBe('inline')
-    expect(baseMenuLinkBlock).toMatch(/display:\s*inline;/)
+    expect(mobileNavigationLink.display).toBe('flex')
+    expect(mobileNavigationLink['min-height']).toBe('56px')
+    expect(mobileNavigationLink['align-items']).toBe('center')
+    expect(baseMenuLinkBlock).toMatch(/display:\s*flex;/)
+    expect(baseMenuLinkBlock).toMatch(/min-height:\s*56px;/)
+    expect(baseMenuLinkBlock).toMatch(/align-items:\s*center;/)
     expect(desktopNavigationLink.display).toBe('block')
+    expect(desktopNavigationLink['min-height']).toBe('0')
     expect(desktopNavigationLink['font-size']).toBe('15px')
     expect(largeDesktopNavigationLink['font-size']).toBe('17px')
     expect(desktopMenuLinkBlock).toMatch(/display:\s*block;/)
@@ -308,7 +313,7 @@ describe('Jekyll visual contract', () => {
     expect(desktopMenuListBlock).toMatch(/gap:\s*20px;/)
     expect(mobileMenuListBlock).not.toMatch(/display:\s*flex;|gap:/)
     expect(jekyllHeaderScss).not.toContain('.menu__list__item {')
-    expect(baseMenuLinkBlock).toMatch(/line-height:\s*1;/)
+    expect(baseMenuLinkBlock).toMatch(/line-height:\s*1\.2;/)
   })
 
   it('uses a stable scrollbar gutter and changes only color for current navigation', () => {

@@ -237,11 +237,6 @@
   border-bottom: 1px solid #30425c;
   background: #111f32;
 }
-.benefits-score-parts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
 .benefits-workspace dl {
   display: grid;
   grid-template-columns: minmax(80px, auto) 1fr;

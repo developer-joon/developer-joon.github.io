@@ -44,7 +44,6 @@ it('preserves header/footer in the public lazy fallback', async () => {
 })
 it.each([
   ['/community/benefits', 'heatmap'],
-  ['/community/benefits/rankings/', 'rankings'],
   ['/community/benefits/fit/', 'fit'],
   ['/community/benefits/company/', 'company'],
 ])(

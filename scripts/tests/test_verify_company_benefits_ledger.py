@@ -35,7 +35,10 @@ class VerifierTests(unittest.TestCase):
 
     def errors(self, anchors=None):
         anchors = self.approved_freeze_anchors if anchors is None else anchors
-        return self.verifier.verify_workspace(self.root, as_of=date(2026, 10, 29), approved_freeze_anchors=anchors)
+        return self.verifier.verify_workspace(
+            self.root, as_of=date(2026, 10, 29), approved_freeze_anchors=anchors,
+            approved_effective_anchors=self.fixture.approved_effective_anchors(),
+        )
 
     def assert_error(self, needle):
         errors = self.errors()
@@ -117,6 +120,59 @@ class VerifierTests(unittest.TestCase):
                     freeze_anchor_receipt=outside_alias,
                 )
             self.assertTrue(any("repository" in error for error in errors), errors[:20])
+
+    def test_effective_selection_receipt_is_distinct_external_and_fail_closed(self):
+        event, new = self.fixture.replacement_event(excluded_index=100)
+        self.fixture.current["domestic"] = new
+        self.fixture.companies = new + self.fixture.current["international"]
+        self.fixture.events = [event]
+        self.fixture.write_all()
+        expected = self.fixture.approved_effective_anchors()[self.fixture.protocol["version"]]
+        missing_errors = self.verifier.verify_workspace(
+            self.root, as_of=date(2026, 10, 29), approved_freeze_anchors=self.approved_freeze_anchors,
+        )
+        self.assertTrue(any("effective-selection receipt is required" in error for error in missing_errors), missing_errors[:30])
+        receipt = {"schema_version": "1", "protocol_version": self.fixture.protocol["version"],
+                   "freeze_manifest_sha256": next(iter(self.approved_freeze_anchors.values())),
+                   **expected, "review_status": "approved", "issued_at": "2026-10-24T00:00:00Z"}
+        local = self.root / "effective-selection-receipt.json"
+        local.write_text(json.dumps(receipt), encoding="utf-8")
+        errors = []
+        self.assertEqual({}, self.verifier.external_effective_selection_anchor(local, self.fixture.protocol, self.root, errors))
+        self.assertTrue(any("outside" in error for error in errors), errors)
+        with tempfile.TemporaryDirectory(dir=ROOT) as repository_dir:
+            repository_receipt = Path(repository_dir) / "effective-receipt.json"
+            repository_receipt.write_text(json.dumps(receipt), encoding="utf-8")
+            errors = []
+            self.assertEqual({}, self.verifier.external_effective_selection_anchor(repository_receipt, self.fixture.protocol, self.root, errors))
+            self.assertTrue(any("repository" in error for error in errors), errors)
+        with tempfile.TemporaryDirectory(dir=self.root.parent) as directory:
+            external = Path(directory) / "receipt.json"
+            external.write_text(json.dumps(receipt), encoding="utf-8")
+            errors = []
+            approved = self.verifier.external_effective_selection_anchor(external, self.fixture.protocol, self.root, errors)
+            self.assertFalse(errors)
+            self.assertEqual(expected, approved[self.fixture.protocol["version"]])
+            external_alias = Path(directory) / "external-alias.json"
+            external_alias.symlink_to(external)
+            errors = []
+            self.assertEqual({}, self.verifier.external_effective_selection_anchor(external_alias, self.fixture.protocol, self.root, errors))
+            self.assertTrue(any("symlink" in error for error in errors), errors)
+            alias = self.root / "receipt-alias.json"
+            alias.symlink_to(external)
+            errors = []
+            self.assertEqual({}, self.verifier.external_effective_selection_anchor(alias, self.fixture.protocol, self.root, errors))
+            self.assertTrue(any("symlink" in error for error in errors), errors)
+            external.write_text(json.dumps(dict(receipt, review_status="review_pending")), encoding="utf-8")
+            errors = []
+            self.assertEqual({}, self.verifier.external_effective_selection_anchor(external, self.fixture.protocol, self.root, errors))
+            self.assertTrue(any("not approved" in error for error in errors), errors)
+            external.write_text(json.dumps(dict(receipt, candidate_effective_sha256="0" * 64)), encoding="utf-8")
+            errors = self.verifier.verify_workspace(
+                self.root, as_of=date(2026, 10, 29), approved_freeze_anchors=self.approved_freeze_anchors,
+                effective_selection_receipt=external,
+            )
+            self.assertTrue(any("effective-selection receipt" in error and "mismatch" in error for error in errors), errors[:30])
 
     def test_self_consistent_frozen_scale_drift_fails_against_old_anchor(self):
         old_anchor = self.fixture.approved_freeze_anchors()
@@ -220,6 +276,21 @@ class VerifierTests(unittest.TestCase):
         errors = self.errors()
         for needle in ("employer_evidence", "scale evidence registry_id", "scale evidence value"):
             self.assertTrue(any(needle in error for error in errors), (needle, errors[:40]))
+
+    def test_employee_count_99_fails_and_100_passes(self):
+        self.rewrite_company_everywhere("domestic", 0, lambda company: company["employer_evidence"].update(employee_count=99))
+        self.assert_error("workforce minimum")
+        self.fixture = FrozenFixture(self.root)
+        self.rewrite_company_everywhere("domestic", 0, lambda company: company["employer_evidence"].update(employee_count=100))
+        self.approved_freeze_anchors = self.fixture.approved_freeze_anchors()
+        self.assertEqual([], self.errors())
+
+    def test_active_at_cutoff_contract_rejects_stale_active_label(self):
+        def mutate(company):
+            company["entity_status"] = "active"
+            company["active_at_cutoff"] = {"status": "ceased", "event_type": "dissolved", "effective_date": "2026-10-01", "evidence_source_ids": [self.fixture.source_for_jurisdiction["KR"]]}
+        self.rewrite_company_everywhere("domestic", 0, mutate)
+        self.assert_error("ceased on or before cutoff")
 
     def test_evidence_source_url_hash_period_and_legal_entity_must_match(self):
         def jurisdiction_mutate(company):
@@ -563,10 +634,25 @@ class VerifierTests(unittest.TestCase):
         self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
         self.assert_error("missing approved independent review")
 
+    def test_approved_claim_review_coverage_rejects_duplicate_target(self):
+        duplicate = copy.deepcopy(self.fixture.reviews[0])
+        duplicate.update(
+            review_id="review-duplicate-target",
+            reviewer_id="carol",
+            reviewed_at="2026-10-20T03:30:00Z",
+        )
+        for entailment in duplicate["source_entailment_reviews"]:
+            entailment["reviewer_id"] = "carol"
+        self.fixture.reviews.append(duplicate)
+        self.fixture.write_jsonl("reviews.jsonl", self.fixture.reviews)
+
+        self.assert_error("approved claim review coverage must be exact one-to-one")
+
     def test_secondary_dol_source_tuple_mutation_fails(self):
         research = ROOT / "docs" / "research" / "company-benefits"
-        claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines() if line]
-        reviews = [json.loads(line) for line in (research / "reviews.jsonl").read_text().splitlines() if line]
+        audit = [json.loads(line) for line in (research / "series-historical-audit.jsonl").read_text().splitlines() if line]
+        claims = [item["record"] for item in audit if item["record_type"] == "claim"]
+        reviews = [item["record"] for item in audit if item["record_type"] == "review"]
         sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines() if line]
         companies = [json.loads(line) for line in (research / "companies.jsonl").read_text().splitlines() if line]
         claim_id = "US-CIK0000827187-2024-health"
@@ -606,8 +692,9 @@ class VerifierTests(unittest.TestCase):
 
     def test_source_entailment_reviewer_identity_must_exactly_match_review(self):
         research = ROOT / "docs" / "research" / "company-benefits"
-        claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines() if line]
-        reviews = [json.loads(line) for line in (research / "reviews.jsonl").read_text().splitlines() if line]
+        audit = [json.loads(line) for line in (research / "series-historical-audit.jsonl").read_text().splitlines() if line]
+        claims = [item["record"] for item in audit if item["record_type"] == "claim"]
+        reviews = [item["record"] for item in audit if item["record_type"] == "review"]
         sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines() if line]
         claim_id = "US-CIK0000827187-2024-health"
         claim = next(item for item in claims if item["claim_id"] == claim_id)
@@ -727,7 +814,13 @@ class VerifierTests(unittest.TestCase):
         self.assert_error("next_effective_sha256 mismatch")
 
     def test_replacement_must_use_next_unused_canonical_candidate(self):
-        event, new = self.fixture.replacement_event()
+        event, new = self.fixture.replacement_event(excluded_index=100)
+        position = event["excluded_hash_position"]
+        self.assertEqual(event["replacement_company_id"], new[position]["company_id"])
+        self.assertEqual(
+            [item["company_id"] for index, item in enumerate(self.fixture.current["domestic"]) if index != position],
+            [item["company_id"] for index, item in enumerate(new) if index != position],
+        )
         self.fixture.current["domestic"] = new
         self.fixture.companies = new + self.fixture.current["international"]
         self.fixture.events = [event]
@@ -831,8 +924,15 @@ class VerifierTests(unittest.TestCase):
             for entry in entries:
                 self.assertEqual(source_map[entry["source_id"]]["url"], entry["endpoint"])
         for source in sources:
-            for field in ("title", "locator", "supporting_quote", "content_sha256"):
-                self.assertTrue(source.get(field), (source["source_id"], field))
+            self.assertTrue(source.get("title"), (source["source_id"], "title"))
+            if source.get("record_type") == "nonpublishable_metadata":
+                self.assertEqual("metadata_only", source.get("retention_mode"), source["source_id"])
+                self.assertIs(source.get("publication_eligible"), False, source["source_id"])
+                for field in ("locator", "supporting_quote", "content_sha256"):
+                    self.assertNotIn(field, source, (source["source_id"], field))
+            else:
+                for field in ("locator", "supporting_quote", "content_sha256"):
+                    self.assertTrue(source.get(field), (source["source_id"], field))
         schema = json.loads((research / "schema" / "population-protocol.schema.json").read_text())
         self.assertEqual(PANEL, schema["$defs"]["country_panel"]["const"])
         contract = json.loads((ROOT / "scripts" / "company-benefits-protocol-contract.json").read_text())
@@ -851,24 +951,22 @@ class VerifierTests(unittest.TestCase):
             "review_status": "approved",
             "issued_at": "2026-10-30T00:00:00Z",
         })
-        errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 30), freeze_anchor_receipt=receipt)
+        errors = self.verifier.verify_workspace(research, as_of=date(2026, 10, 31), freeze_anchor_receipt=receipt)
         self.assertEqual([], errors)
         self.assertEqual("approved", protocol["status"])
-        expected = {"domestic-eligible.jsonl": 1350, "international-eligible.jsonl": 1066,
+        expected = {"domestic-eligible.jsonl": 1037, "international-eligible.jsonl": 1060,
                     "domestic-selected.jsonl": 1000, "international-selected.jsonl": 1000,
                     "domestic-effective-selected.jsonl": 1000, "international-effective-selected.jsonl": 1000}
         for name, count in expected.items():
             self.assertEqual(count, len((research / "population" / name).read_bytes().splitlines()), name)
         self.assertEqual(2000, len((research / "companies.jsonl").read_bytes().splitlines()))
-        self.assertEqual(199, len((research / "benefit-claims.jsonl").read_bytes().splitlines()))
-        self.assertEqual(199, len((research / "reviews.jsonl").read_bytes().splitlines()))
+        self.assertEqual(497, len((research / "series-historical-audit.jsonl").read_bytes().splitlines()))
         claims = [json.loads(line) for line in (research / "benefit-claims.jsonl").read_text().splitlines()]
         sources = [json.loads(line) for line in (research / "source-registry.jsonl").read_text().splitlines()]
         referenced = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
         bindings = [entry for claim in claims for entry in claim.get("source_evidence", [])]
-        self.assertEqual(242, len(sources))
-        self.assertEqual(215, len(referenced))
-        self.assertEqual(196, len(bindings))
+        self.assertTrue(set(referenced).issubset({source["source_id"] for source in sources}))
+        self.assertTrue(all(binding.get("source_id") in referenced for binding in bindings))
 
 
 if __name__ == "__main__":

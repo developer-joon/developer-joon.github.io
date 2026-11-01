@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company-benefits-series-historical-audit.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_type",
+    "company_id",
+    "selection_status",
+    "old_batch_id",
+    "new_batch_id",
+    "publishable",
+    "reason",
+    "record"
+  ],
+  "properties": {
+    "record_type": {"enum": ["claim", "review", "gap"]},
+    "company_id": {"type": "string", "minLength": 1},
+    "selection_status": {"enum": ["retained", "removed"]},
+    "old_batch_id": {"type": "string", "pattern": "^(domestic|international)-(0[1-9]|[1-3][0-9]|40)$"},
+    "new_batch_id": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^(domestic|international)-(0[1-9]|[1-3][0-9]|40)$"}
+      ]
+    },
+    "publishable": {"const": false},
+    "reason": {"const": "protocol_4_refreeze_requires_new_batch_review"},
+    "record": {"type": "object"}
+  }
+}

@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "artifact_kind": "benefit_taxonomy",
+  "taxonomy_version": "benefit-taxonomy-v1",
+  "language": "ko-KR",
+  "principles": {
+    "overall_ranking": "prohibited",
+    "category_ranking": "prohibited",
+    "numeric_scores": "prohibited",
+    "absence_inference": "prohibited",
+    "unmapped_evidenced_claim": "fail_closed",
+    "insufficient_evidence": "separate_outcome",
+    "personal_conditions_storage": [
+      "url_query",
+      "browser_memory"
+    ],
+    "server_or_account_storage": "prohibited"
+  },
+  "category_outcome_contract": {
+    "discriminator": "kind",
+    "variants": [
+      {
+        "kind": "evidenced",
+        "allowed_statuses": [
+          "confirmed",
+          "bounded"
+        ],
+        "required_fields": [
+          "category_id",
+          "status",
+          "claim_count",
+          "benefit_type_count",
+          "scope",
+          "limitations",
+          "last_checked_at"
+        ],
+        "forbidden_fields": [
+          "score",
+          "rank",
+          "percentile",
+          "coverage_percent"
+        ]
+      },
+      {
+        "kind": "insufficient_evidence",
+        "allowed_statuses": [],
+        "required_fields": [
+          "category_id",
+          "reason_code",
+          "nonabsence_notice",
+          "searched_source_ids",
+          "searched_at"
+        ],
+        "forbidden_fields": [
+          "status",
+          "score",
+          "rank",
+          "zero"
+        ]
+      }
+    ]
+  },
+  "status_derivation": {
+    "confirmed": {
+      "all": [
+        "at_least_one_mapped_claim",
+        "claim.status_is_confirmed",
+        "claim.current_validity_is_current_or_undated_current",
+        "claim.has_grade_a_or_b_evidence",
+        "country_scope_is_explicit",
+        "legal_entity_scope_is_explicit",
+        "role_scope_is_explicit_or_explicitly_all_employees",
+        "employment_type_scope_is_explicit_or_explicitly_all_employees",
+        "tenure_condition_is_explicit_including_explicit_none",
+        "no_unresolved_conflict_for_category"
+      ]
+    },
+    "bounded": {
+      "any": [
+        "claim.status_is_limited",
+        "claim.status_is_past",
+        "claim.status_is_name_only",
+        "claim.status_is_conflict",
+        "claim.current_validity_is_historical",
+        "role_scope_is_not_publicly_specified",
+        "employment_type_scope_is_not_publicly_specified",
+        "tenure_condition_is_not_stated",
+        "source_only_proves_named_plan_and_plan_year",
+        "category_contains_unresolved_conflict"
+      ]
+    },
+    "aggregation": "confirmed_only_if_at_least_one_fully_confirmed_projection_and_no_bounded_projection_or_conflict;otherwise_bounded",
+    "unknown_claims": "never_enter_evidenced_outcome"
+  },
+  "scope_contract": {
+    "required_dimensions": [
+      "countries",
+      "legal_entities",
+      "roles",
+      "employment_types",
+      "tenure_condition"
+    ],
+    "display": "always_visible_on_category_and_claim_detail",
+    "unknown_markers": [
+      "not stated by source",
+      "not publicly specified by the source",
+      "not established by searched public source",
+      "unspecified employees",
+      "출처에 명시되지 않음",
+      "확인 불가"
+    ],
+    "unknown_marker_effect": "bounded",
+    "population_entity_inheritance": "prohibited",
+    "group_or_affiliate_transfer": "prohibited"
+  },
+  "categories": [
+    {
+      "id": "leave",
+      "label_ko": "휴가·근무시간",
+      "order": 1
+    },
+    {
+      "id": "family",
+      "label_ko": "육아·가족",
+      "order": 2
+    },
+    {
+      "id": "health",
+      "label_ko": "건강·보험",
+      "order": 3
+    },
+    {
+      "id": "growth",
+      "label_ko": "교육·성장",
+      "order": 4
+    },
+    {
+      "id": "housing",
+      "label_ko": "주거·금융",
+      "order": 5
+    },
+    {
+      "id": "commute",
+      "label_ko": "이동·통근",
+      "order": 6
+    },
+    {
+      "id": "remote",
+      "label_ko": "유연근무·원격근무",
+      "order": 7
+    },
+    {
+      "id": "retirement",
+      "label_ko": "퇴직·장기근속",
+      "order": 8
+    },
+    {
+      "id": "meals",
+      "label_ko": "식사·생활편의",
+      "order": 9
+    },
+    {
+      "id": "inclusion",
+      "label_ko": "포용·접근성",
+      "order": 10
+    }
+  ],
+  "benefit_types": [
+    {"id": "paid-leave", "category_id": "leave", "label_ko": "유급휴가"},
+    {"id": "summer-or-refresh-leave", "category_id": "leave", "label_ko": "하계·리프레시 휴가"},
+    {"id": "paid-time-off", "category_id": "leave", "label_ko": "유급휴가 제도"},
+    {"id": "family-event-leave", "category_id": "leave", "label_ko": "경조휴가"},
+    {"id": "flexible-hours", "category_id": "remote", "label_ko": "유연·시차 근무"},
+    {"id": "remote-work", "category_id": "remote", "label_ko": "원격근무"},
+    {"id": "parental-leave", "category_id": "family", "label_ko": "출산·육아휴직"},
+    {"id": "childcare", "category_id": "family", "label_ko": "보육 지원"},
+    {"id": "child-education", "category_id": "family", "label_ko": "자녀 교육비"},
+    {"id": "family-events", "category_id": "family", "label_ko": "경조·가족 행사 지원"},
+    {"id": "medical", "category_id": "health", "label_ko": "의료·건강보험"},
+    {"id": "dental", "category_id": "health", "label_ko": "치과 보장"},
+    {"id": "vision", "category_id": "health", "label_ko": "시력 보장"},
+    {"id": "health-screening", "category_id": "health", "label_ko": "건강검진"},
+    {"id": "life-insurance", "category_id": "health", "label_ko": "생명·단체보험"},
+    {"id": "accident-insurance", "category_id": "health", "label_ko": "상해·AD&D 보험"},
+    {"id": "short-term-disability", "category_id": "health", "label_ko": "단기 장애 보장"},
+    {"id": "long-term-disability", "category_id": "health", "label_ko": "장기 장애 보장"},
+    {"id": "mental-health-eap", "category_id": "health", "label_ko": "심리상담·EAP"},
+    {"id": "wellness", "category_id": "health", "label_ko": "웰니스·건강증진"},
+    {"id": "statutory-social-insurance", "category_id": "health", "label_ko": "법정 사회보험", "baseline_kind": "statutory_or_mandatory"},
+    {"id": "tuition-assistance", "category_id": "growth", "label_ko": "학비·등록금 지원"},
+    {"id": "job-training", "category_id": "growth", "label_ko": "직무교육"},
+    {"id": "certification-language", "category_id": "growth", "label_ko": "자격·어학 지원"},
+    {"id": "career-development", "category_id": "growth", "label_ko": "경력개발"},
+    {"id": "housing-loan", "category_id": "housing", "label_ko": "주택자금 대출·보조"},
+    {"id": "dormitory-company-housing", "category_id": "housing", "label_ko": "기숙사·사택"},
+    {"id": "employee-stock", "category_id": "housing", "label_ko": "우리사주·주식매입"},
+    {"id": "financial-wellness", "category_id": "housing", "label_ko": "재무복지"},
+    {"id": "prepaid-legal", "category_id": "housing", "label_ko": "선불 법률지원"},
+    {"id": "commuter-bus", "category_id": "commute", "label_ko": "통근버스"},
+    {"id": "transport-allowance", "category_id": "commute", "label_ko": "교통·차량 지원"},
+    {"id": "retirement-defined-contribution", "category_id": "retirement", "label_ko": "확정기여형 퇴직저축"},
+    {"id": "retirement-employer-match", "category_id": "retirement", "label_ko": "고용주 퇴직저축 매칭"},
+    {"id": "retirement-employer-core", "category_id": "retirement", "label_ko": "고용주 기본 퇴직기여"},
+    {"id": "retirement-vesting", "category_id": "retirement", "label_ko": "퇴직기여 귀속"},
+    {"id": "retirement-eligibility", "category_id": "retirement", "label_ko": "퇴직플랜 가입조건"},
+    {"id": "severance", "category_id": "retirement", "label_ko": "퇴직·해고 보상"},
+    {"id": "long-service-award", "category_id": "retirement", "label_ko": "장기근속 포상"},
+    {"id": "meals-cafeteria", "category_id": "meals", "label_ko": "식사·사내식당"},
+    {"id": "welfare-points-gifts", "category_id": "meals", "label_ko": "복지포인트·선물"},
+    {"id": "recreation-clubs-retreat", "category_id": "meals", "label_ko": "동호회·휴양·문화"},
+    {"id": "onsite-convenience", "category_id": "meals", "label_ko": "사내 편의시설"},
+    {"id": "accessibility-accommodation", "category_id": "inclusion", "label_ko": "접근성·합리적 편의"},
+    {"id": "caregiver-family-assistance", "category_id": "inclusion", "label_ko": "가족·돌봄 지원"}
+  ],
+  "dol_form_5500_mappings": [
+    {"field": "TYPE_PENSION_BNFT_CODE", "code": "2J", "benefit_type_id": "retirement-defined-contribution", "label_en": "Code section 401(k) feature", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"},
+    {"field": "TYPE_WELFARE_BNFT_CODE", "code": "4A", "benefit_type_id": "medical", "label_en": "Health (other than vision or dental)", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"},
+    {"field": "TYPE_WELFARE_BNFT_CODE", "code": "4B", "benefit_type_id": "life-insurance", "label_en": "Life insurance", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"},
+    {"field": "TYPE_WELFARE_BNFT_CODE", "code": "4D", "benefit_type_id": "dental", "label_en": "Dental", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"},
+    {"field": "TYPE_WELFARE_BNFT_CODE", "code": "4E", "benefit_type_id": "vision", "label_en": "Vision", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"},
+    {"field": "TYPE_WELFARE_BNFT_CODE", "code": "4F", "benefit_type_id": "short-term-disability", "label_en": "Temporary disability (accident and sickness)", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"},
+    {"field": "TYPE_WELFARE_BNFT_CODE", "code": "4G", "benefit_type_id": "prepaid-legal", "label_en": "Prepaid legal", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"},
+    {"field": "TYPE_WELFARE_BNFT_CODE", "code": "4H", "benefit_type_id": "long-term-disability", "label_en": "Long-term disability", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"},
+    {"field": "TYPE_WELFARE_BNFT_CODE", "code": "4I", "benefit_type_id": "severance", "label_en": "Severance pay", "forced_status": "bounded", "evidence_semantics": "historical_named_plan_feature_only"}
+  ],
+  "dol_guards": [
+    "require_exact_plan_row_source_and_official_code_definition_source",
+    "require_plan_name_sponsor_ein_plan_year_and_ack_id",
+    "never_infer_current_availability",
+    "never_infer_individual_eligibility",
+    "never_infer_affiliate_or_group_coverage",
+    "never_upgrade_historical_to_confirmed"
+  ],
+  "mapping_precedence": [
+    "reviewed_exact_claim_assignment",
+    "exact_dol_field_and_code_mapping",
+    "otherwise_fail_closed"
+  ],
+  "production_name_heuristics": "prohibited",
+  "bundled_claim_policy": {
+    "automatic_text_splitting": "prohibited",
+    "required_input": "reviewed_exact_claim_assignment_with_one_or_more_benefit_type_ids",
+    "category_count_rule": "count_source_claim_once_per_category_even_when_multiple_types_map_to_that_category",
+    "detail_rule": "preserve_original_claim_text_and_show_all_reviewed_type_labels"
+  },
+  "domestic_claim_semantics": [
+    "bind_to_exact_korean_legal_entity_not_brand_or_group",
+    "do_not_transfer_group_recruiting_page_benefits_without_entity_binding",
+    "map_4대보험_to_statutory_social_insurance_and_label_as_baseline_not_differentiator",
+    "unspecified_role_employment_or_tenure_scope_forces_bounded",
+    "worksite_or_nonlocal_resident_conditions_remain_visible_scope_limits",
+    "unknown_exact_entity_result_is_insufficient_evidence_not_absence"
+  ]
+}
