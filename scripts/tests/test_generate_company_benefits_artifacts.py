@@ -3,9 +3,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import tempfile
+import time
 import unittest
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -342,6 +344,88 @@ def run_generator(research, output):
     return SimpleNamespace(returncode=returncode, stdout=stdout.getvalue(), stderr=stderr.getvalue())
 
 
+def external_receipts(research, directory):
+    protocol = json.loads((research / "population-protocol.json").read_text())
+    population = research / "population"
+    freeze_hash = file_digest(population / "freeze-manifest.json")
+    freeze = directory / "freeze-receipt.json"
+    effective = directory / "effective-receipt.json"
+    write_json(freeze, {
+        "schema_version": "1", "protocol_version": protocol["version"],
+        "freeze_manifest_sha256": freeze_hash, "review_status": "approved",
+        "issued_at": "2026-10-31T00:00:00Z",
+    })
+    events = series.read_jsonl(population / "effective-selection-events.jsonl")
+    latest_scope = events[-1]["scope"] if events else "domestic"
+    write_json(effective, {
+        "schema_version": "1", "protocol_version": protocol["version"],
+        "freeze_manifest_sha256": freeze_hash,
+        "effective_manifest_sha256": file_digest(population / "effective-selection-manifest.json"),
+        "domestic_effective_sequence_sha256": file_digest(population / "domestic-effective-selected.jsonl"),
+        "international_effective_sequence_sha256": file_digest(population / "international-effective-selected.jsonl"),
+        "replacement_events_sha256": file_digest(population / "effective-selection-events.jsonl"),
+        "candidate_effective_sha256": file_digest(population / f"{latest_scope}-effective-selected.jsonl"),
+        "review_status": "approved", "issued_at": "2026-10-31T00:00:00Z",
+    })
+    return freeze, effective
+
+
+def run_real_generator(research, output, receipt_dir, authoritative_calls=None):
+    spec = importlib.util.spec_from_file_location(f"artifact_real_cli_{output.name}", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    freeze, effective = external_receipts(research, receipt_dir)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    argv = [
+        "--research-root", str(research), "--output-root", str(output),
+        "--taxonomy", str(TAXONOMY), "--data-version", "2026-10-31-real-v2",
+        "--generated-at", "2026-10-31T04:00:00Z", "--as-of", "2026-10-31",
+        "--freeze-anchor-receipt", str(freeze),
+        "--effective-selection-receipt", str(effective),
+    ]
+    runtime_series = module.load_verifier().company_benefits_series
+    patcher = (
+        mock.patch.object(runtime_series, "validate_v2_authoritative_records",
+                          wraps=runtime_series.validate_v2_authoritative_records)
+        if authoritative_calls is not None else nullcontext()
+    )
+    with patcher as spy, redirect_stdout(stdout), redirect_stderr(stderr):
+        started = time.monotonic()
+        returncode = module.main(argv)
+        elapsed = time.monotonic() - started
+    if authoritative_calls is not None:
+        authoritative_calls.append(spy.call_count)
+    return SimpleNamespace(returncode=returncode, stdout=stdout.getvalue(),
+                           stderr=stderr.getvalue(), elapsed=elapsed)
+
+
+def make_real_v2_research_fixture(destination):
+    source = REPO / "docs" / "research" / "company-benefits"
+    shutil.copytree(source, destination)
+    companies = {row["company_id"]: row for row in series.read_jsonl(destination / "companies.jsonl")}
+    batches = series.read_jsonl(destination / "series-batches.jsonl")
+    records = {ledger: [] for ledger in series.V2_LEDGER_FILES}
+    progress = json.loads((destination / "series-progress.json").read_text())
+    entries = {entry["batch_id"]: entry for entry in progress["batches"]}
+    for batch in batches:
+        batch_records = no_public_info_records(
+            batch, [companies[company_id] for company_id in batch["company_ids"]]
+        )
+        for ledger in records:
+            records[ledger].extend(batch_records[ledger])
+        entry = entries[batch["batch_id"]]
+        entry.update(
+            cell_count=250,
+            cell_set_sha256=series.v2_cell_set_sha256(batch_records["cells"]),
+            v2_ledger_sha256=series.v2_ledger_sha256(batch_records),
+        )
+    for ledger, filename in series.V2_LEDGER_FILES.items():
+        write_jsonl(destination / filename, records[ledger])
+    progress.update(progress_version="2", total_cells=20000)
+    write_json(destination / "series-progress.json", progress)
+    return destination
+
+
 def snapshot(root):
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
@@ -478,14 +562,18 @@ def test_artifact_preflight_delegates_to_protocol4_verifier_with_both_external_r
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)
     verifier = mock.Mock()
-    verifier.verify_workspace.return_value = []
+    validated_context = object()
+    verifier.verify_workspace.return_value = ([], validated_context)
     freeze = tmp_path / "freeze.json"
     effective = tmp_path / "effective.json"
     with mock.patch.object(module, "load_verifier", return_value=verifier):
-        module.verify_active_ledgers(tmp_path / "research", "2026-10-31", freeze, effective)
+        assert module.verify_active_ledgers(
+            tmp_path / "research", "2026-10-31", freeze, effective
+        ) is validated_context
     verifier.verify_workspace.assert_called_once_with(
         tmp_path / "research", as_of="2026-10-31",
         freeze_anchor_receipt=freeze, effective_selection_receipt=effective,
+        return_validation_context=True,
     )
 
 
@@ -710,6 +798,85 @@ def test_generator_rejects_pending_historical_and_fixture_inputs(tmp_path):
     result = run_generator(research, tmp_path / "fixture-output")
     assert result.returncode != 0
     assert "fixture" in result.stderr.casefold()
+
+
+def test_validated_context_rejects_a_different_in_memory_record_snapshot(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    records = series.read_v2_batch_records(research)
+    records["cells"].reverse()
+    with raises(ValueError):
+        series.validate_v2_authoritative_records(
+            records, research, create_context=True
+        )
+
+
+def test_fixture_receipt_identities_are_globally_unique_across_all_batches(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    attempts = series.read_jsonl(research / series.V2_LEDGER_FILES["attempts"])
+    batches = series.read_jsonl(research / "series-batches.jsonl")
+    owner = {
+        company_id: batch["batch_id"]
+        for batch in batches for company_id in batch["company_ids"]
+    }
+    locators = [item["capture_locator"] for item in attempts]
+    responses = [item["raw_response_sha256"] for item in attempts]
+    assert len(locators) == len(set(locators))
+    assert len(responses) == len(set(responses))
+    assert all(f"/{owner[item['company_id']]}/" in item["capture_locator"] for item in attempts)
+    assert all(item["company_id"] in item["capture_locator"] for item in attempts)
+    assert all(item["category_id"] in item["capture_locator"] for item in attempts)
+    assert all(item["route_id"] in item["capture_locator"] for item in attempts)
+
+
+def test_real_publication_preflight_validates_global_v2_package_once_and_emits(tmp_path):
+    research = make_real_v2_research_fixture(tmp_path / "research")
+    calls = []
+    result = run_real_generator(research, tmp_path / "real-output", tmp_path, calls)
+    assert result.returncode == 0, result.stderr
+    assert calls == [1]
+    assert (tmp_path / "real-output" / "manifest.json").is_file()
+    assert result.elapsed < 60
+
+
+def test_real_publication_preflight_rejection_writes_no_output(tmp_path):
+    research = make_real_v2_research_fixture(tmp_path / "research")
+    freeze, effective = external_receipts(research, tmp_path)
+    receipt = json.loads(freeze.read_text())
+    receipt["freeze_manifest_sha256"] = "0" * 64
+    write_json(freeze, receipt)
+    spec = importlib.util.spec_from_file_location("artifact_real_preflight_failure", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = tmp_path / "rejected-output"
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        code = module.main([
+            "--research-root", str(research), "--output-root", str(output),
+            "--taxonomy", str(TAXONOMY), "--data-version", "rejected-v2",
+            "--generated-at", "2026-10-31T04:00:00Z", "--as-of", "2026-10-31",
+            "--freeze-anchor-receipt", str(freeze),
+            "--effective-selection-receipt", str(effective),
+        ])
+    assert code == 1
+    assert "freeze" in stderr.getvalue().casefold()
+    assert "traceback" not in stderr.getvalue().casefold()
+    assert not output.exists()
+
+
+def test_generator_rejects_non_string_v2_source_binding_without_traceback_or_output(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    attempts = series.read_jsonl(research / series.V2_LEDGER_FILES["attempts"])
+    attempts[0]["source_ids"] = [{}]
+    write_jsonl(research / series.V2_LEDGER_FILES["attempts"], attempts)
+    output = tmp_path / "malformed-binding-output"
+    result = run_generator(research, output)
+    assert result.returncode == 1
+    assert "source" in result.stderr.casefold()
+    assert "traceback" not in result.stderr.casefold()
+    assert not output.exists()
 
 
 def load_tests(loader, tests, pattern):

@@ -43,7 +43,10 @@ def no_public_info_records(batch, companies):
                 route_kind = POLICY["routes"][route_id]["route_kind"]
                 attempt_id = f"attempt::{company_id}::{category_id}::{route_id}"
                 attempt_ids.append(attempt_id)
-                token = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()
+                raw_identity = (
+                    f"{batch['batch_id']}::{company_id}::{category_id}::{route_id}"
+                )
+                token = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()
                 attempts.append(receipt({
                     "attempt_id": attempt_id, "cell_id": cell_id, "company_id": company_id,
                     "category_id": category_id, "jurisdiction": company["jurisdiction"],
@@ -51,7 +54,10 @@ def no_public_info_records(batch, companies):
                     "route_kind": route_kind, "query_or_locator": f"bounded query {company_id} {category_id} {route_id}",
                     "started_at": "2026-11-01T01:00:00Z", "completed_at": "2026-11-01T01:01:00Z",
                     "result": "no_result", "source_ids": [], "raw_response_sha256": token,
-                    "capture_locator": f"https://captures.invalid/v2/{serial}",
+                    "capture_locator": (
+                        f"https://captures.invalid/v2/{batch['batch_id']}/"
+                        f"{company_id}/{category_id}/{route_id}/{serial}"
+                    ),
                     "collector_version": "benefits-collector/2.0.0",
                 }))
                 serial += 1

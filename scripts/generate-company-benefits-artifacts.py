@@ -124,13 +124,17 @@ def load_verifier():
 
 
 def verify_active_ledgers(research_root, as_of, freeze_anchor_receipt, effective_selection_receipt):
-    errors = load_verifier().verify_workspace(
+    errors, validated_v2_context = load_verifier().verify_workspace(
         Path(research_root), as_of=as_of,
         freeze_anchor_receipt=freeze_anchor_receipt,
         effective_selection_receipt=effective_selection_receipt,
+        return_validation_context=True,
     )
     if errors:
         raise ValueError("active ledger verification failed:\n" + "\n".join(errors))
+    if validated_v2_context is None:
+        raise ValueError("active ledger verification did not return a validated v2 context")
+    return validated_v2_context
 
 
 def fixture_marker(value):
@@ -146,7 +150,7 @@ def fixture_marker(value):
     return False
 
 
-def validate_inputs(root, taxonomy, taxonomy_sha256):
+def validate_inputs(root, taxonomy, taxonomy_sha256, validated_v2_context=None):
     series = load_verifier().company_benefits_series
     progress = read_json(root / "series-progress.json")
     if series.progress_contract_version(progress) != "2":
@@ -176,7 +180,9 @@ def validate_inputs(root, taxonomy, taxonomy_sha256):
     batch_ids = [company_id for batch in batches for company_id in batch.get("company_ids", [])]
     if len(batch_ids) != 2000 or len(set(batch_ids)) != 2000 or batch_ids != list(company_map):
         raise ValueError("series batches must bind the exact canonical 2,000-company sequence")
-    series.validate_complete_v2_progress(root, batches, progress)
+    series.validate_complete_v2_progress(
+        root, batches, progress, validated_context=validated_v2_context
+    )
 
     claims = read_jsonl(root / "benefit-claims.jsonl")
     if any(row.get("publishable") is False or "record_type" in row or "record" in row for row in claims):
@@ -610,7 +616,7 @@ def main(argv=None):
     parser.add_argument("--effective-selection-receipt", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        verify_active_ledgers(
+        validated_v2_context = verify_active_ledgers(
             args.research_root, args.as_of, args.freeze_anchor_receipt, args.effective_selection_receipt,
         )
         taxonomy = read_json(args.taxonomy)
@@ -618,6 +624,7 @@ def main(argv=None):
         inputs = validate_inputs(
             Path(args.research_root), taxonomy,
             hashlib.sha256(Path(args.taxonomy).read_bytes()).hexdigest(),
+            validated_v2_context=validated_v2_context,
         )
         emit_artifacts(args.output_root, args.data_version, args.generated_at, taxonomy, inputs)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:

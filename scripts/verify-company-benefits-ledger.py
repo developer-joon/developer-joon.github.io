@@ -1398,7 +1398,8 @@ def external_effective_selection_anchor(path, protocol, workspace_root, errors):
 
 
 def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt=None, approved_freeze_anchors=None,
-                     effective_selection_receipt=None, approved_effective_anchors=None):
+                     effective_selection_receipt=None, approved_effective_anchors=None,
+                     return_validation_context=False):
     root = Path(root)
     as_of = as_of or date.today()
     errors = []
@@ -1406,7 +1407,7 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
     protocol = read_json(protocol_path, errors) if protocol_path.is_file() else None
     if not isinstance(protocol, dict):
         errors.append("missing population protocol")
-        return errors
+        return (errors, None) if return_validation_context else errors
     if approved_freeze_anchors is None:
         approved_freeze_anchors = external_freeze_anchor(freeze_anchor_receipt, protocol, errors, root)
     if approved_effective_anchors is None:
@@ -1429,7 +1430,7 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
             for path in root.rglob(name):
                 errors.append(f"prohibited population artifact while protocol is blocked: {path}")
         validate_ranking_language(root, errors)
-        return errors
+        return (errors, None) if return_validation_context else errors
     approval = protocol.get("approval")
     if not isinstance(approval, dict) or not approval.get("approved_by") or not approval.get("approved_at"):
         errors.append("approved protocol is missing explicit approval")
@@ -1444,7 +1445,7 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
         validate_protocol(protocol, source_map, errors)
     except ValueError as exc:
         errors.append(str(exc))
-        return errors
+        return (errors, None) if return_validation_context else errors
     projected = validate_population(root, protocol, source_map, as_of, errors, approved_freeze_anchors, approved_effective_anchors)
     validate_coverage_gaps(root, errors)
 
@@ -1469,11 +1470,13 @@ def verify_workspace(root, as_of=None, evidence_root=None, freeze_anchor_receipt
     claim_ids = validate_claims(claims, company_map, source_map, as_of, errors)
     approved_claim_ids = validate_reviews(claim_reviews, claims, source_map, as_of, errors)
     validate_related_entity_exceptions(companies, claims, approved_claim_ids, source_map, errors)
-    company_benefits_series.validate_series(
+    validated_v2_context = company_benefits_series.validate_series(
         root, projected, claims, reviews, source_map, as_of, errors, parse_timestamp
     )
     validate_corrections(corrections, claim_ids, as_of, errors)
     validate_ranking_language(root, errors)
+    if return_validation_context:
+        return errors, validated_v2_context if not errors else None
     return errors
 
 
