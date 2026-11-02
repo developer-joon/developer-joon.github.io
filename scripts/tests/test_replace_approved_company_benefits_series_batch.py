@@ -213,6 +213,12 @@ class ApprovedBatchReplacementTests(unittest.TestCase):
         audit = self.module.series.read_jsonl(self.root / self.module.AUDIT_FILENAME)
         self.assertEqual((1, self.batch["batch_id"], "correction-approver"),
                          (audit[0]["sequence"], audit[0]["batch_id"], audit[0]["correction_approver_id"]))
+        body = {key: value for key, value in audit[0].items() if key != "event_sha256"}
+        self.assertEqual(
+            hashlib.sha256(self.module.series.canonical_json_bytes(body)).hexdigest(),
+            audit[0]["event_sha256"],
+        )
+        self.assertEqual(audit, self.module._validate_audit_chain(self.root / self.module.AUDIT_FILENAME))
 
     def test_rejects_batch_mismatch_approval_regression_and_stale_hashes_without_writes(self):
         cases = []
@@ -268,6 +274,18 @@ class ApprovedBatchReplacementTests(unittest.TestCase):
         with mock.patch.object(self.module, "_fsync_directory", side_effect=fail_after_exchange):
             with self.assertRaisesRegex(OSError, "post-exchange failure"):
                 self._replace()
+        self.assertEqual(before, self._tree())
+
+    def test_rejects_symlinked_package_artifact_without_writes(self):
+        outside = Path(self.tmp.name) / "outside-checks.jsonl"
+        artifact = self.package_dir / "checks.jsonl"
+        outside.write_bytes(artifact.read_bytes())
+        artifact.unlink()
+        artifact.symlink_to(outside)
+        before = self._tree()
+
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self._replace()
         self.assertEqual(before, self._tree())
 
     def test_rejects_noncanonical_or_wrongly_bound_external_approval_without_writes(self):

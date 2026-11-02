@@ -316,14 +316,16 @@ def _stage_replacement(batch_id, package_dir, approval, approval_raw, research_r
     return new_progress
 
 
-def _replace_locked(batch_id, package_dir, approval_path, research_root, freeze_anchor_receipt,
-                    effective_selection_receipt=None, as_of=None,
-                    repository_root=REPOSITORY_ROOT, dry_run=False):
+def _replace_locked_snapshot(batch_id, package_dir, approval_path, research_root, freeze_anchor_receipt,
+                             effective_selection_receipt=None, as_of=None,
+                             repository_root=REPOSITORY_ROOT, dry_run=False):
     if not isinstance(batch_id, str) or not re.fullmatch(r"(?:domestic|international)-(?:0[1-9]|[1-3][0-9]|40)", batch_id):
         raise ValueError("exact old batch ID is required")
     package_dir = Path(package_dir)
-    if package_dir.is_symlink() or not package_dir.is_dir() or package_dir.resolve(strict=True) != Path(os.path.abspath(package_dir)):
-        raise ValueError("replacement package must be a real directory without symlink aliases")
+    if (package_dir.is_symlink() or not package_dir.is_dir()
+            or package_dir.resolve(strict=True) != Path(os.path.abspath(package_dir))
+            or any(path.is_symlink() for path in package_dir.iterdir())):
+        raise ValueError("replacement package must be a real directory with regular files and no symlinks")
     try:
         package_manifest = json.loads((package_dir / "batch.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -387,6 +389,25 @@ def _replace_locked(batch_id, package_dir, approval_path, research_root, freeze_
         raise
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
+
+
+def _replace_locked(batch_id, package_dir, approval_path, research_root, freeze_anchor_receipt,
+                    effective_selection_receipt=None, as_of=None,
+                    repository_root=REPOSITORY_ROOT, dry_run=False):
+    """Snapshot the package once so validation and integration use the same bytes."""
+    package_dir = Path(package_dir)
+    if (package_dir.is_symlink() or not package_dir.is_dir()
+            or package_dir.resolve(strict=True) != Path(os.path.abspath(package_dir))):
+        raise ValueError("replacement package must be a real directory without symlink aliases")
+    with tempfile.TemporaryDirectory(
+            prefix=".approved-batch-package-", dir=Path(research_root).parent) as directory:
+        snapshot = Path(directory) / "package"
+        shutil.copytree(package_dir, snapshot, symlinks=True)
+        _tree_bytes(snapshot)
+        return _replace_locked_snapshot(
+            batch_id, snapshot, approval_path, research_root, freeze_anchor_receipt,
+            effective_selection_receipt, as_of, repository_root, dry_run,
+        )
 
 
 def replace_approved_batch(batch_id, package_dir, approval_path, research_root,
