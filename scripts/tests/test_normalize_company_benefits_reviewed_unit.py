@@ -117,6 +117,52 @@ class NormalizePayloadTests(unittest.TestCase):
 
 
 class ClosureTests(unittest.TestCase):
+    def test_direct_v2_acquisition_closes_cell_local_direct_source_attempt(self):
+        locator = "https://www.teamblind.com/kr/company/example/review/XZ7yK9vq6"
+        receipt = {
+            "artifact_type": "company-benefits-direct-page-acquisition",
+            "format_version": 2,
+            "acquisition_status": "complete",
+            "cell_id": "cell::KR-CRN-1101112948086::remote",
+            "company_id": "KR-CRN-1101112948086",
+            "category_id": "remote",
+            "route_id": "community-review",
+            "locator": locator,
+            "capture_sha256": "1" * 64,
+            "raw_tool_response_sha256": "2" * 64,
+            "result": {"kind": "direct_source", "review_status": "unreviewed_lead", "url": locator},
+        }
+        direct_attempt = attempt(
+            "KR-CRN-1101112948086", "remote", "other-public-web",
+            ["source::" + "c" * 64],
+        )
+        direct_attempt.update({
+            "attempt_id": "attempt::KR-CRN-1101112948086::remote::community-review",
+            "route_id": "community-review",
+            "route_kind": "community_employee_review",
+            "query_or_locator": locator,
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "direct.json"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            index = normalizer.index_acquisition_roots([root])
+            matched = normalizer._receipt_for_attempt(index, direct_attempt, {locator})
+        self.assertIsNotNone(matched)
+        self.assertEqual(path, matched.path)
+
+    def test_direct_acquisition_capture_is_preferred_over_legacy_attempt_capture(self):
+        direct = normalizer.AcquisitionReceipt(
+            Path("direct-receipt.json"),
+            {"artifact_type": "company-benefits-direct-page-acquisition", "capture_sha256": "1" * 64},
+            "2" * 64,
+        )
+        index = normalizer.AcquisitionIndex(files_by_sha256={"1" * 64: Path("direct-capture.json")})
+        self.assertEqual(
+            Path("direct-capture.json"),
+            normalizer._preferred_acquisition_capture(index, direct),
+        )
+
     def test_acquisition_index_rejects_declared_wrapper_hash_and_uses_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

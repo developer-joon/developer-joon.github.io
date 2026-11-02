@@ -252,8 +252,10 @@ def index_acquisition_roots(roots: Iterable[Path]) -> AcquisitionIndex:
                 if isinstance(attempt_id, str):
                     index.json_by_attempt.setdefault(attempt_id, []).append(path)
                 if (
-                    item_payload.get("artifact_type")
-                    == "company-benefits-search-tool-acquisition"
+                    item_payload.get("artifact_type") in {
+                        "company-benefits-search-tool-acquisition",
+                        "company-benefits-direct-page-acquisition",
+                    }
                     and item_payload.get("format_version") == 2
                 ):
                     index.receipts.append(AcquisitionReceipt(path, item_payload, digest))
@@ -397,6 +399,19 @@ def _receipt_for_attempt(
     candidates = []
     company_receipts = []
     for item in index.receipts:
+        if item.payload.get("artifact_type") == "company-benefits-direct-page-acquisition":
+            if (
+                item.payload.get("acquisition_status") == "complete"
+                and item.payload.get("cell_id") == attempt.get("cell_id")
+                and item.payload.get("company_id") == company
+                and item.payload.get("category_id") == category
+                and item.payload.get("route_id") == route
+                and item.payload.get("locator") == locator
+                and item.payload.get("result", {}).get("kind") == "direct_source"
+                and item.payload.get("result", {}).get("review_status") == "unreviewed_lead"
+            ):
+                return item
+            continue
         query_id = item.payload.get("query_id")
         if isinstance(query_id, str) and query_id.startswith(f"search-query::{company}::"):
             company_receipts.append(item)
@@ -412,6 +427,20 @@ def _receipt_for_attempt(
         for item in company_receipts:
             if source_urls.issubset(_capture_result_urls(index, item)):
                 return item
+    return None
+
+
+def _preferred_acquisition_capture(
+    index: AcquisitionIndex, acquisition: AcquisitionReceipt | None
+) -> Path | None:
+    if (
+        acquisition is not None
+        and acquisition.payload.get("artifact_type")
+        == "company-benefits-direct-page-acquisition"
+    ):
+        capture_hash = acquisition.payload.get("capture_sha256")
+        if isinstance(capture_hash, str):
+            return index.files_by_sha256.get(capture_hash)
     return None
 
 
@@ -501,11 +530,17 @@ def materialize_package(
                 "path": copied.relative_path,
                 "sha256": copied.sha256,
                 "format_version": 2,
+                "artifact_type": acquisition.payload.get("artifact_type"),
                 "query_id": acquisition.payload.get("query_id"),
+                "locator": acquisition.payload.get("locator"),
             }
         capture_candidates = index.json_by_attempt.get(attempt_id, [])
         capture_record = None
-        if capture_candidates:
+        preferred_capture = _preferred_acquisition_capture(index, acquisition)
+        if preferred_capture is not None:
+            copied = copy_immutable(preferred_capture, output, "artifacts/captures")
+            capture_record = {"path": copied.relative_path, "sha256": copied.sha256}
+        elif capture_candidates:
             copied = copy_immutable(capture_candidates[0], output, "artifacts/captures")
             capture_record = {"path": copied.relative_path, "sha256": copied.sha256}
         elif acquisition is not None:
