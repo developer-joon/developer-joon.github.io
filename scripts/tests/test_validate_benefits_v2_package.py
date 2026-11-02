@@ -468,7 +468,16 @@ class BenefitsV2PackageTests(unittest.TestCase):
     def test_category_red_flags_handle_natural_korean_suffixes(self):
         cases = (
             ("remote", "유연근무제를 운영한다.", "유연근무와 재택근무제도를 운영한다."),
-            ("health", "채용검진만 실시한다.", "채용검진 후 임직원 건강검진을 제공한다."),
+            (
+                "health",
+                "채용검진만 실시한다.",
+                "채용검진과 전력그룹사 임직원에 대한 건강검진을 실시한다.",
+            ),
+            (
+                "health",
+                "채용검진만 실시한다.",
+                "복리후생으로 의료 건강검진을 제공하고 채용검진도 실시한다.",
+            ),
             ("retirement", "국민연금에 가입한다.", "국민연금과 퇴직연금제도를 운영한다."),
             ("inclusion", "기부금만 지원한다.", "기부금과 직원 장애 지원제도를 운영한다."),
         )

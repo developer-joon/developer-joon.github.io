@@ -66,7 +66,11 @@ CATEGORY_NEGATIVE_PATTERNS = {
     ),
     "health": (
         ("pre-employment health screening", "pre-employment medical", "채용검진", "채용 건강검진"),
-        ("annual employee health", "employee health check", "medical insurance", "임직원 건강검진", "정기 건강검진", "의료비 지원"),
+        (
+            "annual employee health", "employee health check", "medical insurance",
+            "임직원 건강검진", "임직원에 대한 건강검진", "정기 건강검진",
+            "의료 건강검진", "의료비 지원",
+        ),
     ),
     "retirement": (
         ("national pension", "statutory pension", "국민연금", "4대보험", "four major social insurance"),
