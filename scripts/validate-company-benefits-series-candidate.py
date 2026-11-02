@@ -22,7 +22,7 @@ HASH = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_FIELDS = {"request_id", "target_type", "target_id", "researcher_id", "status"}
 GAP_FIELDS = {"audit_id", "company_id", "disposition", "reason", "searched_official_source_ids",
               "searched_official_urls", "nonabsence_wording", "researcher_id"}
-LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:/|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
+LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:[\\/]|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
 
 
 def sha256(data):
@@ -81,6 +81,11 @@ def _validate_package_modes(candidate_dir):
             )
 
 
+def _has_symlink_component(path):
+    absolute = path.absolute()
+    return any(component.is_symlink() for component in (absolute, *absolute.parents))
+
+
 def _canonical_batch(root, batch_id):
     batches = read_jsonl(Path(root) / "series-batches.jsonl")
     matches = [item for item in batches if item.get("batch_id") == batch_id]
@@ -134,7 +139,7 @@ def _candidate_claim_schema(verifier):
 
 def validate_candidate(candidate_dir, research_root):
     candidate_dir, research_root = Path(candidate_dir), Path(research_root)
-    if candidate_dir.is_symlink() or not candidate_dir.is_dir():
+    if _has_symlink_component(candidate_dir) or not candidate_dir.is_dir():
         raise ValueError("candidate package directory is missing or symlink-aliased")
     actual = {path.name for path in candidate_dir.iterdir()}
     if actual != ALLOWED_FILES or any(

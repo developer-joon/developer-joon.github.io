@@ -385,26 +385,27 @@ class BenefitsV2PackageTests(unittest.TestCase):
         unresolved["sources"] = []
         self.assert_invalid(unresolved, "missing source")
 
-    def test_rejects_source_tiers_incompatible_with_known_hosts_and_routes(self):
-        government_as_media = package_for("reference")
-        government_as_media["sources"][0]["url"] = "https://www.dol.gov/agencies/ebsa"
-        self.assert_invalid(government_as_media, "source tier is incompatible with host")
+    def test_rejects_community_tier_outside_known_community_hosts(self):
+        community = package_for("community_report")
+        community["sources"][0]["url"] = "https://reviews.example.com/benefits"
+        self.assert_invalid(community, "community source tier is incompatible with host")
 
-        company_as_government = package_for("official_verified")
-        company_as_government["sources"][0]["url"] = "https://careers.example.com/benefits"
-        self.assert_invalid(company_as_government, "official government source requires a government host")
+    def test_known_hosts_do_not_override_route_bound_content_tiers(self):
+        # Approved records legitimately use first-party company pages on the
+        # historical official route and community sites as public-web results.
+        company_official = package_for("official_verified")
+        company_official["sources"][0]["url"] = "https://careers.example.com/benefits"
+        self.assert_valid(company_official)
 
-        spoofed_government = package_for("official_verified")
-        for url in (
-            "https://gov.evil.example/benefits",
-            "https://agency.gov.example/benefits",
-        ):
-            with self.subTest(url=url):
-                spoofed_government["sources"][0]["url"] = url
-                self.assert_invalid(
-                    spoofed_government,
-                    "official government source requires a government host",
-                )
+        community_public_web = package_for("reference")
+        community_public_web["sources"][0]["url"] = (
+            "https://www.jobplanet.co.kr/companies/1/benefits"
+        )
+        self.assert_valid(community_public_web)
+
+        government_media = package_for("reference")
+        government_media["sources"][0]["url"] = "https://www.dol.gov/agencies/ebsa"
+        self.assert_valid(government_media)
 
     def test_requires_canonical_binding_and_source_id_order(self):
         routes = package_for()
@@ -463,6 +464,25 @@ class BenefitsV2PackageTests(unittest.TestCase):
             "CSRF protection is documented.",
         )
         self.assert_valid(false_positive)
+
+    def test_category_red_flags_handle_natural_korean_suffixes(self):
+        cases = (
+            ("remote", "유연근무제를 운영한다.", "유연근무와 재택근무제도를 운영한다."),
+            ("health", "채용검진만 실시한다.", "채용검진 후 임직원 건강검진을 제공한다."),
+            ("retirement", "국민연금에 가입한다.", "국민연금과 퇴직연금제도를 운영한다."),
+            ("inclusion", "기부금만 지원한다.", "기부금과 직원 장애 지원제도를 운영한다."),
+        )
+        for category_id, negative, counterevidence in cases:
+            with self.subTest(category_id=category_id, kind="negative"):
+                package = retarget_reference_package(
+                    package_for("reference"), category_id, negative
+                )
+                self.assert_invalid(package, "high-confidence category mismatch")
+            with self.subTest(category_id=category_id, kind="counterevidence"):
+                package = retarget_reference_package(
+                    package_for("reference"), category_id, counterevidence
+                )
+                self.assert_valid(package)
 
     def test_every_evidence_source_must_have_attempt_lineage_for_its_cell(self):
         for state, ledger in (

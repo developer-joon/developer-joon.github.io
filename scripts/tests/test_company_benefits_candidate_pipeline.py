@@ -356,9 +356,18 @@ class CandidatePipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlink|regular file"):
             self.validator.validate_candidate(self.candidate, self.root)
 
+    def test_candidate_rejects_symlinked_parent_directory(self):
+        alias = Path(self.tmp.name) / "candidate-parent-alias"
+        alias.symlink_to(self.candidate.parent, target_is_directory=True)
+        aliased_candidate = alias / self.candidate.name
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.validator.validate_candidate(aliased_candidate, self.root)
+
     def test_candidate_rejects_local_absolute_paths_in_package_fields(self):
         for path in (
             "/home/researcher/private/capture.html",
+            r"\private\capture.html",
+            r"\\server\share\capture.html",
             r"C:\\Users\\researcher\\capture.html",
             "file:///home/researcher/capture.html",
             "FILE:///home/researcher/capture.html",

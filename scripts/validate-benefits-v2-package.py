@@ -271,17 +271,6 @@ def _hostname(url):
         return ""
 
 
-def _is_government_host(host):
-    labels = host.split(".")
-    return (
-        host.endswith(".go.kr")
-        or host == "fss.or.kr"
-        or host.endswith(".fss.or.kr")
-        or host.endswith(".gov")
-        or (len(labels) >= 2 and labels[-2] == "gov" and len(labels[-1]) == 2)
-    )
-
-
 def _is_community_host(host):
     return any(
         host == suffix or host.endswith(f".{suffix}")
@@ -292,14 +281,8 @@ def _is_community_host(host):
 def _source_host_tier_error(source):
     host = _hostname(source.get("url"))
     tier = source.get("source_tier")
-    if tier == OFFICIAL_TIER and not _is_government_host(host):
-        return "official government source requires a government host"
-    if tier != OFFICIAL_TIER and _is_government_host(host):
-        return "source tier is incompatible with host"
     if tier == "community_employee_review" and not _is_community_host(host):
         return "community source tier is incompatible with host"
-    if tier != "community_employee_review" and _is_community_host(host):
-        return "source tier is incompatible with host"
     return None
 
 
@@ -323,7 +306,10 @@ def _capture_sha256(locator):
 def _contains_semantic_term(text, term):
     if term == "telecommut":
         return re.search(r"(?<!\w)telecommut\w*", text) is not None
-    return re.search(rf"(?<!\w){re.escape(term.casefold())}(?!\w)", text) is not None
+    folded_term = term.casefold()
+    if re.search(r"[가-힣]", folded_term):
+        return folded_term in text
+    return re.search(rf"(?<!\w){re.escape(folded_term)}(?!\w)", text) is not None
 
 
 def _category_semantic_error(record):
