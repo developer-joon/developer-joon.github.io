@@ -356,7 +356,38 @@ def _extract_raw(index: AcquisitionIndex, expected_hash: str, attempt_id: str) -
     return extract_content(candidate_index, expected_hash) or extract_content(index, expected_hash)
 
 
-def _receipt_for_attempt(index: AcquisitionIndex, attempt: dict[str, Any]) -> AcquisitionReceipt | None:
+def _capture_result_urls(index: AcquisitionIndex, receipt: AcquisitionReceipt) -> set[str]:
+    capture_path = index.files_by_sha256.get(receipt.payload.get("capture_sha256"))
+    if capture_path is None:
+        return set()
+    payload = index.json_payloads.get(capture_path)
+    if payload is None:
+        try:
+            payload = json.loads(capture_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return set()
+    values = [payload]
+    for value in _all_values(payload):
+        if not isinstance(value, str):
+            continue
+        try:
+            decoded = base64.b64decode(value, validate=True)
+            values.append(json.loads(decoded))
+        except (ValueError, UnicodeError, binascii.Error, json.JSONDecodeError):
+            continue
+    urls: set[str] = set()
+    for value in values:
+        for child in _all_values(value):
+            if isinstance(child, dict) and isinstance(child.get("url"), str):
+                urls.add(child["url"])
+    return urls
+
+
+def _receipt_for_attempt(
+    index: AcquisitionIndex,
+    attempt: dict[str, Any],
+    source_urls: set[str] | None = None,
+) -> AcquisitionReceipt | None:
     company = attempt["company_id"]
     category = attempt["category_id"]
     route = attempt["route_id"]
@@ -364,15 +395,24 @@ def _receipt_for_attempt(index: AcquisitionIndex, attempt: dict[str, Any]) -> Ac
     exact = f"search-query::{company}::{category}::{route}"
     broad = f"search-query::{company}::broad::{route}"
     candidates = []
+    company_receipts = []
     for item in index.receipts:
         query_id = item.payload.get("query_id")
+        if isinstance(query_id, str) and query_id.startswith(f"search-query::{company}::"):
+            company_receipts.append(item)
         if query_id == locator:
             return item
         if query_id == exact:
             candidates.insert(0, item)
         elif query_id == broad:
             candidates.append(item)
-    return candidates[0] if candidates else None
+    if candidates:
+        return candidates[0]
+    if source_urls:
+        for item in company_receipts:
+            if source_urls.issubset(_capture_result_urls(index, item)):
+                return item
+    return None
 
 
 def _manifest_files(output: Path, exclude: set[str] | None = None) -> list[dict[str, Any]]:
@@ -422,6 +462,7 @@ def materialize_package(
         _write_jsonl(output / filename, package[ledger])
 
     index = index_acquisition_roots(acquisition_roots)
+    sources_by_id = {source["source_id"]: source for source in package["sources"]}
     closure_attempts = []
     for attempt_record in package["attempts"]:
         attempt_id = attempt_record["attempt_id"]
@@ -447,7 +488,12 @@ def materialize_package(
         if sha256_file(raw_path) != raw_hash:
             raise NormalizationError(f"{attempt_id}: copied raw response hash mismatch")
 
-        acquisition = _receipt_for_attempt(index, attempt_record)
+        source_urls = {
+            sources_by_id[source_id]["url"]
+            for source_id in attempt_record.get("source_ids", [])
+            if source_id in sources_by_id and isinstance(sources_by_id[source_id].get("url"), str)
+        }
+        acquisition = _receipt_for_attempt(index, attempt_record, source_urls)
         acquisition_record = None
         if acquisition is not None:
             copied = copy_immutable(acquisition.path, output, "artifacts/acquisition-receipts")
