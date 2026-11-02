@@ -54,6 +54,13 @@ def source(source_id="source::example", tier="other_public_web"):
     record = base_source()
     record["source_id"] = source_id
     record["source_tier"] = tier
+    record["url"] = {
+        "official_government": "https://www.dol.gov/agencies/ebsa",
+        "company_recruiting_major_media": "https://careers.example.com/benefits",
+        "other_public_web": "https://news.example.com/benefits",
+        "community_employee_review": "https://www.jobplanet.co.kr/companies/1/benefits",
+        "user_submission": "https://submissions.example.com/report/1",
+    }[tier]
     return record
 
 
@@ -176,13 +183,37 @@ def add_shared_bulk_reference_cell(package):
     return first_attempt, receipt
 
 
+def retarget_reference_package(package, category_id, statement):
+    cell = package["cells"][0]
+    cell["category_id"] = category_id
+    cell["cell_id"] = f"cell::{cell['company_id']}::{category_id}"
+    receipt = package["attempts"][0]
+    receipt["category_id"] = category_id
+    receipt["cell_id"] = cell["cell_id"]
+    receipt["attempt_id"] = (
+        f"attempt::{cell['company_id']}::{category_id}::{receipt['route_id']}"
+    )
+    bind_attempt(receipt)
+    reference = package["references"][0]
+    reference["category_id"] = category_id
+    reference["cell_id"] = cell["cell_id"]
+    reference["statement"] = statement
+    reference["supporting_quote"] = statement
+    reference["reference_id"] = (
+        f"reference::{cell['company_id']}::{category_id}::{reference['source_id']}"
+    )
+    cell["attempt_ids"] = [receipt["attempt_id"]]
+    cell["reference_ids"] = [reference["reference_id"]]
+    return package
+
+
 class BenefitsV2PackageTests(unittest.TestCase):
     def run_validator(self, package):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "package.json"
             path.write_text(json.dumps(package), encoding="utf-8")
             return subprocess.run(
-                [sys.executable, str(VALIDATOR), str(path)],
+                [sys.executable, str(VALIDATOR), str(path), "--prepromotion"],
                 cwd=ROOT,
                 text=True,
                 capture_output=True,
@@ -354,6 +385,85 @@ class BenefitsV2PackageTests(unittest.TestCase):
         unresolved["sources"] = []
         self.assert_invalid(unresolved, "missing source")
 
+    def test_rejects_source_tiers_incompatible_with_known_hosts_and_routes(self):
+        government_as_media = package_for("reference")
+        government_as_media["sources"][0]["url"] = "https://www.dol.gov/agencies/ebsa"
+        self.assert_invalid(government_as_media, "source tier is incompatible with host")
+
+        company_as_government = package_for("official_verified")
+        company_as_government["sources"][0]["url"] = "https://careers.example.com/benefits"
+        self.assert_invalid(company_as_government, "official government source requires a government host")
+
+        spoofed_government = package_for("official_verified")
+        for url in (
+            "https://gov.evil.example/benefits",
+            "https://agency.gov.example/benefits",
+        ):
+            with self.subTest(url=url):
+                spoofed_government["sources"][0]["url"] = url
+                self.assert_invalid(
+                    spoofed_government,
+                    "official government source requires a government host",
+                )
+
+    def test_requires_canonical_binding_and_source_id_order(self):
+        routes = package_for()
+        routes["cells"][0]["attempt_ids"].reverse()
+        self.assert_invalid(routes, "attempt_ids must be in canonical route order")
+
+        package = package_for("reference")
+        first_reference = package["references"][0]
+        first_source = package["sources"][0]
+        second_source = copy.deepcopy(first_source)
+        second_source["source_id"] = "source::aaa"
+        second_reference = copy.deepcopy(first_reference)
+        second_reference["source_id"] = second_source["source_id"]
+        second_reference["reference_id"] = (
+            f"reference::{second_reference['company_id']}::leave::{second_source['source_id']}"
+        )
+        package["sources"].append(second_source)
+        package["references"].append(second_reference)
+        package["attempts"][0]["source_ids"] = [first_source["source_id"], second_source["source_id"]]
+        package["cells"][0]["reference_ids"] = [first_reference["reference_id"], second_reference["reference_id"]]
+        bind_attempt(package["attempts"][0])
+        self.assert_invalid(package, "source_ids must be in canonical order")
+        self.assert_invalid(package, "reference_ids must be in canonical order")
+
+    def test_rejects_capture_hash_reuse_hidden_behind_distinct_locators(self):
+        package = package_for("reference")
+        first, second = add_shared_bulk_reference_cell(package)
+        for receipt in (first, second):
+            receipt.pop("shared_bulk_result_binding")
+        capture_hash = "e" * 64
+        first["capture_locator"] = f"https://captures.example/sha256/{capture_hash}"
+        second["capture_locator"] = f"https://mirror.example/capture?sha256={capture_hash}"
+        second["raw_response_sha256"] = "f" * 64
+        bind_attempt(first)
+        bind_attempt(second)
+        self.assert_invalid(package, "capture hash reuse across cells")
+
+    def test_category_red_flags_fail_only_without_explicit_counterevidence(self):
+        cases = (
+            ("remote", "Flexible scheduling is available.", "Flexible scheduling and remote work are available."),
+            ("health", "Pre-employment health screening is required.", "Pre-employment screening and annual employee health checks are provided."),
+            ("retirement", "National pension enrollment metadata.", "National pension and an employer 401(k) retirement plan are provided."),
+            ("inclusion", "CSR donations and applicant preference are described.", "CSR donations and an employee resource group are described."),
+        )
+        for category_id, negative, counterevidence in cases:
+            with self.subTest(category_id=category_id, kind="negative"):
+                package = retarget_reference_package(package_for("reference"), category_id, negative)
+                self.assert_invalid(package, "high-confidence category mismatch")
+            with self.subTest(category_id=category_id, kind="counterevidence"):
+                package = retarget_reference_package(package_for("reference"), category_id, counterevidence)
+                self.assert_valid(package)
+
+        false_positive = retarget_reference_package(
+            package_for("reference"),
+            "inclusion",
+            "CSRF protection is documented.",
+        )
+        self.assert_valid(false_positive)
+
     def test_every_evidence_source_must_have_attempt_lineage_for_its_cell(self):
         for state, ledger in (
             ("official_verified", "official_claims"),
@@ -481,6 +591,7 @@ class BenefitsV2PackageTests(unittest.TestCase):
         report = approved["community_reports"][0]
         report["source_tier"] = "user_submission"
         approved["sources"][0]["source_tier"] = "user_submission"
+        approved["sources"][0]["url"] = "https://submissions.example.com/report/1"
         approved["attempts"] = [attempt("user-submission", "source_found", [report["source_id"]])]
         approved["cells"][0]["attempt_ids"] = [approved["attempts"][0]["attempt_id"]]
         self.assert_valid(approved)
@@ -559,6 +670,7 @@ class BenefitsV2PackageTests(unittest.TestCase):
         reference["scope"]["status"] = "group_only"
         reference["publication_eligibility"] = "reference_only"
         source_record["source_tier"] = "official_government"
+        source_record["url"] = "https://www.dol.gov/agencies/ebsa"
         source_record["scope_status"] = "group_only"
         source_record["publication_eligibility"] = "reference_only"
         package["attempts"] = [
@@ -637,6 +749,7 @@ class BenefitsV2PackageTests(unittest.TestCase):
         dropped = source("source::dropped", package["sources"][0]["source_tier"])
         package["sources"].append(dropped)
         package["attempts"][0]["source_ids"].append(dropped["source_id"])
+        package["attempts"][0]["source_ids"].sort()
         bind_attempt(package["attempts"][0])
         self.assert_invalid(package, "publishable discovered source is not linked to evidence")
 
@@ -977,7 +1090,7 @@ class BenefitsV2PackageTests(unittest.TestCase):
                 environment = os.environ.copy()
                 environment["PYTHONHASHSEED"] = seed
                 result = subprocess.run(
-                    [sys.executable, str(VALIDATOR), str(path)],
+                    [sys.executable, str(VALIDATOR), str(path), "--prepromotion"],
                     cwd=ROOT,
                     env=environment,
                     text=True,
@@ -1009,7 +1122,7 @@ class BenefitsV2PackageTests(unittest.TestCase):
         for record in package["sources"]:
             record["conflict_status"] = "disclosed"
         first = VALIDATOR_MODULE.validate_package(package)
-        package["official_claims"][0]["source_ids"].reverse()
+        package["sources"].reverse()
         second_result = VALIDATOR_MODULE.validate_package(package)
         self.assertEqual(first, second_result)
         self.assertTrue(any("source::example" in error for error in first), first)

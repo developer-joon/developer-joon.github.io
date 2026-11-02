@@ -5,10 +5,12 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
@@ -53,6 +55,27 @@ CELL_PUBLICATION_ELIGIBILITY = {
     "reference": "reference_only",
     "community_report": "community_only",
     "no_public_info": "discovery_only",
+}
+COMMUNITY_HOST_SUFFIXES = (
+    "blind.com", "glassdoor.com", "jobplanet.co.kr", "teamblind.com",
+)
+CATEGORY_NEGATIVE_PATTERNS = {
+    "remote": (
+        ("flexible scheduling", "flexible hours", "flextime", "유연근무", "시차출퇴근"),
+        ("remote work", "work from home", "telecommut", "재택근무", "원격근무"),
+    ),
+    "health": (
+        ("pre-employment health screening", "pre-employment medical", "채용검진", "채용 건강검진"),
+        ("annual employee health", "employee health check", "medical insurance", "임직원 건강검진", "정기 건강검진", "의료비 지원"),
+    ),
+    "retirement": (
+        ("national pension", "statutory pension", "국민연금", "4대보험", "four major social insurance"),
+        ("employer retirement plan", "retirement savings", "401(k)", "퇴직연금", "퇴직금"),
+    ),
+    "inclusion": (
+        ("csr", "donation", "charitable giving", "applicant preference", "기부", "지원자 우대", "채용 우대"),
+        ("employee resource group", "erg", "workplace inclusion", "employee inclusion", "다양성", "포용", "직원 장애 지원"),
+    ),
 }
 
 
@@ -241,6 +264,89 @@ def _receipt_content_sha256(receipt):
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _hostname(url):
+    try:
+        return (urlparse(url).hostname or "").lower().rstrip(".")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _is_government_host(host):
+    labels = host.split(".")
+    return (
+        host.endswith(".go.kr")
+        or host == "fss.or.kr"
+        or host.endswith(".fss.or.kr")
+        or host.endswith(".gov")
+        or (len(labels) >= 2 and labels[-2] == "gov" and len(labels[-1]) == 2)
+    )
+
+
+def _is_community_host(host):
+    return any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in COMMUNITY_HOST_SUFFIXES
+    )
+
+
+def _source_host_tier_error(source):
+    host = _hostname(source.get("url"))
+    tier = source.get("source_tier")
+    if tier == OFFICIAL_TIER and not _is_government_host(host):
+        return "official government source requires a government host"
+    if tier != OFFICIAL_TIER and _is_government_host(host):
+        return "source tier is incompatible with host"
+    if tier == "community_employee_review" and not _is_community_host(host):
+        return "community source tier is incompatible with host"
+    if tier != "community_employee_review" and _is_community_host(host):
+        return "source tier is incompatible with host"
+    return None
+
+
+def _capture_sha256(locator):
+    """Extract only an explicit capture SHA-256, never guess from arbitrary text."""
+    if not isinstance(locator, str):
+        return None
+    try:
+        parsed = urlparse(locator)
+        query = parse_qs(parsed.query)
+    except ValueError:
+        return None
+    for key in ("sha256", "capture_sha256"):
+        values = query.get(key, [])
+        if len(values) == 1 and re.fullmatch(r"[0-9a-f]{64}", values[0]):
+            return values[0]
+    match = re.search(r"(?:^|/)sha256/([0-9a-f]{64})(?:/|$)", parsed.path)
+    return match.group(1) if match else None
+
+
+def _contains_semantic_term(text, term):
+    if term == "telecommut":
+        return re.search(r"(?<!\w)telecommut\w*", text) is not None
+    return re.search(rf"(?<!\w){re.escape(term.casefold())}(?!\w)", text) is not None
+
+
+def _category_semantic_error(record):
+    """Catch narrow known negatives; this is not automated semantic entailment."""
+    rule = CATEGORY_NEGATIVE_PATTERNS.get(record.get("category_id"))
+    if rule is None or record.get("publication_eligibility") not in {
+        "eligible", "reference_only",
+    }:
+        return None
+    negative_terms, counterevidence_terms = rule
+    text = " ".join(
+        value.casefold()
+        for field in ("statement", "supporting_quote")
+        for value in [record.get(field)]
+        if isinstance(value, str)
+    )
+    if any(_contains_semantic_term(text, term) for term in negative_terms) and not any(
+        _contains_semantic_term(text, term) for term in counterevidence_terms
+    ):
+        return "high-confidence category mismatch without explicit counterevidence"
+    return None
+
+
 def _company_ledger(repo_root, errors):
     companies = {}
     path = (
@@ -416,7 +522,7 @@ def _coverage_policy_errors(policy):
     return errors
 
 
-def validate_package(package, repo_root=ROOT):
+def validate_package(package, repo_root=ROOT, prepromotion=False):
     """Return deterministic, human-readable validation errors for one package."""
     errors = []
     if not isinstance(package, dict):
@@ -524,6 +630,24 @@ def validate_package(package, repo_root=ROOT):
                 f"{cell_id}: publication eligibility for {cell.get('state')} must be "
                 f"{expected_publication}"
             )
+        required_route_order = category_routes.get(cell.get("category_id"), [])
+        expected_attempt_ids = sorted(
+            cell.get("attempt_ids", []),
+            key=lambda attempt_id: (
+                required_route_order.index(
+                    indexes["attempts"].get(attempt_id, {}).get("route_id")
+                )
+                if indexes["attempts"].get(attempt_id, {}).get("route_id")
+                in required_route_order
+                else len(required_route_order),
+                attempt_id,
+            ),
+        )
+        if prepromotion and cell.get("attempt_ids") != expected_attempt_ids:
+            errors.append(f"{cell_id}: attempt_ids must be in canonical route order")
+        for field in ("official_claim_ids", "reference_ids", "community_report_ids"):
+            if prepromotion and cell.get(field) != sorted(cell.get(field, [])):
+                errors.append(f"{cell_id}: {field} must be in canonical order")
 
         bound_attempts = []
         for attempt_id in cell.get("attempt_ids", []):
@@ -549,6 +673,8 @@ def validate_package(package, repo_root=ROOT):
                 errors.append(f"{attempt_id}: shared bulk result binding mismatch")
             if not _same_cell(receipt, cell, include_jurisdiction=True) or receipt.get("coverage_policy_id") != policy_id:
                 errors.append(f"{attempt_id}: attempt binding mismatch for {cell_id}")
+            if prepromotion and receipt.get("source_ids") != sorted(receipt.get("source_ids", [])):
+                errors.append(f"{attempt_id}: source_ids must be in canonical order")
             expected_attempt_id = f"attempt::{cell.get('company_id')}::{cell.get('category_id')}::{receipt.get('route_id')}"
             if attempt_id != expected_attempt_id:
                 errors.append(f"{attempt_id}: noncanonical attempt_id; expected {expected_attempt_id}")
@@ -586,6 +712,8 @@ def validate_package(package, repo_root=ROOT):
                 errors.append(f"{claim_id}: noncanonical claim_id; expected {expected_claim_id}")
             if claim.get("source_tier") != OFFICIAL_TIER:
                 errors.append(f"{claim_id}: official claim source tier mismatch")
+            if prepromotion and claim.get("source_ids") != sorted(claim.get("source_ids", [])):
+                errors.append(f"{claim_id}: source_ids must be in canonical order")
             if claim.get("publication_eligibility") != "eligible":
                 errors.append(f"{claim_id}: official claim must be publication eligible")
             backing_conflicts.append((claim_id, claim.get("conflict_status")))
@@ -646,6 +774,9 @@ def validate_package(package, repo_root=ROOT):
                 continue
             if not _same_cell(reference, cell):
                 errors.append(f"{reference_id}: reference binding mismatch for {cell_id}")
+            semantic_error = _category_semantic_error(reference) if prepromotion else None
+            if semantic_error:
+                errors.append(f"{reference_id}: {semantic_error}")
             expected_reference_id = _canonical_evidence_id("reference", reference)
             if reference_id != expected_reference_id:
                 errors.append(f"{reference_id}: noncanonical reference_id; expected {expected_reference_id}")
@@ -714,6 +845,9 @@ def validate_package(package, repo_root=ROOT):
                 continue
             if not _same_cell(report, cell):
                 errors.append(f"{report_id}: community report binding mismatch for {cell_id}")
+            semantic_error = _category_semantic_error(report) if prepromotion else None
+            if semantic_error:
+                errors.append(f"{report_id}: {semantic_error}")
             expected_report_id = _canonical_evidence_id("community", report)
             if report_id != expected_report_id:
                 errors.append(f"{report_id}: noncanonical community_report_id; expected {expected_report_id}")
@@ -909,6 +1043,9 @@ def validate_package(package, repo_root=ROOT):
         countries = scope.get("countries", []) if isinstance(scope, dict) else []
         if source.get("publication_eligibility") == "eligible" and not countries:
             errors.append(f"{source_id}: eligible source lacks country scope")
+        host_tier_error = _source_host_tier_error(source) if prepromotion else None
+        if host_tier_error:
+            errors.append(f"{source_id}: {host_tier_error}")
 
     for field in ("capture_locator", "raw_response_sha256"):
         uses = defaultdict(list)
@@ -938,19 +1075,49 @@ def validate_package(package, repo_root=ROOT):
                 else:
                     errors.append(f"{field} receipt reuse across cells is not permitted: {value}")
 
+    capture_hash_uses = defaultdict(list)
+    for receipt in indexes["attempts"].values():
+        capture_hash = _capture_sha256(receipt.get("capture_locator"))
+        if capture_hash is not None:
+            capture_hash_uses[capture_hash].append(receipt)
+    for capture_hash, receipts in capture_hash_uses.items() if prepromotion else ():
+        cells = {receipt.get("cell_id") for receipt in receipts}
+        if len(cells) < 2:
+            continue
+        binding_keys = {
+            json.dumps(
+                receipt.get("shared_bulk_result_binding"),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for receipt in receipts
+            if isinstance(receipt.get("shared_bulk_result_binding"), dict)
+        }
+        if not (
+            all(
+                _valid_shared_bulk_binding(receipt, allowed_shared_sources)
+                for receipt in receipts
+            )
+            and len(binding_keys) == len(receipts)
+        ):
+            errors.append(
+                f"capture hash reuse across cells is not permitted: {capture_hash}"
+            )
+
     return sorted(errors)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
+    parser.add_argument("--prepromotion", action="store_true")
     args = parser.parse_args(argv)
     try:
         package = json.loads(args.package.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         print(f"invalid package JSON: {exc}", file=sys.stderr)
         return 2
-    errors = validate_package(package)
+    errors = validate_package(package, prepromotion=args.prepromotion)
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

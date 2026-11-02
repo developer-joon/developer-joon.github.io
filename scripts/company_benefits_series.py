@@ -220,7 +220,7 @@ def read_v2_batch_records(directory):
     return {ledger: read_jsonl(directory / filename) for ledger, filename in V2_LEDGER_FILES.items()}
 
 
-def validate_v2_authoritative_records(records, research_root):
+def validate_v2_authoritative_records(records, research_root, prepromotion=False):
     """Run the authoritative cross-ledger validator over an arbitrary complete slice."""
     validator_path = Path(__file__).with_name("validate-benefits-v2-package.py")
     spec = importlib.util.spec_from_file_location("benefits_v2_batch_package_validator", validator_path)
@@ -234,7 +234,10 @@ def validate_v2_authoritative_records(records, research_root):
     canonical_root = repository_root / "docs" / "research" / "company-benefits"
     if research_root.resolve() == canonical_root.resolve():
         policy = json.loads((research_root / "research-coverage-policies.json").read_text(encoding="utf-8"))
-        errors = validator.validate_package({"coverage_policy": policy, **records}, repository_root)
+        errors = validator.validate_package(
+            {"coverage_policy": policy, **records}, repository_root,
+            prepromotion=prepromotion,
+        )
     else:
         with tempfile.TemporaryDirectory(prefix="benefits-v2-authority-") as directory:
             temporary_root = Path(directory)
@@ -250,16 +253,21 @@ def validate_v2_authoritative_records(records, research_root):
                     raise ValueError(f"v2 authoritative input is missing: {filename}")
                 shutil.copyfile(source, target / filename)
             policy = json.loads((target / "research-coverage-policies.json").read_text(encoding="utf-8"))
-            errors = validator.validate_package({"coverage_policy": policy, **records}, temporary_root)
+            errors = validator.validate_package(
+                {"coverage_policy": policy, **records}, temporary_root,
+                prepromotion=prepromotion,
+            )
     if errors:
         raise ValueError("authoritative benefits-v2 validation failed:\n" + "\n".join(errors))
     return records
 
 
-def validate_v2_package_records(records, batch, research_root):
+def validate_v2_package_records(records, batch, research_root, prepromotion=False):
     """Run batch envelope checks and the authoritative v2 package validator."""
     validate_v2_batch_records(records, batch)
-    return validate_v2_authoritative_records(records, research_root)
+    return validate_v2_authoritative_records(
+        records, research_root, prepromotion=prepromotion
+    )
 
 
 def json_bytes(value):

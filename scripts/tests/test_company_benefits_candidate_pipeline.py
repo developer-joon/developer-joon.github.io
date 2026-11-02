@@ -2,6 +2,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -337,6 +338,50 @@ class CandidatePipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "artifact hash"):
             self.validator.validate_candidate(self.candidate, self.root)
 
+    def test_candidate_rejects_noncanonical_file_and_directory_modes(self):
+        os.chmod(self.candidate / "claims.jsonl", 0o755)
+        with self.assertRaisesRegex(ValueError, "mode|permissions"):
+            self.validator.validate_candidate(self.candidate, self.root)
+        os.chmod(self.candidate / "claims.jsonl", 0o644)
+        os.chmod(self.candidate, 0o775)
+        with self.assertRaisesRegex(ValueError, "mode|permissions"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_candidate_rejects_symlinked_artifact_even_with_matching_mode_and_bytes(self):
+        artifact = self.candidate / "claims.jsonl"
+        outside = Path(self.tmp.name) / "outside-claims.jsonl"
+        outside.write_bytes(artifact.read_bytes())
+        artifact.unlink()
+        artifact.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "symlink|regular file"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_candidate_rejects_local_absolute_paths_in_package_fields(self):
+        for path in (
+            "/home/researcher/private/capture.html",
+            r"C:\\Users\\researcher\\capture.html",
+            "file:///home/researcher/capture.html",
+            "FILE:///home/researcher/capture.html",
+        ):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                ValueError, "local absolute path"
+            ):
+                self.validator._reject_local_absolute_paths(path)
+
+        _, claim = self.use_factual_claim()
+        claim["source_locator"] = "/home/researcher/private/capture.html"
+        claim["source_evidence"][0]["source_locator"] = claim["source_locator"]
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "local absolute path"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_claim_source_ids_must_equal_source_evidence_closure(self):
+        _, claim = self.use_factual_claim()
+        claim["source_evidence"][0]["source_id"] = "different-source"
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "source_ids.*source_evidence|source closure"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
     def test_candidate_hashes_every_v2_ledger(self):
         for filename in (
             "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
@@ -369,7 +414,7 @@ class CandidatePipelineTests(unittest.TestCase):
         self.gaps = self.gaps[1:]
         self.requests = [self.request(claim["claim_id"], "claim")] + [self.request(g["audit_id"], "gap") for g in self.gaps]
         self.write_candidate()
-        with self.assertRaisesRegex(ValueError, "publishable|claim source|schema"):
+        with self.assertRaisesRegex(ValueError, "publishable|claim source|schema|source closure"):
             self.validator.validate_candidate(self.candidate, self.root)
 
     def test_candidate_claim_omits_gate_state_and_promotion_injects_exact_check_time_with_audit(self):

@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ HASH = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_FIELDS = {"request_id", "target_type", "target_id", "researcher_id", "status"}
 GAP_FIELDS = {"audit_id", "company_id", "disposition", "reason", "searched_official_source_ids",
               "searched_official_urls", "nonabsence_wording", "researcher_id"}
+LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:/|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
 
 
 def sha256(data):
@@ -56,6 +58,27 @@ def _unique(records, field, label):
     values = [record.get(field) for record in records]
     if any(not isinstance(value, str) or not value for value in values) or len(values) != len(set(values)):
         raise ValueError(f"{label} requires unique nonempty {field}; duplicate IDs are prohibited")
+
+
+def _reject_local_absolute_paths(value, location="package"):
+    if isinstance(value, str) and LOCAL_ABSOLUTE_PATH.match(value):
+        raise ValueError(f"{location}: local absolute path is prohibited")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _reject_local_absolute_paths(child, f"{location}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_local_absolute_paths(child, f"{location}[{index}]")
+
+
+def _validate_package_modes(candidate_dir):
+    if stat.S_IMODE(candidate_dir.stat().st_mode) != 0o755:
+        raise ValueError("candidate directory permissions must use canonical mode 0755")
+    for path in candidate_dir.iterdir():
+        if stat.S_IMODE(path.stat().st_mode) != 0o644:
+            raise ValueError(
+                f"candidate file permissions must use canonical mode 0644: {path.name}"
+            )
 
 
 def _canonical_batch(root, batch_id):
@@ -111,11 +134,16 @@ def _candidate_claim_schema(verifier):
 
 def validate_candidate(candidate_dir, research_root):
     candidate_dir, research_root = Path(candidate_dir), Path(research_root)
-    if not candidate_dir.is_dir():
-        raise ValueError("candidate package directory is missing")
+    if candidate_dir.is_symlink() or not candidate_dir.is_dir():
+        raise ValueError("candidate package directory is missing or symlink-aliased")
     actual = {path.name for path in candidate_dir.iterdir()}
-    if actual != ALLOWED_FILES or any(not path.is_file() for path in candidate_dir.iterdir()):
-        raise ValueError("candidate package must contain exactly candidate.json and ten canonical JSONL files")
+    if actual != ALLOWED_FILES or any(
+        path.is_symlink() or not path.is_file() for path in candidate_dir.iterdir()
+    ):
+        raise ValueError(
+            "candidate package must contain exactly candidate.json and ten canonical regular files; symlinks are prohibited"
+        )
+    _validate_package_modes(candidate_dir)
     try:
         manifest_raw = (candidate_dir / "candidate.json").read_bytes()
         manifest = json.loads(manifest_raw)
@@ -131,6 +159,7 @@ def validate_candidate(candidate_dir, research_root):
         raise ValueError("candidate manifest must use canonical JSON bytes")
     if not isinstance(manifest.get("researcher_id"), str) or not manifest["researcher_id"].strip():
         raise ValueError("candidate researcher_id is required")
+    _reject_local_absolute_paths(manifest, "candidate.json")
     batch = _canonical_batch(research_root, manifest.get("batch_id"))
     for field in ("company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256"):
         if not HASH.fullmatch(str(manifest.get(field, ""))) or manifest.get(field) != batch.get(field):
@@ -144,13 +173,16 @@ def validate_candidate(candidate_dir, research_root):
         if artifacts.get(name) != sha256(raw):
             raise ValueError(f"candidate artifact hash mismatch: {name}")
         records[name] = read_jsonl(candidate_dir / name)
+        _reject_local_absolute_paths(records[name], name)
 
     verifier = _load_verifier()
     v2_records = {
         ledger: records[filename]
         for ledger, filename in verifier.company_benefits_series.V2_LEDGER_FILES.items()
     }
-    verifier.company_benefits_series.validate_v2_package_records(v2_records, batch, research_root)
+    verifier.company_benefits_series.validate_v2_package_records(
+        v2_records, batch, research_root, prepromotion=True
+    )
     metadata_ids = _validate_sources(records["sources.jsonl"], verifier)
     sources = {item["source_id"]: item for item in records["sources.jsonl"]}
     claims, gaps, requests = records["claims.jsonl"], records["gaps.jsonl"], records["review-requests.jsonl"]
@@ -178,6 +210,20 @@ def validate_candidate(candidate_dir, research_root):
         if "prepublication_checked_at" in claim:
             raise ValueError(f"{claim_id}: candidate cannot assert post-review prepublication gate state")
         verifier.validate_structure(claim, claim_schema, claim_id, claim_errors)
+        evidence_source_ids = {
+            evidence.get("source_id")
+            for field in ("source_evidence", "conflict_evidence")
+            for evidence in claim.get(field, [])
+            if isinstance(evidence, dict) and isinstance(evidence.get("source_id"), str)
+        }
+        claim_source_ids = claim.get("source_ids", [])
+        if claim.get("status") != "unknown" and (
+            set(claim_source_ids) != evidence_source_ids
+            or len(claim_source_ids) != len(set(claim_source_ids))
+        ):
+            raise ValueError(
+                f"{claim_id}: source_ids must exactly match source_evidence source closure"
+            )
         for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
             if source_id not in sources:
                 raise ValueError(f"{claim_id}: claim source does not resolve in candidate package")
