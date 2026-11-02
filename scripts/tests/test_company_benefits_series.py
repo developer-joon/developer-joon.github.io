@@ -49,7 +49,15 @@ class SeriesContractTests(unittest.TestCase):
             self.root, as_of=date(2026, 10, 29),
             approved_freeze_anchors=self.fixture.approved_freeze_anchors())
 
+    def use_legacy_contract(self):
+        for filename in V2_FILES.values():
+            self.series.write_jsonl(self.root / filename, [])
+        self.series.materialize_contract(
+            self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "bob"
+        )
+
     def configure_gap_only_batch(self, include_reviews=True):
+        self.use_legacy_contract()
         companies = self.fixture.current["domestic"][:25]
         routes = [{
             "record_type": "nonpublishable_metadata",
@@ -177,6 +185,7 @@ class SeriesContractTests(unittest.TestCase):
         self.assertEqual(before, (self.root / "series-batches.jsonl").read_bytes())
 
     def test_pending_batch_data_is_rejected(self):
+        self.use_legacy_contract()
         claim = copy.deepcopy(self.fixture.claims[0])
         pending_company = self.fixture.current["domestic"][25]
         claim["claim_id"] = "pending-claim"
@@ -252,6 +261,7 @@ class SeriesContractTests(unittest.TestCase):
             self.series.validate_persisted_v2_hashes(self.root, batches, progress)
 
     def test_partial_approved_batch_is_rejected(self):
+        self.use_legacy_contract()
         self.fixture.claims.pop()
         self.fixture.reviews.pop()
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)

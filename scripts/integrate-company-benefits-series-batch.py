@@ -30,12 +30,13 @@ TARGETS = {
     "checks.jsonl": "series-prepublication-checks.jsonl",
     **{filename: filename for filename in series.V2_LEDGER_FILES.values()},
 }
+V2_TARGETS = {filename: filename for filename in series.V2_LEDGER_FILES.values()}
 ID_FIELDS = {
     "sources.jsonl": "source_id", "claims.jsonl": "claim_id", "reviews.jsonl": "review_id",
     "gaps.jsonl": "audit_id", "checks.jsonl": "source_id",
     **{filename: series.V2_ID_FIELDS[ledger] for ledger, filename in series.V2_LEDGER_FILES.items()},
 }
-LEDGER_TARGETS = tuple(TARGETS.values()) + ("series-progress.json", "series-batches.jsonl")
+LEDGER_TARGETS = tuple(V2_TARGETS.values()) + ("series-progress.json", "series-batches.jsonl")
 TRANSACTION_DIRNAME = ".company-benefits-series-batch-transaction"
 COMMITTED_TRANSACTION_DIRNAME = ".company-benefits-series-batch-committed"
 TRANSACTION_SCHEMA_VERSION = "1"
@@ -633,32 +634,12 @@ def _integrate_batch_locked(input_dir, research_root, freeze_anchor_receipt, eff
     with tempfile.TemporaryDirectory(prefix="company-benefits-series-") as directory:
         staged = Path(directory) / "research"
         shutil.copytree(research_root, staged)
-        for name, target in TARGETS.items():
+        # The v1 projections are immutable refreeze audit inputs while v2 is in
+        # progress. They validate the package but are never merged or promoted.
+        for name, target in V2_TARGETS.items():
             current = series.read_jsonl(staged / target)
-            if name == "checks.jsonl":
-                claims = incoming["claims.jsonl"]
-                reviews = claim_review_map(incoming["reviews.jsonl"])
-                source_map = {item["source_id"]: item for item in series.read_jsonl(staged / "source-registry.jsonl")}
-                latest = {}
-                for claim in claims:
-                    for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
-                        reviewed_at = reviews[claim["claim_id"]]["reviewed_at"]
-                        if source_id not in latest or parse_timestamp(reviewed_at, "reviewed_at") > parse_timestamp(latest[source_id], "reviewed_at"):
-                            latest[source_id] = reviewed_at
-                gap_map = {item["audit_id"]: item for item in incoming["gaps.jsonl"]}
-                for review in incoming["reviews.jsonl"]:
-                    record_id = review.get("record_id")
-                    if not record_id:
-                        continue
-                    for source_id in expected_check_source_ids([], [gap_map[record_id]], source_map):
-                        reviewed_at = review["reviewed_at"]
-                        if source_id not in latest or parse_timestamp(reviewed_at, "outcome reviewed_at") > parse_timestamp(latest[source_id], "reviewed_at"):
-                            latest[source_id] = reviewed_at
-                expected = expected_check_source_ids(claims, incoming["gaps.jsonl"], source_map)
-                values = merge_checks(current, incoming[name], latest, expected)
-            else:
-                field = ID_FIELDS[name]
-                values = sorted(current + incoming[name], key=lambda item: item[field])
+            field = ID_FIELDS[name]
+            values = sorted(current + incoming[name], key=lambda item: item[field])
             series.write_jsonl(staged / target, values)
         progress = json.loads((staged / "series-progress.json").read_text(encoding="utf-8"))
         approved_entries = {item["batch_id"]: item for item in progress["batches"] if item["status"] == "approved"}

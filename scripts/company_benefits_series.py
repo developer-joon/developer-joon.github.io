@@ -836,8 +836,13 @@ def build_progress(root, batches, approved_batch_ids, approved_at, reviewer_id, 
     for batch in batches:
         approved = batch["batch_id"] in approved_batch_ids
         company_ids = batch["company_ids"]
-        claim_count = sum(len(claims_by_company.get(company_id, [])) for company_id in company_ids) if approved else 0
-        no_claim_count = sum(bool(gaps_by_company.get(company_id)) for company_id in company_ids) if approved else 0
+        batch_cells = [cell for company_id in company_ids for cell in v2_cells_by_company.get(company_id, [])]
+        if approved and v2_progress:
+            claim_count = sum(bool(cell.get("official_claim_ids")) for cell in batch_cells)
+            no_claim_count = len(batch_cells) - claim_count
+        else:
+            claim_count = sum(len(claims_by_company.get(company_id, [])) for company_id in company_ids) if approved else 0
+            no_claim_count = sum(bool(gaps_by_company.get(company_id)) for company_id in company_ids) if approved else 0
         entry = {
             "batch_id": batch["batch_id"],
             "scope": batch["scope"],
@@ -854,7 +859,6 @@ def build_progress(root, batches, approved_batch_ids, approved_at, reviewer_id, 
             reviewers = reviewer_id.get(batch["batch_id"]) if isinstance(reviewer_id, dict) else reviewer_id
             if isinstance(reviewers, str):
                 reviewers = [reviewers]
-            batch_cells = [cell for company_id in company_ids for cell in v2_cells_by_company.get(company_id, [])]
             if v2_progress and len(batch_cells) != BATCH_SIZE * len(V2_CATEGORIES):
                 raise ValueError(f"{batch['batch_id']}: v2 approved batch requires exactly 250 cells before progress publication")
             entry.update(approved_at=timestamp, reviewer_ids=sorted(reviewers or []))
@@ -997,6 +1001,11 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
     except ValueError as exc:
         errors.append(str(exc))
         v2_progress = "total_cells" in progress or progress.get("progress_version") == "2"
+    if v2_progress:
+        # Preserved v1 refreeze ledgers are nonpublishable audit evidence during
+        # migration. They cannot account for, approve, or block a v2 batch.
+        claims = []
+        reviews = []
     valid_top_shapes = (legacy_top, legacy_top | {"progress_version"},
                         legacy_top | {"total_cells"}, allowed_top)
     if set(progress) not in valid_top_shapes or progress.get("manifest_version") != MANIFEST_VERSION or progress.get("status") not in {"in_progress", "complete"}:
@@ -1020,7 +1029,7 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
     review_by_claim = {}
     for review in reviews:
         review_by_claim.setdefault(review.get("claim_id"), []).append(review)
-    gaps = read_jsonl(root / "series-research-gaps.jsonl")
+    gaps = [] if v2_progress else read_jsonl(root / "series-research-gaps.jsonl")
     gap_map = _company_gap_map(gaps)
     complete_v2 = v2_progress and progress.get("status") == "complete"
     v2_partitions = None
@@ -1119,6 +1128,13 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
                 validate_v2_batch_records(batch_v2_records, batch)
             except (OSError, ValueError, RuntimeError) as exc:
                 errors.append(f"{batch['batch_id']}: merged v2 batch validation failed: {exc}")
+        if v2_progress:
+            expected_claim_count = sum(bool(cell.get("official_claim_ids")) for cell in batch_cells)
+            expected_no_claim_count = len(batch_cells) - expected_claim_count
+            if (entry.get("claim_count") != expected_claim_count
+                    or entry.get("no_claim_count") != expected_no_claim_count):
+                errors.append(f"{batch['batch_id']}: v2 claim/no-claim progress counts mismatch")
+            continue
         accounted = 0
         for company_id in batch["company_ids"]:
             company_claims = claims_by_company.get(company_id, [])
@@ -1163,7 +1179,7 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         if any(source_map.get(source_id, {}).get("hash_provenance") == IDENTITY_PROVENANCE
                for source_id in claim.get("source_ids", [])):
             errors.append(f"{claim.get('claim_id')}: official identity projections cannot support benefit claim prose")
-    checks = read_jsonl(root / "series-prepublication-checks.jsonl")
+    checks = [] if v2_progress else read_jsonl(root / "series-prepublication-checks.jsonl")
     check_map = {item.get("source_id"): item for item in checks}
     expected_source_ids = set(used_source_ids)
     for gap_id in outcome_targets:

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -300,6 +301,45 @@ class SeriesIntegrationTests(unittest.TestCase):
         first = self.module.load_package(self.input, self.root)
         second = self.module.load_package(self.input, self.root)
         self.assertEqual(first, second)
+
+    def test_real_v2_integration_preserves_legacy_audit_ledgers_byte_for_byte(self):
+        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        legacy_paths = (
+            "benefit-claims.jsonl", "reviews.jsonl", "series-prepublication-checks.jsonl",
+            "series-research-gaps.jsonl", "source-registry.jsonl",
+        )
+        before = {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest() for name in legacy_paths}
+        freeze_receipt = Path(self.tmp.name) / "freeze-anchor-receipt.json"
+        freeze_receipt.write_bytes(self.module.series.json_bytes({
+            "schema_version": "1", "protocol_version": self.fixture.protocol["version"],
+            "freeze_manifest_sha256": next(iter(self.fixture.approved_freeze_anchors().values())),
+            "review_status": "approved", "issued_at": "2026-10-21T00:00:00Z",
+        }))
+
+        progress = self.module.integrate_batch(
+            self.input, self.root, freeze_receipt, as_of=date(2026, 10, 29)
+        )
+
+        after = {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest() for name in legacy_paths}
+        self.assertEqual(before, after)
+        approved_entry = next(item for item in progress["batches"] if item["status"] == "approved")
+        self.assertEqual((0, 250, 250), (
+            approved_entry["claim_count"], approved_entry["no_claim_count"], approved_entry["cell_count"]
+        ))
+        self.assertEqual(1, sum(item["status"] == "approved" for item in progress["batches"]))
+        self.assertEqual(79, sum(item["status"] == "pending" for item in progress["batches"]))
+        for ledger, filename in V2_FILES.items():
+            id_field = self.module.series.V2_ID_FIELDS[ledger]
+            self.assertEqual(
+                sorted(self.v2_records[ledger], key=lambda item: item[id_field]),
+                self.module.series.read_jsonl(self.root / filename),
+            )
 
     def test_zero_claim_25_gap_reviews_are_exact_and_orphans_fail(self):
         gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
