@@ -220,7 +220,7 @@ def read_v2_batch_records(directory):
     return {ledger: read_jsonl(directory / filename) for ledger, filename in V2_LEDGER_FILES.items()}
 
 
-def validate_v2_authoritative_records(records, research_root, prepromotion=False):
+def validate_v2_authoritative_records(records, research_root, prepromotion=False, validation_context=None):
     """Run the authoritative cross-ledger validator over an arbitrary complete slice."""
     validator_path = Path(__file__).with_name("validate-benefits-v2-package.py")
     spec = importlib.util.spec_from_file_location("benefits_v2_batch_package_validator", validator_path)
@@ -237,6 +237,7 @@ def validate_v2_authoritative_records(records, research_root, prepromotion=False
         errors = validator.validate_package(
             {"coverage_policy": policy, **records}, repository_root,
             prepromotion=prepromotion,
+            validation_context=validation_context,
         )
     else:
         with tempfile.TemporaryDirectory(prefix="benefits-v2-authority-") as directory:
@@ -256,6 +257,7 @@ def validate_v2_authoritative_records(records, research_root, prepromotion=False
             errors = validator.validate_package(
                 {"coverage_policy": policy, **records}, temporary_root,
                 prepromotion=prepromotion,
+                validation_context=validation_context,
             )
     if errors:
         raise ValueError("authoritative benefits-v2 validation failed:\n" + "\n".join(errors))
@@ -266,7 +268,8 @@ def validate_v2_package_records(records, batch, research_root, prepromotion=Fals
     """Run batch envelope checks and the authoritative v2 package validator."""
     validate_v2_batch_records(records, batch)
     return validate_v2_authoritative_records(
-        records, research_root, prepromotion=prepromotion
+        records, research_root, prepromotion=prepromotion,
+        validation_context={"mode": "batch", "company_ids": batch["company_ids"]},
     )
 
 

@@ -38,10 +38,11 @@ ID_FIELDS = {
 PACKAGE_FIELDS = {"coverage_policy", *ID_FIELDS}
 OFFICIAL_TIER = "official_government"
 ACCEPTABLE_EMPTY_RESULTS = {"no_result", "ineligible_source"}
-BENEFIT_CATEGORIES = {
+BENEFIT_CATEGORY_ORDER = (
     "leave", "family", "health", "growth", "housing",
     "commute", "remote", "retirement", "meals", "inclusion",
-}
+)
+BENEFIT_CATEGORIES = set(BENEFIT_CATEGORY_ORDER)
 MANDATORY_COVERAGE_ROUTES = {
     "official-government",
     "company-recruiting-media",
@@ -512,7 +513,55 @@ def _coverage_policy_errors(policy):
     return errors
 
 
-def validate_package(package, repo_root=ROOT, prepromotion=False):
+def _membership_errors(cells, validation_context):
+    """Validate an explicitly declared batch or unit Cartesian product."""
+    if validation_context is None:
+        return []
+    if not isinstance(validation_context, dict) or set(validation_context) != {"mode", "company_ids"}:
+        return ["validation context must contain exactly mode and company_ids"]
+    mode = validation_context.get("mode")
+    company_ids = validation_context.get("company_ids")
+    if mode not in {"batch", "unit"}:
+        return ["validation context mode must be batch or unit"]
+    if (not isinstance(company_ids, list) or not company_ids
+            or any(not isinstance(company_id, str) or not company_id for company_id in company_ids)
+            or len(company_ids) != len(set(company_ids))):
+        return ["validation context company_ids must be a nonempty array of unique strings"]
+    if mode == "batch" and len(company_ids) != 25:
+        return ["batch validation context must contain exactly 25 company_ids"]
+
+    expected_order = [
+        (company_id, category_id)
+        for company_id in company_ids
+        for category_id in BENEFIT_CATEGORY_ORDER
+    ]
+    actual_order = [
+        (cell.get("company_id"), cell.get("category_id"))
+        for cell in cells
+        if isinstance(cell, dict)
+    ]
+    expected = set(expected_order)
+    actual = set(actual_order)
+    errors = []
+    if len(actual_order) != len(actual):
+        errors.append("duplicate company/category cells are prohibited")
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected, key=lambda pair: (str(pair[0]), str(pair[1])))
+    if missing:
+        errors.append(f"missing canonical cell: {missing[0][0]}::{missing[0][1]}")
+    if extra:
+        errors.append(f"unexpected canonical cell: {extra[0][0]}::{extra[0][1]}")
+    if len(actual_order) != len(expected_order) or actual != expected:
+        dimensions = "25 companies x 10 categories" if mode == "batch" else (
+            f"{len(company_ids)} companies x 10 categories"
+        )
+        errors.append(f"cells must equal the exact canonical {dimensions} set")
+    if actual_order != expected_order:
+        errors.append("cells must be in canonical company/category order")
+    return errors
+
+
+def validate_package(package, repo_root=ROOT, prepromotion=False, validation_context=None):
     """Return deterministic, human-readable validation errors for one package."""
     errors = []
     if not isinstance(package, dict):
@@ -532,6 +581,7 @@ def validate_package(package, repo_root=ROOT, prepromotion=False):
     if errors:
         return errors
     policy = package["coverage_policy"]
+    errors.extend(_membership_errors(package["cells"], validation_context))
 
     validators = _schema_validators(repo_root, errors)
     if len(validators) != len(SCHEMAS):
@@ -1101,13 +1151,38 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
     parser.add_argument("--prepromotion", action="store_true")
+    context_group = parser.add_mutually_exclusive_group()
+    context_group.add_argument(
+        "--batch-manifest", type=Path,
+        help="JSON manifest containing the exact 25 company_ids in acquisition order",
+    )
+    context_group.add_argument(
+        "--unit-manifest", type=Path,
+        help="JSON manifest containing the explicit unit company_ids in acquisition order",
+    )
     args = parser.parse_args(argv)
     try:
         package = json.loads(args.package.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         print(f"invalid package JSON: {exc}", file=sys.stderr)
         return 2
-    errors = validate_package(package, prepromotion=args.prepromotion)
+    validation_context = None
+    manifest_path = args.batch_manifest or args.unit_manifest
+    if manifest_path is not None:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print(f"invalid validation manifest JSON: {exc}", file=sys.stderr)
+            return 2
+        validation_context = {
+            "mode": "batch" if args.batch_manifest else "unit",
+            "company_ids": manifest.get("company_ids") if isinstance(manifest, dict) else None,
+        }
+    errors = validate_package(
+        package,
+        prepromotion=args.prepromotion,
+        validation_context=validation_context,
+    )
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

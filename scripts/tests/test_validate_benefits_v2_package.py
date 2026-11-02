@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from scripts.tests.benefits_v2_batch_fixture import no_public_info_records
 from scripts.tests.test_company_benefits_v2_contracts import (
     base_attempt,
     base_cell,
@@ -208,12 +209,34 @@ def retarget_reference_package(package, category_id, statement):
 
 
 class BenefitsV2PackageTests(unittest.TestCase):
-    def run_validator(self, package):
+    def canonical_package(self, batch_id="domestic-01", company_limit=None):
+        research = ROOT / "docs" / "research" / "company-benefits"
+        batches = [json.loads(line) for line in (research / "series-batches.jsonl").read_text().splitlines()]
+        batch = copy.deepcopy(next(item for item in batches if item["batch_id"] == batch_id))
+        if company_limit is not None:
+            batch["company_ids"] = batch["company_ids"][:company_limit]
+        companies = [json.loads(line) for line in (research / "companies.jsonl").read_text().splitlines()]
+        records = no_public_info_records(batch, companies)
+        package = {"coverage_policy": json.loads(POLICY_PATH.read_text(encoding="utf-8")), **records}
+        return package, batch
+
+    def run_validator(self, package, validation_context=None):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "package.json"
             path.write_text(json.dumps(package), encoding="utf-8")
+            command = [sys.executable, str(VALIDATOR), str(path), "--prepromotion"]
+            if validation_context is not None:
+                manifest = Path(directory) / "manifest.json"
+                manifest.write_text(
+                    json.dumps({"company_ids": validation_context["company_ids"]}),
+                    encoding="utf-8",
+                )
+                command.extend([
+                    "--batch-manifest" if validation_context["mode"] == "batch" else "--unit-manifest",
+                    str(manifest),
+                ])
             return subprocess.run(
-                [sys.executable, str(VALIDATOR), str(path), "--prepromotion"],
+                command,
                 cwd=ROOT,
                 text=True,
                 capture_output=True,
@@ -233,6 +256,37 @@ class BenefitsV2PackageTests(unittest.TestCase):
         for state in ("official_verified", "reference", "community_report", "no_public_info"):
             with self.subTest(state=state):
                 self.assert_valid(package_for(state))
+
+    def test_explicit_batch_context_rejects_domestic_01_249_cell_package(self):
+        package, batch = self.canonical_package()
+        package["cells"].pop()
+        context = {"mode": "batch", "company_ids": batch["company_ids"]}
+        for prepromotion in (False, True):
+            with self.subTest(prepromotion=prepromotion):
+                errors = VALIDATOR_MODULE.validate_package(
+                    package, prepromotion=prepromotion, validation_context=context
+                )
+                self.assertTrue(any("exact canonical 25 companies x 10 categories" in error for error in errors), errors)
+        result = self.run_validator(package, context)
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("exact canonical 25 companies x 10 categories", result.stderr)
+
+    def test_explicit_batch_context_enforces_acquisition_order(self):
+        package, batch = self.canonical_package()
+        package["cells"][0], package["cells"][1] = package["cells"][1], package["cells"][0]
+        errors = VALIDATOR_MODULE.validate_package(
+            package,
+            validation_context={"mode": "batch", "company_ids": batch["company_ids"]},
+        )
+        self.assertTrue(any("canonical company/category order" in error for error in errors), errors)
+
+    def test_explicit_five_company_unit_context_accepts_exact_membership(self):
+        package, batch = self.canonical_package(company_limit=5)
+        errors = VALIDATOR_MODULE.validate_package(
+            package,
+            validation_context={"mode": "unit", "company_ids": batch["company_ids"]},
+        )
+        self.assertEqual([], errors)
 
     def test_no_public_info_requires_every_policy_route_with_acceptable_terminal_result(self):
         missing = package_for()
