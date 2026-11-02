@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import importlib.util
 import json
@@ -301,6 +302,106 @@ class SeriesIntegrationTests(unittest.TestCase):
         first = self.module.load_package(self.input, self.root)
         second = self.module.load_package(self.input, self.root)
         self.assertEqual(first, second)
+
+    def test_rejects_semantically_equal_legacy_duplicates_with_different_raw_bytes(self):
+        cases = (
+            ("sources.jsonl", "source_id"),
+            ("claims.jsonl", "claim_id"),
+            ("reviews.jsonl", "review_id"),
+            ("gaps.jsonl", "audit_id"),
+        )
+        for name, field in cases:
+            existing_path = Path(self.tmp.name) / f"existing-{name}"
+            incoming_path = Path(self.tmp.name) / f"incoming-{name}"
+            existing_path.write_bytes(f'{{"{field}":"duplicate","value":1}}\n'.encode())
+            existing = self.module.series.read_jsonl(existing_path)
+            for variant in (
+                f'{{"value":1,"{field}":"duplicate"}}\n',
+                f'{{"{field}": "duplicate", "value": 1}}\n',
+            ):
+                with self.subTest(name=name, variant=variant):
+                    incoming_path.write_bytes(variant.encode())
+                    incoming = self.module.series.read_jsonl(incoming_path)
+                    self.assertEqual(existing, incoming)
+                    with self.assertRaisesRegex(ValueError, "collision"):
+                        self.module.validate_record_collisions(
+                            name, incoming_path, existing_path, incoming, existing
+                        )
+
+    def test_accepts_only_byte_identical_legacy_claim_duplicate(self):
+        raw = b'{"claim_id":"duplicate","value":1}\n'
+        existing_path = Path(self.tmp.name) / "existing-claims.jsonl"
+        incoming_path = Path(self.tmp.name) / "incoming-claims.jsonl"
+        existing_path.write_bytes(raw)
+        incoming_path.write_bytes(raw)
+        existing = self.module.series.read_jsonl(existing_path)
+        incoming = self.module.series.read_jsonl(incoming_path)
+
+        self.module.validate_record_collisions(
+            "claims.jsonl", incoming_path, existing_path, incoming, existing
+        )
+
+    def test_load_package_accepts_byte_identical_claim_already_frozen_in_legacy_ledger(self):
+        company_id = self.batch["company_ids"][0]
+        company = next(item for item in self.fixture.companies if item["company_id"] == company_id)
+        source = copy.deepcopy(self.fixture.benefit_source)
+        source_id = f"benefit-source-{company_id}"
+        source.update(
+            source_id=source_id,
+            applicable_legal_entities=[company["selected_reporting_legal_entity"]],
+            policy_owner_legal_entity=company["benefit_policy_owner"],
+        )
+        claim = copy.deepcopy(self.fixture.claims[0])
+        claim_id = f"{company_id}-claim"
+        claim.update(
+            claim_id=claim_id,
+            company_id=company_id,
+            source_ids=[source_id],
+            prepublication_checked_at="2026-10-22T05:00:00Z",
+        )
+        claim["source_evidence"][0]["source_id"] = source_id
+        claim["application_scope"]["legal_entities"] = [company["selected_reporting_legal_entity"]]
+        review = copy.deepcopy(self.fixture.reviews[0])
+        review.update(review_id=f"review-{company_id}", claim_id=claim_id, researcher_id="gap-researcher")
+        review["source_entailment_reviews"][0]["source_id"] = source_id
+        gaps = [{"audit_id": f"company-gap::{item_id}", "company_id": item_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for item_id in self.batch["company_ids"][1:]]
+        gap_sources, gap_checks = self.bind_exact_gap_route(gaps)
+        claim_check = {
+            "source_id": source_id, "url": source["url"], "status": 200,
+            "final_url": source["url"], "marker": "Official", "marker_confirmed": True,
+            "content_sha256": source["content_sha256"], "checked_at": "2026-10-22T05:00:00Z",
+        }
+        self.package(
+            claims=[claim], sources=[source, *gap_sources],
+            reviews=[review, *self.outcome_reviews(gaps)], gaps=gaps,
+            checks=[claim_check, *gap_checks],
+        )
+        claims_path = self.root / "benefit-claims.jsonl"
+        claims_path.write_bytes(claims_path.read_bytes() + (self.input / "claims.jsonl").read_bytes())
+
+        _, _, records = self.module.load_package(self.input, self.root)
+
+        self.assertEqual([claim], records["claims.jsonl"])
+
+    def test_rejects_byte_identical_v2_duplicate_id(self):
+        name = V2_FILES["attempts"]
+        field = self.module.ID_FIELDS[name]
+        raw = f'{{"{field}":"duplicate"}}\n'.encode()
+        existing_path = Path(self.tmp.name) / f"existing-{name}"
+        incoming_path = Path(self.tmp.name) / f"incoming-{name}"
+        existing_path.write_bytes(raw)
+        incoming_path.write_bytes(raw)
+        existing = self.module.series.read_jsonl(existing_path)
+        incoming = self.module.series.read_jsonl(incoming_path)
+
+        with self.assertRaisesRegex(ValueError, "collision"):
+            self.module.validate_record_collisions(
+                name, incoming_path, existing_path, incoming, existing
+            )
 
     def test_accepts_exact_legacy_audit_records_already_frozen_in_immutable_ledgers(self):
         gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,

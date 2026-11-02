@@ -37,6 +37,7 @@ ID_FIELDS = {
     **{filename: series.V2_ID_FIELDS[ledger] for ledger, filename in series.V2_LEDGER_FILES.items()},
 }
 LEDGER_TARGETS = tuple(V2_TARGETS.values()) + ("series-progress.json", "series-batches.jsonl")
+IMMUTABLE_LEGACY_FILES = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl")
 TRANSACTION_DIRNAME = ".company-benefits-series-batch-transaction"
 COMMITTED_TRANSACTION_DIRNAME = ".company-benefits-series-batch-committed"
 TRANSACTION_SCHEMA_VERSION = "1"
@@ -64,6 +65,29 @@ def _unique_map(records, field, label):
             or len(values) != len(set(values))):
         raise ValueError(f"{label} requires unique nonempty {field} values")
     return dict(zip(values, records))
+
+
+def _raw_record_map(path, records, field, label):
+    """Index parsed records by ID while retaining their exact JSON line bytes."""
+    path = Path(path)
+    raw = path.read_bytes() if path.is_file() else b""
+    raw_records = [line for line in raw.splitlines() if line.strip()]
+    record_map = _unique_map(records, field, label)
+    if len(raw_records) != len(records):
+        raise ValueError(f"{label} raw record count mismatch")
+    return {record[field]: raw for record, raw in zip(records, raw_records)}, record_map
+
+
+def validate_record_collisions(name, incoming_path, existing_path, incoming_records, existing_records):
+    """Allow legacy duplicate IDs only when the complete raw records are byte-identical."""
+    field = ID_FIELDS[name]
+    incoming_raw, incoming_by_id = _raw_record_map(incoming_path, incoming_records, field, name)
+    existing_raw, existing_by_id = _raw_record_map(existing_path, existing_records, field, f"existing {name}")
+    overlaps = set(incoming_by_id) & set(existing_by_id)
+    if overlaps and name not in IMMUTABLE_LEGACY_FILES:
+        raise ValueError(f"cross-batch {field} collision")
+    if any(incoming_raw[item_id] != existing_raw[item_id] for item_id in overlaps):
+        raise ValueError(f"cross-batch {field} collision")
 
 
 def expected_check_source_ids(claims, gaps, source_map):
@@ -250,16 +274,10 @@ def load_package(input_dir, research_root):
     validate_review_audit(manifest, batch, records, research_root)
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
-    immutable_legacy_files = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl")
-    for name in (*immutable_legacy_files, *series.V2_LEDGER_FILES.values()):
-        field = ID_FIELDS[name]
-        incoming_by_id = {item[field]: item for item in records[name]}
-        existing_by_id = {item.get(field): item for item in existing[name]}
-        overlaps = set(incoming_by_id) & set(existing_by_id)
-        if overlaps and name not in immutable_legacy_files:
-            raise ValueError(f"cross-batch {field} collision")
-        if any(incoming_by_id[item_id] != existing_by_id[item_id] for item_id in overlaps):
-            raise ValueError(f"cross-batch {field} collision")
+    for name in (*IMMUTABLE_LEGACY_FILES, *series.V2_LEDGER_FILES.values()):
+        validate_record_collisions(
+            name, input_dir / name, research_root / TARGETS[name], records[name], existing[name]
+        )
     company_ids = set(batch["company_ids"])
     claims = records["claims.jsonl"]
     gaps = records["gaps.jsonl"]
@@ -281,7 +299,6 @@ def load_package(input_dir, research_root):
         if company_gaps and not any(phrase in company_gaps[0].get("nonabsence_wording", "") for phrase in series.NONABSENCE_PHRASES):
             raise ValueError("company gap lacks mandatory Korean non-absence wording")
 
-    existing_claim_ids = {item.get("claim_id") for item in existing["claims.jsonl"]}
     claim_map = _unique_map(claims, "claim_id", "claims")
     gap_map = _unique_map(gaps, "audit_id", "gaps")
     review_map, outcome_review_map = {}, {}
@@ -312,9 +329,6 @@ def load_package(input_dir, research_root):
         if review.get("decision") != "approved" or review.get("researcher_id") == review.get("reviewer_id"):
             raise ValueError(f"{record_id}: unapproved or self-approved outcome review")
         parse_timestamp(review.get("reviewed_at"), "outcome reviewed_at")
-    if set(claim_map) & existing_claim_ids:
-        raise ValueError("cross-batch claim_id collision")
-
     source_map = {item.get("source_id"): item for item in existing["sources.jsonl"] + records["sources.jsonl"]}
     used_ids = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
     if None in source_map or used_ids - set(source_map):
