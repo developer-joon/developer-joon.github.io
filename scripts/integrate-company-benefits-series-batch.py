@@ -217,7 +217,7 @@ def validate_review_audit(manifest, batch, records, research_root):
     return audit
 
 
-def load_package(input_dir, research_root):
+def load_package(input_dir, research_root, validate_immutable_legacy_collisions=True):
     input_dir, research_root = Path(input_dir), Path(research_root)
     actual = {path.name for path in input_dir.iterdir()}
     if actual != ALLOWED_FILES or any(not path.is_file() for path in input_dir.iterdir()):
@@ -274,7 +274,10 @@ def load_package(input_dir, research_root):
     validate_review_audit(manifest, batch, records, research_root)
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
-    for name in (*IMMUTABLE_LEGACY_FILES, *series.V2_LEDGER_FILES.values()):
+    collision_files = list(series.V2_LEDGER_FILES.values())
+    if validate_immutable_legacy_collisions:
+        collision_files[:0] = IMMUTABLE_LEGACY_FILES
+    for name in collision_files:
         validate_record_collisions(
             name, input_dir / name, research_root / TARGETS[name], records[name], existing[name]
         )

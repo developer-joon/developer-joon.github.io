@@ -206,6 +206,18 @@ def _membership_keys(records):
     return {(item.get("company_id"), item.get("category_id")) for item in records["cells"]}
 
 
+def _validate_immutable_legacy_projections(integrator, package_dir, research_root):
+    """Validate frozen compatibility projections without making them merge inputs."""
+    for name in integrator.IMMUTABLE_LEGACY_FILES:
+        target = integrator.TARGETS[name]
+        incoming_path = Path(package_dir) / name
+        existing_path = Path(research_root) / target
+        integrator.validate_record_collisions(
+            name, incoming_path, existing_path,
+            series.read_jsonl(incoming_path), series.read_jsonl(existing_path),
+        )
+
+
 def _stage_replacement(batch_id, package_dir, approval, approval_raw, research_root, staged,
                        freeze_anchor_receipt, effective_selection_receipt, as_of):
     integrator = _integrator()
@@ -250,7 +262,13 @@ def _stage_replacement(batch_id, package_dir, approval, approval_raw, research_r
     progress["batches"] = [pending_entry if item.get("batch_id") == batch_id else item for item in entries]
     progress_path.write_bytes(series.json_bytes(progress))
 
-    manifest, package_batch, incoming = integrator.load_package(package_dir, staged)
+    # Legacy compatibility projections are immutable.  Validate their exact
+    # overlaps once, but leave them out of the integration collision set: only
+    # the six v2 target slices are replacement inputs.
+    _validate_immutable_legacy_projections(integrator, package_dir, staged)
+    manifest, package_batch, incoming = integrator.load_package(
+        package_dir, staged, validate_immutable_legacy_collisions=False
+    )
     if manifest.get("batch_id") != batch_id or package_batch.get("batch_id") != batch_id:
         raise ValueError("batch mismatch between requested old batch and replacement package")
     if _parse_timestamp(manifest.get("approved_at"), "replacement approved_at") <= _parse_timestamp(

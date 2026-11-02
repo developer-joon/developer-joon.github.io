@@ -262,6 +262,47 @@ class ApprovedBatchReplacementTests(unittest.TestCase):
                 name, incoming_path, existing_path, incoming, existing
             )
 
+    def test_immutable_legacy_projection_overlap_is_validated_separately(self):
+        integrator = self.module._integrator()
+        legacy_targets = {
+            "sources.jsonl": "source-registry.jsonl",
+            "claims.jsonl": "benefit-claims.jsonl",
+            "reviews.jsonl": "reviews.jsonl",
+            "gaps.jsonl": "series-research-gaps.jsonl",
+        }
+        id_fields = {
+            "sources.jsonl": "source_id",
+            "claims.jsonl": "claim_id",
+            "reviews.jsonl": "review_id",
+            "gaps.jsonl": "audit_id",
+        }
+        package = Path(self.tmp.name) / "legacy-projections"
+        research = Path(self.tmp.name) / "legacy-expectations"
+        package.mkdir()
+        research.mkdir()
+        for name, target in legacy_targets.items():
+            field = id_fields[name]
+            raw = self.module.series.jsonl_bytes([{field: f"frozen-{field}", "value": 1}])
+            (package / name).write_bytes(raw)
+            (research / target).write_bytes(raw)
+
+        self.module._validate_immutable_legacy_projections(
+            integrator, package, research
+        )
+
+        for name, target in legacy_targets.items():
+            with self.subTest(name=name):
+                field = id_fields[name]
+                original = (research / target).read_bytes()
+                (research / target).write_bytes(
+                    self.module.series.jsonl_bytes([{field: f"frozen-{field}", "value": 2}])
+                )
+                with self.assertRaisesRegex(ValueError, f"cross-batch {field} collision"):
+                    self.module._validate_immutable_legacy_projections(
+                        integrator, package, research
+                    )
+                (research / target).write_bytes(original)
+
     def test_post_exchange_failure_rolls_back_byte_identically(self):
         before = self._tree()
         real_fsync = self.module._fsync_directory

@@ -341,6 +341,29 @@ class SeriesIntegrationTests(unittest.TestCase):
             "claims.jsonl", incoming_path, existing_path, incoming, existing
         )
 
+    def test_load_package_can_delegate_immutable_legacy_collision_validation(self):
+        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        existing = self.module.series.read_jsonl(self.root / "source-registry.jsonl")
+        self.module.series.write_jsonl(
+            self.root / "source-registry.jsonl", [*existing, dict(sources[0], title="not identical")]
+        )
+
+        with self.assertRaisesRegex(ValueError, "cross-batch source_id collision"):
+            self.module.load_package(self.input, self.root)
+
+        manifest, batch, records = self.module.load_package(
+            self.input, self.root, validate_immutable_legacy_collisions=False
+        )
+        self.assertEqual(self.batch["batch_id"], manifest["batch_id"])
+        self.assertEqual(self.batch, batch)
+        self.assertEqual(sources, records["sources.jsonl"])
+
     def test_load_package_accepts_byte_identical_claim_already_frozen_in_legacy_ledger(self):
         company_id = self.batch["company_ids"][0]
         company = next(item for item in self.fixture.companies if item["company_id"] == company_id)
