@@ -513,13 +513,37 @@ def _coverage_policy_errors(policy):
     return errors
 
 
-def _membership_errors(cells, validation_context):
+def _canonical_batch_company_ids(repo_root, batch_id):
+    """Return one batch's authoritative company order from series-batches.jsonl."""
+    path = (
+        Path(repo_root) / "docs" / "research" / "company-benefits"
+        / "series-batches.jsonl"
+    )
+    try:
+        rows = [json.loads(line) for line in _read_authoritative_text(repo_root, path).splitlines()]
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        return None, f"canonical batch manifest is invalid: {exc}"
+    matches = [row for row in rows if isinstance(row, dict) and row.get("batch_id") == batch_id]
+    if len(matches) != 1:
+        return None, "validation context batch_id must resolve exactly once in canonical batch manifest"
+    company_ids = matches[0].get("company_ids")
+    if (not isinstance(company_ids, list) or len(company_ids) != 25
+            or any(not isinstance(value, str) or not value for value in company_ids)
+            or len(set(company_ids)) != 25):
+        return None, "canonical batch manifest must contain exactly 25 unique company_ids"
+    return company_ids, None
+
+
+def _membership_errors(cells, validation_context, repo_root):
     """Validate an explicitly declared batch or unit Cartesian product."""
     if validation_context is None:
         return []
-    if not isinstance(validation_context, dict) or set(validation_context) != {"mode", "company_ids"}:
-        return ["validation context must contain exactly mode and company_ids"]
+    if not isinstance(validation_context, dict) or set(validation_context) != {
+        "mode", "batch_id", "company_ids"
+    }:
+        return ["validation context must contain exactly mode, batch_id, and company_ids"]
     mode = validation_context.get("mode")
+    batch_id = validation_context.get("batch_id")
     company_ids = validation_context.get("company_ids")
     if mode not in {"batch", "unit"}:
         return ["validation context mode must be batch or unit"]
@@ -527,8 +551,23 @@ def _membership_errors(cells, validation_context):
             or any(not isinstance(company_id, str) or not company_id for company_id in company_ids)
             or len(company_ids) != len(set(company_ids))):
         return ["validation context company_ids must be a nonempty array of unique strings"]
-    if mode == "batch" and len(company_ids) != 25:
-        return ["batch validation context must contain exactly 25 company_ids"]
+    if not isinstance(batch_id, str) or not batch_id:
+        return ["validation context batch_id must be a nonempty string"]
+    canonical_company_ids, canonical_error = _canonical_batch_company_ids(repo_root, batch_id)
+    if canonical_error or canonical_company_ids is None:
+        return [canonical_error or "canonical batch manifest is unavailable"]
+    if mode == "batch":
+        if len(company_ids) != 25:
+            return ["batch validation context must contain exactly 25 company_ids"]
+        if company_ids != canonical_company_ids:
+            return ["batch validation context does not match canonical batch manifest order"]
+    else:
+        if len(company_ids) > 5:
+            return ["unit validation context may contain at most five company_ids"]
+        start = canonical_company_ids.index(company_ids[0]) if company_ids[0] in canonical_company_ids else -1
+        if (start < 0 or start // 5 != (start + len(company_ids) - 1) // 5
+                or canonical_company_ids[start:start + len(company_ids)] != company_ids):
+            return ["unit validation context must be a canonical ordered slice of one five-company unit"]
 
     expected_order = [
         (company_id, category_id)
@@ -581,7 +620,7 @@ def validate_package(package, repo_root=ROOT, prepromotion=False, validation_con
     if errors:
         return errors
     policy = package["coverage_policy"]
-    errors.extend(_membership_errors(package["cells"], validation_context))
+    errors.extend(_membership_errors(package["cells"], validation_context, repo_root))
 
     validators = _schema_validators(repo_root, errors)
     if len(validators) != len(SCHEMAS):
@@ -1150,7 +1189,12 @@ def validate_package(package, repo_root=ROOT, prepromotion=False, validation_con
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
-    parser.add_argument("--prepromotion", action="store_true")
+    lint_group = parser.add_mutually_exclusive_group()
+    lint_group.add_argument("--prepromotion", action="store_true")
+    lint_group.add_argument(
+        "--prepromotion-lint-only", action="store_true",
+        help="run strict lint without claiming batch or unit promotion completeness",
+    )
     context_group = parser.add_mutually_exclusive_group()
     context_group.add_argument(
         "--batch-manifest", type=Path,
@@ -1161,6 +1205,12 @@ def main(argv=None):
         help="JSON manifest containing the explicit unit company_ids in acquisition order",
     )
     args = parser.parse_args(argv)
+    if args.prepromotion and args.batch_manifest is None and args.unit_manifest is None:
+        print(
+            "--prepromotion requires --batch-manifest or --unit-manifest",
+            file=sys.stderr,
+        )
+        return 2
     try:
         package = json.loads(args.package.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -1176,11 +1226,12 @@ def main(argv=None):
             return 2
         validation_context = {
             "mode": "batch" if args.batch_manifest else "unit",
+            "batch_id": manifest.get("batch_id") if isinstance(manifest, dict) else None,
             "company_ids": manifest.get("company_ids") if isinstance(manifest, dict) else None,
         }
     errors = validate_package(
         package,
-        prepromotion=args.prepromotion,
+        prepromotion=args.prepromotion or args.prepromotion_lint_only,
         validation_context=validation_context,
     )
     if errors:

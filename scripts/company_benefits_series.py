@@ -246,7 +246,9 @@ def validate_v2_authoritative_records(records, research_root, prepromotion=False
             (target / "schema").mkdir(parents=True)
             for filename in validator.SCHEMAS.values():
                 shutil.copyfile(canonical_root / "schema" / filename, target / "schema" / filename)
-            for filename in ("companies.jsonl", "research-coverage-policies.json"):
+            for filename in (
+                "companies.jsonl", "research-coverage-policies.json", "series-batches.jsonl"
+            ):
                 source = research_root / filename
                 if not source.is_file() and filename == "research-coverage-policies.json":
                     source = canonical_root / filename
@@ -269,7 +271,10 @@ def validate_v2_package_records(records, batch, research_root, prepromotion=Fals
     validate_v2_batch_records(records, batch)
     return validate_v2_authoritative_records(
         records, research_root, prepromotion=prepromotion,
-        validation_context={"mode": "batch", "company_ids": batch["company_ids"]},
+        validation_context={
+            "mode": "batch", "batch_id": batch.get("batch_id"),
+            "company_ids": batch["company_ids"],
+        },
     )
 
 

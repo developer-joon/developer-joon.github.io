@@ -220,15 +220,24 @@ class BenefitsV2PackageTests(unittest.TestCase):
         package = {"coverage_policy": json.loads(POLICY_PATH.read_text(encoding="utf-8")), **records}
         return package, batch
 
-    def run_validator(self, package, validation_context=None):
+    def run_validator(self, package, validation_context: object = "lint-only"):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "package.json"
             path.write_text(json.dumps(package), encoding="utf-8")
-            command = [sys.executable, str(VALIDATOR), str(path), "--prepromotion"]
+            command = [sys.executable, str(VALIDATOR), str(path)]
+            command.append("--prepromotion-lint-only" if validation_context == "lint-only" else "--prepromotion")
             if validation_context is not None:
+                if validation_context == "lint-only":
+                    validation_context = None
+            if validation_context is not None:
+                self.assertIsInstance(validation_context, dict)
+                assert isinstance(validation_context, dict)
                 manifest = Path(directory) / "manifest.json"
                 manifest.write_text(
-                    json.dumps({"company_ids": validation_context["company_ids"]}),
+                    json.dumps({
+                        "batch_id": validation_context["batch_id"],
+                        "company_ids": validation_context["company_ids"],
+                    }),
                     encoding="utf-8",
                 )
                 command.extend([
@@ -257,26 +266,44 @@ class BenefitsV2PackageTests(unittest.TestCase):
             with self.subTest(state=state):
                 self.assert_valid(package_for(state))
 
-    def test_explicit_batch_context_rejects_domestic_01_249_cell_package(self):
+    def test_explicit_batch_context_rejects_every_noncanonical_cell_set(self):
         package, batch = self.canonical_package()
-        package["cells"].pop()
-        context = {"mode": "batch", "company_ids": batch["company_ids"]}
-        for prepromotion in (False, True):
-            with self.subTest(prepromotion=prepromotion):
+        context = {
+            "mode": "batch", "batch_id": batch["batch_id"],
+            "company_ids": batch["company_ids"],
+        }
+        mutations = {}
+        missing = copy.deepcopy(package); missing["cells"].pop(); mutations["249 cells"] = missing
+        extra = copy.deepcopy(package)
+        extra_cell = copy.deepcopy(extra["cells"][-1])
+        extra_cell["company_id"] = "KR-CRN-9999999999999"
+        extra_cell["cell_id"] = f"cell::{extra_cell['company_id']}::{extra_cell['category_id']}"
+        extra["cells"].append(extra_cell)
+        mutations["extra"] = extra
+        duplicate = copy.deepcopy(package); duplicate["cells"][-1] = copy.deepcopy(duplicate["cells"][0]); mutations["duplicate"] = duplicate
+        substituted = copy.deepcopy(package); substituted["cells"][-1]["company_id"] = "KR-CRN-9999999999999"; mutations["substituted"] = substituted
+        out_of_order = copy.deepcopy(package); out_of_order["cells"][0], out_of_order["cells"][1] = out_of_order["cells"][1], out_of_order["cells"][0]; mutations["out of order"] = out_of_order
+        for label, candidate in mutations.items():
+            with self.subTest(label=label):
                 errors = VALIDATOR_MODULE.validate_package(
-                    package, prepromotion=prepromotion, validation_context=context
+                    candidate, validation_context=context
                 )
-                self.assertTrue(any("exact canonical 25 companies x 10 categories" in error for error in errors), errors)
-        result = self.run_validator(package, context)
-        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
-        self.assertIn("exact canonical 25 companies x 10 categories", result.stderr)
+                self.assertTrue(any(
+                    token in error for error in errors
+                    for token in ("exact canonical 25 companies x 10 categories", "canonical company/category order")
+                ), errors)
+                result = self.run_validator(candidate, context)
+                self.assertEqual(1, result.returncode, result.stdout + result.stderr)
 
     def test_explicit_batch_context_enforces_acquisition_order(self):
         package, batch = self.canonical_package()
         package["cells"][0], package["cells"][1] = package["cells"][1], package["cells"][0]
         errors = VALIDATOR_MODULE.validate_package(
             package,
-            validation_context={"mode": "batch", "company_ids": batch["company_ids"]},
+            validation_context={
+                "mode": "batch", "batch_id": batch["batch_id"],
+                "company_ids": batch["company_ids"],
+            },
         )
         self.assertTrue(any("canonical company/category order" in error for error in errors), errors)
 
@@ -284,9 +311,42 @@ class BenefitsV2PackageTests(unittest.TestCase):
         package, batch = self.canonical_package(company_limit=5)
         errors = VALIDATOR_MODULE.validate_package(
             package,
-            validation_context={"mode": "unit", "company_ids": batch["company_ids"]},
+            validation_context={
+                "mode": "unit", "batch_id": "domestic-01",
+                "company_ids": batch["company_ids"],
+            },
         )
         self.assertEqual([], errors)
+
+    def test_context_modes_cannot_bypass_canonical_batch_membership(self):
+        package, batch = self.canonical_package()
+        cases = []
+        replaced = list(batch["company_ids"])
+        replaced[-1] = "KR-CRN-9999999999999"
+        cases.append(("batch", replaced))
+        reordered = list(batch["company_ids"])
+        reordered[0], reordered[1] = reordered[1], reordered[0]
+        cases.append(("batch", reordered))
+        cases.append(("unit", batch["company_ids"][:-1]))
+        for mode, company_ids in cases:
+            with self.subTest(mode=mode, company_ids=company_ids[:2]):
+                errors = VALIDATOR_MODULE.validate_package(
+                    package,
+                    validation_context={
+                        "mode": mode, "batch_id": batch["batch_id"],
+                        "company_ids": company_ids,
+                    },
+                )
+                self.assertTrue(any(
+                    token in error for error in errors
+                    for token in ("canonical batch manifest", "at most five company_ids")
+                ), errors)
+
+    def test_prepromotion_cli_requires_explicit_membership_context(self):
+        package, _ = self.canonical_package()
+        result = self.run_validator(package, validation_context=None)
+        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+        self.assertIn("requires --batch-manifest or --unit-manifest", result.stderr)
 
     def test_no_public_info_requires_every_policy_route_with_acceptable_terminal_result(self):
         missing = package_for()
@@ -1173,7 +1233,7 @@ class BenefitsV2PackageTests(unittest.TestCase):
                 environment = os.environ.copy()
                 environment["PYTHONHASHSEED"] = seed
                 result = subprocess.run(
-                    [sys.executable, str(VALIDATOR), str(path), "--prepromotion"],
+                    [sys.executable, str(VALIDATOR), str(path), "--prepromotion-lint-only"],
                     cwd=ROOT,
                     env=environment,
                     text=True,
