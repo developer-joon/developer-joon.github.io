@@ -302,6 +302,29 @@ class SeriesIntegrationTests(unittest.TestCase):
         second = self.module.load_package(self.input, self.root)
         self.assertEqual(first, second)
 
+    def test_accepts_exact_legacy_audit_records_already_frozen_in_immutable_ledgers(self):
+        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        self.module.series.write_jsonl(
+            self.root / "source-registry.jsonl",
+            [*self.module.series.read_jsonl(self.root / "source-registry.jsonl"), *sources],
+        )
+        self.module.series.write_jsonl(
+            self.root / "series-research-gaps.jsonl",
+            [*self.module.series.read_jsonl(self.root / "series-research-gaps.jsonl"),
+             *self.module.series.read_jsonl(self.input / "gaps.jsonl")],
+        )
+
+        _, _, records = self.module.load_package(self.input, self.root)
+
+        self.assertEqual(self.module.series.read_jsonl(self.input / "gaps.jsonl"), records["gaps.jsonl"])
+        self.assertEqual(sources, records["sources.jsonl"])
+
     def test_real_v2_integration_preserves_legacy_audit_ledgers_byte_for_byte(self):
         gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",

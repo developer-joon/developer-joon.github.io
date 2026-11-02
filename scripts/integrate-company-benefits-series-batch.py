@@ -250,11 +250,15 @@ def load_package(input_dir, research_root):
     validate_review_audit(manifest, batch, records, research_root)
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
-    for name in ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", *series.V2_LEDGER_FILES.values()):
+    immutable_legacy_files = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl")
+    for name in (*immutable_legacy_files, *series.V2_LEDGER_FILES.values()):
         field = ID_FIELDS[name]
-        incoming_ids = {item[field] for item in records[name]}
-        existing_ids = {item.get(field) for item in existing[name]}
-        if incoming_ids & existing_ids:
+        incoming_by_id = {item[field]: item for item in records[name]}
+        existing_by_id = {item.get(field): item for item in existing[name]}
+        overlaps = set(incoming_by_id) & set(existing_by_id)
+        if overlaps and name not in immutable_legacy_files:
+            raise ValueError(f"cross-batch {field} collision")
+        if any(incoming_by_id[item_id] != existing_by_id[item_id] for item_id in overlaps):
             raise ValueError(f"cross-batch {field} collision")
     company_ids = set(batch["company_ids"])
     claims = records["claims.jsonl"]
