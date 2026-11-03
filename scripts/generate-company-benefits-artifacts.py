@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from collections import Counter
@@ -409,46 +410,81 @@ def validate_inputs(root, taxonomy, taxonomy_sha256):
     return _assemble_inputs(root, taxonomy, taxonomy_sha256)
 
 
+def _capture_regular_file(path, label):
+    path = Path(path)
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{label} must be a regular file")
+    return path.read_bytes(), stat.S_IMODE(metadata.st_mode)
+
+
+def _capture_research_tree(root):
+    """Capture every verifier-visible research file without following links."""
+    root = Path(root)
+    snapshot = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"publication research snapshot rejects symlink: {path.relative_to(root)}")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(root)
+        snapshot[relative] = _capture_regular_file(path, relative.as_posix())
+    current = {path.relative_to(root) for path in root.rglob("*") if path.is_file() and not path.is_symlink()}
+    if current != set(snapshot):
+        raise ValueError("publication research tree changed while snapshotting")
+    for relative, (raw, mode) in snapshot.items():
+        if _capture_regular_file(root / relative, relative.as_posix()) != (raw, mode):
+            raise ValueError("publication research tree changed while snapshotting")
+    return snapshot
+
+
+def _materialize_snapshot(snapshot, destination):
+    destination = Path(destination)
+    for relative, (raw, mode) in snapshot.items():
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        target.chmod(mode)
+
+
 def publication_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
                      effective_selection_receipt):
     """Validate one byte snapshot and return recursively immutable inputs."""
     root = Path(research_root)
     series = load_verifier().company_benefits_series
+    snapshot = _capture_research_tree(root)
     progress_relative = Path("series-progress.json")
-    progress_raw = (root / progress_relative).read_bytes()
+    if progress_relative not in snapshot:
+        raise ValueError("publication snapshot is missing series-progress.json")
+    progress_raw = snapshot[progress_relative][0]
     progress = json.loads(progress_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
     if series.progress_contract_version(progress) != "2":
         raise ValueError("v2 artifact publication requires explicit progress_version=2")
-    relative_paths = {
-        progress_relative, Path("companies.jsonl"), Path("series-batches.jsonl"),
-        Path("benefit-claims.jsonl"), Path("series-research-gaps.jsonl"), Path("reviews.jsonl"),
-        Path("source-registry.jsonl"), Path("series-prepublication-checks.jsonl"),
-        Path("benefit-taxonomy-assignments.jsonl"),
-        Path("benefit-taxonomy-assignment-requests.jsonl"), Path("population-protocol.json"),
-        Path("population/effective-selection-manifest.json"),
-        Path("research-coverage-policies.json"),
-    }
-    relative_paths.update(Path(filename) for filename in series.V2_LEDGER_FILES.values())
-    snapshot = {relative: (root / relative).read_bytes() for relative in relative_paths}
     taxonomy_path = Path(taxonomy_path)
-    taxonomy_raw = taxonomy_path.read_bytes()
-    verify_active_ledgers(
-        root, as_of, freeze_anchor_receipt, effective_selection_receipt
-    )
-    if (taxonomy_path.read_bytes() != taxonomy_raw
-            or any((root / relative).read_bytes() != raw for relative, raw in snapshot.items())):
-        raise ValueError("publication input changed during authoritative validation")
+    taxonomy_raw, _ = _capture_regular_file(taxonomy_path, "taxonomy")
+    receipts = {}
+    for name, path in (("freeze", freeze_anchor_receipt), ("effective", effective_selection_receipt)):
+        if path is not None:
+            receipts[name] = _capture_regular_file(path, f"{name} receipt")
 
     with tempfile.TemporaryDirectory(prefix="company-benefits-publication-snapshot-") as directory:
-        snapshot_root = Path(directory)
-        for relative, raw in snapshot.items():
-            target = snapshot_root / relative
+        snapshot_base = Path(directory)
+        snapshot_root = snapshot_base / "research"
+        _materialize_snapshot(snapshot, snapshot_root)
+        snapshot_receipts = {}
+        for name, value in receipts.items():
+            target = snapshot_base / "external" / f"{name}.json"
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(raw)
+            target.write_bytes(value[0])
+            target.chmod(value[1])
+            snapshot_receipts[name] = target
+        verify_active_ledgers(
+            snapshot_root, as_of, snapshot_receipts.get("freeze"), snapshot_receipts.get("effective")
+        )
         taxonomy = json.loads(taxonomy_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
         taxonomy_contract(taxonomy)
         v2_snapshot = {
-            ledger: snapshot[Path(filename)]
+            ledger: snapshot[Path(filename)][0]
             for ledger, filename in series.V2_LEDGER_FILES.items()
         }
         v2_records = {

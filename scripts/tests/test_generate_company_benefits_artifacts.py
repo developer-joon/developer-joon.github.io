@@ -334,6 +334,8 @@ def run_generator(research, output):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     stdout, stderr = io.StringIO(), io.StringIO()
+    (research.parent / "freeze.json").write_bytes(b'{}\n')
+    (research.parent / "effective.json").write_bytes(b'{}\n')
     argv = [
         "--research-root", str(research),
         "--output-root", str(output),
@@ -710,7 +712,7 @@ def test_artifact_preflight_delegates_to_protocol4_verifier_with_both_external_r
     )
 
 
-def test_publication_gate_rejects_post_snapshot_mutation_and_freezes_nested_values(tmp_path):
+def test_publication_gate_ignores_post_snapshot_live_mutation_and_freezes_nested_values(tmp_path):
     module_spec = importlib.util.spec_from_file_location("publication_gate_snapshot", SCRIPT)
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)
@@ -724,13 +726,6 @@ def test_publication_gate_rejects_post_snapshot_mutation_and_freezes_nested_valu
         write_jsonl(research / "companies.jsonl", companies)
 
     with mock.patch.object(module, "verify_active_ledgers", side_effect=verify_then_mutate):
-        with raises(ValueError):
-            module.publication_gate(
-                research, TAXONOMY, module.date(2026, 10, 31), None, None,
-            )
-
-    make_research_fixture(research)
-    with mock.patch.object(module, "verify_active_ledgers", return_value=None):
         taxonomy, inputs = module.publication_gate(
             research, TAXONOMY, module.date(2026, 10, 31), None, None,
         )
@@ -758,6 +753,37 @@ def test_publication_gate_validates_the_captured_coverage_policy_without_canonic
             module.publication_gate(
                 research, TAXONOMY, module.date(2026, 10, 31), None, None,
             )
+
+
+def test_publication_gate_runs_authoritative_verifier_against_complete_snapshot_and_receipts(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("publication_gate_full_snapshot", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    write_jsonl(research / "corrections.jsonl", [{"state": "before"}])
+    freeze = tmp_path / "freeze.json"
+    effective = tmp_path / "effective.json"
+    freeze.write_bytes(b'{"receipt":"freeze"}\n')
+    effective.write_bytes(b'{"receipt":"effective"}\n')
+
+    def verify_snapshot(snapshot_root, as_of, freeze_anchor_receipt, effective_selection_receipt):
+        assert Path(snapshot_root) != research
+        assert (Path(snapshot_root) / "corrections.jsonl").read_bytes() == b'{"state":"before"}\n'
+        assert Path(freeze_anchor_receipt) != freeze
+        assert Path(effective_selection_receipt) != effective
+        assert Path(freeze_anchor_receipt).read_bytes() == b'{"receipt":"freeze"}\n'
+        assert Path(effective_selection_receipt).read_bytes() == b'{"receipt":"effective"}\n'
+        write_jsonl(research / "corrections.jsonl", [{"state": "mutated-live-root"}])
+        freeze.write_bytes(b'mutated-live-receipt\n')
+        assert (Path(snapshot_root) / "corrections.jsonl").read_bytes() == b'{"state":"before"}\n'
+
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=verify_snapshot):
+        taxonomy, inputs = module.publication_gate(
+            research, TAXONOMY, module.date(2026, 10, 31), freeze, effective,
+        )
+    assert taxonomy["taxonomy_version"]
+    assert len(inputs[0]) == 2000
 
 
 def test_artifact_generation_rejects_gap_without_preserved_official_source_id_route(tmp_path):
@@ -1121,7 +1147,7 @@ def test_generator_rejects_non_string_v2_source_binding_without_traceback_or_out
     assert not output.exists()
 
 
-def test_publication_gate_rejects_v2_ledger_mutation_during_verification(tmp_path):
+def test_publication_gate_uses_v2_snapshot_when_live_ledger_mutates_during_verification(tmp_path):
     research = tmp_path / "research"
     make_research_fixture(research)
     spec = importlib.util.spec_from_file_location("artifact_ledger_race", SCRIPT)
@@ -1133,10 +1159,12 @@ def test_publication_gate_rejects_v2_ledger_mutation_during_verification(tmp_pat
     def mutate(*_args, **_kwargs):
         target.write_bytes(target.read_bytes() + b"\n")
 
-    with mock.patch.object(module, "verify_active_ledgers", side_effect=mutate), raises(ValueError):
-        module.publication_gate(
-            research, TAXONOMY, "2026-10-31", tmp_path / "freeze.json", tmp_path / "effective.json"
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=mutate):
+        taxonomy, inputs = module.publication_gate(
+            research, TAXONOMY, "2026-10-31", None, None
         )
+    assert taxonomy["taxonomy_version"]
+    assert len(inputs[8]) == 2000
 
 
 def test_publication_gate_validates_exact_snapshot_across_malformed_valid_malformed_swap(tmp_path):
@@ -1163,6 +1191,8 @@ def test_publication_gate_validates_exact_snapshot_across_malformed_valid_malfor
             target.write_bytes(malformed)
 
     stderr = io.StringIO()
+    (tmp_path / "freeze.json").write_bytes(b'{}\n')
+    (tmp_path / "effective.json").write_bytes(b'{}\n')
     with mock.patch.object(module, "verify_active_ledgers", side_effect=validate_reopened_paths), redirect_stderr(stderr):
         code = module.main([
             "--research-root", str(research), "--output-root", str(output),
