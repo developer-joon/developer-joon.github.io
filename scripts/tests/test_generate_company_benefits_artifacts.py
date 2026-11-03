@@ -322,6 +322,10 @@ def make_research_fixture(root, v2=True):
         "protocol_id": "company-benefits-population-v4", "version": "4.0.0",
     })
     write_json(root / "population" / "effective-selection-manifest.json", {"status": "approved"})
+    shutil.copyfile(
+        REPO / "docs/research/company-benefits/research-coverage-policies.json",
+        root / "research-coverage-policies.json",
+    )
     return {"companies": companies, "claim": claim, "request": request, "assignment": assignment}
 
 
@@ -735,6 +739,25 @@ def test_publication_gate_rejects_post_snapshot_mutation_and_freezes_nested_valu
         inputs[0][0]["legal_name"] = "CALLER-MUTATED-SNAPSHOT"
     with raises(TypeError):
         taxonomy["categories"][0]["id"] = "CALLER-MUTATED-TAXONOMY"
+    with raises(TypeError):
+        dict.__setitem__(inputs[0][0], "legal_name", "BASE-CLASS-MUTATION")
+    with raises(TypeError):
+        list.append(taxonomy["categories"], {"id": "BASE-LIST-MUTATION"})
+
+
+def test_publication_gate_validates_the_captured_coverage_policy_without_canonical_fallback(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("publication_gate_policy_snapshot", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    write_json(research / "research-coverage-policies.json", {})
+
+    with mock.patch.object(module, "verify_active_ledgers", return_value=None):
+        with raises(ValueError):
+            module.publication_gate(
+                research, TAXONOMY, module.date(2026, 10, 31), None, None,
+            )
 
 
 def test_artifact_generation_rejects_gap_without_preserved_official_source_id_route(tmp_path):

@@ -12,7 +12,9 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 import uuid
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -208,7 +210,7 @@ def public_gap_message(gap, checks):
 
 
 def _credential_free_https(source):
-    parsed = urlparse(str(source.get("url", ""))) if isinstance(source, dict) else None
+    parsed = urlparse(str(source.get("url", ""))) if isinstance(source, Mapping) else None
     return bool(parsed and parsed.scheme == "https" and parsed.netloc
                 and parsed.username is None and parsed.password is None)
 
@@ -243,7 +245,7 @@ def publication_plain_text(value):
 
 def publication_source_url(source):
     """Return a deterministic inert URL without changing valid target semantics."""
-    url = source.get("url") if isinstance(source, dict) else None
+    url = source.get("url") if isinstance(source, Mapping) else None
     if (not isinstance(url, str) or re.search(r"%(?![0-9A-Fa-f]{2})", url)
             or not _safe_decoded_url_layer(url)):
         raise ValueError("publication source URL is invalid")
@@ -274,12 +276,18 @@ def publication_source_url(source):
 
 def _safe_decoded_url_layer(value):
     """Reject unsafe characters and ambiguous authorities at every decode layer."""
-    if any(character == "\\" or character.isspace() or ord(character) < 32 or 127 <= ord(character) <= 159
+    if any(character == "\\" or character.isspace() or unicodedata.category(character).startswith("C")
            for character in value):
         return False
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return False
     return bool(
-        parsed.scheme == "https" and parsed.netloc and "%" not in parsed.netloc
+        parsed.scheme == "https" and parsed.netloc and hostname and not parsed.netloc.endswith(":")
+        and "%" not in parsed.netloc
         and parsed.username is None and parsed.password is None
     )
 
@@ -301,15 +309,17 @@ def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
             continue
         assignment = assignments.get(claim.get("claim_id"), {}).get("assignment", {})
         assigned_ids = assignment.get("benefit_type_ids")
-        if (assignment.get("state") != "assigned" or not isinstance(assigned_ids, list)
+        if (assignment.get("state") != "assigned" or not isinstance(assigned_ids, Sequence)
+                or isinstance(assigned_ids, (str, bytes))
                 or not assigned_ids or (type_ids and any(item not in type_ids for item in assigned_ids))):
             continue
         source_ids = claim.get("source_ids")
         source_evidence = claim.get("source_evidence")
-        if (not isinstance(source_ids, list) or not source_ids
-                or not isinstance(source_evidence, list) or not source_evidence):
+        if (not isinstance(source_ids, Sequence) or isinstance(source_ids, (str, bytes)) or not source_ids
+                or not isinstance(source_evidence, Sequence) or isinstance(source_evidence, (str, bytes))
+                or not source_evidence):
             continue
-        evidence_ids = [item.get("source_id") for item in source_evidence if isinstance(item, dict)]
+        evidence_ids = [item.get("source_id") for item in source_evidence if isinstance(item, Mapping)]
         if set(evidence_ids) != set(source_ids) or any(not source_id for source_id in evidence_ids):
             continue
         bound = True

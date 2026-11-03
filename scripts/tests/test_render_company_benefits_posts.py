@@ -284,6 +284,17 @@ class ProductionPostRendererTests(unittest.TestCase):
             "https://%5Bexample.test%5D/path",
             "https://example.test/raw space",
             "https://example.test\\evil/path",
+            "https://example.test/\u200bhidden",
+            "https://example.test/%E2%80%8Bhidden",
+            "https://example.test/\u202eoverride",
+            "https://example.test/%E2%80%AEoverride",
+            "https://example.test/\u2066isolate",
+            "https://example.test/%E2%81%A6isolate",
+            "https://example.test/\ufeffbom",
+            "https://example.test/%EF%BB%BFbom",
+            "https://:/path",
+            "https://example.test:bad/path",
+            "https://example.test:/path",
             "https://example.test/\x85",
         )
         for url in rejected:

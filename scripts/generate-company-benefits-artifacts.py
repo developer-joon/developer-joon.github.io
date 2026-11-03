@@ -11,8 +11,10 @@ import shutil
 import sys
 import tempfile
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import urlparse
 
 COMPANY_ID = re.compile(r"^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$")
@@ -24,43 +26,27 @@ UNKNOWN_MARKERS = (
 NONABSENCE_NOTICE = "이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다."
 
 
-class FrozenDict(dict):
-    """A recursively immutable dict that preserves dict read compatibility."""
-
-    def _immutable(self, *args, **kwargs):
-        raise TypeError("publication snapshot is immutable")
-
-    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable
-    __ior__ = _immutable
-
-    def __deepcopy__(self, memo):
-        return self
-
-
-class FrozenList(list):
-    """A recursively immutable list that preserves list read compatibility."""
-
-    def _immutable(self, *args, **kwargs):
-        raise TypeError("publication snapshot is immutable")
-
-    __setitem__ = __delitem__ = __iadd__ = __imul__ = append = clear = extend = insert = pop = remove = reverse = sort = _immutable
-
-    def __deepcopy__(self, memo):
-        return self
-
-
 def freeze_snapshot(value):
     if isinstance(value, dict):
-        return FrozenDict((key, freeze_snapshot(item)) for key, item in value.items())
+        return MappingProxyType({key: freeze_snapshot(item) for key, item in value.items()})
     if isinstance(value, list):
-        return FrozenList(freeze_snapshot(item) for item in value)
+        return tuple(freeze_snapshot(item) for item in value)
     if isinstance(value, tuple):
         return tuple(freeze_snapshot(item) for item in value)
     return value
 
 
+def thaw_snapshot(value):
+    """Create plain JSON containers without exposing the validated snapshot."""
+    if isinstance(value, Mapping):
+        return {key: thaw_snapshot(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [thaw_snapshot(item) for item in value]
+    return value
+
+
 def canonical_bytes(value):
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
+    return json.dumps(thaw_snapshot(value), ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
 
 
 def sha256(raw):
@@ -440,6 +426,7 @@ def publication_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
         Path("benefit-taxonomy-assignments.jsonl"),
         Path("benefit-taxonomy-assignment-requests.jsonl"), Path("population-protocol.json"),
         Path("population/effective-selection-manifest.json"),
+        Path("research-coverage-policies.json"),
     }
     relative_paths.update(Path(filename) for filename in series.V2_LEDGER_FILES.values())
     snapshot = {relative: (root / relative).read_bytes() for relative in relative_paths}
@@ -486,7 +473,7 @@ def bounded_claim(claim):
 def unknown_projection(value, fallback):
     if isinstance(value, str) and value.strip():
         return value
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         reason = value.get("reason")
         if isinstance(reason, str) and reason.strip():
             return {"kind": "unknown", "reason": reason}
@@ -501,7 +488,7 @@ def public_v2_record(record, timestamp_fields=()):
     for field in timestamp_fields:
         if field in projected:
             projected[field] = utc_time(projected[field], field)
-    if isinstance(projected.get("frozen_snapshot"), dict):
+    if isinstance(projected.get("frozen_snapshot"), Mapping):
         projected["frozen_snapshot"] = dict(projected["frozen_snapshot"])
         projected["frozen_snapshot"]["frozen_at"] = utc_time(
             projected["frozen_snapshot"]["frozen_at"], "frozen_at"
@@ -743,12 +730,12 @@ def public_taxonomy(taxonomy):
 
 
 def scan_forbidden_keys(value, path="$"):
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         for key, child in value.items():
             if FORBIDDEN_KEY.search(key):
                 raise ValueError(f"prohibited numeric/ranking key at {path}.{key}")
             scan_forbidden_keys(child, f"{path}.{key}")
-    elif isinstance(value, list):
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for index, child in enumerate(value):
             scan_forbidden_keys(child, f"{path}[{index}]")
 
