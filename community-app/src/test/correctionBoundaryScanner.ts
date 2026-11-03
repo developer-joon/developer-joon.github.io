@@ -3,6 +3,7 @@
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import { dirname, extname, relative, resolve, sep } from 'node:path'
+import ts from 'typescript'
 
 export type CorrectionBoundaryViolation = {
   file: string
@@ -129,40 +130,109 @@ function collectFiles(repositoryRoot: string, scanRoot: ScanRoot) {
 const sourcePrefix = 'community-app/src/'
 const moduleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.json', '.css', '.scss'] as const
 const localImport = /^(?:\.{1,2}\/|@\/)/
+const parsedModuleExtensions = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs'])
+const correctionRoutePaths = new Set([
+  '/community/benefits/correction',
+  '/community/benefits/correction/',
+  '/community/benefits/correction/requests',
+  '/community/benefits/correction/requests/',
+])
 
-function importSpecifiers(source: string) {
+function parseModule(file: string, source: string) {
+  const extension = extname(file).toLowerCase()
+  if (!parsedModuleExtensions.has(extension)) return undefined
+  const scriptKind = extension === '.tsx'
+    ? ts.ScriptKind.TSX
+    : extension === '.jsx'
+      ? ts.ScriptKind.JSX
+      : extension === '.js' || extension === '.mjs'
+        ? ts.ScriptKind.JS
+        : ts.ScriptKind.TS
+  return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind)
+}
+
+function dynamicImportSpecifier(node: ts.Node) {
+  if (!ts.isCallExpression(node)
+    || node.expression.kind !== ts.SyntaxKind.ImportKeyword
+    || node.arguments.length !== 1
+    || !ts.isStringLiteralLike(node.arguments[0])) return undefined
+  return node.arguments[0].text
+}
+
+function importSpecifiers(sourceFile: ts.SourceFile) {
   const specifiers = new Set<string>()
-  const staticImport = /\b(?:import|export)\s+(?:type\s+)?(?:[^'";]{0,2000}?\s+from\s*)?['"]([^'"]+)['"]/g
-  const dynamicImport = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
-  for (const pattern of [staticImport, dynamicImport]) {
-    for (const match of source.matchAll(pattern)) specifiers.add(match[1])
+  const visit = (node: ts.Node) => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      specifiers.add(node.moduleSpecifier.text)
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      specifiers.add(node.moduleSpecifier.text)
+    } else {
+      const dynamicSpecifier = dynamicImportSpecifier(node)
+      if (dynamicSpecifier) specifiers.add(dynamicSpecifier)
+    }
+    ts.forEachChild(node, visit)
   }
+  visit(sourceFile)
   return [...specifiers].sort(comparePaths)
 }
 
-function importedBindings(source: string) {
+function importedBindings(sourceFile: ts.SourceFile) {
   const bindings = new Map<string, string>()
-  const staticImport = /\bimport\s+(?:type\s+)?([^'";]{1,2000}?)\s+from\s+['"]([^'"]+)['"]/g
-  for (const match of source.matchAll(staticImport)) {
-    const clause = match[1].trim()
-    const specifier = match[2]
-    const defaultBinding = clause.match(/^([A-Za-z_$][\w$]*)\s*(?:,|$)/)?.[1]
-    if (defaultBinding) bindings.set(defaultBinding, specifier)
-    const namespaceBinding = clause.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/)?.[1]
-    if (namespaceBinding) bindings.set(namespaceBinding, specifier)
-    const namedBindings = clause.match(/\{([^}]*)\}/)?.[1]
-    if (namedBindings) {
-      for (const entry of namedBindings.split(',')) {
-        const names = entry.trim().replace(/^type\s+/, '').split(/\s+as\s+/)
-        const localName = names.at(-1)?.trim()
-        if (localName && /^[A-Za-z_$][\w$]*$/.test(localName)) bindings.set(localName, specifier)
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)
+      || !statement.importClause
+      || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue
+    const specifier = statement.moduleSpecifier.text
+    const clause = statement.importClause
+    if (clause.name) bindings.set(clause.name.text, specifier)
+    if (clause.namedBindings) {
+      if (ts.isNamespaceImport(clause.namedBindings)) {
+        bindings.set(clause.namedBindings.name.text, specifier)
+      } else {
+        for (const element of clause.namedBindings.elements) bindings.set(element.name.text, specifier)
       }
     }
   }
 
-  const lazyImport = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*lazy\s*\([\s\S]{0,800}?\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
-  for (const match of source.matchAll(lazyImport)) bindings.set(match[1], match[2])
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      let specifier: string | undefined
+      const findDynamicImport = (candidate: ts.Node) => {
+        specifier ??= dynamicImportSpecifier(candidate)
+        if (!specifier) ts.forEachChild(candidate, findDynamicImport)
+      }
+      findDynamicImport(node.initializer)
+      if (specifier) bindings.set(node.name.text, specifier)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
   return bindings
+}
+
+function correctionRouteComponents(sourceFile: ts.SourceFile) {
+  const components = new Set<string>()
+  const containsCorrectionPath = (node: ts.Node) => {
+    let found = false
+    const visit = (candidate: ts.Node) => {
+      if (ts.isStringLiteralLike(candidate) && correctionRoutePaths.has(candidate.text)) found = true
+      if (!found) ts.forEachChild(candidate, visit)
+    }
+    visit(node)
+    return found
+  }
+  const collectComponents = (node: ts.Node) => {
+    if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) && ts.isIdentifier(node.tagName)) {
+      components.add(node.tagName.text)
+    }
+    ts.forEachChild(node, collectComponents)
+  }
+  const visit = (node: ts.Node) => {
+    if (ts.isIfStatement(node) && containsCorrectionPath(node.expression)) collectComponents(node.thenStatement)
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return [...components].sort(comparePaths)
 }
 
 function resolveLocalModule(repositoryRoot: string, importer: string, specifier: string, sourceFiles: ReadonlySet<string>) {
@@ -185,19 +255,31 @@ function correctionModuleClosure(
 ) {
   const sourceFiles = new Set(sources.keys())
   const roots = new Set([...sourceFiles].filter((file) => /correction/i.test(file)))
+  const parsedModules = new Map<string, ts.SourceFile>()
+  const parseFailures = new Set<string>()
 
   for (const [file, source] of sources) {
-    const bindings = importedBindings(source)
-    const routePattern = /\bif\s*\([^\n)]*(['"])\/community\/benefits\/correction(?:\/requests)?\/?\1[^\n)]*\)/g
-    for (const route of source.matchAll(routePattern)) {
-      const routeStart = (route.index ?? 0) + route[0].length
-      const remaining = source.slice(routeStart)
-      const nextRoute = remaining.search(/\n\s*if\s*\(/)
-      const routeBlock = remaining.slice(0, nextRoute === -1 ? 2000 : Math.min(nextRoute, 2000))
-      const componentNames = [...routeBlock.matchAll(/<([A-Z][\w$]*)\b/g)].map((match) => match[1])
-      const specifiers = componentNames
+    const sourceFile = parseModule(file, source)
+    if (!sourceFile) continue
+    const parseDiagnostics = (sourceFile as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] }).parseDiagnostics
+    if (parseDiagnostics.length > 0) {
+      parseFailures.add(file)
+      if (/correction/i.test(file) || correctionContext.test(source)) {
+        violations.push({ file, rule: 'unparseable correction source module' })
+      }
+    } else {
+      parsedModules.set(file, sourceFile)
+    }
+  }
+
+  for (const [file, sourceFile] of parsedModules) {
+    const componentNames = correctionRouteComponents(sourceFile)
+    if (componentNames.length > 0) {
+      const bindings = importedBindings(sourceFile)
+      const routeBindings = componentNames
         .map((component) => bindings.get(component))
         .filter((specifier): specifier is string => Boolean(specifier && localImport.test(specifier)))
+      const specifiers = [...new Set(routeBindings)]
       const candidates = specifiers.map((specifier) => resolveLocalModule(repositoryRoot, file, specifier, sourceFiles))
       if (specifiers.length === 0 || candidates.some((target) => !target)) {
         violations.push({ file, rule: 'unresolved correction route component' })
@@ -212,7 +294,15 @@ function correctionModuleClosure(
     const file = queue.shift()!
     if (closure.has(file)) continue
     closure.add(file)
-    for (const specifier of importSpecifiers(sources.get(file) ?? '')) {
+    if (parseFailures.has(file)) {
+      if (!violations.some((violation) => violation.file === file && violation.rule === 'unparseable correction source module')) {
+        violations.push({ file, rule: 'unparseable correction source module' })
+      }
+      continue
+    }
+    const sourceFile = parsedModules.get(file)
+    if (!sourceFile) continue
+    for (const specifier of importSpecifiers(sourceFile)) {
       if (!localImport.test(specifier)) continue
       const target = resolveLocalModule(repositoryRoot, file, specifier, sourceFiles)
       if (!target) {

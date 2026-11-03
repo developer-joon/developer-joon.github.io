@@ -169,6 +169,83 @@ describe('Benefit Atlas correction workflow boundary', () => {
     })
   })
 
+  it('traces an exact multiline correction route through an alias, directory index, and two re-export hops', () => {
+    withFixture({
+      'community-app/src/App.tsx': [
+        "import { EntryPage as RoutedPage } from '@/routes/entry'",
+        "export function App({ pathname }: { pathname: string }) {",
+        '  if (',
+        "   pathname === '/community/benefits/correction'",
+        '  ) { return <RoutedPage /> }',
+        '  return null',
+        '}',
+      ].join('\n'),
+      'community-app/src/routes/entry/index.ts': "export { RoutedPage as EntryPage } from './firstHop'\n",
+      'community-app/src/routes/entry/firstHop.ts': "export { NeutralPanel as RoutedPage } from './secondHop'\n",
+      'community-app/src/routes/entry/secondHop.tsx': 'export const NeutralPanel = () => <a href="/issues/new">Continue</a>\n',
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/routes/entry/secondHop.tsx',
+        rule: 'GitHub issue creation URL',
+      })
+    })
+  })
+
+  it('maps the equivalent multiline correction requests route to its rendered component only', () => {
+    withFixture({
+      'community-app/src/App.tsx': [
+        "import { RequestsPage as RoutedPage } from './pages/RequestsPage'",
+        "import { BugReportPage } from './pages/BugReportPage'",
+        "export function App({ pathname }: { pathname: string }) {",
+        '  if (',
+        "   pathname === '/community/benefits/correction/requests'",
+        '  ) { return <RoutedPage /> }',
+        "  if (pathname === '/community/bug-report') return <BugReportPage />",
+        '  return null',
+        '}',
+      ].join('\n'),
+      'community-app/src/pages/RequestsPage.tsx': 'export const RequestsPage = () => <a href="/issues/new">Continue</a>\n',
+      'community-app/src/pages/BugReportPage.tsx': 'export const BugReportPage = () => <a href="/issues/new">Report bug</a>\n',
+    }, (root) => {
+      const violations = scanCorrectionBoundary(root).violations
+      expect(violations).toContainEqual({
+        file: 'community-app/src/pages/RequestsPage.tsx',
+        rule: 'GitHub issue creation URL',
+      })
+      expect(violations).not.toContainEqual(expect.objectContaining({
+        file: 'community-app/src/pages/BugReportPage.tsx',
+      }))
+    })
+  })
+
+  it('ignores import-shaped comments and strings while following real module literals', () => {
+    withFixture({
+      'community-app/src/pages/BenefitCorrectionPage.tsx': [
+        "// import './MissingComment'",
+        "const example = \"export { Example } from './MissingString'\"",
+        "import './StaticDependency'",
+        "export { ReExported } from './ReExportDependency'",
+        "void import('./DynamicDependency')",
+        'export const BenefitCorrectionPage = () => example',
+      ].join('\n'),
+      'community-app/src/pages/StaticDependency.ts': 'export const url = "/issues/new?source=static"\n',
+      'community-app/src/pages/ReExportDependency.ts': 'export const url = "/issues/new?source=re-export"\n',
+      'community-app/src/pages/DynamicDependency.ts': 'export const url = "/issues/new?source=dynamic"\n',
+    }, (root) => {
+      const violations = scanCorrectionBoundary(root).violations
+      for (const file of [
+        'community-app/src/pages/StaticDependency.ts',
+        'community-app/src/pages/ReExportDependency.ts',
+        'community-app/src/pages/DynamicDependency.ts',
+      ]) {
+        expect(violations).toContainEqual({ file, rule: 'GitHub issue creation URL' })
+      }
+      expect(violations).not.toContainEqual(expect.objectContaining({
+        rule: 'unresolved local import in correction module graph',
+      }))
+    })
+  })
+
   it('traces correction request routes through dynamic imports and two re-export hops', () => {
     withFixture({
       'community-app/src/App.tsx': [
@@ -186,6 +263,21 @@ describe('Benefit Atlas correction workflow boundary', () => {
       expect(scanCorrectionBoundary(root).violations).toContainEqual({
         file: 'community-app/src/features/entry/NeutralPanel.tsx',
         rule: 'GitHub issue creation URL',
+      })
+    })
+  })
+
+  it('fails closed deterministically when a correction source module cannot be parsed', () => {
+    withFixture({
+      'community-app/src/pages/BenefitCorrectionPage.tsx': [
+        "import { Panel } from './Panel'",
+        'export const BenefitCorrectionPage = () => <Panel>',
+      ].join('\n'),
+      'community-app/src/pages/Panel.tsx': 'export const Panel = () => null\n',
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/pages/BenefitCorrectionPage.tsx',
+        rule: 'unparseable correction source module',
       })
     })
   })
@@ -209,6 +301,36 @@ describe('Benefit Atlas correction workflow boundary', () => {
         file: 'community-app/src/pages/EntryPage.tsx',
         rule: 'unresolved local import in correction module graph',
       })
+    })
+  })
+
+  it('terminates cycles while tracing the correction module graph', () => {
+    withFixture({
+      'community-app/src/pages/BenefitCorrectionPage.tsx': "import './CycleA'\n",
+      'community-app/src/pages/CycleA.ts': "import './CycleB'\n",
+      'community-app/src/pages/CycleB.ts': [
+        "import './CycleA'",
+        'export const url = "/issues/new?source=cycle"',
+      ].join('\n'),
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/pages/CycleB.ts',
+        rule: 'GitHub issue creation URL',
+      })
+    })
+  })
+
+  it('does not resolve a correction import outside the source root', () => {
+    withFixture({
+      'community-app/src/pages/BenefitCorrectionPage.tsx': "import '../../../outside'\n",
+      'outside.ts': 'export const url = "/issues/new?source=outside"\n',
+    }, (root) => {
+      const result = scanCorrectionBoundary(root)
+      expect(result.violations).toContainEqual({
+        file: 'community-app/src/pages/BenefitCorrectionPage.tsx',
+        rule: 'unresolved local import in correction module graph',
+      })
+      expect(result.scannedFiles).not.toContain('outside.ts')
     })
   })
 
