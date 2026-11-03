@@ -103,10 +103,55 @@ def expected_check_source_ids(claims, gaps, source_map):
     return source_ids
 
 
-def merge_checks(existing, incoming, latest_review_by_source_id, expected_source_ids=None):
-    """Upsert source checks only when the same source_id tuple is newer and unchanged."""
-    merged = _unique_map(existing, "source_id", "existing checks")
-    incoming_map = _unique_map(incoming, "source_id", "incoming checks")
+def merge_checks(existing, incoming, latest_review_by_source_id, expected_source_ids=None,
+                 *, source_map=None, legacy_sources=None):
+    """Select one effective check per source in this workflow.
+
+    A bound projection supersedes compatibility history, independent of ledger
+    order. Competing current observations within either input are ambiguous.
+    Across batches only a strictly newer, validated projection may change the
+    observation. Other workflows keep their own ledgers and are not URL aliases.
+    """
+    source_map, legacy_sources = source_map or {}, legacy_sources or {}
+
+    def projected(check):
+        if "compatibility_projection" not in check:
+            return False
+        source_id = check.get("source_id")
+        if source_id not in source_map or source_id not in legacy_sources:
+            raise ValueError(f"{source_id}: unbound compatibility projection")
+        series.validate_source_check(check, source_map[source_id], legacy_sources[source_id])
+        return True
+
+    def select(records, label, historical=False):
+        selected, observations = {}, {}
+        for check in records:
+            source_id = check.get("source_id")
+            if not isinstance(source_id, str) or not source_id:
+                raise ValueError(f"{label}: requires nonempty source_id")
+            is_projected = projected(check)
+            observation_key = (source_id, is_projected)
+            prior_observation = observations.get(observation_key)
+            if prior_observation is not None and series.json_bytes(prior_observation) != series.json_bytes(check):
+                raise ValueError(f"{source_id}: conflicting source check tuple")
+            observations[observation_key] = check
+            previous = selected.get(source_id)
+            if previous is not None and series.json_bytes(previous) != series.json_bytes(check):
+                was_projected = projected(previous)
+                if not historical or was_projected == is_projected:
+                    raise ValueError(f"{source_id}: conflicting source check tuple")
+                compatibility = previous if is_projected else check
+                series.validate_source_check(compatibility, source_map[source_id], legacy_sources[source_id])
+                current = check if is_projected else previous
+                if parse_timestamp(current.get("checked_at"), "check checked_at") <= parse_timestamp(
+                        compatibility.get("checked_at"), "historical check checked_at"):
+                    raise ValueError(f"{source_id}: source check must be strictly newer")
+                check = current
+            selected[source_id] = check
+        return selected
+
+    merged = select(existing, "existing checks", historical=True)
+    incoming_map = select(incoming, "incoming checks")
     expected_source_ids = set(latest_review_by_source_id) if expected_source_ids is None else set(expected_source_ids)
     if set(incoming_map) != expected_source_ids:
         raise ValueError("incoming checks do not match source bindings")
@@ -120,7 +165,9 @@ def merge_checks(existing, incoming, latest_review_by_source_id, expected_source
             current_tuple = {key: value for key, value in check.items() if key != "checked_at"}
             previous_tuple = {key: value for key, value in previous.items() if key != "checked_at"}
             if current_tuple != previous_tuple:
-                raise ValueError(f"{source_id}: conflicting source check tuple")
+                if not projected(check):
+                    raise ValueError(f"{source_id}: conflicting source check tuple")
+                series.validate_source_check(previous, source_map[source_id], legacy_sources[source_id])
             if checked <= parse_timestamp(previous.get("checked_at"), "existing check checked_at"):
                 raise ValueError(f"{source_id}: source check must be strictly newer")
         merged[source_id] = check
@@ -255,12 +302,16 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
         raw = (input_dir / name).read_bytes()
         if artifacts.get(name) != sha256(raw):
             raise ValueError(f"artifact hash mismatch: {name}")
-        records[name] = series.read_jsonl(input_dir / name)
+        records[name] = (series.read_source_checks(input_dir / name) if name == "checks.jsonl"
+                         else series.read_jsonl(input_dir / name))
 
     v2_records = {ledger: records[filename] for ledger, filename in series.V2_LEDGER_FILES.items()}
     series.validate_v2_record_structure(v2_records, batch)
     for name in FILES:
-        _unique_map(records[name], ID_FIELDS[name], name)
+        if name == "checks.jsonl":
+            series.source_check_map(records[name])
+        else:
+            _unique_map(records[name], ID_FIELDS[name], name)
         serialized = json.dumps(records[name], ensure_ascii=False)
         if "evidence_path" in serialized or "evidence_file" in serialized or any(item.get("hash_provenance") == "retained_file" for item in records[name]):
             raise ValueError("evidence files and retained-file provenance are prohibited")
@@ -274,6 +325,7 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
     validate_review_audit(manifest, batch, records, research_root)
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
+    existing["checks.jsonl"] = series.read_source_checks(research_root / TARGETS["checks.jsonl"])
     collision_files = list(series.V2_LEDGER_FILES.values())
     if validate_immutable_legacy_collisions:
         collision_files[:0] = IMMUTABLE_LEGACY_FILES
@@ -348,7 +400,7 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
             if len(evidence_ids) != len(set(evidence_ids)) or set(evidence_ids) != set(claim.get("source_ids", [])):
                 raise ValueError(f"{claim.get('claim_id')}: missing one-to-one source evidence bindings")
     expected_source_ids = expected_check_source_ids(claims, gaps, source_map)
-    check_map = _unique_map(records["checks.jsonl"], "source_id", "checks")
+    check_map = series.source_check_map(records["checks.jsonl"])
     if set(check_map) != expected_source_ids:
         raise ValueError("checks must bind every used official source_id exactly once")
     legacy_sources = verifier.company_benefits_series.frozen_source_records(research_root)
@@ -379,7 +431,8 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
             current = latest_review_by_source_id.get(source_id)
             if current is None or parse_timestamp(reviewed_at, "outcome reviewed_at") > parse_timestamp(current, "latest review"):
                 latest_review_by_source_id[source_id] = reviewed_at
-    merge_checks(existing["checks.jsonl"], records["checks.jsonl"], latest_review_by_source_id, expected_source_ids)
+    merge_checks(existing["checks.jsonl"], records["checks.jsonl"], latest_review_by_source_id, expected_source_ids,
+                 source_map=source_map, legacy_sources=legacy_sources)
     return manifest, batch, records
 
 

@@ -98,8 +98,8 @@ def validate_external_review(package, review_dir, validator):
             raise ValueError(f"external review artifact hash mismatch: {name}")
 
     reviews = validator.read_jsonl(review_dir / "reviews.jsonl")
-    checks = validator.read_jsonl(review_dir / "checks.jsonl")
     verifier = validator._load_verifier()
+    checks = verifier.company_benefits_series.read_source_checks(review_dir / "checks.jsonl")
     claim_schema = verifier.load_schema("review.schema.json")
     outcome_schema = verifier.load_schema("outcome-review.schema.json")
     targets = [(kind, target) for kind, target, _ in package["targets"]]
@@ -145,9 +145,9 @@ def validate_external_review(package, review_dir, validator):
             expected_source_ids.add(source_id)
             latest_review[source_id] = max(latest_review.get(source_id, review_times[(kind, target)]),
                                            review_times[(kind, target)])
-    check_source_ids = [check.get("source_id") for check in checks]
-    if len(check_source_ids) != len(set(check_source_ids)) or set(check_source_ids) != expected_source_ids:
-        raise ValueError("post-review checks must exactly cover every candidate source_id once; missing, duplicate, and orphan checks are prohibited")
+    check_source_ids = verifier.company_benefits_series.source_check_map(checks)
+    if set(check_source_ids) != expected_source_ids:
+        raise ValueError("post-review checks must exactly cover every candidate source_id; missing and orphan checks are prohibited")
     check_contract = verifier.company_benefits_series
     for check in checks:
         source_id = check.get("source_id")

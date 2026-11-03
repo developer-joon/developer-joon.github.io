@@ -341,6 +341,37 @@ def frozen_source_records(root):
     return records
 
 
+def source_check_map(records):
+    """Collapse identical serialized checks; reject ambiguous source observations."""
+    result = {}
+    for check in records:
+        if not isinstance(check, dict):
+            raise ValueError("checks must be objects")
+        source_id = check.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            raise ValueError("checks require nonempty source_id")
+        if source_id in result and json_bytes(result[source_id]) != json_bytes(check):
+            raise ValueError(f"{source_id}: conflicting source check tuple")
+        result[source_id] = check
+    return result
+
+
+def read_source_checks(path):
+    """Retain audit records, requiring repeated observations to be byte-identical."""
+    path = Path(path)
+    records, seen = [], {}
+    for raw in path.read_bytes().splitlines(keepends=True) if path.is_file() else []:
+        if not raw.strip():
+            continue
+        check = json.loads(raw)
+        key = json_bytes(check)
+        if key in seen and seen[key] != raw:
+            raise ValueError("duplicate source checks must be byte-identical")
+        seen[key] = raw
+        records.append(check)
+    return records
+
+
 def validate_source_check(check, source, legacy_record=None):
     """Validate a post-review observation without rewriting its source.
 

@@ -341,7 +341,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             "claims.jsonl", incoming_path, existing_path, incoming, existing
         )
 
-    def test_load_package_can_delegate_immutable_legacy_collision_validation(self):
+    def test_load_package_cannot_delegate_frozen_source_byte_validation(self):
         gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
@@ -354,15 +354,11 @@ class SeriesIntegrationTests(unittest.TestCase):
             self.root / "source-registry.jsonl", [*existing, dict(sources[0], title="not identical")]
         )
 
-        with self.assertRaisesRegex(ValueError, "cross-batch source_id collision"):
-            self.module.load_package(self.input, self.root)
-
-        manifest, batch, records = self.module.load_package(
-            self.input, self.root, validate_immutable_legacy_collisions=False
-        )
-        self.assertEqual(self.batch["batch_id"], manifest["batch_id"])
-        self.assertEqual(self.batch, batch)
-        self.assertEqual(sources, records["sources.jsonl"])
+        # Delegation cannot bypass the unconditional frozen source byte guard.
+        for delegate in (True, False):
+            with self.assertRaisesRegex(ValueError, "frozen legacy source bytes differ"):
+                self.module.load_package(self.input, self.root,
+                    validate_immutable_legacy_collisions=delegate)
 
     def test_load_package_accepts_byte_identical_claim_already_frozen_in_legacy_ledger(self):
         company_id = self.batch["company_ids"][0]

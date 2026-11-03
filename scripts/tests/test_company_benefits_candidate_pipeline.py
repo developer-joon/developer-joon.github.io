@@ -581,7 +581,7 @@ class CandidatePipelineTests(unittest.TestCase):
         self.assertEqual([first["source_id"], second["source_id"], "kr-dart-exact-entity-route"],
                          [item["source_id"] for item in promoted])
 
-    def test_source_id_check_coverage_rejects_missing_duplicate_orphan_and_cross_source_tuple(self):
+    def test_source_id_check_coverage_rejects_missing_competing_orphan_and_cross_source_tuple(self):
         first, claim = self.use_factual_claim(url="https://www.dol.gov/shared/archive.zip")
         second = copy.deepcopy(first)
         second.update(source_id="official-benefit-policy-part-b", locator="form-5500:plan-b",
@@ -595,7 +595,7 @@ class CandidatePipelineTests(unittest.TestCase):
         valid = [self.source_check(first), self.source_check(second)]
         cases = [
             (valid[:-1], "missing|cover"),
-            (valid + [copy.deepcopy(valid[-1])], "duplicate|cover"),
+            (valid + [dict(valid[-1], checked_at="2026-10-30T03:30:00Z")], "conflicting|tuple"),
             (valid + [dict(valid[-1], source_id="orphan")], "orphan|cover"),
             ([valid[0], dict(valid[1], marker=first["http_verification"]["expected_marker"])], "source|tuple|marker"),
         ]
@@ -664,6 +664,84 @@ class CandidatePipelineTests(unittest.TestCase):
         self.promoter.promote(self.candidate, self.review, self.output, self.root)
         self.assertEqual(frozen, (self.output / "sources.jsonl").read_bytes())
         self.assertEqual(frozen, (self.root / "source-registry.jsonl").read_bytes())
+
+    def test_existing_historical_check_accepts_projected_refresh_and_later_change(self):
+        check = self.frozen_current_check()
+        historical = {key: value for key, value in check.items() if key != "compatibility_projection"}
+        historical.update(self.sources[0]["access_observation"], checked_at="2026-10-29T03:00:00Z")
+        ledger = self.root / "series-prepublication-checks.jsonl"
+        frozen = (self.root / "source-registry.jsonl").read_bytes()
+        for previous, current in ((historical, check), (check, dict(check, status=403,
+                access_wall="bot_or_network_block", checked_at="2026-10-30T03:30:00Z"))):
+            with self.subTest(previous=previous):
+                ledger.write_bytes(jsonl_bytes([previous]))
+                self.write_review_bundle(checks=[current])
+                output = self.output if previous == historical else self.output.with_name("approved-later")
+                self.promoter.promote(self.candidate, self.review, output, self.root)
+                self.assertEqual(frozen, (output / "sources.jsonl").read_bytes())
+                self.assertEqual(frozen, (self.root / "source-registry.jsonl").read_bytes())
+
+    def test_effective_checks_are_bound_unambiguous_and_order_independent(self):
+        current = self.frozen_current_check()
+        historical = {key: value for key, value in current.items() if key != "compatibility_projection"}
+        historical.update(self.sources[0]["access_observation"], checked_at="2026-10-29T03:00:00Z")
+        integrator = load(ROOT / "scripts/integrate-company-benefits-series-batch.py", "selection_integrator")
+        source_id = current["source_id"]
+        bindings = dict(source_map={source_id: self.sources[0]},
+                        legacy_sources={source_id: (self.root / "source-registry.jsonl").read_bytes()})
+        later = dict(current, checked_at="2026-10-30T03:30:00Z")
+        for existing in ([historical, current], [current, historical], [current, copy.deepcopy(current)]):
+            self.assertEqual([later], integrator.merge_checks(existing, [later, copy.deepcopy(later)],
+                             {source_id: "2026-10-30T02:00:00Z"}, **bindings))
+        competing = dict(current, status=403, access_wall="bot_or_network_block")
+        for existing, incoming in (([historical], [current, competing]),
+                                   ([current, competing], [later]),
+                                   ([historical, current, dict(historical, checked_at="2026-10-28T03:00:00Z")], [later]),
+                                   ([dict(historical, checked_at=later["checked_at"]), current], [later]),
+                                   ([current], [dict(historical, checked_at=later["checked_at"])])):
+            with self.assertRaises(ValueError):
+                integrator.merge_checks(existing, incoming, {source_id: "2026-10-30T02:00:00Z"}, **bindings)
+        with self.assertRaisesRegex(ValueError, "unbound"):
+            integrator.merge_checks([historical], [current], {source_id: "2026-10-30T02:00:00Z"})
+        # A projection cannot bring another workflow's check fields into this ledger.
+        with self.assertRaises(ValueError):
+            integrator.merge_checks([], [dict(current, workflow="unrelated")],
+                                    {source_id: "2026-10-30T02:00:00Z"}, **bindings)
+        other_id = "other-source-same-url"
+        substituted = dict(current, source_id=other_id)
+        other_source = dict(self.sources[0], source_id=other_id)
+        with self.assertRaises(ValueError):
+            integrator.merge_checks([], [substituted], {other_id: "2026-10-30T02:00:00Z"},
+                source_map={other_id: other_source}, legacy_sources={other_id: bindings["legacy_sources"][source_id]})
+        unrelated = dict(historical, source_id=other_id)
+        result = integrator.merge_checks([unrelated, historical], [current],
+                         {source_id: "2026-10-30T02:00:00Z"}, **bindings)
+        self.assertEqual({source_id, other_id}, {item["source_id"] for item in result})
+
+    def test_duplicate_projected_artifact_is_identical_or_rejected(self):
+        check = self.frozen_current_check()
+        self.write_review_bundle(checks=[check, copy.deepcopy(check)])
+        self.promoter.promote(self.candidate, self.review, self.output, self.root)
+        ledger = self.root / "series-prepublication-checks.jsonl"
+        ledger.write_bytes(jsonl_bytes([check]) + json.dumps(check).encode() + b"\n")
+        integrator = load(ROOT / "scripts/integrate-company-benefits-series-batch.py", "duplicate_integrator")
+        with self.assertRaisesRegex(ValueError, "byte-identical"):
+            integrator.load_package(self.output, self.root)
+
+    def test_historical_success_can_be_followed_by_projected_failure(self):
+        check = self.frozen_current_check()
+        self.sources[0]["access_observation"] = {"status": 200, "final_url": check["url"], "access_wall": "none"}
+        frozen = jsonl_bytes(self.sources)
+        (self.root / "source-registry.jsonl").write_bytes(frozen)
+        self.write_candidate()
+        historical = {key: value for key, value in check.items() if key != "compatibility_projection"}
+        historical["checked_at"] = "2026-10-29T03:00:00Z"
+        (self.root / "series-prepublication-checks.jsonl").write_bytes(jsonl_bytes([historical]))
+        check.update(status=403, access_wall="bot_or_network_block")
+        check["compatibility_projection"]["legacy_record_sha256"] = digest(frozen)
+        self.write_review_bundle(checks=[check])
+        self.promoter.promote(self.candidate, self.review, self.output, self.root)
+        self.assertEqual(frozen, (self.output / "sources.jsonl").read_bytes())
 
     def test_frozen_check_rejects_absent_or_forged_projection(self):
         for mode in ("absent", "forged", "unanchored"):
