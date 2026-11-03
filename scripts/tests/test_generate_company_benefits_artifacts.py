@@ -706,6 +706,37 @@ def test_artifact_preflight_delegates_to_protocol4_verifier_with_both_external_r
     )
 
 
+def test_publication_gate_rejects_post_snapshot_mutation_and_freezes_nested_values(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("publication_gate_snapshot", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    original_name = json.loads((research / "companies.jsonl").read_text().splitlines()[0])["legal_name"]
+
+    def verify_then_mutate(*args, **kwargs):
+        companies = [json.loads(line) for line in (research / "companies.jsonl").read_text().splitlines()]
+        companies[0]["legal_name"] = "MUTATED-AFTER-VALIDATION"
+        write_jsonl(research / "companies.jsonl", companies)
+
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=verify_then_mutate):
+        with raises(ValueError):
+            module.publication_gate(
+                research, TAXONOMY, module.date(2026, 10, 31), None, None,
+            )
+
+    make_research_fixture(research)
+    with mock.patch.object(module, "verify_active_ledgers", return_value=None):
+        taxonomy, inputs = module.publication_gate(
+            research, TAXONOMY, module.date(2026, 10, 31), None, None,
+        )
+    assert inputs[0][0]["legal_name"] == original_name
+    with raises(TypeError):
+        inputs[0][0]["legal_name"] = "CALLER-MUTATED-SNAPSHOT"
+    with raises(TypeError):
+        taxonomy["categories"][0]["id"] = "CALLER-MUTATED-TAXONOMY"
+
+
 def test_artifact_generation_rejects_gap_without_preserved_official_source_id_route(tmp_path):
     research = tmp_path / "research"
     make_research_fixture(research)

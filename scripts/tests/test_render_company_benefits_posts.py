@@ -283,6 +283,7 @@ class ProductionPostRendererTests(unittest.TestCase):
             "https://example%3A443/path",
             "https://%5Bexample.test%5D/path",
             "https://example.test/raw space",
+            "https://example.test\\evil/path",
             "https://example.test/\x85",
         )
         for url in rejected:

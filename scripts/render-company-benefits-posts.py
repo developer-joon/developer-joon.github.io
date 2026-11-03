@@ -274,7 +274,7 @@ def publication_source_url(source):
 
 def _safe_decoded_url_layer(value):
     """Reject unsafe characters and ambiguous authorities at every decode layer."""
-    if any(character.isspace() or ord(character) < 32 or 127 <= ord(character) <= 159
+    if any(character == "\\" or character.isspace() or ord(character) < 32 or 127 <= ord(character) <= 159
            for character in value):
         return False
     parsed = urlparse(value)

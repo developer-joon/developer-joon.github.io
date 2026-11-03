@@ -24,6 +24,41 @@ UNKNOWN_MARKERS = (
 NONABSENCE_NOTICE = "이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다."
 
 
+class FrozenDict(dict):
+    """A recursively immutable dict that preserves dict read compatibility."""
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("publication snapshot is immutable")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable
+    __ior__ = _immutable
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+class FrozenList(list):
+    """A recursively immutable list that preserves list read compatibility."""
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("publication snapshot is immutable")
+
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = append = clear = extend = insert = pop = remove = reverse = sort = _immutable
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+def freeze_snapshot(value):
+    if isinstance(value, dict):
+        return FrozenDict((key, freeze_snapshot(item)) for key, item in value.items())
+    if isinstance(value, list):
+        return FrozenList(freeze_snapshot(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(freeze_snapshot(item) for item in value)
+    return value
+
+
 def canonical_bytes(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
 
@@ -390,33 +425,54 @@ def validate_inputs(root, taxonomy, taxonomy_sha256):
 
 def publication_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
                      effective_selection_receipt):
-    """Own the complete validation and input-loading operation before output."""
+    """Validate one byte snapshot and return recursively immutable inputs."""
     root = Path(research_root)
     series = load_verifier().company_benefits_series
-    if series.progress_contract_version(read_json(root / "series-progress.json")) != "2":
+    progress_relative = Path("series-progress.json")
+    progress_raw = (root / progress_relative).read_bytes()
+    progress = json.loads(progress_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    if series.progress_contract_version(progress) != "2":
         raise ValueError("v2 artifact publication requires explicit progress_version=2")
-    v2_snapshot = {
-        ledger: (root / filename).read_bytes()
-        for ledger, filename in series.V2_LEDGER_FILES.items()
+    relative_paths = {
+        progress_relative, Path("companies.jsonl"), Path("series-batches.jsonl"),
+        Path("benefit-claims.jsonl"), Path("series-research-gaps.jsonl"), Path("reviews.jsonl"),
+        Path("source-registry.jsonl"), Path("series-prepublication-checks.jsonl"),
+        Path("benefit-taxonomy-assignments.jsonl"),
+        Path("benefit-taxonomy-assignment-requests.jsonl"), Path("population-protocol.json"),
+        Path("population/effective-selection-manifest.json"),
     }
+    relative_paths.update(Path(filename) for filename in series.V2_LEDGER_FILES.values())
+    snapshot = {relative: (root / relative).read_bytes() for relative in relative_paths}
+    taxonomy_path = Path(taxonomy_path)
+    taxonomy_raw = taxonomy_path.read_bytes()
     verify_active_ledgers(
         root, as_of, freeze_anchor_receipt, effective_selection_receipt
     )
-    taxonomy_path = Path(taxonomy_path)
-    taxonomy = read_json(taxonomy_path)
-    taxonomy_contract(taxonomy)
-    v2_records = {
-        ledger: read_jsonl_bytes(v2_snapshot[ledger], series.V2_LEDGER_FILES[ledger])
-        for ledger in series.V2_LEDGER_FILES
-    }
-    series.validate_complete_v2_progress(root, records=v2_records)
-    if any((root / series.V2_LEDGER_FILES[ledger]).read_bytes() != raw
-           for ledger, raw in v2_snapshot.items()):
-        raise ValueError("v2 source ledger changed during publication validation")
-    inputs = _assemble_inputs(
-        root, taxonomy, hashlib.sha256(taxonomy_path.read_bytes()).hexdigest(), v2_snapshot
-    )
-    return taxonomy, inputs
+    if (taxonomy_path.read_bytes() != taxonomy_raw
+            or any((root / relative).read_bytes() != raw for relative, raw in snapshot.items())):
+        raise ValueError("publication input changed during authoritative validation")
+
+    with tempfile.TemporaryDirectory(prefix="company-benefits-publication-snapshot-") as directory:
+        snapshot_root = Path(directory)
+        for relative, raw in snapshot.items():
+            target = snapshot_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        taxonomy = json.loads(taxonomy_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+        taxonomy_contract(taxonomy)
+        v2_snapshot = {
+            ledger: snapshot[Path(filename)]
+            for ledger, filename in series.V2_LEDGER_FILES.items()
+        }
+        v2_records = {
+            ledger: read_jsonl_bytes(v2_snapshot[ledger], series.V2_LEDGER_FILES[ledger])
+            for ledger in series.V2_LEDGER_FILES
+        }
+        series.validate_complete_v2_progress(snapshot_root, records=v2_records)
+        inputs = _assemble_inputs(
+            snapshot_root, taxonomy, hashlib.sha256(taxonomy_raw).hexdigest(), v2_snapshot
+        )
+    return freeze_snapshot(taxonomy), freeze_snapshot(inputs)
 
 
 def bounded_claim(claim):
