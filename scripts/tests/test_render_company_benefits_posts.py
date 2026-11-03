@@ -62,7 +62,9 @@ class ProductionPostRendererTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def render(self):
-        with mock.patch.object(self.renderer, "verify_active_ledgers", return_value=None) as verifier:
+        generator = load(ROOT / "scripts/generate-company-benefits-artifacts.py", "renderer_publication_gate")
+        with (mock.patch.object(generator, "verify_active_ledgers", return_value=None) as verifier,
+              mock.patch.object(self.renderer, "load_module", return_value=generator)):
             result = self.renderer.render_series(
                 self.research, self.map_path, self.output, TAXONOMY,
                 as_of="2026-10-31",
@@ -176,22 +178,6 @@ class ProductionPostRendererTests(unittest.TestCase):
         indexes[ledger][record_id] = record
         return cell, indexes
 
-    def render_v2_installment(self, evidence_class):
-        company = self.companies[1]
-        cell, indexes = self.v2_evidence(evidence_class, company["company_id"])
-        entry = copy.deepcopy(next(row for row in self.render_map["entries"]
-                                   if row["artifact_type"] == "installment"))
-        entry["company_ids"] = [company["company_id"]]
-        curated = self.renderer.curate_installment_entries(
-            [entry], {}, {}, {}, {company["company_id"]: {"leave": cell}}, indexes, self.taxonomy,
-        )
-        self.assertEqual([company["company_id"]], curated[0]["company_ids"])
-        text = self.renderer.render_installment(
-            curated[0], {company["company_id"]: company}, {}, {}, {}, {}, {}, self.taxonomy,
-            {company["company_id"]: {"leave": cell}}, indexes,
-        )
-        return company, text
-
     def test_official_v2_schema_has_no_publishable_prose_shape(self):
         company_id = self.companies[1]["company_id"]
         cell, indexes = self.v2_evidence("official", company_id)
@@ -200,20 +186,19 @@ class ProductionPostRendererTests(unittest.TestCase):
             {company_id: {"leave": cell}}, indexes, self.taxonomy,
         ))
 
-    def test_v2_only_reference_company_is_retained_and_rendered(self):
-        company, text = self.render_v2_installment("reference")
-        self.assertIn(company["legal_name"], text)
-        self.assertIn("직원에게 유급휴가 지원 제도를 운영한다", text)
-        self.assertIn("참고", text)
-        self.assertIn("https://evidence.example/reference", text)
-
-    def test_v2_only_community_company_is_retained_and_rendered(self):
-        company, text = self.render_v2_installment("community")
-        self.assertIn(company["legal_name"], text)
-        self.assertIn("직원에게 유급휴가 지원 제도를 운영한다", text)
-        self.assertEqual(2, text.count("직원에게 유급휴가 지원 제도를 운영한다"))
-        self.assertIn("커뮤니티", text)
-        self.assertIn("https://evidence.example/community", text)
+    def test_current_v2_schema_is_explicitly_fail_closed_for_every_evidence_class(self):
+        company_id = self.companies[1]["company_id"]
+        for evidence_class in ("official", "reference", "community"):
+            with self.subTest(evidence_class=evidence_class):
+                cell, indexes = self.v2_evidence(evidence_class, company_id)
+                self.assertEqual([], self.renderer.v2_publication_evidence(
+                    {"leave": cell}, indexes,
+                ))
+                self.assertEqual([], self.renderer.publication_evidence(
+                    company_id, [], {}, {}, self.taxonomy, {"leave": cell}, indexes,
+                ))
+        self.assertIn("no independently reviewed publication projection contract",
+                      self.renderer.V2_PUBLICATION_BLOCK_REASON)
 
     def test_v2_publication_prose_is_bounded_plain_text(self):
         probes = (
@@ -247,36 +232,23 @@ class ProductionPostRendererTests(unittest.TestCase):
                 if character == "\\":
                     self.assertEqual(0, len(rendered[:-1]) % 2)
 
-    def test_v2_scope_and_source_url_are_rendered_as_inert_text(self):
-        company = self.companies[1]
-        cell, indexes = self.v2_evidence("reference", company["company_id"])
-        record = next(iter(indexes["references"].values()))
-        source = next(iter(indexes["sources"].values()))
+    def test_scope_and_source_url_sanitizers_remain_defense_in_depth(self):
         scope = {
-            "status": "unresolved", "countries": [company["jurisdiction"]],
+            "countries": ["KR"],
             "legal_entities": ["{{site.secret}}"], "roles": ["<img src=x onerror=alert(1)>"],
             "employment_types": ["[click](javascript:alert(1))"],
         }
-        record["scope"] = copy.deepcopy(scope)
-        source["scope"] = {key: value for key, value in scope.items() if key != "status"}
-        record["statement"] = record["supporting_quote"] = (
-            "{{site.secret}} 직원에게 유급휴가 지원 제도를 운영한다"
-        )
-        source["url"] = "https://example.com/{{site.secret}}/[click](javascript:alert(1))?next=<tag>"
-        record["source_locator"] = source["url"]
-        text = self.renderer.render_installment(
-            {**copy.deepcopy(next(row for row in self.render_map["entries"]
-                                  if row["artifact_type"] == "installment")),
-             "company_ids": [company["company_id"]]},
-            {company["company_id"]: company}, {}, {}, {}, {}, {}, self.taxonomy,
-            {company["company_id"]: {"leave": cell}}, indexes,
-        )
-        for raw in ("{{site.secret}}", "<img", "[click](javascript:", "<tag>"):
-            self.assertNotIn(raw, text)
-        self.assertIn("%7B%7Bsite.secret%7D%7D", text)
-        self.assertIn("%5Bclick%5D%28javascript:alert%281%29%29", text)
+        text = self.renderer.scope_text({"application_scope": scope})
+        self.assertNotIn("{{site.secret}}", text)
+        self.assertNotIn("<img", text)
+        self.assertNotIn("[click](javascript:", text)
+        self.assertIn("&#123;&#123;site\\.secret&#125;&#125;", text)
         self.assertIn("&lt;img", text)
         self.assertIn(r"\[click\]\(javascript:alert\(1\)\)", text)
+        url = "https://example.com/{{site.secret}}/[click](javascript:alert(1))?next=<tag>"
+        rendered = self.renderer.publication_source_url({"url": url})
+        self.assertIn("%7B%7Bsite.secret%7D%7D", rendered)
+        self.assertIn("%5Bclick%5D%28javascript:alert%281%29%29", rendered)
 
     def test_v2_source_url_with_control_character_is_rejected(self):
         company_id = self.companies[1]["company_id"]
@@ -289,17 +261,40 @@ class ProductionPostRendererTests(unittest.TestCase):
             {company_id: {"leave": cell}}, indexes, self.taxonomy,
         ))
 
-    def test_v2_source_url_rejects_encoded_controls_at_nested_layers(self):
-        rejected = ("%0A", "%0d%0a", "%00", "%7F", "%250A", "%25250A")
-        for suffix in rejected:
-            with self.subTest(suffix=suffix):
+    def test_source_url_rejects_controls_at_every_supported_decode_layer(self):
+        suffix = "%0A"
+        for layers in range(1, 17):
+            with self.subTest(layers=layers):
                 with self.assertRaisesRegex(ValueError, "invalid"):
                     self.renderer.publication_source_url({"url": "https://example.test/" + suffix})
+            suffix = suffix.replace("%", "%25")
+
+    def test_source_url_rejects_excessive_nesting_malformed_escapes_and_unsafe_authority(self):
+        nested = "%25"
+        for _ in range(17):
+            nested = nested.replace("%", "%25")
+        rejected = (
+            "https://example.test/" + nested,
+            "https://example.test/%80",
+            "https://example.test/%ZZ",
+            "https://example.test/trailing%",
+            "https://example%2Etest/path",
+            "https://example%40test/path",
+            "https://example%3A443/path",
+            "https://%5Bexample.test%5D/path",
+            "https://example.test/raw space",
+            "https://example.test/\x85",
+        )
+        for url in rejected:
+            with self.subTest(url=url):
+                with self.assertRaisesRegex(ValueError, "invalid|nesting"):
+                    self.renderer.publication_source_url({"url": url})
 
     def test_v2_source_url_preserves_safe_percent_encoded_targets(self):
         for url in (
                 "https://example.test/%ED%95%9C%EA%B8%80",
-                "https://example.test/literal%25value"):
+                "https://example.test/literal%25value",
+                "https://example.test/한글"):
             with self.subTest(url=url):
                 self.assertEqual(url, self.renderer.publication_source_url({"url": url}))
 
@@ -323,7 +318,7 @@ class ProductionPostRendererTests(unittest.TestCase):
                     {company_id: {"leave": cell}}, indexes, self.taxonomy,
                 ))
 
-    def test_v2_semantic_filter_accepts_concrete_terms_for_all_categories(self):
+    def test_v2_fail_closed_policy_does_not_use_a_category_or_record_allowlist(self):
         company_id = self.companies[1]["company_id"]
         accepted = {}
         for category in ("leave", "family", "health", "growth", "housing", "commute",
@@ -332,7 +327,11 @@ class ProductionPostRendererTests(unittest.TestCase):
             accepted[category] = bool(self.renderer.publication_evidence(
                 company_id, [], {}, {}, self.taxonomy, {category: cell}, indexes,
             ))
-        self.assertEqual({category: True for category in accepted}, accepted)
+        self.assertEqual({category: False for category in accepted}, accepted)
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("CATEGORY_PUBLICATION_TERMS", source)
+        self.assertNotIn("_entity_benefit_phrase", source)
+        self.assertNotIn("V2_RECORD_KEYS", source)
 
     def test_v2_semantic_filter_requires_bound_entity_and_employee_benefit_action(self):
         company_id = self.companies[1]["company_id"]
@@ -367,7 +366,7 @@ class ProductionPostRendererTests(unittest.TestCase):
         record["scope"]["legal_entities"] = ["Acme Corporation"]
         source["scope"]["legal_entities"] = ["Acme Corporation"]
         record["statement"] = record["supporting_quote"] = "Acme employees receive meal benefits"
-        self.assertTrue(self.renderer.publication_evidence(
+        self.assertFalse(self.renderer.publication_evidence(
             company_id, [], {}, {}, self.taxonomy, {"meals": cell}, indexes,
         ))
 
@@ -379,7 +378,7 @@ class ProductionPostRendererTests(unittest.TestCase):
         record["scope"]["legal_entities"] = ["(주)동방"]
         source["scope"]["legal_entities"] = ["(주)동방"]
         record["statement"] = "(주)동방 직원에게 원격근무를 지원한다"
-        self.assertTrue(self.renderer.publication_evidence(
+        self.assertFalse(self.renderer.publication_evidence(
             company_id, [], {}, {}, self.taxonomy, {"remote": cell}, indexes,
         ))
 
@@ -491,7 +490,7 @@ class ProductionPostRendererTests(unittest.TestCase):
                     {company_id: {"leave": cell}}, indexes, self.taxonomy,
                 ))
 
-    def test_real_v2_ledgers_keep_exact_reference_and_community_sets(self):
+    def test_all_real_v2_ledgers_are_fail_closed_including_former_survivors_and_wrong_company_transfer(self):
         research = ROOT / "docs/research/company-benefits"
         ledger_specs = {
             "official_claims": ("official-claims-v2.jsonl", "claim_id"),
@@ -517,36 +516,31 @@ class ProductionPostRendererTests(unittest.TestCase):
                              if item["evidence_class"] == evidence_class}
             for evidence_class in ("official", "reference", "community")
         }
-        self.assertLess(len(accepted_by_class["reference"]), len(indexes["references"]))
-        self.assertLess(len(accepted_by_class["community"]), len(indexes["community_reports"]))
-        unrelated = {
-            "reference::KR-CRN-1101110124521::remote::source::17b99f0926942d37a11ca7869f3c9f65b999b37b0664891db98e673914ca8fcd",
-            "reference::KR-CRN-1101110275134::commute::source::9061e30657446b2edbc2489d65150278630aaaebd8a6bf5483fea16d8f6887a7",
-            "reference::KR-CRN-1101110275134::meals::source::99e21807671bc376186cfbaedabd5f789f0c1bf1490b23e40106817bd24a6c77",
-            "reference::KR-CRN-1101116536481::remote::source::19ece2cb777958e86d67dca90a167e41065491aa8c52e1295ed03a080ffcefb1",
-            "reference::KR-CRN-1301110007533::health::source::18142efd5e9f2a4f9c5543b8761d0eaf961670f64a7dd0219c3884784ed97a6d",
-            "reference::KR-CRN-1101110032112::health::source::103020a18534202fa6c625b18b9217fda2c147213fb7470bb7fa96601b0de28e",
-            "reference::KR-CRN-1101110032112::remote::source::76fe2ceaed50cf8e5b34fca012b5a1d5de3d975044c9dd23e8e9d6271946de40",
-            "reference::KR-CRN-1101110339542::growth::source::796880f75862076c414697ba4933b6f7fefb8f458272ca6f6b7dc3520f45f1ca",
-            "reference::KR-CRN-1101110339542::remote::source::877650622b854c0af35f21b1acd838cf2fa06a7b1ff857e1ad2a2199d62f6d68",
-            "reference::KR-CRN-1801110015362::retirement::source::003156e8b9ece82fb49fbca82b4aa9c251c928a4c64312c7000d2515ecbbf9f8",
+        former_survivors = {
+            "reference::KR-CRN-1101110014409::family::source::3b6417cd6d069818d31f273c93cc345747ff99d4604bce62d3d308afd453f4bb",
+            "reference::KR-CRN-1101110085450::commute::source::33701f1d2aabd9152ce4b282b9b85e04bf5b587595fd225e9d83c35dd5880070",
+            "reference::KR-CRN-1101110221939::health::source::7d10df409e0828155ac0dd2c0298bdd9fa1306b6cd997416410e5590caec406f",
+            "reference::KR-CRN-1101111361669::leave::source::ca6cde4350039b12d4f061e3557613a42d7b86a3f3e8904b15c9d3464cc4aa68",
+            "reference::KR-CRN-1101112208000::housing::source::0bbc268d68e54e6c3331187e89d57e229593b582a27b7c5b6ffb46a6390cab4d",
+            "reference::KR-CRN-1101116420361::remote::source::d9d5196e0bf08a2c23ce3b6f5476864fc75ecf30934f917e456dcb0242f6c098",
+            "reference::KR-CRN-1146710001456::health::source::0aea41db5575039a8ce647fa99546c9c3cea2b11ed2c328ae3a1acf23ec48435",
+            "reference::KR-CRN-1545110039704::housing::source::fe5d8237555adccd290ad7aa03200c6c117a1c67d16bdacb512409382b1d991a",
+            "reference::KR-CRN-1801110186907::housing::source::7f963848dc90a44362e753be313bc8556bd159b077ab0c2875c96cd3f8df4d04",
         }
-        self.assertTrue(unrelated.isdisjoint(accepted_by_class["reference"]))
-        self.assertNotIn(
-            "reference::KR-CRN-1101110005002::leave::source::10153c7ca422defc8d3675f066f8ae2d8166aca959be3c870e6626baeceb489f",
-            accepted_by_class["reference"],
-        )
-        self.assertNotIn(
-            "community::KR-CRN-1101110007909::housing::source::ab281df02457431d49c26cbdb8af5b35f8e046e19f5e5bf1a40d0b1226b1f77c",
-            accepted_by_class["community"],
-        )
-        self.assertEqual(set(), accepted_by_class["official"])
+        renderer_source = SCRIPT.read_text(encoding="utf-8")
+        self.assertTrue(all(record_id not in renderer_source for record_id in former_survivors))
+        self.assertTrue(former_survivors.issubset(set(indexes["references"])))
+        wrong_transfer = next(indexes["references"][record_id] for record_id in former_survivors
+                              if "1101111361669::leave" in record_id)
+        self.assertIn("osstemvascular.com", wrong_transfer["source_locator"])
+        self.assertEqual({"official": set(), "reference": set(), "community": set()},
+                         accepted_by_class)
 
     def test_renderer_does_not_call_private_schema_validator_api(self):
         company_id = self.companies[1]["company_id"]
         cell, indexes = self.v2_evidence("reference", company_id)
         with mock.patch.object(self.renderer, "load_module", side_effect=AssertionError("private API")):
-            self.assertTrue(self.renderer.publication_evidence(
+            self.assertFalse(self.renderer.publication_evidence(
                 company_id, [], {}, {}, self.taxonomy, {"leave": cell}, indexes,
             ))
         self.assertNotIn("_schema_validators", SCRIPT.read_text(encoding="utf-8"))
@@ -725,37 +719,36 @@ class ProductionPostRendererTests(unittest.TestCase):
                 self.assertIn("복지가 없다는 뜻이 아닙니다", text)
                 self.assertIn("순위가 아닙니다", text)
 
-    def test_render_series_consumes_validated_v2_cells_and_indexes(self):
-        original_validate = self.renderer.validate_complete_inputs
-        original_curate = self.renderer.curate_installment_entries
-        company = self.companies[1]
-        cell, indexes = self.v2_evidence("reference", company["company_id"])
-        validation_completed = False
+    def test_render_series_consumes_one_publication_gate_snapshot_without_rereading_ledgers(self):
+        generator = load(ROOT / "scripts/generate-company-benefits-artifacts.py", "frozen_renderer_gate")
+        with mock.patch.object(generator, "verify_active_ledgers", return_value=None):
+            frozen = generator.publication_gate(
+                self.research, TAXONOMY, "2026-10-31", None, None,
+            )
+        gate = mock.Mock()
 
-        def validated_with_v2(*args):
-            nonlocal validation_completed
-            values = list(original_validate(*args))
-            values[8] = copy.deepcopy(values[8])
-            values[8][company["company_id"]]["leave"] = cell
-            for ledger, records in indexes.items():
-                values[11][ledger].update(records)
-            validation_completed = True
-            return tuple(values)
+        def return_frozen_then_mutate(*args):
+            (self.research / "company-category-cells.jsonl").write_text("changed after gate\n")
+            (self.research / "series-batches.jsonl").write_text("changed after gate\n")
+            (self.research / "series-prepublication-checks.jsonl").write_text("changed after gate\n")
+            return frozen
 
-        def curate_validated_tuple(*args):
-            self.assertTrue(validation_completed)
-            self.assertIs(args[4][company["company_id"]]["leave"], cell)
-            self.assertIn(next(iter(indexes["references"])), args[5]["references"])
-            return original_curate(*args)
-
-        with (mock.patch.object(self.renderer, "validate_complete_inputs", side_effect=validated_with_v2),
-              mock.patch.object(self.renderer, "curate_installment_entries", side_effect=curate_validated_tuple)):
-            emitted = self.render()
+        gate.publication_gate.side_effect = return_frozen_then_mutate
+        with mock.patch.object(self.renderer, "load_module", return_value=gate) as loader:
+            emitted = self.renderer.render_series(
+                self.research, self.map_path, self.output, TAXONOMY, as_of="2026-10-31",
+            )
+        loader.assert_called_once()
+        gate.publication_gate.assert_called_once_with(
+            self.research, TAXONOMY, self.renderer.date(2026, 10, 31), None, None,
+        )
         self.assertEqual(2, len(emitted))
         text = "\n".join(path.read_text(encoding="utf-8") for path in self.output.rglob("*.md"))
-        self.assertIn(company["legal_name"], text)
-        self.assertIn("직원에게 유급휴가 지원 제도를 운영한다", text)
-        self.assertIn("https://evidence.example/reference", text)
+        self.assertIn(self.companies[0]["legal_name"], text)
+        self.assertNotIn(self.companies[1]["legal_name"], text)
+        renderer_source = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("verify_active_ledgers(", renderer_source)
+        self.assertNotIn("validate_complete_inputs(", renderer_source)
 
     def test_citations_are_contiguous_and_sources_follow_first_seen_order(self):
         self.render()
@@ -1143,7 +1136,7 @@ class ProductionPostRendererTests(unittest.TestCase):
         progress["status"] = "in_progress"
         progress["batches"][0]["status"] = "pending"
         progress_path.write_text(json.dumps(progress), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "complete|approved"):
+        with self.assertRaisesRegex(ValueError, "complete|approved|progress.*schema"):
             self.render()
         self.assertFalse(self.output.exists())
 
@@ -1197,16 +1190,22 @@ class ProductionPostRendererTests(unittest.TestCase):
                 self.assertFalse(self.output.exists())
                 (self.research / name).write_bytes(originals[name])
 
-    def test_preflight_passes_both_external_receipts_to_authoritative_verifier(self):
-        verifier = mock.Mock()
-        verifier.verify_workspace.return_value = []
+    def test_render_passes_both_external_receipts_to_authoritative_publication_gate(self):
+        generator = load(ROOT / "scripts/generate-company-benefits-artifacts.py", "receipt_renderer_gate")
+        with mock.patch.object(generator, "verify_active_ledgers", return_value=None):
+            frozen = generator.publication_gate(
+                self.research, TAXONOMY, "2026-10-31", None, None,
+            )
+        gate = mock.Mock()
+        gate.publication_gate.return_value = frozen
         freeze = self.base / "freeze.json"
         effective = self.base / "effective.json"
-        with mock.patch.object(self.renderer, "load_module", return_value=verifier):
-            self.renderer.verify_active_ledgers(self.research, "2026-10-31", freeze, effective)
-        verifier.verify_workspace.assert_called_once_with(
-            self.research, as_of="2026-10-31",
-            freeze_anchor_receipt=freeze, effective_selection_receipt=effective,
+        with mock.patch.object(self.renderer, "load_module", return_value=gate):
+            self.renderer.render_series(
+                self.research, self.map_path, self.output, TAXONOMY, "2026-10-31", freeze, effective,
+            )
+        gate.publication_gate.assert_called_once_with(
+            self.research, TAXONOMY, self.renderer.date(2026, 10, 31), freeze, effective,
         )
 
 
