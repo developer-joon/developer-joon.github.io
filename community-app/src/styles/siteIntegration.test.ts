@@ -136,6 +136,67 @@ function contrastRatio(foreground: string, background: string) {
   return (lighter + 0.05) / (darker + 0.05)
 }
 
+const allowedSvgAttributes: Record<string, readonly string[]> = {
+  svg: ['xmlns', 'viewBox', 'fill'],
+  rect: ['width', 'height', 'fill'],
+  path: ['d', 'stroke', 'stroke-width'],
+  polyline: ['points', 'stroke', 'stroke-width', 'opacity'],
+  line: ['x1', 'y1', 'x2', 'y2', 'stroke', 'stroke-width', 'opacity'],
+  circle: ['cx', 'cy', 'r', 'fill', 'opacity'],
+}
+
+function validateDecorativeSvg(svg: string) {
+  const errors: string[] = []
+  const svgWithoutNamespace = svg.replace(/\sxmlns="http:\/\/www\.w3\.org\/2000\/svg"/, '')
+  const tagPattern = /<\/?[a-z][\w-]*(?:\s+[a-z][\w-]*\s*=\s*"[^"]*")*\s*\/?>/gi
+  const tags = [...svg.matchAll(tagPattern)].map((match) => match[0])
+  const openElements: string[] = []
+  let rootCount = 0
+
+  if (!/^<svg\b/.test(svg)) errors.push('missing svg root')
+  if (/<style\b|\sstyle\s*=|@import\b|url\s*\(/i.test(svg)) errors.push('forbidden CSS construct')
+  if (/<script\b|\son[a-z]+\s*=|<foreignObject\b|<text\b|&(?:#\d+|#x[\da-f]+|[a-z][\w.-]*);/i.test(svg)) {
+    errors.push('forbidden active content')
+  }
+  if (/(?:href|src)\s*=|(?:https?:)?\/\/|data:/i.test(svgWithoutNamespace)) errors.push('external resource reference')
+  if (svg.replace(tagPattern, '').trim()) errors.push('non-element content or malformed markup')
+
+  for (const tag of tags) {
+    const element = tag.match(/^<\/?([a-z][\w-]*)/i)?.[1]
+    if (!element || !allowedSvgAttributes[element]) {
+      errors.push(`element not allowed: ${element ?? tag}`)
+      continue
+    }
+
+    if (tag.startsWith('</')) {
+      if (tag !== `</${element}>` || openElements.pop() !== element) errors.push(`invalid closing element: ${element}`)
+      continue
+    }
+
+    if (element === 'svg') {
+      rootCount += 1
+      if (openElements.length > 0) errors.push('nested svg root')
+    } else if (openElements.length === 0) {
+      errors.push(`element outside svg root: ${element}`)
+    }
+
+    const seenAttributes = new Set<string>()
+    for (const attributeMatch of tag.matchAll(/\s+([a-z][\w-]*)\s*=\s*"([^"]*)"/gi)) {
+      const attribute = attributeMatch[1]
+      if (!allowedSvgAttributes[element].includes(attribute)) errors.push(`attribute not allowed on ${element}: ${attribute}`)
+      if (seenAttributes.has(attribute)) errors.push(`duplicate attribute on ${element}: ${attribute}`)
+      seenAttributes.add(attribute)
+    }
+
+    if (!tag.endsWith('/>')) openElements.push(element)
+  }
+
+  if (rootCount !== 1) errors.push('expected exactly one svg root')
+  if (openElements.length > 0) errors.push(`unclosed element: ${openElements.at(-1)}`)
+
+  return errors
+}
+
 describe('Jekyll visual contract', () => {
   it('keeps the recognizable site palette while assigning accessible functional colors', () => {
     expect(tokens).toContain('--background: #ffffff;')
@@ -373,13 +434,24 @@ describe('shared shell contract', () => {
 
   it('uses a safe local decorative SVG for the Benefit Atlas field', () => {
     const svg = read('../images/community/benefit-atlas.svg')
-    const svgWithoutNamespace = svg.replace(/\sxmlns="http:\/\/www\.w3\.org\/2000\/svg"/, '')
 
     expect(svg).toMatch(/^<svg\b/)
     expect(svg).toMatch(/<(?:path|circle|line|polyline)\b/)
-    expect(svg).not.toMatch(/<script\b|\son[a-z]+\s*=|<foreignObject\b|<text\b|&(?:#\d+|#x[\da-f]+|[a-z][\w.-]*);/i)
-    expect(svgWithoutNamespace).not.toMatch(/(?:href|src)\s*=|(?:https?:)?\/\/|data:/i)
+    expect(validateDecorativeSvg(svg)).toEqual([])
     expect(svg).not.toMatch(/Benefit Atlas|BREADLAB|기업 복지/i)
+  })
+
+  it.each([
+    ['style element', '<svg xmlns="http://www.w3.org/2000/svg"><style>path{fill:red}</style><path d="M0 0"/></svg>'],
+    ['inline style attribute', '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0" style="fill:url(/paint.svg#x)"/></svg>'],
+    ['CSS import', '<svg xmlns="http://www.w3.org/2000/svg"><style>@import "/track.css";</style><path d="M0 0"/></svg>'],
+    ['CSS resource URL', '<svg xmlns="http://www.w3.org/2000/svg"><style>path{fill:url(/paint.svg#x)}</style><path d="M0 0"/></svg>'],
+  ])('rejects decorative SVG mutations containing %s', (_label, mutation) => {
+    expect(validateDecorativeSvg(mutation)).not.toEqual([])
+  })
+
+  it('does not retain the removed benefits heading selector', () => {
+    expect(benefitsCss).not.toMatch(/\.benefits-heading\b/)
   })
 
   it('keeps the Community banner full width while wrapping its title and listing content', () => {

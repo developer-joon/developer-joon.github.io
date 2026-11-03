@@ -469,9 +469,6 @@
     max-height: 60vh;
     overflow: auto;
   }
-  .benefits-heading {
-    gap: 8px;
-  }
   .fixture-badge {
     padding: 6px;
     font-size: 12px;
