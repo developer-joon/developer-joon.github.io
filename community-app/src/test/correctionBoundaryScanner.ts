@@ -1,6 +1,7 @@
 /// <reference types="node" />
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync } from 'node:fs'
+import type { Dirent } from 'node:fs'
 import { extname, relative, resolve, sep } from 'node:path'
 
 export type CorrectionBoundaryViolation = {
@@ -64,6 +65,9 @@ const forbiddenContent: readonly { rule: string; pattern: RegExp }[] = [
   },
 ]
 
+const issueCreationUrl = forbiddenContent[0]
+const correctionContext = /\bcorrection\b|benefit[_\s-]*correction|correction[_\s-]*benefit|\/community\/benefits\/(?:my-)?correction|benefit_correction|BenefitCorrection|정보\s*수정|수정\s*요청|정정/i
+
 function repositoryPath(repositoryRoot: string, absolutePath: string) {
   return relative(repositoryRoot, absolutePath).split(sep).join('/')
 }
@@ -77,12 +81,31 @@ function shouldExclude(path: string, name: string) {
 
 function collectFiles(repositoryRoot: string, scanRoot: ScanRoot) {
   const root = resolve(repositoryRoot, scanRoot.path)
-  if (!existsSync(root)) return []
-
   const files: string[] = []
+  const violations: CorrectionBoundaryViolation[] = []
+  let rootStats
+  try {
+    rootStats = lstatSync(root)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { files, violations }
+    violations.push({ file: scanRoot.path, rule: 'unreadable correction scan path' })
+    return { files, violations }
+  }
   const visit = (directory: string) => {
-    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => comparePaths(left.name, right.name))) {
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(directory, { withFileTypes: true })
+    } catch {
+      violations.push({ file: repositoryPath(repositoryRoot, directory), rule: 'unreadable correction scan path' })
+      return
+    }
+
+    for (const entry of entries.sort((left, right) => comparePaths(left.name, right.name))) {
       const path = resolve(directory, entry.name)
+      if (entry.isSymbolicLink()) {
+        violations.push({ file: repositoryPath(repositoryRoot, path), rule: 'symlink in correction scan root' })
+        continue
+      }
       if (entry.isDirectory()) {
         if (!scanRoot.applySourceExclusions
           || (!excludedSourceDirectories.has(entry.name) && entry.name !== 'test')) visit(path)
@@ -95,15 +118,20 @@ function collectFiles(repositoryRoot: string, scanRoot: ScanRoot) {
     }
   }
 
-  visit(root)
-  return files
+  if (rootStats.isSymbolicLink()) {
+    violations.push({ file: scanRoot.path, rule: 'symlink in correction scan root' })
+  } else {
+    visit(root)
+  }
+  return { files, violations }
 }
 
 export function scanCorrectionBoundary(repositoryRoot: string): CorrectionBoundaryScan {
-  const scannedFiles = scanRoots
-    .flatMap((scanRoot) => collectFiles(repositoryRoot, scanRoot))
+  const collected = scanRoots.map((scanRoot) => collectFiles(repositoryRoot, scanRoot))
+  const scannedFiles = collected
+    .flatMap(({ files }) => files)
     .sort(comparePaths)
-  const violations: CorrectionBoundaryViolation[] = []
+  const violations = collected.flatMap((result) => result.violations)
 
   for (const file of scannedFiles) {
     if (/^\.github\/ISSUE_TEMPLATE\/.*company[-_]benefits[-_]correction/i.test(file)) {
@@ -111,14 +139,31 @@ export function scanCorrectionBoundary(repositoryRoot: string): CorrectionBounda
     }
 
     const absolutePath = resolve(repositoryRoot, file)
-    const content = readFileSync(absolutePath)
-    if (content.includes(0)) continue
+    let content: Buffer
+    try {
+      content = readFileSync(absolutePath)
+    } catch {
+      violations.push({ file, rule: 'unreadable configured text file' })
+      continue
+    }
+    if (content.includes(0)) {
+      violations.push({ file, rule: 'NUL byte in configured text file' })
+      continue
+    }
     const source = content.toString('utf8')
 
-    for (const forbidden of forbiddenContent) {
+    const isCorrectionContext = file.startsWith('.github/ISSUE_TEMPLATE/')
+      || file.startsWith('community-app/benefits/')
+      || /correction/i.test(file)
+      || correctionContext.test(source)
+    const applicableRules = isCorrectionContext
+      ? forbiddenContent
+      : forbiddenContent.filter((rule) => rule !== issueCreationUrl)
+    for (const forbidden of applicableRules) {
       if (forbidden.pattern.test(source)) violations.push({ file, rule: forbidden.rule })
     }
   }
 
+  violations.sort((left, right) => comparePaths(left.file, right.file) || comparePaths(left.rule, right.rule))
   return { scannedFiles, violations }
 }

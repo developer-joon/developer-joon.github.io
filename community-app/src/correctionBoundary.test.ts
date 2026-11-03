@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -39,18 +39,24 @@ describe('Benefit Atlas correction workflow boundary', () => {
   it('scans snapshot-like issue-template paths and test-like static benefit paths', () => {
     withFixture({
       '.github/ISSUE_TEMPLATE/__snapshots__/benefit-correction.spec.yml': 'body: Submit this correction with the GitHub issue template.\n',
+      '.github/ISSUE_TEMPLATE/feedback.yml': 'body: Continue at https://github.com/example/project/issues/new?template=feedback.yml\n',
       'community-app/benefits/test/correction.test.html': '<a href="/issues/new">Correct this benefit</a>\n',
     }, (root) => {
       const result = scanCorrectionBoundary(root)
 
       expect(result.scannedFiles).toEqual([
         '.github/ISSUE_TEMPLATE/__snapshots__/benefit-correction.spec.yml',
+        '.github/ISSUE_TEMPLATE/feedback.yml',
         'community-app/benefits/test/correction.test.html',
       ])
       expect(result.violations).toEqual(expect.arrayContaining([
         {
           file: '.github/ISSUE_TEMPLATE/__snapshots__/benefit-correction.spec.yml',
           rule: 'GitHub correction issue/template wording',
+        },
+        {
+          file: '.github/ISSUE_TEMPLATE/feedback.yml',
+          rule: 'GitHub issue creation URL',
         },
         {
           file: 'community-app/benefits/test/correction.test.html',
@@ -74,6 +80,65 @@ describe('Benefit Atlas correction workflow boundary', () => {
     })
   })
 
+  it('fails closed when configured text contains a leading NUL byte', () => {
+    withFixture({
+      'community-app/benefits/correction/index.html': Buffer.from('\0<a href="/issues/new">Correct this benefit</a>\n'),
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/benefits/correction/index.html',
+        rule: 'NUL byte in configured text file',
+      })
+    })
+  })
+
+  it('rejects symlinks under every live correction scan root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'correction-boundary-'))
+    try {
+      const target = resolve(root, 'target.txt')
+      writeFileSync(target, '<a href="/issues/new">Correct this benefit</a>\n')
+      const links = [
+        '.github/ISSUE_TEMPLATE/benefit-correction.yml',
+        'community-app/benefits/correction/index.html',
+        'community-app/src/pages/BenefitCorrectionPage.tsx',
+      ]
+      for (const link of links) {
+        const destination = resolve(root, link)
+        mkdirSync(dirname(destination), { recursive: true })
+        symlinkSync(target, destination)
+      }
+
+      const result = scanCorrectionBoundary(root)
+
+      expect(result.violations.filter(({ rule }) => rule === 'symlink in correction scan root')).toEqual(
+        links.map((file) => ({ file, rule: 'symlink in correction scan root' })),
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('allows an unrelated bug report page to create GitHub issues', () => {
+    withFixture({
+      'community-app/src/pages/BugReportPage.tsx': 'export const reportUrl = "https://github.com/example/project/issues/new?template=bug.yml"\n',
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toEqual([])
+    })
+  })
+
+  it('rejects issue creation after a correction page is renamed', () => {
+    withFixture({
+      'community-app/src/pages/FeedbackPage.tsx': [
+        'export const returnTo = "/community/benefits/correction/"',
+        'export const submitUrl = "https://github.com/example/project/issues/new?template=feedback.yml"',
+      ].join('\n'),
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/pages/FeedbackPage.tsx',
+        rule: 'GitHub issue creation URL',
+      })
+    })
+  })
+
   it.each([
     ['full GitHub issue URL', 'export const correction = "https://github.com/example/project/issues/new?template=benefit.yml"', 'GitHub issue creation URL'],
     ['correction issue wording', 'export const help = "Submit this correction with the GitHub issue template."', 'GitHub correction issue/template wording'],
@@ -89,13 +154,12 @@ describe('Benefit Atlas correction workflow boundary', () => {
     })
   })
 
-  it('allows unrelated GitHub links and excludes source tests, dependencies, generated output, and binary files', () => {
+  it('allows unrelated GitHub links and excludes source tests, dependencies, and generated output', () => {
     withFixture({
       'community-app/src/pages/About.tsx': 'export const source = "https://github.com/example/project"\n',
       'community-app/src/pages/About.test.tsx': 'const forbiddenExample = "/issues/new"\n',
       'community-app/src/generated/Legacy.ts': 'export const correction = "/issues/new"\n',
       'community-app/src/node_modules/package/index.js': 'export const correction = "/issues/new"\n',
-      'community-app/src/pages/binary.ts': Buffer.from([0, 1, 2, 3]),
       'community-app/coverage/report.html': '<a href="/issues/new">generated report</a>',
       'community-app/dist/index.html': '<a href="/issues/new">generated bundle</a>',
     }, (root) => {
@@ -103,7 +167,6 @@ describe('Benefit Atlas correction workflow boundary', () => {
 
       expect(result.scannedFiles).toEqual([
         'community-app/src/pages/About.tsx',
-        'community-app/src/pages/binary.ts',
       ])
       expect(result.violations).toEqual([])
     })
