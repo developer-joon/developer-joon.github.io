@@ -16,6 +16,7 @@ export type CorrectionBoundaryScan = {
 type ScanRoot = {
   path: string
   extensions: ReadonlySet<string> | null
+  applySourceExclusions: boolean
 }
 
 const comparePaths = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0
@@ -24,18 +25,21 @@ const scanRoots: readonly ScanRoot[] = [
   {
     path: '.github/ISSUE_TEMPLATE',
     extensions: null,
+    applySourceExclusions: false,
   },
   {
     path: 'community-app/src',
     extensions: new Set(['.css', '.html', '.js', '.jsx', '.json', '.md', '.mjs', '.scss', '.ts', '.tsx']),
+    applySourceExclusions: true,
   },
   {
     path: 'community-app/benefits',
     extensions: new Set(['.html']),
+    applySourceExclusions: false,
   },
 ]
 
-const excludedDirectories = new Set([
+const excludedSourceDirectories = new Set([
   '__snapshots__',
   'coverage',
   'dist',
@@ -66,7 +70,7 @@ function repositoryPath(repositoryRoot: string, absolutePath: string) {
 
 function shouldExclude(path: string, name: string) {
   const segments = path.split(sep)
-  return segments.some((segment) => excludedDirectories.has(segment))
+  return segments.some((segment) => excludedSourceDirectories.has(segment))
     || segments.includes('test')
     || excludedSourceFiles.test(name)
 }
@@ -80,11 +84,14 @@ function collectFiles(repositoryRoot: string, scanRoot: ScanRoot) {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => comparePaths(left.name, right.name))) {
       const path = resolve(directory, entry.name)
       if (entry.isDirectory()) {
-        if (!excludedDirectories.has(entry.name) && entry.name !== 'test') visit(path)
+        if (!scanRoot.applySourceExclusions
+          || (!excludedSourceDirectories.has(entry.name) && entry.name !== 'test')) visit(path)
         continue
       }
       if (!entry.isFile() || (scanRoot.extensions && !scanRoot.extensions.has(extname(entry.name).toLowerCase()))) continue
-      if (!shouldExclude(relative(root, path), entry.name)) files.push(repositoryPath(repositoryRoot, path))
+      if (!scanRoot.applySourceExclusions || !shouldExclude(relative(root, path), entry.name)) {
+        files.push(repositoryPath(repositoryRoot, path))
+      }
     }
   }
 

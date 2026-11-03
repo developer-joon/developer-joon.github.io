@@ -23,15 +23,39 @@ function withFixture(files: Record<string, string | Buffer>, assertion: (root: s
 const repositoryRoot = resolve(process.cwd(), '..')
 
 describe('Benefit Atlas correction workflow boundary', () => {
-  it('finds a prohibited legacy issue template outside the former hand-picked files', () => {
+  it('finds a prohibited live issue template even when its filename looks like a test', () => {
     withFixture({
-      '.github/ISSUE_TEMPLATE/company-benefits-correction.yml': 'name: Benefit correction\nbody: Open a GitHub issue\n',
-      'community-app/src/pages/MyBenefitCorrectionsPage.tsx': 'export const page = "internal"\n',
+      '.github/ISSUE_TEMPLATE/company-benefits-correction.test.yml': 'name: Benefit correction\nbody: Open a GitHub issue\n',
     }, (root) => {
       const result = scanCorrectionBoundary(root)
 
+      expect(result.scannedFiles).toContain('.github/ISSUE_TEMPLATE/company-benefits-correction.test.yml')
       expect(result.violations).toEqual(expect.arrayContaining([
-        expect.objectContaining({ file: '.github/ISSUE_TEMPLATE/company-benefits-correction.yml' }),
+        expect.objectContaining({ file: '.github/ISSUE_TEMPLATE/company-benefits-correction.test.yml' }),
+      ]))
+    })
+  })
+
+  it('scans snapshot-like issue-template paths and test-like static benefit paths', () => {
+    withFixture({
+      '.github/ISSUE_TEMPLATE/__snapshots__/benefit-correction.spec.yml': 'body: Submit this correction with the GitHub issue template.\n',
+      'community-app/benefits/test/correction.test.html': '<a href="/issues/new">Correct this benefit</a>\n',
+    }, (root) => {
+      const result = scanCorrectionBoundary(root)
+
+      expect(result.scannedFiles).toEqual([
+        '.github/ISSUE_TEMPLATE/__snapshots__/benefit-correction.spec.yml',
+        'community-app/benefits/test/correction.test.html',
+      ])
+      expect(result.violations).toEqual(expect.arrayContaining([
+        {
+          file: '.github/ISSUE_TEMPLATE/__snapshots__/benefit-correction.spec.yml',
+          rule: 'GitHub correction issue/template wording',
+        },
+        {
+          file: 'community-app/benefits/test/correction.test.html',
+          rule: 'GitHub issue creation URL',
+        },
       ]))
     })
   })
@@ -65,7 +89,7 @@ describe('Benefit Atlas correction workflow boundary', () => {
     })
   })
 
-  it('allows unrelated GitHub links and excludes tests, dependencies, generated output, and binary files', () => {
+  it('allows unrelated GitHub links and excludes source tests, dependencies, generated output, and binary files', () => {
     withFixture({
       'community-app/src/pages/About.tsx': 'export const source = "https://github.com/example/project"\n',
       'community-app/src/pages/About.test.tsx': 'const forbiddenExample = "/issues/new"\n',
@@ -100,8 +124,9 @@ describe('Benefit Atlas correction workflow boundary', () => {
       'community-app/src/pages/MyBenefitCorrectionsPage.tsx',
       'community-app/src/types/benefitCorrections.ts',
     ]))
-    expect(result.scannedFiles.some((file) => /(?:^|\/)(?:node_modules|dist|coverage|generated|__snapshots__)(?:\/|$)/.test(file))).toBe(false)
-    expect(result.scannedFiles.some((file) => /\.(?:spec|test)\.[^.]+$/i.test(file))).toBe(false)
+    const scannedSourceFiles = result.scannedFiles.filter((file) => file.startsWith('community-app/src/'))
+    expect(scannedSourceFiles.some((file) => /(?:^|\/)(?:node_modules|dist|coverage|generated|__snapshots__)(?:\/|$)/.test(file))).toBe(false)
+    expect(scannedSourceFiles.some((file) => /\.(?:spec|test)\.[^.]+$/i.test(file))).toBe(false)
     expect(result.violations).toEqual([])
   })
 })
