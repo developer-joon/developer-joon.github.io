@@ -145,6 +145,17 @@ const allowedSvgAttributes: Record<string, readonly string[]> = {
   circle: ['cx', 'cy', 'r', 'fill', 'opacity'],
 }
 
+const safeSvgPaintValue = /^(?:none|#[0-9a-f]{6})$/i
+const safeSvgOpacityValue = /^(?:0(?:\.\d{1,2})?|1(?:\.0{1,2})?)$/
+const safeSvgStrokeWidthValue = /^(?:[1-9](?:\.\d{1,2})?|10(?:\.0{1,2})?)$/
+
+function isSafeSvgAttributeValue(attribute: string, value: string) {
+  if (attribute === 'fill' || attribute === 'stroke') return safeSvgPaintValue.test(value)
+  if (attribute === 'opacity') return safeSvgOpacityValue.test(value)
+  if (attribute === 'stroke-width') return safeSvgStrokeWidthValue.test(value)
+  return true
+}
+
 function validateDecorativeSvg(svg: string) {
   const errors: string[] = []
   const svgWithoutNamespace = svg.replace(/\sxmlns="http:\/\/www\.w3\.org\/2000\/svg"/, '')
@@ -183,7 +194,9 @@ function validateDecorativeSvg(svg: string) {
     const seenAttributes = new Set<string>()
     for (const attributeMatch of tag.matchAll(/\s+([a-z][\w-]*)\s*=\s*"([^"]*)"/gi)) {
       const attribute = attributeMatch[1]
+      const value = attributeMatch[2]
       if (!allowedSvgAttributes[element].includes(attribute)) errors.push(`attribute not allowed on ${element}: ${attribute}`)
+      if (!isSafeSvgAttributeValue(attribute, value)) errors.push(`attribute value not allowed for ${attribute}: ${value}`)
       if (seenAttributes.has(attribute)) errors.push(`duplicate attribute on ${element}: ${attribute}`)
       seenAttributes.add(attribute)
     }
@@ -446,6 +459,12 @@ describe('shared shell contract', () => {
     ['inline style attribute', '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0" style="fill:url(/paint.svg#x)"/></svg>'],
     ['CSS import', '<svg xmlns="http://www.w3.org/2000/svg"><style>@import "/track.css";</style><path d="M0 0"/></svg>'],
     ['CSS resource URL', '<svg xmlns="http://www.w3.org/2000/svg"><style>path{fill:url(/paint.svg#x)}</style><path d="M0 0"/></svg>'],
+    ['comment-obfuscated paint URL', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="u/**/rl(/paint.svg#x)"/></svg>'],
+    ['escape-obfuscated paint URL', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="u\\72 l(/paint.svg#x)"/></svg>'],
+    ['paint variable', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="var(--paint)"/></svg>'],
+    ['paint function', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="rgb(0 0 0)"/></svg>'],
+    ['arbitrary paint token', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="red"/></svg>'],
+    ['paint control character', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="#071725\u0001"/></svg>'],
   ])('rejects decorative SVG mutations containing %s', (_label, mutation) => {
     expect(validateDecorativeSvg(mutation)).not.toEqual([])
   })
