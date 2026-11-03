@@ -26,6 +26,7 @@ const extractScssBlock = (source: string, marker: string): string => {
 const tokens = read('src/styles/tokens.css')
 const globalCss = read('src/styles/global.css')
 const communityCss = read('src/styles/community.css')
+const benefitsCss = read('src/styles/benefits.css')
 const jekyllHeaderScss = read('../_sass/_includes/_header.scss')
 const jekyllSettings = read('../_data/settings.yml')
 const entryHtml = [
@@ -353,6 +354,32 @@ describe('shared shell contract', () => {
   it('exposes the benefits explorer in the Jekyll menu with full-document navigation', () => {
     expect(jekyllSettings).toMatch(/- title: "Benefit Atlas"\s+url: "\/community\/benefits\/"\s+no_ajax: true/)
     expect(jekyllSettings).not.toContain('- title: "기업 복지 탐색기"')
+  })
+
+  it('keeps the Benefit Atlas hero full bleed with the shared responsive inner wrap', () => {
+    const shellSource = read('src/components/benefits/BenefitsExplorerShell.tsx')
+
+    expect(shellSource).toMatch(/<main className="benefits-main">\s*<section className="benefit-atlas-hero"/)
+    expect(shellSource).toMatch(/<section className="benefit-atlas-hero"[^>]*>\s*<div className="benefit-atlas-hero__inner community-wrap">/)
+    expect(shellSource).toMatch(/<\/section>\s*<div className="benefits-workspace community-wrap">/)
+    expect(shellSource.match(/<h1\b/g)).toHaveLength(1)
+    expect(benefitsCss).toMatch(/\.community-page\.benefits-page main\.benefits-main\s*\{[^}]*max-width:\s*none;[^}]*padding-inline:\s*0;/)
+    expect(benefitsCss).toContain("url('/images/community/benefit-atlas.svg')")
+    expect(benefitsCss).toMatch(/\.benefit-atlas-hero\s*\{[^}]*overflow:\s*hidden;/)
+    expect(benefitsCss).toMatch(/\.benefit-atlas-hero h1\s*\{[^}]*font-size:\s*clamp\([^;]+\);[^}]*word-break:\s*keep-all;/)
+    expect(benefitsCss).toMatch(/\.benefit-atlas-hero__copy\s*\{[^}]*word-break:\s*keep-all;/)
+    expect(benefitsCss).toMatch(/@media \(max-width:\s*699px\)[\s\S]*\.benefits-tabs a\s*\{[^}]*min-height:\s*56px;/)
+  })
+
+  it('uses a safe local decorative SVG for the Benefit Atlas field', () => {
+    const svg = read('../images/community/benefit-atlas.svg')
+    const svgWithoutNamespace = svg.replace(/\sxmlns="http:\/\/www\.w3\.org\/2000\/svg"/, '')
+
+    expect(svg).toMatch(/^<svg\b/)
+    expect(svg).toMatch(/<(?:path|circle|line|polyline)\b/)
+    expect(svg).not.toMatch(/<script\b|\son[a-z]+\s*=|<foreignObject\b|<text\b|&(?:#\d+|#x[\da-f]+|[a-z][\w.-]*);/i)
+    expect(svgWithoutNamespace).not.toMatch(/(?:href|src)\s*=|(?:https?:)?\/\/|data:/i)
+    expect(svg).not.toMatch(/Benefit Atlas|BREADLAB|기업 복지/i)
   })
 
   it('keeps the Community banner full width while wrapping its title and listing content', () => {
