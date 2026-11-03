@@ -487,6 +487,21 @@ def _closure_artifact(
     return path, payload
 
 
+def _capture_raw_sha256(capture: dict[str, Any]) -> str | None:
+    declared = capture.get("raw_tool_response_sha256", capture.get("raw_response_sha256"))
+    if isinstance(declared, str):
+        return declared
+    for field in ("raw_tool_response_base64", "raw_response_base64"):
+        encoded = capture.get(field)
+        if not isinstance(encoded, str):
+            continue
+        try:
+            return sha256_bytes(base64.b64decode(encoded, validate=True))
+        except (ValueError, binascii.Error):
+            return None
+    return None
+
+
 def verify_external_closure(output: Path, closure: dict[str, Any]) -> None:
     """Fail closed unless every attempt is one exact acquisition/capture/raw chain."""
     attempts = closure.get("attempts")
@@ -499,9 +514,7 @@ def verify_external_closure(output: Path, closure: dict[str, Any]) -> None:
         _, receipt = _closure_artifact(
             output, entry.get("receipt"), f"{attempt_id}: attempt receipt", parse_json=True
         )
-        _, capture = _closure_artifact(
-            output, entry.get("capture"), f"{attempt_id}: capture", parse_json=True
-        )
+        _closure_artifact(output, entry.get("capture"), f"{attempt_id}: capture")
         _, _ = _closure_artifact(output, entry.get("raw"), f"{attempt_id}: raw")
         if receipt.get("attempt_id") != attempt_id:
             raise NormalizationError(f"{attempt_id}: attempt receipt binding mismatch")
@@ -509,19 +522,18 @@ def verify_external_closure(output: Path, closure: dict[str, Any]) -> None:
         raw_hash = entry["raw"].get("sha256")
         if receipt.get("raw_response_sha256") != raw_hash:
             raise NormalizationError(f"{attempt_id}: attempt raw hash mismatch")
-        capture_raw_hash = capture.get(
-            "raw_tool_response_sha256", capture.get("raw_response_sha256")
+        acquisition_record = entry.get("acquisition_receipt")
+        if acquisition_record is None:
+            continue
+        _, capture = _closure_artifact(
+            output, entry.get("capture"), f"{attempt_id}: capture", parse_json=True
         )
-        if capture_raw_hash != raw_hash:
+        if _capture_raw_sha256(capture) != raw_hash:
             raise NormalizationError(f"{attempt_id}: capture raw hash mismatch")
 
         for field in ("attempt_id", "cell_id", "route_id"):
             if field in capture and capture[field] != receipt.get(field):
                 raise NormalizationError(f"{attempt_id}: capture {field} binding mismatch")
-
-        acquisition_record = entry.get("acquisition_receipt")
-        if acquisition_record is None:
-            continue
         _, acquisition = _closure_artifact(
             output,
             acquisition_record,
@@ -536,15 +548,24 @@ def verify_external_closure(output: Path, closure: dict[str, Any]) -> None:
         artifact_type = acquisition.get("artifact_type")
         if artifact_type == "company-benefits-search-tool-acquisition":
             query_id = acquisition.get("query_id")
+            capture_query = capture.get("query")
+            if not isinstance(capture_query, dict):
+                capture_query = {}
+            capture_query_id = capture.get("query_id", capture_query.get("query_id"))
+            executed_query = capture.get("executed_query")
+            capture_locator = capture_query.get("query_or_locator")
+            receipt_locator = receipt.get("query_or_locator")
             expected_query_ids = {
-                receipt.get("query_or_locator"),
+                receipt_locator,
                 f"search-query::{receipt.get('company_id')}::{receipt.get('category_id')}::{receipt.get('route_id')}",
                 f"search-query::{receipt.get('company_id')}::broad::{receipt.get('route_id')}",
             }
             if (
                 query_id not in expected_query_ids
                 or acquisition_record.get("query_id") != query_id
-                or capture.get("executed_query") != receipt.get("query_or_locator")
+                or (capture_query_id is not None and capture_query_id != query_id)
+                or (capture_locator is not None and executed_query != capture_locator)
+                or (receipt_locator != query_id and executed_query != receipt_locator)
             ):
                 raise NormalizationError(f"{attempt_id}: search query semantics mismatch")
         elif artifact_type == "company-benefits-direct-page-acquisition":

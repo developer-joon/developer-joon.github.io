@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import importlib.util
 import json
@@ -242,6 +243,49 @@ class ClosureTests(unittest.TestCase):
 
         with self.assertRaisesRegex(normalizer.NormalizationError, "query semantics mismatch"):
             normalizer.verify_external_closure(Path(root.name), closure)
+
+    def test_external_closure_accepts_search_query_id_receipt_and_embedded_raw(self):
+        root, closure = self._closure_fixture()
+        self.addCleanup(root.cleanup)
+        entry = closure["attempts"][0]
+        receipt_path = Path(root.name) / entry["receipt"]["path"]
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        query_id = "search-query::company::leave::other-public-web"
+        receipt["query_or_locator"] = query_id
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        entry["receipt"]["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        capture_path = Path(root.name) / entry["capture"]["path"]
+        capture = json.loads(capture_path.read_text(encoding="utf-8"))
+        capture.pop("raw_tool_response_sha256")
+        capture["raw_tool_response_base64"] = base64.b64encode(
+            (Path(root.name) / entry["raw"]["path"]).read_bytes()
+        ).decode("ascii")
+        capture["query"] = {
+            "query_id": query_id,
+            "query_or_locator": capture["executed_query"],
+        }
+        capture_path.write_text(json.dumps(capture), encoding="utf-8")
+        entry["capture"]["sha256"] = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+        acquisition_path = Path(root.name) / entry["acquisition_receipt"]["path"]
+        acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
+        acquisition["capture_sha256"] = entry["capture"]["sha256"]
+        acquisition_path.write_text(json.dumps(acquisition), encoding="utf-8")
+        entry["acquisition_receipt"]["sha256"] = hashlib.sha256(
+            acquisition_path.read_bytes()
+        ).hexdigest()
+
+        normalizer.verify_external_closure(Path(root.name), closure)
+
+    def test_external_closure_keeps_legacy_no_acquisition_jsonl_compatible(self):
+        root, closure = self._closure_fixture()
+        self.addCleanup(root.cleanup)
+        entry = closure["attempts"][0]
+        entry["acquisition_receipt"] = None
+        capture_path = Path(root.name) / entry["capture"]["path"]
+        capture_path.write_text('{"legacy":1}\n{"legacy":2}\n', encoding="utf-8")
+        entry["capture"]["sha256"] = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+
+        normalizer.verify_external_closure(Path(root.name), closure)
 
     def _closure_fixture(self):
         temporary = tempfile.TemporaryDirectory()
