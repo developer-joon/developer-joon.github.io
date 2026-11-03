@@ -39,6 +39,12 @@ const entryHtml = [
   'benefits/my-corrections/index.html',
   'admin/benefit-corrections/index.html',
 ].map(read)
+const benefitsExplorerEntries = [
+  ['benefits/index.html', '복지 현황'],
+  ['benefits/fit/index.html', '조건 탐색'],
+  ['benefits/company/index.html', '기업 근거 상세'],
+  ['benefits/methodology/index.html', '조사 기준·정정 이력'],
+] as const
 const shellSources = [
   'src/pages/CommunityHomePage.tsx',
   'src/pages/PostDetailPage.tsx',
@@ -335,6 +341,15 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('uses the Benefit Atlas brand in every explorer document title', () => {
+    for (const [path, pageTitle] of benefitsExplorerEntries) {
+      const html = read(path)
+
+      expect(html).toContain(`<title>${pageTitle} · Benefit Atlas</title>`)
+      expect(html).not.toContain('기업 복지 탐색기')
+    }
+  })
+
   it('exposes the benefits explorer in the Jekyll menu with full-document navigation', () => {
     expect(jekyllSettings).toMatch(/- title: "Benefit Atlas"\s+url: "\/community\/benefits\/"\s+no_ajax: true/)
     expect(jekyllSettings).not.toContain('- title: "기업 복지 탐색기"')

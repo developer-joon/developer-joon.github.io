@@ -497,7 +497,7 @@ async function main() {
   for (const [part,title] of [['','복지 현황'],['fit/','조건 탐색'],['company/','기업 근거 상세'],['methodology/','조사 기준·정정 이력']]) {
     const relativePath=`community/benefits/${part}index.html`
     const html=await readText(relativePath)
-    assertIncludes(html,`<title>${title} · 기업 복지 탐색기</title>`,relativePath,'expected title')
+    assertIncludes(html,`<title>${title} · Benefit Atlas</title>`,relativePath,'expected title')
     assertIncludes(html,`<link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}">`,relativePath,'canonical URL')
     assertIncludes(html,'<meta name="description" content="',relativePath,'description')
     if (/예시 데이터|가상 검증기업|fixture-v1/.test(html)) fail(`${relativePath} contains fixture disclosure`)
