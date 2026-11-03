@@ -336,7 +336,8 @@ describe('Jekyll visual contract', () => {
 
 describe('shared shell contract', () => {
   it('exposes the benefits explorer in the Jekyll menu with full-document navigation', () => {
-    expect(jekyllSettings).toMatch(/- title: "기업 복지 탐색기"\s+url: "\/community\/benefits\/"\s+no_ajax: true/)
+    expect(jekyllSettings).toMatch(/- title: "Benefit Atlas"\s+url: "\/community\/benefits\/"\s+no_ajax: true/)
+    expect(jekyllSettings).not.toContain('- title: "기업 복지 탐색기"')
   })
 
   it('keeps the Community banner full width while wrapping its title and listing content', () => {

@@ -87,10 +87,11 @@ describe('AppHeader global shell', () => {
       ['0 → 1', '/lab/'],
       ['Blog', '/blog/'],
       ['Community', '/community/'],
-      ['기업 복지 탐색기', '/community/benefits/'],
+      ['Benefit Atlas', '/community/benefits/'],
       ['Shop', '/shop/'],
       ['About', '/about'],
     ])
+    expect(within(navigation).queryByText('기업 복지 탐색기')).not.toBeInTheDocument()
     expect(within(navigation).getByRole('link', { name: 'Community' })).toHaveAttribute('aria-current', 'page')
     expect(header.firstElementChild).toHaveClass('community-header__wrap', 'community-wrap')
     const menuList = within(navigation).getByRole('list')
@@ -98,12 +99,19 @@ describe('AppHeader global shell', () => {
     expect(within(menuList).getAllByRole('listitem')).toHaveLength(6)
   })
 
-  it('marks the benefits menu item current on benefits routes', () => {
-    window.history.replaceState({}, '', '/community/benefits/fit/')
+  it.each([
+    '/community/benefits/',
+    '/community/benefits/fit/',
+    '/community/benefits/company/',
+    '/community/benefits/methodology/',
+    '/community/benefits/correction/',
+  ])('marks the Benefit Atlas menu item current on %s', (pathname) => {
+    window.history.replaceState({}, '', pathname)
     render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
 
     const navigation = screen.getByRole('navigation', { name: '주요 메뉴' })
-    expect(within(navigation).getByRole('link', { name: '기업 복지 탐색기' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).getByRole('link', { name: 'Benefit Atlas' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).queryByText('기업 복지 탐색기')).not.toBeInTheDocument()
     expect(within(navigation).getByRole('link', { name: 'Community' })).not.toHaveAttribute('aria-current')
   })
 

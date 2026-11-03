@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 import { App } from './App'
 import { AuthContext, type AuthContextValue } from './auth/AuthProvider'
+import { BenefitsExplorerShell } from './components/benefits/BenefitsExplorerShell'
 vi.mock('./pages/BenefitsExplorerPage', () => ({
   BenefitsExplorerPage: ({
     route,
@@ -69,4 +70,18 @@ it('keeps correction pages behind Community authentication initialization', () =
   )
   expect(screen.getByRole('status')).toHaveTextContent('로그인 상태를 확인하고 있습니다.')
   expect(screen.queryByText('복지 heatmap')).not.toBeInTheDocument()
+})
+
+it('brands the explorer shell as Benefit Atlas while preserving its Korean tabs', () => {
+  render(
+    <BenefitsExplorerShell route="fit" query="?q=예시">
+      <p>탐색 결과</p>
+    </BenefitsExplorerShell>,
+  )
+
+  expect(screen.getByRole('heading', { level: 1, name: 'Benefit Atlas' })).toBeVisible()
+  expect(screen.queryByText('기업 복지 탐색기')).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: '복지 현황' })).toHaveAttribute('href', '/community/benefits/?q=예시')
+  expect(screen.getByRole('link', { name: '조건 탐색' })).toHaveAttribute('aria-current', 'page')
+  expect(screen.getByRole('link', { name: '조사 기준·정정 이력' })).toHaveAttribute('href', '/community/benefits/methodology/?q=예시')
 })

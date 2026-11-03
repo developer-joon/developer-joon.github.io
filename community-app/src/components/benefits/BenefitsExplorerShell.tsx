@@ -7,7 +7,7 @@ export function BenefitsExplorerShell({ route, query, manifest, children }: { ro
   return <div className="community-page benefits-page">
     <AppHeader />
     <main className="benefits-workspace">
-      <div className="benefits-heading"><div><p className="benefits-kicker">공개 근거로 살펴보는 기업 복지</p><h1>기업 복지 탐색기</h1><p>확인된 내용과 근거의 한계를 함께 표시합니다.</p></div></div>
+      <div className="benefits-heading"><div><p className="benefits-kicker">공개 근거로 살펴보는 기업 복지</p><h1>Benefit Atlas</h1><p>확인된 내용과 근거의 한계를 함께 표시합니다.</p></div></div>
       <nav className="benefits-tabs" aria-label="복지 탐색 화면">
         <a aria-current={route === 'heatmap' ? 'page' : undefined} href={`/community/benefits/${query}`}>복지 현황</a>
         <a aria-current={route === 'fit' ? 'page' : undefined} href={`/community/benefits/fit/${query}`}>조건 탐색</a>
