@@ -395,8 +395,17 @@ class CandidatePipelineTests(unittest.TestCase):
             "//server/share/x",
             "/images/../../etc/passwd",
             "/images/%2e%2e/etc/passwd",
+            "%2fetc/passwd",
+            "%252fetc/passwd",
+            "%25252fetc/passwd",
             "/%65tc/passwd",
             "/%2fserver/share",
+            "/images/logo.svg?next=/etc/passwd",
+            "/images/logo.svg?next=%252fetc/passwd",
+            "/images/logo.svg#../../etc/passwd",
+            "/Applications/private.app",
+            "/System/Library/private",
+            "/Volumes/private/capture",
             r"/images\private.png",
             "/images:private.png",
             "/images/\x00private.png",
@@ -404,6 +413,21 @@ class CandidatePipelineTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaisesRegex(
                 ValueError, "local absolute path"
             ):
+                self.validator._reject_local_absolute_paths(path)
+
+    def test_candidate_fails_closed_when_percent_decoding_exceeds_bound(self):
+        path = "/etc/passwd"
+        for _ in range(self.validator.MAX_PERCENT_DECODE_PASSES + 1):
+            path = path.replace("%", "%25").replace("/", "%2f")
+        with self.assertRaisesRegex(ValueError, "local absolute path"):
+            self.validator._reject_local_absolute_paths(path)
+
+    def test_candidate_allows_benign_root_relative_query_and_fragment(self):
+        for path in (
+            "/images/logo.svg?v=1.2",
+            "/images/logo.svg#brand-mark",
+        ):
+            with self.subTest(path=path):
                 self.validator._reject_local_absolute_paths(path)
 
     def test_candidate_rejects_local_absolute_paths_in_package_fields(self):

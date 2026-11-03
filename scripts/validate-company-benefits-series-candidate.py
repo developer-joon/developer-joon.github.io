@@ -10,7 +10,7 @@ import re
 import stat
 import sys
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 CANDIDATE_FILES = ("sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl")
 V2_FILES = (
@@ -25,9 +25,11 @@ GAP_FIELDS = {"audit_id", "company_id", "disposition", "reason", "searched_offic
               "searched_official_urls", "nonabsence_wording", "researcher_id"}
 LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:\\|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
 FILESYSTEM_ROOTS = {
-    "bin", "boot", "dev", "etc", "home", "lib", "lib64", "media", "mnt", "opt",
-    "private", "proc", "root", "run", "sbin", "srv", "sys", "tmp", "users", "usr", "var",
+    "applications", "bin", "boot", "dev", "etc", "home", "lib", "lib64", "media", "mnt", "opt",
+    "private", "proc", "root", "run", "sbin", "srv", "sys", "system", "tmp", "users", "usr", "var",
+    "volumes",
 }
+MAX_PERCENT_DECODE_PASSES = 5
 
 
 def sha256(data):
@@ -65,26 +67,56 @@ def _unique(records, field, label):
         raise ValueError(f"{label} requires unique nonempty {field}; duplicate IDs are prohibited")
 
 
-def _unsafe_root_relative_path(value):
-    if not value.startswith("/"):
-        return False
-    if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
-        return True
-    decoded = re.split(r"[\s)\]]", value, maxsplit=1)[0]
-    while True:
+def _decode_percent_bounded(value):
+    decoded = value
+    for _ in range(MAX_PERCENT_DECODE_PASSES):
         try:
             expanded = unquote(decoded, errors="strict")
         except UnicodeDecodeError:
-            return True
+            return None
         if expanded == decoded:
-            break
+            return decoded
         decoded = expanded
-    if decoded.startswith("//") or "\\" in decoded or ":" in decoded:
+    try:
+        return decoded if unquote(decoded, errors="strict") == decoded else None
+    except UnicodeDecodeError:
+        return None
+
+
+def _unsafe_url_component(value):
+    for candidate in re.split(r"[&;=]", value):
+        if not candidate:
+            continue
+        if LOCAL_ABSOLUTE_PATH.match(candidate) or candidate.startswith("//") or "\\" in candidate:
+            return True
+        segments = [segment for segment in re.split(r"[\\/]", candidate) if segment]
+        if (candidate.startswith("/") and not segments) or ".." in segments:
+            return True
+        if segments and segments[0].casefold() in FILESYSTEM_ROOTS:
+            return True
+    return False
+
+
+def _unsafe_root_relative_path(value):
+    stripped = value.lstrip()
+    token = re.split(r"[\s)\]]", stripped, maxsplit=1)[0]
+    decoded = _decode_percent_bounded(token)
+    if decoded is None:
         return True
+    if LOCAL_ABSOLUTE_PATH.match(decoded):
+        return True
+    if not decoded.startswith("/"):
+        return False
     if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in decoded):
         return True
-    segments = decoded.split("/")[1:]
-    if ".." in segments:
+    try:
+        parsed = urlsplit(decoded)
+    except ValueError:
+        return True
+    if parsed.scheme or parsed.netloc or "\\" in parsed.path or ":" in parsed.path:
+        return True
+    segments = parsed.path.split("/")[1:]
+    if ".." in segments or _unsafe_url_component(parsed.query) or _unsafe_url_component(parsed.fragment):
         return True
     normalized = [segment for segment in segments if segment not in ("", ".")]
     return not normalized or normalized[0].casefold() in FILESYSTEM_ROOTS
