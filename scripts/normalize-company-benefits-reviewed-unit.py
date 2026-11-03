@@ -433,11 +433,7 @@ def _receipt_for_attempt(
 def _preferred_acquisition_capture(
     index: AcquisitionIndex, acquisition: AcquisitionReceipt | None
 ) -> Path | None:
-    if (
-        acquisition is not None
-        and acquisition.payload.get("artifact_type")
-        == "company-benefits-direct-page-acquisition"
-    ):
+    if acquisition is not None:
         capture_hash = acquisition.payload.get("capture_sha256")
         if isinstance(capture_hash, str):
             return index.files_by_sha256.get(capture_hash)
@@ -467,6 +463,100 @@ def verify_closure_manifest(output: Path, manifest: dict[str, Any]) -> None:
             raise NormalizationError(f"manifest hash mismatch: {relative}")
         if path.stat().st_size != record.get("size"):
             raise NormalizationError(f"manifest size mismatch: {relative}")
+
+
+def _closure_artifact(
+    output: Path, record: Any, label: str, *, parse_json: bool = False
+) -> tuple[Path, Any]:
+    if not isinstance(record, dict):
+        raise NormalizationError(f"{label} record is missing")
+    relative = safe_relative_path(record.get("path", ""))
+    path = output / relative
+    if not path.is_file() or path.is_symlink():
+        raise NormalizationError(f"{label} file missing: {relative}")
+    if sha256_file(path) != record.get("sha256"):
+        raise NormalizationError(f"{label} file hash mismatch: {relative}")
+    if not parse_json:
+        return path, None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise NormalizationError(f"{label} is not valid JSON: {relative}") from exc
+    if not isinstance(payload, dict):
+        raise NormalizationError(f"{label} must contain a JSON object: {relative}")
+    return path, payload
+
+
+def verify_external_closure(output: Path, closure: dict[str, Any]) -> None:
+    """Fail closed unless every attempt is one exact acquisition/capture/raw chain."""
+    attempts = closure.get("attempts")
+    if not isinstance(attempts, list):
+        raise NormalizationError("external closure attempts must be a list")
+    for entry in attempts:
+        if not isinstance(entry, dict):
+            raise NormalizationError("external closure attempt must be an object")
+        attempt_id = entry.get("attempt_id")
+        _, receipt = _closure_artifact(
+            output, entry.get("receipt"), f"{attempt_id}: attempt receipt", parse_json=True
+        )
+        _, capture = _closure_artifact(
+            output, entry.get("capture"), f"{attempt_id}: capture", parse_json=True
+        )
+        _, _ = _closure_artifact(output, entry.get("raw"), f"{attempt_id}: raw")
+        if receipt.get("attempt_id") != attempt_id:
+            raise NormalizationError(f"{attempt_id}: attempt receipt binding mismatch")
+
+        raw_hash = entry["raw"].get("sha256")
+        if receipt.get("raw_response_sha256") != raw_hash:
+            raise NormalizationError(f"{attempt_id}: attempt raw hash mismatch")
+        capture_raw_hash = capture.get(
+            "raw_tool_response_sha256", capture.get("raw_response_sha256")
+        )
+        if capture_raw_hash != raw_hash:
+            raise NormalizationError(f"{attempt_id}: capture raw hash mismatch")
+
+        for field in ("attempt_id", "cell_id", "route_id"):
+            if field in capture and capture[field] != receipt.get(field):
+                raise NormalizationError(f"{attempt_id}: capture {field} binding mismatch")
+
+        acquisition_record = entry.get("acquisition_receipt")
+        if acquisition_record is None:
+            continue
+        _, acquisition = _closure_artifact(
+            output,
+            acquisition_record,
+            f"{attempt_id}: acquisition receipt",
+            parse_json=True,
+        )
+        capture_hash = entry["capture"].get("sha256")
+        if acquisition.get("capture_sha256") != capture_hash:
+            raise NormalizationError(f"{attempt_id}: acquisition capture hash mismatch")
+        if acquisition.get("raw_tool_response_sha256") != raw_hash:
+            raise NormalizationError(f"{attempt_id}: acquisition raw hash mismatch")
+        artifact_type = acquisition.get("artifact_type")
+        if artifact_type == "company-benefits-search-tool-acquisition":
+            query_id = acquisition.get("query_id")
+            expected_query_ids = {
+                receipt.get("query_or_locator"),
+                f"search-query::{receipt.get('company_id')}::{receipt.get('category_id')}::{receipt.get('route_id')}",
+                f"search-query::{receipt.get('company_id')}::broad::{receipt.get('route_id')}",
+            }
+            if (
+                query_id not in expected_query_ids
+                or acquisition_record.get("query_id") != query_id
+                or capture.get("executed_query") != receipt.get("query_or_locator")
+            ):
+                raise NormalizationError(f"{attempt_id}: search query semantics mismatch")
+        elif artifact_type == "company-benefits-direct-page-acquisition":
+            locator = receipt.get("query_or_locator")
+            if (
+                acquisition.get("locator") != locator
+                or acquisition_record.get("locator") != locator
+                or capture.get("locator") != locator
+            ):
+                raise NormalizationError(f"{attempt_id}: direct query semantics mismatch")
+        else:
+            raise NormalizationError(f"{attempt_id}: unsupported acquisition artifact type")
 
 
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
@@ -540,15 +630,13 @@ def materialize_package(
         if preferred_capture is not None:
             copied = copy_immutable(preferred_capture, output, "artifacts/captures")
             capture_record = {"path": copied.relative_path, "sha256": copied.sha256}
+        elif acquisition is not None:
+            raise NormalizationError(
+                f"{attempt_id}: acquisition-bound immutable capture bytes not found"
+            )
         elif capture_candidates:
             copied = copy_immutable(capture_candidates[0], output, "artifacts/captures")
             capture_record = {"path": copied.relative_path, "sha256": copied.sha256}
-        elif acquisition is not None:
-            capture_hash = acquisition.payload.get("capture_sha256")
-            capture_path = index.files_by_sha256.get(capture_hash)
-            if capture_path is not None:
-                copied = copy_immutable(capture_path, output, "artifacts/captures")
-                capture_record = {"path": copied.relative_path, "sha256": copied.sha256}
         if capture_record is None:
             raise NormalizationError(f"{attempt_id}: immutable capture bytes not found")
         closure_attempts.append(
@@ -594,6 +682,7 @@ def materialize_package(
     closure_path = output / "external-closure-manifest.json"
     closure_path.write_bytes(canonical_bytes(closure, newline=True))
     closure_path.chmod(0o600)
+    verify_external_closure(output, closure)
     report = {
         "batch_id": batch_id,
         "unit_id": unit_id,

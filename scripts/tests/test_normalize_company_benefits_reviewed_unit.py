@@ -117,6 +117,30 @@ class NormalizePayloadTests(unittest.TestCase):
 
 
 class ClosureTests(unittest.TestCase):
+    def test_search_acquisition_capture_is_preferred_over_same_attempt_direct_capture(self):
+        search_capture = Path("search-capture.json")
+        direct_capture = Path("direct-capture.json")
+        search = normalizer.AcquisitionReceipt(
+            Path("search-receipt.json"),
+            {
+                "artifact_type": "company-benefits-search-tool-acquisition",
+                "capture_sha256": "1" * 64,
+            },
+            "3" * 64,
+        )
+        index = normalizer.AcquisitionIndex(
+            files_by_sha256={
+                "1" * 64: search_capture,
+                "2" * 64: direct_capture,
+            },
+            json_by_attempt={"attempt::shared": [direct_capture, search_capture]},
+        )
+
+        self.assertEqual(
+            search_capture,
+            normalizer._preferred_acquisition_capture(index, search),
+        )
+
     def test_direct_v2_acquisition_closes_cell_local_direct_source_attempt(self):
         locator = "https://www.teamblind.com/kr/company/example/review/XZ7yK9vq6"
         receipt = {
@@ -162,6 +186,129 @@ class ClosureTests(unittest.TestCase):
             Path("direct-capture.json"),
             normalizer._preferred_acquisition_capture(index, direct),
         )
+
+    def test_external_closure_rejects_acquisition_capture_hash_mismatch(self):
+        root, closure = self._closure_fixture()
+        self.addCleanup(root.cleanup)
+        acquisition_path = Path(root.name) / closure["attempts"][0]["acquisition_receipt"]["path"]
+        acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
+        acquisition["capture_sha256"] = "f" * 64
+        acquisition_path.write_text(json.dumps(acquisition), encoding="utf-8")
+        closure["attempts"][0]["acquisition_receipt"]["sha256"] = hashlib.sha256(
+            acquisition_path.read_bytes()
+        ).hexdigest()
+
+        with self.assertRaisesRegex(normalizer.NormalizationError, "acquisition capture hash mismatch"):
+            normalizer.verify_external_closure(Path(root.name), closure)
+
+    def test_external_closure_rejects_capture_raw_hash_mismatch(self):
+        root, closure = self._closure_fixture()
+        self.addCleanup(root.cleanup)
+        capture_path = Path(root.name) / closure["attempts"][0]["capture"]["path"]
+        capture = json.loads(capture_path.read_text(encoding="utf-8"))
+        capture["raw_tool_response_sha256"] = "f" * 64
+        capture_path.write_text(json.dumps(capture), encoding="utf-8")
+        closure["attempts"][0]["capture"]["sha256"] = hashlib.sha256(
+            capture_path.read_bytes()
+        ).hexdigest()
+        acquisition_path = Path(root.name) / closure["attempts"][0]["acquisition_receipt"]["path"]
+        acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
+        acquisition["capture_sha256"] = closure["attempts"][0]["capture"]["sha256"]
+        acquisition_path.write_text(json.dumps(acquisition), encoding="utf-8")
+        closure["attempts"][0]["acquisition_receipt"]["sha256"] = hashlib.sha256(
+            acquisition_path.read_bytes()
+        ).hexdigest()
+
+        with self.assertRaisesRegex(normalizer.NormalizationError, "capture raw hash mismatch"):
+            normalizer.verify_external_closure(Path(root.name), closure)
+
+    def test_external_closure_rejects_search_query_semantics_mismatch(self):
+        root, closure = self._closure_fixture()
+        self.addCleanup(root.cleanup)
+        capture_path = Path(root.name) / closure["attempts"][0]["capture"]["path"]
+        capture = json.loads(capture_path.read_text(encoding="utf-8"))
+        capture["executed_query"] = "different query"
+        capture_path.write_text(json.dumps(capture), encoding="utf-8")
+        closure["attempts"][0]["capture"]["sha256"] = hashlib.sha256(
+            capture_path.read_bytes()
+        ).hexdigest()
+        acquisition_path = Path(root.name) / closure["attempts"][0]["acquisition_receipt"]["path"]
+        acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
+        acquisition["capture_sha256"] = closure["attempts"][0]["capture"]["sha256"]
+        acquisition_path.write_text(json.dumps(acquisition), encoding="utf-8")
+        closure["attempts"][0]["acquisition_receipt"]["sha256"] = hashlib.sha256(
+            acquisition_path.read_bytes()
+        ).hexdigest()
+
+        with self.assertRaisesRegex(normalizer.NormalizationError, "query semantics mismatch"):
+            normalizer.verify_external_closure(Path(root.name), closure)
+
+    def _closure_fixture(self):
+        temporary = tempfile.TemporaryDirectory()
+        root = Path(temporary.name)
+        paths = {
+            "receipt": root / "artifacts/attempt-receipts/attempt.json",
+            "acquisition": root / "artifacts/acquisition-receipts/acquisition.json",
+            "capture": root / "artifacts/captures/capture.json",
+            "raw": root / "artifacts/raw/raw.bin",
+        }
+        for path in paths.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        raw = b"raw search response"
+        raw_hash = hashlib.sha256(raw).hexdigest()
+        paths["raw"].write_bytes(raw)
+        receipt = {
+            "attempt_id": "attempt::company::leave::other-public-web",
+            "cell_id": "cell::company::leave",
+            "company_id": "company",
+            "category_id": "leave",
+            "route_id": "other-public-web",
+            "query_or_locator": "company leave benefits",
+            "raw_response_sha256": raw_hash,
+        }
+        capture = {
+            "attempt_id": receipt["attempt_id"],
+            "cell_id": receipt["cell_id"],
+            "route_id": receipt["route_id"],
+            "executed_query": receipt["query_or_locator"],
+            "raw_tool_response_sha256": raw_hash,
+        }
+        paths["receipt"].write_text(json.dumps(receipt), encoding="utf-8")
+        paths["capture"].write_text(json.dumps(capture), encoding="utf-8")
+        capture_hash = hashlib.sha256(paths["capture"].read_bytes()).hexdigest()
+        acquisition = {
+            "artifact_type": "company-benefits-search-tool-acquisition",
+            "format_version": 2,
+            "query_id": "search-query::company::leave::other-public-web",
+            "capture_sha256": capture_hash,
+            "raw_tool_response_sha256": raw_hash,
+        }
+        paths["acquisition"].write_text(json.dumps(acquisition), encoding="utf-8")
+        closure = {
+            "attempts": [{
+                "attempt_id": receipt["attempt_id"],
+                "receipt": {
+                    "path": paths["receipt"].relative_to(root).as_posix(),
+                    "sha256": hashlib.sha256(paths["receipt"].read_bytes()).hexdigest(),
+                },
+                "acquisition_receipt": {
+                    "path": paths["acquisition"].relative_to(root).as_posix(),
+                    "sha256": hashlib.sha256(paths["acquisition"].read_bytes()).hexdigest(),
+                    "artifact_type": acquisition["artifact_type"],
+                    "query_id": acquisition["query_id"],
+                    "locator": None,
+                },
+                "capture": {
+                    "path": paths["capture"].relative_to(root).as_posix(),
+                    "sha256": capture_hash,
+                },
+                "raw": {
+                    "path": paths["raw"].relative_to(root).as_posix(),
+                    "sha256": raw_hash,
+                },
+            }]
+        }
+        return temporary, closure
 
     def test_acquisition_index_rejects_declared_wrapper_hash_and_uses_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
