@@ -10,7 +10,8 @@ const globalLinks = [
 ] as const
 
 export function AppHeader() {
-  const onBenefitsRoute = window.location.pathname.startsWith('/community/benefits/')
+  const pathname = window.location.pathname
+  const onBenefitsRoute = pathname === '/community/benefits' || pathname.startsWith('/community/benefits/')
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileNavigation, setMobileNavigation] = useState(() => window.matchMedia?.('(max-width: 1023px)').matches ?? true)
   const toggleRef = useRef<HTMLButtonElement>(null)

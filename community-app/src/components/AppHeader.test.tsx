@@ -100,6 +100,7 @@ describe('AppHeader global shell', () => {
   })
 
   it.each([
+    '/community/benefits',
     '/community/benefits/',
     '/community/benefits/fit/',
     '/community/benefits/company/',
