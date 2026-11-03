@@ -429,7 +429,15 @@ def _capture_research_tree(root):
             continue
         relative = path.relative_to(root)
         snapshot[relative] = _capture_regular_file(path, relative.as_posix())
-    current = {path.relative_to(root) for path in root.rglob("*") if path.is_file() and not path.is_symlink()}
+    current = set()
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"publication research snapshot rejects symlink: {path.relative_to(root)}")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(root)
+        _capture_regular_file(path, relative.as_posix())
+        current.add(relative)
     if current != set(snapshot):
         raise ValueError("publication research tree changed while snapshotting")
     for relative, (raw, mode) in snapshot.items():
@@ -453,6 +461,9 @@ def publication_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
     root = Path(research_root)
     series = load_verifier().company_benefits_series
     snapshot = _capture_research_tree(root)
+    policy_relative = Path("research-coverage-policies.json")
+    if policy_relative not in snapshot:
+        raise ValueError("publication snapshot is missing research-coverage-policies.json")
     progress_relative = Path("series-progress.json")
     if progress_relative not in snapshot:
         raise ValueError("publication snapshot is missing series-progress.json")

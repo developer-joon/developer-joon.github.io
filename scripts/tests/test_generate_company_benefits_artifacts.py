@@ -4,6 +4,7 @@ import importlib.util
 import inspect
 import io
 import json
+import os
 import shutil
 import tempfile
 import time
@@ -753,6 +754,41 @@ def test_publication_gate_validates_the_captured_coverage_policy_without_canonic
             module.publication_gate(
                 research, TAXONOMY, module.date(2026, 10, 31), None, None,
             )
+
+    make_research_fixture(research)
+    (research / "research-coverage-policies.json").unlink()
+    with mock.patch.object(module, "verify_active_ledgers", return_value=None):
+        with raises(ValueError):
+            module.publication_gate(
+                research, TAXONOMY, module.date(2026, 10, 31), None, None,
+            )
+
+
+def test_research_snapshot_rejects_symlink_or_fifo_added_between_tree_scans(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("publication_gate_tree_race", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+
+    for kind in ("symlink", "fifo"):
+        root = tmp_path / kind
+        root.mkdir()
+        (root / "stable.json").write_bytes(b'{}\n')
+        real_rglob = module.Path.rglob
+        calls = 0
+
+        def raced_rglob(self, pattern):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                late = root / f"late-{kind}"
+                if kind == "symlink":
+                    late.symlink_to(root / "stable.json")
+                else:
+                    os.mkfifo(late)
+            return real_rglob(self, pattern)
+
+        with mock.patch.object(module.Path, "rglob", raced_rglob), raises(ValueError):
+            module._capture_research_tree(root)
 
 
 def test_publication_gate_runs_authoritative_verifier_against_complete_snapshot_and_receipts(tmp_path):
