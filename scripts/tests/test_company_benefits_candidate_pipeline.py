@@ -645,6 +645,74 @@ class CandidatePipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "identity|benefit|claim"):
             self.validator.validate_candidate(self.candidate, self.root)
 
+    def frozen_current_check(self):
+        self.sources[0]["access_observation"] = {"status": 403, "final_url": self.sources[0]["url"],
+                                                 "access_wall": "bot_or_network_block"}
+        raw = jsonl_bytes(self.sources)
+        (self.root / "source-registry.jsonl").write_bytes(raw)
+        self.write_candidate()
+        return {"source_id": self.sources[0]["source_id"], "url": self.sources[0]["url"],
+                "status": 200, "final_url": self.sources[0]["url"], "access_wall": "none",
+                "checked_at": "2026-10-30T03:00:00Z",
+                "compatibility_projection": {"algorithm": "immutable-legacy-source-v1",
+                                             "legacy_record_sha256": digest(raw)}}
+
+    def test_frozen_bot_block_accepts_fresh_check_with_explicit_audit(self):
+        check = self.frozen_current_check()
+        frozen = (self.root / "source-registry.jsonl").read_bytes()
+        self.write_review_bundle(checks=[check])
+        self.promoter.promote(self.candidate, self.review, self.output, self.root)
+        self.assertEqual(frozen, (self.output / "sources.jsonl").read_bytes())
+        self.assertEqual(frozen, (self.root / "source-registry.jsonl").read_bytes())
+
+    def test_frozen_check_rejects_absent_or_forged_projection(self):
+        for mode in ("absent", "forged", "unanchored"):
+            check = self.frozen_current_check()
+            if mode == "absent":
+                del check["compatibility_projection"]
+            elif mode == "forged":
+                check["compatibility_projection"]["legacy_record_sha256"] = "0" * 64
+            else:
+                (self.root / "source-registry.jsonl").write_bytes(b"")
+            self.write_review_bundle(checks=[check])
+            with self.assertRaises(ValueError):
+                self.promoter.promote(self.candidate, self.review, self.output, self.root)
+
+    def test_frozen_source_rejects_nonvolatile_and_byte_changes(self):
+        self.frozen_current_check()
+        self.sources[0]["owner"] = "Changed owner"
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "legacy|frozen"):
+            self.validator.validate_candidate(self.candidate, self.root)
+        self.frozen_current_check()
+        path = self.root / "source-registry.jsonl"
+        path.write_text(json.dumps(self.sources[0]) + "\n")
+        with self.assertRaisesRegex(ValueError, "legacy|frozen"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_compiler_preserves_frozen_source_and_rejects_mutation(self):
+        self.frozen_current_check()
+        self.test_scratch_compiler_is_separate_and_deterministic()
+        frozen = (self.root / "source-registry.jsonl").read_bytes()
+        compiled = Path(self.tmp.name) / "compiled"
+        self.assertEqual(frozen, (compiled / "sources.jsonl").read_bytes())
+        scratch = Path(self.tmp.name) / "scratch"
+        mutated = dict(self.sources[0], owner="Changed owner")
+        (scratch / "sources.jsonl").write_bytes(jsonl_bytes([mutated]))
+        with self.assertRaisesRegex(ValueError, "legacy|frozen"):
+            self.compiler.compile_candidate(scratch, compiled, self.root)
+        self.assertEqual(frozen, (compiled / "sources.jsonl").read_bytes())
+
+    def test_frozen_current_check_rejects_inconsistent_metadata(self):
+        for updates in ({"access_wall": "bot_or_network_block"}, {"status": None},
+                        {"final_url": "http://insecure.example"}, {"status": True}, {"status": 999},
+                        {"access_wall": []}, {"final_url": "https://"}):
+            check = self.frozen_current_check()
+            check.update(updates)
+            self.write_review_bundle(checks=[check])
+            with self.assertRaises(ValueError):
+                self.promoter.promote(self.candidate, self.review, self.output, self.root)
+
     def test_metadata_gap_accepts_exact_failed_observation_but_not_mutation(self):
         self.sources[0]["access_observation"] = {"status": 403, "final_url": self.sources[0]["url"],
                                                  "access_wall": "bot_or_network_block"}

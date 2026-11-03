@@ -351,8 +351,11 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
     check_map = _unique_map(records["checks.jsonl"], "source_id", "checks")
     if set(check_map) != expected_source_ids:
         raise ValueError("checks must bind every used official source_id exactly once")
+    legacy_sources = verifier.company_benefits_series.frozen_source_records(research_root)
     for source_id, check in check_map.items():
-        verifier.company_benefits_series.validate_source_check(check, source_map[source_id])
+        verifier.company_benefits_series.validate_source_check(
+            check, source_map[source_id],
+            legacy_sources.get(source_id))
     latest_review_by_source_id = {}
     for claim in claims:
         reviewed = parse_timestamp(review_map[claim["claim_id"]].get("reviewed_at"), "reviewed_at")

@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 MANIFEST_VERSION = "1"
 SCOPES = ("domestic", "international")
@@ -326,14 +327,56 @@ def validate_identity_source(source):
         raise ValueError("official identity projection is restricted to official entity identity fields")
 
 
-def validate_source_check(check, source):
-    """Validate one post-review check against one exact source_id tuple."""
+def frozen_source_records(root):
+    """Index exact JSONL record bytes, including their line terminator."""
+    path = Path(root) / "source-registry.jsonl"
+    records = {}
+    for raw in path.read_bytes().splitlines(keepends=True) if path.is_file() else []:
+        if not raw.strip():
+            continue
+        source_id = json.loads(raw)["source_id"]
+        if source_id in records:
+            raise ValueError(f"{source_id}: duplicate frozen legacy source")
+        records[source_id] = raw
+    return records
+
+
+def validate_source_check(check, source, legacy_record=None):
+    """Validate a post-review observation without rewriting its source.
+
+    Metadata drift requires an explicit compatibility audit bound to trusted
+    frozen JSONL bytes. This grants no publication eligibility or claim evidence.
+    Callers retain responsibility for post-review timing and exact byte overlap.
+    """
     source_id = source.get("source_id")
     if check.get("source_id") != source_id or check.get("url") != source.get("url"):
         raise ValueError(f"{source_id}: post-review check source_id/URL binding mismatch")
     if source.get("record_type") == "nonpublishable_metadata":
         fields = {"source_id", "url", "status", "final_url", "access_wall", "checked_at"}
         actual = {field: check.get(field) for field in ("status", "final_url", "access_wall")}
+        projection = check.get("compatibility_projection")
+        if projection is not None:
+            expected = {"algorithm": "immutable-legacy-source-v1",
+                        "legacy_record_sha256": hashlib.sha256(legacy_record).hexdigest()
+                        if legacy_record is not None else None}
+            if (legacy_record is None or json.loads(legacy_record) != source
+                    or projection != expected or set(check) != fields | {"compatibility_projection"}):
+                raise ValueError(f"{source_id}: invalid immutable legacy compatibility projection")
+            status, final_url, wall = (check.get(key) for key in ("status", "final_url", "access_wall"))
+            walls = {"none", "api_key", "login", "fee", "contract", "bot_or_network_block"}
+            try:
+                final = urlsplit(final_url) if isinstance(final_url, str) else None
+                secure_final = final is not None and final.scheme == "https" and bool(final.hostname)
+            except ValueError:
+                secure_final = False
+            if (not isinstance(wall, str) or wall not in walls
+                    or (status is None and (final_url is not None or wall != "bot_or_network_block"))
+                    or (status is not None and (type(status) is not int or not 100 <= status <= 599
+                        or not secure_final))
+                    or (status == 200 and wall == "bot_or_network_block")
+                    or (status in {401, 403, 429} and wall == "none")):
+                raise ValueError(f"{source_id}: inconsistent current metadata observation")
+            return
         if set(check) != fields or actual != source.get("access_observation"):
             raise ValueError(f"{source_id}: metadata check must exactly match observed route failure/access semantics")
         return
@@ -1206,13 +1249,14 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
             errors.append(str(exc))
     if len(check_map) != len(checks) or set(check_map) != expected_source_ids:
         errors.append("series prepublication checks must contain one record per used official source_id")
+    legacy_sources = frozen_source_records(root)
     for source_id, check in check_map.items():
         source = source_map.get(source_id)
         if source is None:
             errors.append(f"prepublication {source_id}: orphan source_id")
             continue
         try:
-            validate_source_check(check, source)
+            validate_source_check(check, source, legacy_sources.get(source_id))
         except ValueError as exc:
             errors.append(str(exc))
         checked = parse_timestamp(check.get("checked_at"), "checked_at", f"prepublication {source_id}", errors)

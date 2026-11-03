@@ -252,6 +252,12 @@ def validate_candidate(candidate_dir, research_root):
     verifier.company_benefits_series.validate_v2_package_records(
         v2_records, batch, research_root, prepromotion=True
     )
+    legacy_sources = verifier.company_benefits_series.frozen_source_records(research_root)
+    for raw in (candidate_dir / "sources.jsonl").read_bytes().splitlines(keepends=True):
+        if raw.strip():
+            source_id = json.loads(raw).get("source_id")
+            if source_id in legacy_sources and raw != legacy_sources[source_id]:
+                raise ValueError(f"{source_id}: frozen legacy source bytes differ")
     metadata_ids = _validate_sources(records["sources.jsonl"], verifier)
     sources = {item["source_id"]: item for item in records["sources.jsonl"]}
     claims, gaps, requests = records["claims.jsonl"], records["gaps.jsonl"], records["review-requests.jsonl"]
@@ -341,6 +347,7 @@ def validate_candidate(candidate_dir, research_root):
     if requests != expected_requests or any(set(request) != REQUEST_FIELDS for request in requests):
         raise ValueError("review requests require exact one pending target per outcome in canonical order; duplicate or orphan targets are prohibited")
     return {"manifest": manifest, "batch": batch, "records": records, "targets": targets,
+            "legacy_sources": legacy_sources,
             "manifest_sha256": sha256((candidate_dir / "candidate.json").read_bytes())}
 
 

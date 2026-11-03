@@ -151,7 +151,8 @@ def validate_external_review(package, review_dir, validator):
     check_contract = verifier.company_benefits_series
     for check in checks:
         source_id = check.get("source_id")
-        check_contract.validate_source_check(check, source_map[source_id])
+        check_contract.validate_source_check(check, source_map[source_id],
+                                             package["legacy_sources"].get(source_id))
         checked = _timestamp(check.get("checked_at"), "check checked_at")
         if checked <= latest_review[source_id]:
             raise ValueError(f"{source_id}: post-review check must follow every bound independent review")
