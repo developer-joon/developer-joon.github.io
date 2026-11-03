@@ -46,6 +46,12 @@ const benefitsExplorerEntries = [
   ['benefits/company/index.html', '기업 근거 상세'],
   ['benefits/methodology/index.html', '조사 기준·정정 이력'],
 ] as const
+const benefitCorrectionSources = [
+  'src/components/benefits/BenefitsCorrectionLink.tsx',
+  'src/pages/BenefitCorrectionPage.tsx',
+  'src/pages/BenefitsCompanyPage.tsx',
+  'src/pages/BenefitsMethodologyPage.tsx',
+].map(read).join('\n')
 const shellSources = [
   'src/pages/CommunityHomePage.tsx',
   'src/pages/PostDetailPage.tsx',
@@ -519,6 +525,23 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('keeps Benefit Atlas correction CTAs on the internal workflow only', () => {
+    const companyPage = read('src/pages/BenefitsCompanyPage.tsx')
+    const methodologyPage = read('src/pages/BenefitsMethodologyPage.tsx')
+    const correctionLink = read('src/components/benefits/BenefitsCorrectionLink.tsx')
+
+    expect(companyPage).toContain('<BenefitsCorrectionLink')
+    expect(methodologyPage).toContain('<BenefitsCorrectionLink')
+    expect(correctionLink).toContain('정보 수정 요청')
+    expect(correctionLink).toContain('/community/benefits/correction/')
+    expect(benefitCorrectionSources).not.toMatch(/github(?:\.com)?|issues?\/new|issue template|template=/i)
+  })
+
+  it('keeps correction actions at the existing 56px touch target', () => {
+    expect(benefitsCss).toMatch(/\.benefits-correction-link\s*\{[^}]*min-height:\s*56px;/)
+    expect(benefitsCss).toMatch(/\.benefit-correction-form button,[\s\S]*\.benefit-corrections-list button\s*\{[^}]*min-height:\s*56px;/)
+  })
+
   it('uses the Benefit Atlas brand in every explorer document title', () => {
     for (const [path, pageTitle] of benefitsExplorerEntries) {
       const html = read(path)

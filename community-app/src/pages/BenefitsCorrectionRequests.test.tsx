@@ -72,6 +72,15 @@ describe('authenticated benefit correction', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Google로 로그인하고 요청하기' }))
     expect(value.signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, `/community/benefits/correction/?company=${company.company_id}&category=health`)
     expect(screen.queryByText('evil.example')).not.toBeInTheDocument()
+    expect(screen.getByText('Google 로그인 후 작성 중인 입력 내용은 이 기기에 임시 저장되며, 로그인 완료 뒤 이 수정 요청 화면으로 돌아옵니다.')).toBeVisible()
+  })
+
+  it('explains safe evidence, correction scope, and the separate publication decision', async () => {
+    wrap(<BenefitCorrectionPage repository={repository()} storage={storage()} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+
+    expect(await screen.findByText('개인정보, 비공개·사내 문서, 로그인해야 볼 수 있는 문서, 유료 자료는 제출하지 마세요. 공개적으로 접근 가능한 HTTPS 근거 URL이 필요합니다.')).toBeVisible()
+    expect(screen.getByText('국가·관할, 대상 법인, 직군, 고용 형태, 적용 시점·기간을 적어 주세요.')).toBeVisible()
+    expect(screen.getByText('승인은 검토 결정이며 공개 데이터가 즉시 변경되지는 않습니다. 게시는 별도의 조사·산출물(artifact) 검증과 운영자 적용을 거쳐야 합니다.')).toBeVisible()
   })
 
   it('validates canonical company/category prefills and preserves a bounded account draft', async () => {
@@ -144,6 +153,7 @@ describe('authenticated benefit correction', () => {
     expect(screen.getByRole('button', { name: '제출 중…' })).toBeDisabled()
     resolve({ ok: true, data: item })
     expect(await screen.findByRole('status')).toHaveTextContent('수정 요청이 접수되었습니다')
+    expect(screen.getByRole('link', { name: '내 수정 요청' })).toHaveAttribute('href', '/community/benefits/my-corrections/')
     expect(local.values.size).toBe(0)
   })
 

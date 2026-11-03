@@ -195,7 +195,7 @@
 }
 .benefits-correction-link {
   display: inline-flex;
-  min-height: 44px;
+  min-height: 56px;
   align-items: center;
   padding: 8px 14px;
   border: 1px solid #7ee8ce;
@@ -217,6 +217,15 @@
 }
 .benefit-correction-form { display: grid; gap: 20px; }
 .benefit-correction-form label { display: grid; gap: 8px; color: #d8e9fc; font-weight: 700; }
+.benefit-correction-warning,
+.benefit-correction-review-note {
+  padding: 12px 14px;
+  border-left: 3px solid #7ee8ce;
+  background: #091426;
+  overflow-wrap: anywhere;
+}
+.benefit-correction-warning { border-left-color: #ffc45c; color: #ffe4a4; }
+.benefit-correction-field-help { margin: -14px 0 0; color: #b9cbe0; font-size: 13px; }
 .benefit-correction-form input,
 .benefit-correction-form select,
 .benefit-correction-form textarea {
@@ -232,7 +241,7 @@
 .benefit-correction-form input[readonly] { color: #b9cbe0; }
 .benefit-correction-form button,
 .benefit-correction-gate button,
-.benefit-corrections-list button { min-height: 52px; padding: 12px 18px; }
+.benefit-corrections-list button { min-height: 56px; padding: 12px 18px; }
 .benefit-corrections-list { display: grid; gap: 16px; }
 .benefit-correction-card { border: 1px solid #30425c; background: #091426; padding: 18px; overflow-wrap: anywhere; }
 .benefit-correction-card header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; color: #7ee8ce; }
