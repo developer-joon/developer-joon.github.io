@@ -184,10 +184,57 @@ function isSafeSvgPoints(value: string) {
 }
 
 function isSafeSvgPath(value: string) {
-  if (!/[AaCcHhLlMmQqSsTtVvZz]/.test(value)) return false
-  if (!new RegExp(`^(?:[AaCcHhLlMmQqSsTtVvZz]|${svgDecimalSource}|[ ,])+$`).test(value)) return false
-  return [...value.matchAll(new RegExp(svgDecimalSource, 'g'))]
-    .every((match) => isBoundedSvgDecimal(match[0], -maxSvgCoordinate, maxSvgCoordinate))
+  const decimalAtCursor = new RegExp(svgDecimalSource, 'y')
+  let cursor = 0
+
+  const skipSpaces = () => {
+    while (value[cursor] === ' ') cursor += 1
+  }
+  const readDecimal = () => {
+    decimalAtCursor.lastIndex = cursor
+    const match = decimalAtCursor.exec(value)
+    if (!match || !isBoundedSvgDecimal(match[0], -maxSvgCoordinate, maxSvgCoordinate)) return false
+    cursor = decimalAtCursor.lastIndex
+    return true
+  }
+  const readSeparator = () => {
+    const start = cursor
+    skipSpaces()
+    if (value[cursor] === ',') {
+      cursor += 1
+      skipSpaces()
+      return true
+    }
+    return cursor > start
+  }
+  const readCoordinate = (separatorRequired = false) => {
+    if (separatorRequired) {
+      if (!readSeparator()) return false
+    } else {
+      skipSpaces()
+    }
+    return readDecimal()
+  }
+
+  skipSpaces()
+  if (value[cursor] !== 'M') return false
+  cursor += 1
+  if (!readCoordinate() || !readCoordinate(true)) return false
+  skipSpaces()
+
+  let cubicSegments = 0
+  while (cursor < value.length) {
+    if (value[cursor] !== 'C') return false
+    cursor += 1
+    if (!readCoordinate()) return false
+    for (let coordinate = 1; coordinate < 6; coordinate += 1) {
+      if (!readCoordinate(true)) return false
+    }
+    cubicSegments += 1
+    skipSpaces()
+  }
+
+  return cubicSegments > 0
 }
 
 function isSafeSvgAttributeValue(attribute: string, value: string) {
@@ -523,6 +570,31 @@ describe('shared shell contract', () => {
     ['paint control character', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="#071725\u0001"/></svg>'],
   ])('rejects decorative SVG mutations containing %s', (_label, mutation) => {
     expect(validateDecorativeSvg(mutation)).not.toEqual([])
+  })
+
+  it.each([
+    ['missing M coordinate', 'M0'],
+    ['truncated C segment', 'M0 0 C1 2 3'],
+    ['coordinates after Z', 'Z 1 2'],
+    ['arc with an invalid flag', 'M0 0 A1 1 0 2 0 3 3'],
+    ['unsupported L command', 'M0 0 L1 1'],
+    ['unsupported A command', 'M0 0 A1 1 0 0 0 3 3'],
+    ['unsupported Z command', 'M0 0 C1 2 3 4 5 6 Z'],
+    ['missing all M coordinates', 'M C1 2 3 4 5 6'],
+    ['extra number after C segment', 'M0 0 C1 2 3 4 5 6 7'],
+    ['multiple M commands', 'M0 0 C1 2 3 4 5 6 M7 8 C9 10 11 12 13 14'],
+    ['M command after C', 'C1 2 3 4 5 6 M0 0'],
+    ['empty C segment', 'M0 0 C'],
+    ['repeated comma separator', 'M0,,0 C1 2 3 4 5 6'],
+    ['comma before C command', 'M0 0,C1 2 3 4 5 6'],
+    ['missing numeric separator', 'M0 0 C1 2 3 4 5-6'],
+  ])('rejects decorative SVG path grammar mutation: %s', (_label, path) => {
+    const mutation = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="${path}"/></svg>`
+    expect(validateDecorativeSvg(mutation)).not.toEqual([])
+  })
+
+  it('accepts the local M-plus-cubic-C path grammar with comma or space separators', () => {
+    expect(isSafeSvgPath('M0,0 C1,2 3,4 5,6 C7 8 9 10 11 12')).toBe(true)
   })
 
   it.each([
