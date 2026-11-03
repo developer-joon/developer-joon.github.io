@@ -10,6 +10,7 @@ import re
 import stat
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 CANDIDATE_FILES = ("sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl")
 V2_FILES = (
@@ -22,7 +23,11 @@ HASH = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_FIELDS = {"request_id", "target_type", "target_id", "researcher_id", "status"}
 GAP_FIELDS = {"audit_id", "company_id", "disposition", "reason", "searched_official_source_ids",
               "searched_official_urls", "nonabsence_wording", "researcher_id"}
-LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:[\\/]|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
+LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:\\|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
+FILESYSTEM_ROOTS = {
+    "bin", "boot", "dev", "etc", "home", "lib", "lib64", "media", "mnt", "opt",
+    "private", "proc", "root", "run", "sbin", "srv", "sys", "tmp", "users", "usr", "var",
+}
 
 
 def sha256(data):
@@ -60,8 +65,35 @@ def _unique(records, field, label):
         raise ValueError(f"{label} requires unique nonempty {field}; duplicate IDs are prohibited")
 
 
+def _unsafe_root_relative_path(value):
+    if not value.startswith("/"):
+        return False
+    if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+        return True
+    decoded = re.split(r"[\s)\]]", value, maxsplit=1)[0]
+    while True:
+        try:
+            expanded = unquote(decoded, errors="strict")
+        except UnicodeDecodeError:
+            return True
+        if expanded == decoded:
+            break
+        decoded = expanded
+    if decoded.startswith("//") or "\\" in decoded or ":" in decoded:
+        return True
+    if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in decoded):
+        return True
+    segments = decoded.split("/")[1:]
+    if ".." in segments:
+        return True
+    normalized = [segment for segment in segments if segment not in ("", ".")]
+    return not normalized or normalized[0].casefold() in FILESYSTEM_ROOTS
+
+
 def _reject_local_absolute_paths(value, location="package"):
-    if isinstance(value, str) and LOCAL_ABSOLUTE_PATH.match(value):
+    if isinstance(value, str) and (
+        LOCAL_ABSOLUTE_PATH.match(value) or _unsafe_root_relative_path(value)
+    ):
         raise ValueError(f"{location}: local absolute path is prohibited")
     if isinstance(value, dict):
         for key, child in value.items():

@@ -363,12 +363,65 @@ class CandidatePipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlink"):
             self.validator.validate_candidate(aliased_candidate, self.root)
 
+    def test_candidate_allows_root_relative_web_asset_paths(self):
+        for path in (
+            "/btn_programInfo01.png",
+            "/images/foo.svg",
+            "/images/icons/v1.2/foo.svg",
+            "/btn_programInfo01.png)](/health/contents.do) [more](https://example.com)",
+        ):
+            with self.subTest(path=path):
+                self.validator._reject_local_absolute_paths(path)
+
+    def test_candidate_rejects_root_relative_filesystem_and_traversal_bypasses(self):
+        for path in (
+            "/bin",
+            "/sbin",
+            "/dev",
+            "/proc",
+            "/sys",
+            "/run",
+            "/srv",
+            "/mnt",
+            "/media",
+            "/boot",
+            "/lib",
+            "/lib64",
+            "/bin/sh",
+            "/dev/null",
+            "/proc/self/environ",
+            "/sys/kernel",
+            "/run/secrets/x",
+            "//server/share/x",
+            "/images/../../etc/passwd",
+            "/images/%2e%2e/etc/passwd",
+            "/%65tc/passwd",
+            "/%2fserver/share",
+            r"/images\private.png",
+            "/images:private.png",
+            "/images/\x00private.png",
+        ):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                ValueError, "local absolute path"
+            ):
+                self.validator._reject_local_absolute_paths(path)
+
     def test_candidate_rejects_local_absolute_paths_in_package_fields(self):
         for path in (
-            "/home/researcher/private/capture.html",
+            "/",
+            "/home/bread",
+            "/etc/passwd",
+            "/tmp/private/capture.html",
+            "/var/tmp/capture.html",
+            "/usr/local/bin/tool",
+            "/opt/tool/capture.html",
+            "/root/private/capture.html",
+            "/Users/researcher/private/capture.html",
+            "/private/capture.html",
             r"\private\capture.html",
             r"\\server\share\capture.html",
             r"C:\\Users\\researcher\\capture.html",
+            "file:///",
             "file:///home/researcher/capture.html",
             "FILE:///home/researcher/capture.html",
         ):
