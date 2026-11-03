@@ -138,22 +138,74 @@ function contrastRatio(foreground: string, background: string) {
 
 const allowedSvgAttributes: Record<string, readonly string[]> = {
   svg: ['xmlns', 'viewBox', 'fill'],
-  rect: ['width', 'height', 'fill'],
+  rect: ['width', 'height', 'rx', 'ry', 'fill'],
   path: ['d', 'stroke', 'stroke-width'],
   polyline: ['points', 'stroke', 'stroke-width', 'opacity'],
   line: ['x1', 'y1', 'x2', 'y2', 'stroke', 'stroke-width', 'opacity'],
   circle: ['cx', 'cy', 'r', 'fill', 'opacity'],
 }
 
+const requiredSvgAttributes: Record<string, readonly string[]> = {
+  svg: ['xmlns', 'viewBox'],
+  rect: ['width', 'height'],
+  path: ['d'],
+  polyline: ['points'],
+  line: ['x1', 'y1', 'x2', 'y2'],
+  circle: ['cx', 'cy', 'r'],
+}
+
+const svgDecimalSource = '-?(?:0|[1-9]\\d*)(?:\\.\\d+)?'
+const safeSvgDecimal = new RegExp(`^${svgDecimalSource}$`)
 const safeSvgPaintValue = /^(?:none|#[0-9a-f]{6})$/i
 const safeSvgOpacityValue = /^(?:0(?:\.\d{1,2})?|1(?:\.0{1,2})?)$/
-const safeSvgStrokeWidthValue = /^(?:[1-9](?:\.\d{1,2})?|10(?:\.0{1,2})?)$/
+const maxSvgCoordinate = 10_000
+const maxSvgStrokeWidth = 10
+
+function isBoundedSvgDecimal(value: string, minimum: number, maximum: number, minimumIsExclusive = false) {
+  if (!safeSvgDecimal.test(value)) return false
+  const number = Number(value)
+  return Number.isFinite(number) && (minimumIsExclusive ? number > minimum : number >= minimum) && number <= maximum
+}
+
+function isSafeSvgViewBox(value: string) {
+  const match = value.match(new RegExp(`^(${svgDecimalSource}) +(${svgDecimalSource}) +(${svgDecimalSource}) +(${svgDecimalSource})$`))
+  return Boolean(match
+    && isBoundedSvgDecimal(match[1], -maxSvgCoordinate, maxSvgCoordinate)
+    && isBoundedSvgDecimal(match[2], -maxSvgCoordinate, maxSvgCoordinate)
+    && isBoundedSvgDecimal(match[3], 0, maxSvgCoordinate, true)
+    && isBoundedSvgDecimal(match[4], 0, maxSvgCoordinate, true))
+}
+
+function isSafeSvgPoints(value: string) {
+  const pointList = new RegExp(`^${svgDecimalSource},${svgDecimalSource}(?: +${svgDecimalSource},${svgDecimalSource})*$`)
+  return pointList.test(value)
+    && [...value.matchAll(new RegExp(svgDecimalSource, 'g'))]
+      .every((match) => isBoundedSvgDecimal(match[0], -maxSvgCoordinate, maxSvgCoordinate))
+}
+
+function isSafeSvgPath(value: string) {
+  if (!/[AaCcHhLlMmQqSsTtVvZz]/.test(value)) return false
+  if (!new RegExp(`^(?:[AaCcHhLlMmQqSsTtVvZz]|${svgDecimalSource}|[ ,])+$`).test(value)) return false
+  return [...value.matchAll(new RegExp(svgDecimalSource, 'g'))]
+    .every((match) => isBoundedSvgDecimal(match[0], -maxSvgCoordinate, maxSvgCoordinate))
+}
 
 function isSafeSvgAttributeValue(attribute: string, value: string) {
+  if (attribute === 'xmlns') return value === 'http://www.w3.org/2000/svg'
+  if (attribute === 'viewBox') return isSafeSvgViewBox(value)
   if (attribute === 'fill' || attribute === 'stroke') return safeSvgPaintValue.test(value)
   if (attribute === 'opacity') return safeSvgOpacityValue.test(value)
-  if (attribute === 'stroke-width') return safeSvgStrokeWidthValue.test(value)
-  return true
+  if (attribute === 'stroke-width') return isBoundedSvgDecimal(value, 0, maxSvgStrokeWidth, true)
+  if (attribute === 'width' || attribute === 'height' || attribute === 'r') {
+    return isBoundedSvgDecimal(value, 0, maxSvgCoordinate, true)
+  }
+  if (attribute === 'rx' || attribute === 'ry') return isBoundedSvgDecimal(value, 0, maxSvgCoordinate)
+  if (['x1', 'y1', 'x2', 'y2', 'cx', 'cy'].includes(attribute)) {
+    return isBoundedSvgDecimal(value, -maxSvgCoordinate, maxSvgCoordinate)
+  }
+  if (attribute === 'points') return isSafeSvgPoints(value)
+  if (attribute === 'd') return isSafeSvgPath(value)
+  return false
 }
 
 function validateDecorativeSvg(svg: string) {
@@ -199,6 +251,10 @@ function validateDecorativeSvg(svg: string) {
       if (!isSafeSvgAttributeValue(attribute, value)) errors.push(`attribute value not allowed for ${attribute}: ${value}`)
       if (seenAttributes.has(attribute)) errors.push(`duplicate attribute on ${element}: ${attribute}`)
       seenAttributes.add(attribute)
+    }
+
+    for (const requiredAttribute of requiredSvgAttributes[element]) {
+      if (!seenAttributes.has(requiredAttribute)) errors.push(`missing required attribute on ${element}: ${requiredAttribute}`)
     }
 
     if (!tag.endsWith('/>')) openElements.push(element)
@@ -466,6 +522,48 @@ describe('shared shell contract', () => {
     ['arbitrary paint token', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="red"/></svg>'],
     ['paint control character', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="#071725\u0001"/></svg>'],
   ])('rejects decorative SVG mutations containing %s', (_label, mutation) => {
+    expect(validateDecorativeSvg(mutation)).not.toEqual([])
+  })
+
+  it.each([
+    ['missing xmlns', '<svg viewBox="0 0 10 10"><path d="M0 0"/></svg>'],
+    ['wrong xmlns', '<svg xmlns="https://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0"/></svg>'],
+    ['duplicate xmlns', '<svg xmlns="http://www.w3.org/2000/svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0"/></svg>'],
+    ['missing viewBox', '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'],
+    ['malformed viewBox', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="not a viewbox"><path d="M0 0"/></svg>'],
+    ['zero viewBox width', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 0 10"><path d="M0 0"/></svg>'],
+    ['negative viewBox height', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 -1"><path d="M0 0"/></svg>'],
+    ['negative width', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="-1" height="1"/></svg>'],
+    ['zero height', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1" height="0"/></svg>'],
+    ['non-finite height', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1" height="Infinity"/></svg>'],
+    ['functional width', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="calc(1)" height="1"/></svg>'],
+    ['negative rx', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1" height="1" rx="-1"/></svg>'],
+    ['functional ry', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1" height="1" ry="var(--r)"/></svg>'],
+    ['out-of-bounds coordinate', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="10001" y1="0" x2="1" y2="1"/></svg>'],
+    ['non-finite coordinate', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="NaN" y1="0" x2="1" y2="1"/></svg>'],
+    ['functional coordinate', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="var(--x)" cy="1" r="1"/></svg>'],
+    ['negative radius', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" cy="1" r="-1"/></svg>'],
+    ['non-finite radius', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" cy="1" r="Infinity"/></svg>'],
+    ['functional radius', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" cy="1" r="calc(1)"/></svg>'],
+    ['empty points', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><polyline points=""/></svg>'],
+    ['unpaired points', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><polyline points="0,0 1"/></svg>'],
+    ['functional points', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><polyline points="0,0 calc(1),1"/></svg>'],
+    ['path prose', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="not path data"/></svg>'],
+    ['path function', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="Mcalc(1) 0"/></svg>'],
+    ['path illegal character', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0@"/></svg>'],
+    ['path control character', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0\u0001"/></svg>'],
+    ['rect missing width', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect height="1"/></svg>'],
+    ['rect missing height', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1"/></svg>'],
+    ['path missing d', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path/></svg>'],
+    ['polyline missing points', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><polyline/></svg>'],
+    ['line missing x1', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line y1="0" x2="1" y2="1"/></svg>'],
+    ['line missing y1', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="0" x2="1" y2="1"/></svg>'],
+    ['line missing x2', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="0" y1="0" y2="1"/></svg>'],
+    ['line missing y2', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="0" y1="0" x2="1"/></svg>'],
+    ['circle missing cx', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cy="1" r="1"/></svg>'],
+    ['circle missing cy', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" r="1"/></svg>'],
+    ['circle missing r', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" cy="1"/></svg>'],
+  ])('rejects decorative SVG root or geometry mutation: %s', (_label, mutation) => {
     expect(validateDecorativeSvg(mutation)).not.toEqual([])
   })
 
