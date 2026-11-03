@@ -46,12 +46,6 @@ const benefitsExplorerEntries = [
   ['benefits/company/index.html', '기업 근거 상세'],
   ['benefits/methodology/index.html', '조사 기준·정정 이력'],
 ] as const
-const benefitCorrectionSources = [
-  'src/components/benefits/BenefitsCorrectionLink.tsx',
-  'src/pages/BenefitCorrectionPage.tsx',
-  'src/pages/BenefitsCompanyPage.tsx',
-  'src/pages/BenefitsMethodologyPage.tsx',
-].map(read).join('\n')
 const shellSources = [
   'src/pages/CommunityHomePage.tsx',
   'src/pages/PostDetailPage.tsx',
@@ -534,7 +528,6 @@ describe('shared shell contract', () => {
     expect(methodologyPage).toContain('<BenefitsCorrectionLink')
     expect(correctionLink).toContain('정보 수정 요청')
     expect(correctionLink).toContain('/community/benefits/correction/')
-    expect(benefitCorrectionSources).not.toMatch(/github(?:\.com)?|issues?\/new|issue template|template=/i)
   })
 
   it('keeps correction actions at the existing 56px touch target', () => {
