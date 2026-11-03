@@ -16,7 +16,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 EXPECTED_SCOPES = ("domestic", "international")
 STATUS_LABELS = {
@@ -37,13 +37,38 @@ EXPECTED_PUBLICATION_FILENAMES = frozenset(
     + [f"_posts/2026-10-31-company-benefits-international-i{number:02d}.md" for number in range(1, 41)]
     + ["_posts/2026-10-31-company-benefits-verified-directory-hub.md"]
 )
-# Publication prose is capped in Unicode code points before escaping. This keeps
-# captured pages bounded while preserving deterministic, valid character cuts.
+# Publication prose is capped after escaping so emitted Markdown is bounded.
 PUBLICATION_PROSE_MAX_CHARS = 500
 V2_SOURCE_TIERS = {
     "official_government", "company_recruiting_major_media", "other_public_web",
     "community_employee_review", "user_submission",
 }
+# Reviewed literal variants complement the Korean taxonomy labels. They are a
+# publication filter only: no claim text is generated or split from these terms.
+CATEGORY_PUBLICATION_TERMS = {
+    "leave": ("유급휴가", "리프레시 휴가", "경조휴가", "연차", "휴가"),
+    "family": ("육아휴직", "출산휴가", "보육", "어린이집", "자녀", "가족 행사"),
+    "health": ("건강검진", "건강보험", "의료", "치과", "시력", "심리상담", "웰니스", "보험"),
+    "growth": ("직무교육", "학비", "등록금", "자격", "어학", "자기계발", "경력개발", "도서구입"),
+    "housing": ("주택", "주거", "기숙사", "사택", "우리사주", "주식매입", "재무복지", "법률지원"),
+    "commute": ("통근버스", "통근", "교통", "차량", "주차", "유류비", "셔틀"),
+    "remote": ("유연근무", "시차", "원격근무", "재택근무", "재택 근무", "탄력 근무"),
+    "retirement": ("퇴직연금", "퇴직저축", "퇴직금", "퇴직", "장기근속", "401(k)"),
+    "meals": ("식사", "사내식당", "구내식당", "구내 식당", "복지포인트", "동호회", "휴양", "편의시설", "선물"),
+    "inclusion": ("접근성", "합리적 편의", "포용", "다양성", "장애 지원", "돌봄", "ERG"),
+}
+PAGE_SHELL_PATTERN = re.compile(
+    r"(?i)(?:\bwindow\b|clientWidth|heightVH|\bdocument\.|javascript:|"
+    r"\bnavigation\b|\bcopyright\b|\blogin\b|\bsign[ -]?in\b|\bmenu\b|로그인|메뉴|저작권|"
+    r"<\s*(?:html|head|body|script|style|aside|nav|header|footer|img|svg)\b|"
+    r"!\[[^\]]*\]\(|https?://|(?:^|\n)\s*#{1,6}\s|\|\s*---)"
+)
+TEMPLATE_PROSE_PATTERNS = (
+    re.compile(r"(?:범주|관련)\s*복리후생.*공개\s*페이지가\s*(?:명시|열거)"),
+    re.compile(r"공개\s*복지\s*페이지가.*관련\s*항목을\s*열거"),
+    re.compile(r"관련\s*항목을\s*열거한다"),
+)
+_V2_SCHEMA_VALIDATORS = None
 
 
 def load_module(path, name):
@@ -183,16 +208,19 @@ def scope_text(claim):
     scope = claim.get("application_scope") or {}
     def joined(field):
         values = scope.get(field) or []
-        return ", ".join(str(value) for value in values) or "출처에 명시되지 않음"
+        return ", ".join(publication_plain_text(str(value)) for value in values) or "출처에 명시되지 않음"
     return (
         f"국가 {joined('countries')}; 법인 {joined('legal_entities')}; "
         f"직군 {joined('roles')}; 고용형태 {joined('employment_types')}; "
-        f"근속 조건 {scope.get('tenure_condition') or '출처에 명시되지 않음'}"
+        f"근속 조건 {publication_plain_text(str(scope.get('tenure_condition') or '출처에 명시되지 않음'))}"
     )
 
 
 def render_sources(source_ids, source_map):
-    return "".join(f"[{number}] {source_map[source_id]['url']}\n" for number, source_id in enumerate(source_ids, 1))
+    return "".join(
+        f"[{number}] {publication_source_url(source_map[source_id])}\n"
+        for number, source_id in enumerate(source_ids, 1)
+    )
 
 
 def public_check_time(value):
@@ -242,16 +270,95 @@ def _timezone_aware_timestamp(value):
 
 
 def publication_plain_text(value):
-    """Render bounded ledger prose as inert Jekyll Markdown text."""
+    """Render ledger prose as inert Jekyll Markdown within the final bound."""
     collapsed = " ".join(value.split())
-    if len(collapsed) > PUBLICATION_PROSE_MAX_CHARS:
-        collapsed = collapsed[:PUBLICATION_PROSE_MAX_CHARS - 1] + "…"
-    escaped = re.sub(r"([\\`*_\[\]()#+\-.!|])", r"\\\1", collapsed)
-    return html.escape(escaped, quote=False).replace("{", "&#123;").replace("}", "&#125;")
+    tokens = []
+    for character in collapsed:
+        if character in "{}":
+            token = f"&#{ord(character)};"
+        elif ord(character) < 32 or 127 <= ord(character) <= 159:
+            token = f"&#{ord(character)};"
+        elif character in "&<>":
+            token = html.escape(character, quote=False)
+        elif character in "\\`*_[]()#+-.!|":
+            token = "\\" + character
+        else:
+            token = character
+        tokens.append(token)
+    if sum(map(len, tokens)) <= PUBLICATION_PROSE_MAX_CHARS:
+        return "".join(tokens)
+    emitted = []
+    length = 0
+    for token in tokens:
+        if length + len(token) > PUBLICATION_PROSE_MAX_CHARS - 1:
+            break
+        emitted.append(token)
+        length += len(token)
+    return "".join(emitted) + "…"
+
+
+def publication_source_url(source):
+    """Return a deterministic inert URL without changing target semantics."""
+    url = source.get("url") if isinstance(source, dict) else None
+    if (not isinstance(url, str)
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in url)
+            or not _credential_free_https(source)):
+        raise ValueError("publication source URL is invalid")
+    return quote(url, safe=":/?#@!$&+,;=%")
+
+
+def _v2_schema_valid(ledger, value):
+    """Apply the repository's authoritative v2 JSON Schema validator."""
+    global _V2_SCHEMA_VALIDATORS
+    if _V2_SCHEMA_VALIDATORS is None:
+        validator = load_module(
+            Path(__file__).with_name("validate-benefits-v2-package.py"),
+            "benefits_v2_publication_validator",
+        )
+        errors = []
+        _V2_SCHEMA_VALIDATORS = validator._schema_validators(
+            Path(__file__).resolve().parents[1], errors
+        )
+        if errors or len(_V2_SCHEMA_VALIDATORS) != len(validator.SCHEMAS):
+            raise RuntimeError("authoritative v2 schemas are unavailable: " + "; ".join(errors))
+    try:
+        return not list(_V2_SCHEMA_VALIDATORS[ledger][1].iter_errors(value))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _same_v2_scope(record_scope, source_scope):
+    fields = ("countries", "legal_entities", "roles", "employment_types")
+    return all(
+        isinstance(record_scope, dict) and isinstance(source_scope, dict)
+        and isinstance(record_scope.get(field), list) and isinstance(source_scope.get(field), list)
+        and sorted(record_scope[field]) == sorted(source_scope[field])
+        for field in fields
+    )
+
+
+def _category_terms(category_id, taxonomy):
+    terms = set(CATEGORY_PUBLICATION_TERMS.get(category_id, ()))
+    for item in (taxonomy or {}).get("benefit_types", []):
+        if item.get("category_id") == category_id and isinstance(item.get("label_ko"), str):
+            terms.add(item["label_ko"])
+    return tuple(sorted(terms, key=lambda value: (-len(value), value)))
+
+
+def _eligible_publication_prose(value, category_id, taxonomy):
+    if (not isinstance(value, str) or not value.strip()
+            or len(value) > PUBLICATION_PROSE_MAX_CHARS
+            or any(ord(char) < 32 and char not in "\t\n\r" for char in value)
+            or any(pattern.search(value) for pattern in TEMPLATE_PROSE_PATTERNS)
+            or PAGE_SHELL_PATTERN.search(value)):
+        return False
+    folded = value.casefold()
+    return any(term.casefold() in folded for term in _category_terms(category_id, taxonomy))
 
 
 def _canonical_v2_source(source_id, source):
-    if (not isinstance(source, dict) or source.get("source_id") != source_id
+    if (not _v2_schema_valid("sources", source)
+            or not isinstance(source, dict) or source.get("source_id") != source_id
             or not re.fullmatch(r"source::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}", source_id)
             or source.get("source_tier") not in V2_SOURCE_TIERS
             or not isinstance(source.get("title"), str) or not source["title"]
@@ -274,7 +381,13 @@ def _canonical_v2_source(source_id, source):
         if (not isinstance(values, list) or not values or len(values) != len(set(values))
                 or any(not isinstance(value, str) or not value for value in values)):
             return False
-    return all(re.fullmatch(r"[A-Z]{2}", country) for country in scope["countries"])
+    if not all(re.fullmatch(r"[A-Z]{2}", country) for country in scope["countries"]):
+        return False
+    try:
+        publication_source_url(source)
+    except ValueError:
+        return False
+    return True
 
 
 def _valid_community_review(record):
@@ -296,6 +409,43 @@ def _valid_community_review(record):
         and re.fullmatch(r"[0-9a-f]{64}", snapshot["content_sha256"])
         and _timezone_aware_timestamp(snapshot.get("frozen_at"))
     )
+
+
+def _valid_v2_record_binding(evidence_class, record_id, record, cell, source):
+    ledger = {"official": "official_claims", "reference": "references",
+              "community": "community_reports"}[evidence_class]
+    if not _v2_schema_valid("cells", cell) or not _v2_schema_valid(ledger, record):
+        return False
+    if evidence_class == "official":
+        return (
+            record_id == record.get("claim_id")
+            and record.get("source_tier") == "official_government"
+            and record.get("scope_status") == source.get("scope_status") == cell.get("scope_status")
+            and record.get("conflict_status") == source.get("conflict_status")
+            and record.get("publication_eligibility") == source.get("publication_eligibility") == "eligible"
+            and _same_v2_scope(record.get("scope"), source.get("scope"))
+        )
+    source_id = record.get("source_id")
+    canonical_id = f"{evidence_class}::{record.get('company_id')}::{record.get('category_id')}::{source_id}"
+    if record_id != canonical_id:
+        return False
+    record_scope_status = (
+        record.get("scope", {}).get("status") if evidence_class == "reference"
+        else record.get("scope_status")
+    )
+    if (record.get("source_tier") != source.get("source_tier")
+            or record.get("reliability") != source.get("reliability")
+            or record.get("currentness") != source.get("currentness")
+            or record.get("conflict_status") != source.get("conflict_status")
+            or record.get("publication_eligibility") != source.get("publication_eligibility")
+            or record_scope_status != source.get("scope_status")
+            or record_scope_status != cell.get("scope_status")
+            or not _same_v2_scope(record.get("scope"), source.get("scope"))):
+        return False
+    if evidence_class == "reference":
+        return (record.get("source_locator") == source.get("url")
+                and record.get("checked_at") == source.get("retrieved_at"))
+    return _valid_community_review(record)
 
 
 def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
@@ -362,7 +512,7 @@ def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
                 or cell.get("publication_eligibility") != valid_cell_publication[cell["state"]]):
             continue
         cell_id = cell.get("cell_id")
-        if not isinstance(cell_id, str) or not cell_id:
+        if cell_id != f"cell::{company_id}::{category_id}":
             continue
         for evidence_class, ledger, cell_field, id_field, eligible_values, id_pattern in ledger_contracts:
             record_ids = cell.get(cell_field)
@@ -394,13 +544,16 @@ def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
                        or source.get("publication_eligibility") not in eligible_values
                        for source_id, source in zip(source_ids, bound_sources)):
                     continue
-                if evidence_class == "community" and not _valid_community_review(record):
+                if not _valid_v2_record_binding(
+                        evidence_class, record_id, record, cell, bound_sources[0]):
                     continue
                 statement = record.get("statement")
                 quote = record.get("supporting_quote")
-                if evidence_class == "community" and quote is None:
+                if evidence_class == "community":
                     quote = statement
-                if not isinstance(statement, str) or not statement.strip() or not isinstance(quote, str) or not quote.strip():
+                prose = (statement, quote)
+                if any(not _eligible_publication_prose(value, category_id, taxonomy)
+                       for value in prose):
                     continue
                 evidence.append({
                     "evidence_class": evidence_class, "record_id": record_id,
@@ -453,8 +606,12 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
         numbers = []
         for source_id in dict.fromkeys(source_ids):
             source = source_map.get(source_id)
-            if source is None or not str(source.get("url", "")).startswith("https://"):
-                raise ValueError(f"{source_id}: claim source is missing or not publication eligible")
+            try:
+                publication_source_url(source)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{source_id}: claim source is missing or not publication eligible"
+                ) from exc
             if source_id not in cited:
                 cited.append(source_id)
             numbers.append(cited.index(source_id) + 1)
