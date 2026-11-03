@@ -139,6 +139,95 @@ describe('Benefit Atlas correction workflow boundary', () => {
     })
   })
 
+  it('traces the renamed correction route component without classifying unrelated app imports', () => {
+    withFixture({
+      'community-app/src/App.tsx': [
+        "import { EntryPage as RoutedPage } from './pages/EntryPage'",
+        "import { BugReportPage } from './pages/BugReportPage'",
+        "export function App({ pathname }: { pathname: string }) {",
+        "  if (pathname === '/community/benefits/correction') return <RoutedPage />",
+        "  if (pathname === '/community/bug-report') return <BugReportPage />",
+        '  return null',
+        '}',
+      ].join('\n'),
+      'community-app/src/pages/EntryPage.tsx': [
+        "import { NeutralAction } from '../components/NeutralAction'",
+        'export function EntryPage() { return <NeutralAction /> }',
+      ].join('\n'),
+      'community-app/src/components/NeutralAction.tsx': 'export const NeutralAction = () => <a href="https://github.com/example/project/issues/new">Send feedback</a>\n',
+      'community-app/src/pages/BugReportPage.tsx': 'export const BugReportPage = () => <a href="https://github.com/example/project/issues/new?template=bug.yml">Report bug</a>\n',
+    }, (root) => {
+      const violations = scanCorrectionBoundary(root).violations
+
+      expect(violations).toContainEqual({
+        file: 'community-app/src/components/NeutralAction.tsx',
+        rule: 'GitHub issue creation URL',
+      })
+      expect(violations).not.toContainEqual(expect.objectContaining({
+        file: 'community-app/src/pages/BugReportPage.tsx',
+      }))
+    })
+  })
+
+  it('traces correction request routes through dynamic imports and two re-export hops', () => {
+    withFixture({
+      'community-app/src/App.tsx': [
+        "import { lazy } from 'react'",
+        "const RoutedPage = lazy(() => import('./pages/EntryPage').then(module => ({ default: module.EntryPage })))",
+        "export function App({ pathname }: { pathname: string }) {",
+        "  if (pathname === '/community/benefits/correction/requests') return <RoutedPage />",
+        '  return null',
+        '}',
+      ].join('\n'),
+      'community-app/src/pages/EntryPage.tsx': "export { RoutedPanel as EntryPage } from '../features/entry'\n",
+      'community-app/src/features/entry/index.ts': "export { NeutralPanel as RoutedPanel } from './NeutralPanel'\n",
+      'community-app/src/features/entry/NeutralPanel.tsx': 'export const NeutralPanel = () => <a href="/issues/new">Continue</a>\n',
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/features/entry/NeutralPanel.tsx',
+        rule: 'GitHub issue creation URL',
+      })
+    })
+  })
+
+  it('fails closed when a local import in the correction closure cannot be resolved', () => {
+    withFixture({
+      'community-app/src/App.tsx': [
+        "import { EntryPage } from './pages/EntryPage'",
+        "export function App({ pathname }: { pathname: string }) {",
+        "  if (pathname === '/community/benefits/correction') return <EntryPage />",
+        '  return null',
+        '}',
+      ].join('\n'),
+      'community-app/src/pages/EntryPage.tsx': [
+        "import { MissingPanel } from '../components/MissingPanel'",
+        "import { useState } from 'react'",
+        'export function EntryPage() { useState(false); return <MissingPanel /> }',
+      ].join('\n'),
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/pages/EntryPage.tsx',
+        rule: 'unresolved local import in correction module graph',
+      })
+    })
+  })
+
+  it('fails closed when a correction route component cannot be resolved', () => {
+    withFixture({
+      'community-app/src/App.tsx': [
+        "export function App({ pathname }: { pathname: string }) {",
+        "  if (pathname === '/community/benefits/correction') return <MissingPage />",
+        '  return null',
+        '}',
+      ].join('\n'),
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/App.tsx',
+        rule: 'unresolved correction route component',
+      })
+    })
+  })
+
   it.each([
     ['full GitHub issue URL', 'export const correction = "https://github.com/example/project/issues/new?template=benefit.yml"', 'GitHub issue creation URL'],
     ['correction issue wording', 'export const help = "Submit this correction with the GitHub issue template."', 'GitHub correction issue/template wording'],
