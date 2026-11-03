@@ -5,6 +5,7 @@ import argparse
 import copy
 import fcntl
 import hashlib
+import html
 import importlib.util
 import json
 import os
@@ -36,6 +37,13 @@ EXPECTED_PUBLICATION_FILENAMES = frozenset(
     + [f"_posts/2026-10-31-company-benefits-international-i{number:02d}.md" for number in range(1, 41)]
     + ["_posts/2026-10-31-company-benefits-verified-directory-hub.md"]
 )
+# Publication prose is capped in Unicode code points before escaping. This keeps
+# captured pages bounded while preserving deterministic, valid character cuts.
+PUBLICATION_PROSE_MAX_CHARS = 500
+V2_SOURCE_TIERS = {
+    "official_government", "company_recruiting_major_media", "other_public_web",
+    "community_employee_review", "user_submission",
+}
 
 
 def load_module(path, name):
@@ -221,6 +229,75 @@ def _credential_free_https(source):
                 and parsed.username is None and parsed.password is None)
 
 
+def _timezone_aware_timestamp(value):
+    if not isinstance(value, str) or not re.fullmatch(
+            r"20[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T"
+            r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]+)?"
+            r"(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", value):
+        return False
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is not None
+    except ValueError:
+        return False
+
+
+def publication_plain_text(value):
+    """Render bounded ledger prose as inert Jekyll Markdown text."""
+    collapsed = " ".join(value.split())
+    if len(collapsed) > PUBLICATION_PROSE_MAX_CHARS:
+        collapsed = collapsed[:PUBLICATION_PROSE_MAX_CHARS - 1] + "…"
+    escaped = re.sub(r"([\\`*_\[\]()#+\-.!|])", r"\\\1", collapsed)
+    return html.escape(escaped, quote=False).replace("{", "&#123;").replace("}", "&#125;")
+
+
+def _canonical_v2_source(source_id, source):
+    if (not isinstance(source, dict) or source.get("source_id") != source_id
+            or not re.fullmatch(r"source::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}", source_id)
+            or source.get("source_tier") not in V2_SOURCE_TIERS
+            or not isinstance(source.get("title"), str) or not source["title"]
+            or len(source["title"]) > 500 or not _credential_free_https(source)
+            or not _timezone_aware_timestamp(source.get("retrieved_at"))
+            or not isinstance(source.get("content_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", source["content_sha256"])
+            or source.get("reliability") not in {"high", "medium", "low", "unrated"}
+            or source.get("currentness") not in {"current", "historical", "unknown"}
+            or source.get("scope_status") not in {"exact_entity", "bounded_entity", "group_only", "unresolved"}
+            or source.get("conflict_status") not in {"none", "disclosed", "contradictory"}
+            or source.get("publication_eligibility") not in {
+                "eligible", "reference_only", "discovery_only", "ineligible"}):
+        return False
+    scope = source.get("scope")
+    if not isinstance(scope, dict):
+        return False
+    for field in ("countries", "legal_entities", "roles", "employment_types"):
+        values = scope.get(field)
+        if (not isinstance(values, list) or not values or len(values) != len(set(values))
+                or any(not isinstance(value, str) or not value for value in values)):
+            return False
+    return all(re.fullmatch(r"[A-Z]{2}", country) for country in scope["countries"])
+
+
+def _valid_community_review(record):
+    moderation = record.get("moderation")
+    snapshot = record.get("frozen_snapshot")
+    return bool(
+        isinstance(moderation, dict)
+        and set(moderation) == {"status", "reviewer_id", "reviewed_at", "decision_sha256"}
+        and moderation.get("status") == "approved"
+        and isinstance(moderation.get("reviewer_id"), str)
+        and re.fullmatch(r"moderator::[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", moderation["reviewer_id"])
+        and _timezone_aware_timestamp(moderation.get("reviewed_at"))
+        and isinstance(moderation.get("decision_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", moderation["decision_sha256"])
+        and isinstance(snapshot, dict)
+        and set(snapshot) == {"locator", "content_sha256", "frozen_at"}
+        and _credential_free_https({"url": snapshot.get("locator")})
+        and isinstance(snapshot.get("content_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", snapshot["content_sha256"])
+        and _timezone_aware_timestamp(snapshot.get("frozen_at"))
+    )
+
+
 def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
                          cells=None, v2_indexes=None):
     """Normalize validated legacy and v2 records into publication evidence."""
@@ -259,14 +336,24 @@ def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
     indexes = v2_indexes or {}
     sources = indexes.get("sources", {})
     ledger_contracts = (
-        ("official", "official_claims", "official_claim_ids", "claim_id", {"eligible"}),
-        ("reference", "references", "reference_ids", "reference_id", {"eligible", "reference_only"}),
-        ("community", "community_reports", "community_report_ids", "community_report_id", {"eligible"}),
+        ("official", "official_claims", "official_claim_ids", "claim_id", {"eligible"},
+         r"official::[a-f0-9]{64}"),
+        ("reference", "references", "reference_ids", "reference_id", {"eligible", "reference_only"},
+         r"reference::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}"),
+        ("community", "community_reports", "community_report_ids", "community_report_id", {"eligible"},
+         r"community::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}"),
     )
     valid_cell_publication = {
         "official_verified": "official_claim", "reference": "reference_only",
         "community_report": "community_only",
     }
+    record_counts = {}
+    for cell in (cells or {}).values():
+        if not isinstance(cell, dict):
+            continue
+        for field in ("official_claim_ids", "reference_ids", "community_report_ids"):
+            for record_id in cell.get(field, []) if isinstance(cell.get(field), list) else []:
+                record_counts[record_id] = record_counts.get(record_id, 0) + 1
     seen_records = set()
     for category_id, cell in (cells or {}).items():
         if (not isinstance(cell, dict) or category_id not in category_map
@@ -277,12 +364,14 @@ def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
         cell_id = cell.get("cell_id")
         if not isinstance(cell_id, str) or not cell_id:
             continue
-        for evidence_class, ledger, cell_field, id_field, eligible_values in ledger_contracts:
+        for evidence_class, ledger, cell_field, id_field, eligible_values, id_pattern in ledger_contracts:
             record_ids = cell.get(cell_field)
-            if not isinstance(record_ids, list):
+            if (not isinstance(record_ids, list) or len(record_ids) != len(set(record_ids))
+                    or any(record_counts.get(record_id) != 1 for record_id in record_ids)):
                 continue
             for record_id in record_ids:
-                if not isinstance(record_id, str) or not record_id or record_id in seen_records:
+                if (not isinstance(record_id, str) or not re.fullmatch(id_pattern, record_id)
+                        or record_id in seen_records):
                     continue
                 record = indexes.get(ledger, {}).get(record_id)
                 if (not isinstance(record, dict) or record.get(id_field) != record_id
@@ -298,23 +387,25 @@ def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
                 if not isinstance(source_ids, list) or not source_ids or any(
                         not isinstance(source_id, str) or not source_id for source_id in source_ids):
                     continue
+                if len(source_ids) != len(set(source_ids)):
+                    continue
                 bound_sources = [sources.get(source_id) for source_id in source_ids]
-                if any(not _credential_free_https(source)
+                if any(not _canonical_v2_source(source_id, source)
                        or source.get("publication_eligibility") not in eligible_values
-                       for source in bound_sources):
+                       for source_id, source in zip(source_ids, bound_sources)):
                     continue
-                if evidence_class == "community" and (
-                        record.get("moderation", {}).get("status") != "approved"
-                        or not isinstance(record.get("frozen_snapshot"), dict)):
+                if evidence_class == "community" and not _valid_community_review(record):
                     continue
-                statement = record.get("statement") or bound_sources[0].get("title")
-                quote = record.get("supporting_quote") or statement
+                statement = record.get("statement")
+                quote = record.get("supporting_quote")
+                if evidence_class == "community" and quote is None:
+                    quote = statement
                 if not isinstance(statement, str) or not statement.strip() or not isinstance(quote, str) or not quote.strip():
                     continue
                 evidence.append({
                     "evidence_class": evidence_class, "record_id": record_id,
-                    "source_ids": list(dict.fromkeys(source_ids)), "statement": statement.strip(),
-                    "supporting_quote": quote.strip(), "category_label": category_map[category_id],
+                    "source_ids": source_ids, "statement": publication_plain_text(statement),
+                    "supporting_quote": publication_plain_text(quote), "category_label": category_map[category_id],
                     "scope": record.get("scope") or cell.get("scope") or {},
                     "scope_status": record.get("scope_status", cell.get("scope_status", "unknown")),
                     "reliability": record.get("reliability", cell.get("reliability", "unknown")),

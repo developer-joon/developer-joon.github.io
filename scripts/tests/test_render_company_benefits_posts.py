@@ -90,8 +90,9 @@ class ProductionPostRendererTests(unittest.TestCase):
     def v2_evidence(self, evidence_class, company_id=None, category_id="leave"):
         company_id = company_id or self.companies[1]["company_id"]
         cell_id = f"cell::{company_id}::{category_id}"
-        source_id = f"source::{evidence_class}"
-        record_id = f"{evidence_class}::record"
+        digest = hashlib.sha256(evidence_class.encode()).hexdigest()
+        source_id = f"source::{digest}"
+        record_id = f"official::{digest}" if evidence_class == "official" else f"{evidence_class}::record"
         cell = {
             "cell_id": cell_id, "company_id": company_id, "category_id": category_id,
             "state": {"official": "official_verified", "reference": "reference",
@@ -109,12 +110,20 @@ class ProductionPostRendererTests(unittest.TestCase):
         source = {
             "source_id": source_id, "title": f"{evidence_class.title()} benefit source",
             "url": f"https://evidence.example/{evidence_class}",
+            "source_tier": {"official": "official_government",
+                            "reference": "company_recruiting_major_media",
+                            "community": "community_employee_review"}[evidence_class],
+            "retrieved_at": "2026-10-30T02:00:00Z", "content_sha256": digest,
             "publication_eligibility": "eligible" if evidence_class != "reference" else "reference_only",
             "reliability": cell["reliability"], "currentness": cell["currentness"],
-            "scope_status": "exact_entity", "conflict_status": "none",
+            "scope_status": "unresolved" if evidence_class == "reference" else "exact_entity",
+            "scope": {"countries": ["KR"], "legal_entities": [self.companies[1]["legal_name"]],
+                      "roles": ["employees"], "employment_types": ["full_time"]},
+            "conflict_status": "none",
         }
         record = {
             "cell_id": cell_id, "company_id": company_id, "category_id": category_id,
+            "source_tier": source["source_tier"],
             "statement": f"{evidence_class.title()} leave statement",
             "supporting_quote": f"{evidence_class.title()} leave quote",
             "publication_eligibility": "eligible" if evidence_class != "reference" else "reference_only",
@@ -134,7 +143,13 @@ class ProductionPostRendererTests(unittest.TestCase):
         else:
             record["source_id"] = source_id
         if evidence_class == "community":
-            record.update(moderation={"status": "approved"}, frozen_snapshot={"locator": "https://snapshot.example/1"})
+            record.pop("supporting_quote")
+            record.update(
+                moderation={"status": "approved", "reviewer_id": "moderator::fixture",
+                            "reviewed_at": "2026-10-30T02:00:00Z", "decision_sha256": digest},
+                frozen_snapshot={"locator": "https://snapshot.example/1", "content_sha256": digest,
+                                 "frozen_at": "2026-10-30T02:00:00Z"},
+            )
         indexes = {"attempts": {}, "official_claims": {}, "references": {},
                    "community_reports": {}, "sources": {source_id: source}}
         indexes[ledger][record_id] = record
@@ -177,9 +192,145 @@ class ProductionPostRendererTests(unittest.TestCase):
         company, text = self.render_v2_installment("community")
         self.assertIn(company["legal_name"], text)
         self.assertIn("Community leave statement", text)
-        self.assertIn("Community leave quote", text)
+        self.assertEqual(2, text.count("Community leave statement"))
         self.assertIn("커뮤니티", text)
         self.assertIn("https://evidence.example/community", text)
+
+    def test_v2_publication_prose_is_bounded_plain_text(self):
+        probes = (
+            ("<script>alert(1)</script><b>bold</b>", ("<script>", "<b>"), "alert"),
+            ("# Heading [click](https://evil.example) *emphasis*", ("[click]", "*emphasis*"), "Heading"),
+            ("```python boom()``` and `inline`", ("```", "`inline`"), "boom"),
+            ("{{ site.secret }} {% include evil.html %}", ("{{", "{%"), "secret"),
+        )
+        for field in ("statement", "supporting_quote"):
+            for probe, dangerous, readable in probes:
+                with self.subTest(field=field, probe=probe):
+                    company = self.companies[1]
+                    cell, indexes = self.v2_evidence("reference", company["company_id"])
+                    indexes["references"]["reference::record"][field] = probe
+                    entry = copy.deepcopy(next(row for row in self.render_map["entries"]
+                                               if row["artifact_type"] == "installment"))
+                    entry["company_ids"] = [company["company_id"]]
+                    text = self.renderer.render_installment(
+                        entry, {company["company_id"]: company}, {}, {}, {}, {}, {}, self.taxonomy,
+                        {company["company_id"]: {"leave": cell}}, indexes,
+                    )
+                    self.assertIn(readable, text)
+                    if probe.startswith("#"):
+                        self.assertIn(r"\# Heading", text)
+                    for construct in dangerous:
+                        self.assertNotIn(construct, text)
+
+        long_text = "혜택 " * 2000
+        rendered = self.renderer.publication_plain_text(long_text)
+        self.assertTrue(rendered.endswith("…"))
+        self.assertLessEqual(len(rendered), self.renderer.PUBLICATION_PROSE_MAX_CHARS)
+        self.assertEqual(rendered, self.renderer.publication_plain_text(long_text))
+
+    def test_official_metadata_only_record_is_excluded_without_title_fallback(self):
+        company_id = self.companies[1]["company_id"]
+        cell, indexes = self.v2_evidence("official", company_id)
+        record = indexes["official_claims"][next(iter(indexes["official_claims"]))]
+        record.pop("statement")
+        record.pop("supporting_quote")
+        entries = [{"batch_id": "official-metadata", "company_ids": [company_id]}]
+        self.assertEqual([], self.renderer.curate_installment_entries(
+            entries, {}, {}, {}, {company_id: {"leave": cell}}, indexes, self.taxonomy,
+        ))
+
+    def test_v2_duplicate_ids_wrong_classes_and_malformed_sources_are_rejected(self):
+        company_id = self.companies[1]["company_id"]
+
+        def duplicate_record(cell, indexes):
+            cell["reference_ids"].append(cell["reference_ids"][0])
+
+        def wrong_record_class(cell, indexes):
+            record = indexes["references"].pop("reference::record")
+            record["reference_id"] = "community::wrong-class"
+            cell["reference_ids"] = ["community::wrong-class"]
+            indexes["references"]["community::wrong-class"] = record
+
+        def mismatched_source_key(cell, indexes):
+            indexes["sources"][next(iter(indexes["sources"]))]["source_id"] = "source::different"
+
+        def missing_title(cell, indexes):
+            indexes["sources"][next(iter(indexes["sources"]))].pop("title")
+
+        def malformed_hash(cell, indexes):
+            indexes["sources"][next(iter(indexes["sources"]))]["content_sha256"] = "not-a-hash"
+
+        def malformed_retrieval_time(cell, indexes):
+            indexes["sources"][next(iter(indexes["sources"]))]["retrieved_at"] = "2026-10-30T02:00:00"
+
+        for mutate in (duplicate_record, wrong_record_class, mismatched_source_key, missing_title,
+                       malformed_hash, malformed_retrieval_time):
+            with self.subTest(mutate=mutate.__name__):
+                cell, indexes = self.v2_evidence("reference", company_id)
+                mutate(cell, indexes)
+                self.assertEqual([], self.renderer.curate_installment_entries(
+                    [{"batch_id": "v2", "company_ids": [company_id]}], {}, {}, {},
+                    {company_id: {"leave": cell}}, indexes, self.taxonomy,
+                ))
+
+        cell, indexes = self.v2_evidence("official", company_id)
+        record = indexes["official_claims"][next(iter(indexes["official_claims"]))]
+        record["source_ids"].append(record["source_ids"][0])
+        self.assertEqual([], self.renderer.curate_installment_entries(
+            [{"batch_id": "v2", "company_ids": [company_id]}], {}, {}, {},
+            {company_id: {"leave": cell}}, indexes, self.taxonomy,
+        ))
+
+    def test_v2_community_requires_complete_moderation_and_frozen_snapshot(self):
+        company_id = self.companies[1]["company_id"]
+        mutations = (
+            lambda record: record.update(moderation={"status": "approved"}),
+            lambda record: record["moderation"].update(decision_sha256="short"),
+            lambda record: record["moderation"].update(reviewed_at="2026-10-30T02:00:00"),
+            lambda record: record.update(frozen_snapshot={}),
+            lambda record: record["frozen_snapshot"].update(locator="http://snapshot.example/1"),
+            lambda record: record["frozen_snapshot"].update(content_sha256="short"),
+            lambda record: record["frozen_snapshot"].update(frozen_at="2026-10-30T02:00:00"),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                cell, indexes = self.v2_evidence("community", company_id)
+                record = indexes["community_reports"]["community::record"]
+                mutate(record)
+                self.assertEqual([], self.renderer.curate_installment_entries(
+                    [{"batch_id": "v2", "company_ids": [company_id]}], {}, {}, {},
+                    {company_id: {"leave": cell}}, indexes, self.taxonomy,
+                ))
+
+    def test_real_v2_ledgers_keep_exact_reference_and_community_sets(self):
+        research = ROOT / "docs/research/company-benefits"
+        ledger_specs = {
+            "official_claims": ("official-claims-v2.jsonl", "claim_id"),
+            "references": ("reference-records.jsonl", "reference_id"),
+            "community_reports": ("community-benefit-reports.jsonl", "community_report_id"),
+            "sources": ("sources-v2.jsonl", "source_id"),
+        }
+        indexes = {ledger: {
+            row[id_field]: row for row in self.renderer.read_jsonl(research / filename)
+        } for ledger, (filename, id_field) in ledger_specs.items()}
+        indexes["attempts"] = {}
+        cells_by_company = {}
+        for cell in self.renderer.read_jsonl(research / "company-category-cells.jsonl"):
+            cells_by_company.setdefault(cell["company_id"], {})[cell["category_id"]] = cell
+        accepted = [
+            item
+            for company_id, cells in cells_by_company.items()
+            for item in self.renderer.publication_evidence(
+                company_id, [], {}, {}, self.taxonomy, cells, indexes)
+        ]
+        accepted_by_class = {
+            evidence_class: {item["record_id"] for item in accepted
+                             if item["evidence_class"] == evidence_class}
+            for evidence_class in ("official", "reference", "community")
+        }
+        self.assertEqual(set(indexes["references"]), accepted_by_class["reference"])
+        self.assertEqual(set(indexes["community_reports"]), accepted_by_class["community"])
+        self.assertEqual(set(), accepted_by_class["official"])
 
     def test_v2_mismatched_malformed_and_noneligible_evidence_is_rejected(self):
         company_id = self.companies[1]["company_id"]
@@ -187,7 +338,8 @@ class ProductionPostRendererTests(unittest.TestCase):
             lambda cell, indexes: indexes["references"]["reference::record"].update(company_id="other"),
             lambda cell, indexes: indexes["references"]["reference::record"].update(source_id=""),
             lambda cell, indexes: indexes["references"]["reference::record"].update(publication_eligibility="discovery_only"),
-            lambda cell, indexes: indexes["sources"]["source::reference"].update(url="http://evidence.example/reference"),
+            lambda cell, indexes: indexes["sources"][next(iter(indexes["sources"]))].update(
+                url="http://evidence.example/reference"),
             lambda cell, indexes: cell.update(state="no_public_info"),
         )
         for mutate in mutations:
