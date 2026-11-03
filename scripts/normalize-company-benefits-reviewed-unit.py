@@ -570,10 +570,13 @@ def verify_external_closure(output: Path, closure: dict[str, Any]) -> None:
                 raise NormalizationError(f"{attempt_id}: search query semantics mismatch")
         elif artifact_type == "company-benefits-direct-page-acquisition":
             locator = receipt.get("query_or_locator")
+            capture_locator = capture.get(
+                "locator", capture.get("url", capture.get("executed_url"))
+            )
             if (
                 acquisition.get("locator") != locator
                 or acquisition_record.get("locator") != locator
-                or capture.get("locator") != locator
+                or capture_locator != locator
             ):
                 raise NormalizationError(f"{attempt_id}: direct query semantics mismatch")
         else:

@@ -287,6 +287,42 @@ class ClosureTests(unittest.TestCase):
 
         normalizer.verify_external_closure(Path(root.name), closure)
 
+    def test_external_closure_accepts_legacy_direct_capture_url_field(self):
+        root, closure = self._closure_fixture()
+        self.addCleanup(root.cleanup)
+        entry = closure["attempts"][0]
+        locator = "https://example.invalid/direct"
+        receipt_path = Path(root.name) / entry["receipt"]["path"]
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["query_or_locator"] = locator
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        entry["receipt"]["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+        capture_path = Path(root.name) / entry["capture"]["path"]
+        capture = json.loads(capture_path.read_text(encoding="utf-8"))
+        capture.pop("executed_query")
+        capture["url"] = locator
+        capture_path.write_text(json.dumps(capture), encoding="utf-8")
+        entry["capture"]["sha256"] = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+        acquisition_path = Path(root.name) / entry["acquisition_receipt"]["path"]
+        acquisition = json.loads(acquisition_path.read_text(encoding="utf-8"))
+        acquisition.update({
+            "artifact_type": "company-benefits-direct-page-acquisition",
+            "locator": locator,
+            "capture_sha256": entry["capture"]["sha256"],
+        })
+        acquisition.pop("query_id")
+        acquisition_path.write_text(json.dumps(acquisition), encoding="utf-8")
+        entry["acquisition_receipt"].update({
+            "artifact_type": acquisition["artifact_type"],
+            "locator": locator,
+            "query_id": None,
+        })
+        entry["acquisition_receipt"]["sha256"] = hashlib.sha256(
+            acquisition_path.read_bytes()
+        ).hexdigest()
+
+        normalizer.verify_external_closure(Path(root.name), closure)
+
     def _closure_fixture(self):
         temporary = tempfile.TemporaryDirectory()
         root = Path(temporary.name)
