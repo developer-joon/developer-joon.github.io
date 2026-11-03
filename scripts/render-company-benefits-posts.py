@@ -15,6 +15,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 EXPECTED_SCOPES = ("domestic", "international")
 STATUS_LABELS = {
@@ -214,44 +215,134 @@ def public_gap_message(gap, checks):
     return PUBLIC_GAP_MESSAGES["not_verified"]
 
 
-def has_meaningful_benefit_evidence(company_id, claims, source_map, assignments):
-    """Return whether a company has a concrete, source-bound benefit claim."""
+def _credential_free_https(source):
+    parsed = urlparse(str(source.get("url", ""))) if isinstance(source, dict) else None
+    return bool(parsed and parsed.scheme == "https" and parsed.netloc
+                and parsed.username is None and parsed.password is None)
+
+
+def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
+                         cells=None, v2_indexes=None):
+    """Normalize validated legacy and v2 records into publication evidence."""
+    type_ids = {item["id"] for item in (taxonomy or {}).get("benefit_types", [])}
+    category_map = {item["id"]: item["label_ko"] for item in (taxonomy or {}).get("categories", [])}
+    evidence = []
     for claim in claims:
         if (claim.get("company_id") != company_id
                 or claim.get("status") not in {"confirmed", "limited", "past", "conflict"}):
             continue
         assignment = assignments.get(claim.get("claim_id"), {}).get("assignment", {})
-        if assignment.get("state") not in {"assigned", "unclassified"}:
+        assigned_ids = assignment.get("benefit_type_ids")
+        if (assignment.get("state") != "assigned" or not isinstance(assigned_ids, list)
+                or not assigned_ids or (type_ids and any(item not in type_ids for item in assigned_ids))):
             continue
         source_ids = claim.get("source_ids")
-        evidence = claim.get("source_evidence")
-        if not isinstance(source_ids, list) or not source_ids or not isinstance(evidence, list) or not evidence:
+        source_evidence = claim.get("source_evidence")
+        if (not isinstance(source_ids, list) or not source_ids
+                or not isinstance(source_evidence, list) or not source_evidence):
             continue
-        evidence_ids = [item.get("source_id") for item in evidence if isinstance(item, dict)]
+        evidence_ids = [item.get("source_id") for item in source_evidence if isinstance(item, dict)]
         if set(evidence_ids) != set(source_ids) or any(not source_id for source_id in evidence_ids):
             continue
         bound = True
         for source_id in source_ids:
             source = source_map.get(source_id)
-            if (not isinstance(source, dict)
-                    or not str(source.get("url", "")).startswith("https://")
+            if (not _credential_free_https(source)
                     or source.get("publication_eligible") is False
                     or source.get("retention_mode") == "metadata_only"):
                 bound = False
                 break
         if bound:
-            return True
-    return False
+            evidence.append({"evidence_class": "legacy", "record_id": claim["claim_id"],
+                             "source_ids": source_ids, "raw": claim, "type_ids": assigned_ids})
+
+    indexes = v2_indexes or {}
+    sources = indexes.get("sources", {})
+    ledger_contracts = (
+        ("official", "official_claims", "official_claim_ids", "claim_id", {"eligible"}),
+        ("reference", "references", "reference_ids", "reference_id", {"eligible", "reference_only"}),
+        ("community", "community_reports", "community_report_ids", "community_report_id", {"eligible"}),
+    )
+    valid_cell_publication = {
+        "official_verified": "official_claim", "reference": "reference_only",
+        "community_report": "community_only",
+    }
+    seen_records = set()
+    for category_id, cell in (cells or {}).items():
+        if (not isinstance(cell, dict) or category_id not in category_map
+                or cell.get("company_id") != company_id or cell.get("category_id") != category_id
+                or cell.get("state") not in valid_cell_publication
+                or cell.get("publication_eligibility") != valid_cell_publication[cell["state"]]):
+            continue
+        cell_id = cell.get("cell_id")
+        if not isinstance(cell_id, str) or not cell_id:
+            continue
+        for evidence_class, ledger, cell_field, id_field, eligible_values in ledger_contracts:
+            record_ids = cell.get(cell_field)
+            if not isinstance(record_ids, list):
+                continue
+            for record_id in record_ids:
+                if not isinstance(record_id, str) or not record_id or record_id in seen_records:
+                    continue
+                record = indexes.get(ledger, {}).get(record_id)
+                if (not isinstance(record, dict) or record.get(id_field) != record_id
+                        or any(record.get(field) != cell.get(field)
+                               for field in ("cell_id", "company_id", "category_id"))
+                        or record.get("publication_eligibility") not in eligible_values):
+                    continue
+                if evidence_class == "official":
+                    source_ids = record.get("source_ids")
+                else:
+                    source_id = record.get("source_id")
+                    source_ids = [source_id] if isinstance(source_id, str) and source_id else []
+                if not isinstance(source_ids, list) or not source_ids or any(
+                        not isinstance(source_id, str) or not source_id for source_id in source_ids):
+                    continue
+                bound_sources = [sources.get(source_id) for source_id in source_ids]
+                if any(not _credential_free_https(source)
+                       or source.get("publication_eligibility") not in eligible_values
+                       for source in bound_sources):
+                    continue
+                if evidence_class == "community" and (
+                        record.get("moderation", {}).get("status") != "approved"
+                        or not isinstance(record.get("frozen_snapshot"), dict)):
+                    continue
+                statement = record.get("statement") or bound_sources[0].get("title")
+                quote = record.get("supporting_quote") or statement
+                if not isinstance(statement, str) or not statement.strip() or not isinstance(quote, str) or not quote.strip():
+                    continue
+                evidence.append({
+                    "evidence_class": evidence_class, "record_id": record_id,
+                    "source_ids": list(dict.fromkeys(source_ids)), "statement": statement.strip(),
+                    "supporting_quote": quote.strip(), "category_label": category_map[category_id],
+                    "scope": record.get("scope") or cell.get("scope") or {},
+                    "scope_status": record.get("scope_status", cell.get("scope_status", "unknown")),
+                    "reliability": record.get("reliability", cell.get("reliability", "unknown")),
+                    "currentness": record.get("currentness", cell.get("currentness", "unknown")),
+                    "conflict_status": record.get("conflict_status", cell.get("conflict_status", "none")),
+                })
+                seen_records.add(record_id)
+    return evidence
 
 
-def curate_installment_entries(entries, claims_by_company, source_map, assignments):
+def has_meaningful_benefit_evidence(company_id, claims, source_map, assignments, taxonomy=None,
+                                    cells=None, v2_indexes=None):
+    """Return whether normalized publication evidence exists for a company."""
+    return bool(publication_evidence(
+        company_id, claims, source_map, assignments, taxonomy or {}, cells, v2_indexes
+    ))
+
+
+def curate_installment_entries(entries, claims_by_company, source_map, assignments,
+                               cells_by_company=None, v2_indexes=None, taxonomy=None):
     """Copy installments while dropping evidence-empty companies and batches."""
     curated = []
     for entry in entries:
         company_ids = [
             company_id for company_id in entry["company_ids"]
             if has_meaningful_benefit_evidence(
-                company_id, claims_by_company.get(company_id, []), source_map, assignments
+                company_id, claims_by_company.get(company_id, []), source_map, assignments, taxonomy,
+                (cells_by_company or {}).get(company_id, {}), v2_indexes,
             )
         ]
         if company_ids:
@@ -261,8 +352,10 @@ def curate_installment_entries(entries, claims_by_company, source_map, assignmen
     return curated
 
 
-def render_installment(entry, company_map, claims_by_company, gaps_by_company, source_map, check_map, assignments, taxonomy):
+def render_installment(entry, company_map, claims_by_company, gaps_by_company, source_map, check_map,
+                       assignments, taxonomy, cells_by_company=None, v2_indexes=None):
     type_map = {item["id"]: item for item in taxonomy["benefit_types"]}
+    source_map = {**source_map, **(v2_indexes or {}).get("sources", {})}
     cited = []
 
     def citations(source_ids):
@@ -289,19 +382,29 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
         parts.append(f"- 선정 단위: {company.get('selected_reporting_legal_entity', company['legal_name'])}\n")
         parts.append(f"- 관할·범위: {company.get('jurisdiction', '미상')} / {company.get('scope', entry['scope'])}\n")
         parts.append(f"- 규모 근거: {scale}; 회계연도 말 {fiscal}; 재무 범위 {financial_scope}\n")
-        claims = sorted((
-            claim for claim in claims_by_company.get(company_id, [])
-            if has_meaningful_benefit_evidence(company_id, [claim], source_map, assignments)
-        ), key=lambda item: item["claim_id"])
-        if not claims:
+        company_evidence = publication_evidence(
+            company_id, claims_by_company.get(company_id, []), source_map, assignments, taxonomy,
+            (cells_by_company or {}).get(company_id, {}), v2_indexes,
+        )
+        if not company_evidence:
             raise ValueError(f"{company_id}: curated company lacks meaningful benefit evidence")
-        for claim in claims:
+        for item in company_evidence:
+            if item["evidence_class"] != "legacy":
+                marker = citations(item["source_ids"])
+                class_label = {"official": "공식", "reference": "참고", "community": "커뮤니티"}[
+                    item["evidence_class"]]
+                parts.append(f"- **{item['statement']}** ({item['category_label']}; {class_label}){marker}\n")
+                parts.append(f"  - 근거 문구: {item['supporting_quote']}\n")
+                parts.append(f"  - 적용 범위: {scope_text({'application_scope': item['scope']})}\n")
+                parts.append(f"  - 신뢰도·현재성: {item['reliability']} / {item['currentness']}\n")
+                parts.append(f"  - 범위·상충: {item['scope_status']} / {item['conflict_status']}\n")
+                continue
+            claim = item["raw"]
             assignment = assignments.get(claim["claim_id"])
             if assignment is None:
                 raise ValueError(f"{claim['claim_id']}: missing approved taxonomy assignment")
             outcome = assignment["assignment"]
-            labels = ([type_map[type_id]["label_ko"] for type_id in outcome["benefit_type_ids"]]
-                      if outcome["state"] == "assigned" else ["분류 보류"])
+            labels = [type_map[type_id]["label_ko"] for type_id in outcome["benefit_type_ids"]]
             source_ids = [item["source_id"] for item in claim.get("source_evidence", [])]
             if set(source_ids) != set(claim.get("source_ids", [])):
                 raise ValueError(f"{claim['claim_id']}: source evidence coverage mismatch")
@@ -762,6 +865,7 @@ def render_series(research_root, render_map_path, output_root, taxonomy_path, as
     taxonomy_sha256 = hashlib.sha256(Path(taxonomy_path).read_bytes()).hexdigest()
     validated = validate_complete_inputs(research_root, taxonomy, taxonomy_sha256)
     companies, company_map, claims_by_company, gaps_by_company, source_map, assignments = validated[:6]
+    cells_by_company, v2_indexes = validated[8], validated[11]
     check_map = unique_map(read_jsonl(research_root / "series-prepublication-checks.jsonl"), "source_id", "prepublication checks")
     if len(companies) != 2000:
         raise ValueError("validated active company ledger must contain exactly 2,000 rows")
@@ -772,12 +876,14 @@ def render_series(research_root, render_map_path, output_root, taxonomy_path, as
         if batch is None or batch.get("company_ids") != entry["company_ids"]:
             raise ValueError(f"{entry['batch_id']}: render map differs from active canonical batch")
     emitted_installments = curate_installment_entries(
-        installments, claims_by_company, source_map, assignments
+        installments, claims_by_company, source_map, assignments,
+        cells_by_company, v2_indexes, taxonomy,
     )
     rendered = {}
     for entry in emitted_installments:
         rendered[entry["filename"]] = render_installment(
-            entry, company_map, claims_by_company, gaps_by_company, source_map, check_map, assignments, taxonomy
+            entry, company_map, claims_by_company, gaps_by_company, source_map, check_map, assignments,
+            taxonomy, cells_by_company, v2_indexes,
         )
     hub = next(entry for entry in entries if entry["artifact_type"] == "hub")
     rendered[hub["filename"]] = render_hub(hub, emitted_installments, source_map)
