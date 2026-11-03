@@ -134,8 +134,8 @@ const parsedModuleExtensions = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs'])
 const correctionRoutePaths = new Set([
   '/community/benefits/correction',
   '/community/benefits/correction/',
-  '/community/benefits/correction/requests',
-  '/community/benefits/correction/requests/',
+  '/community/benefits/my-corrections',
+  '/community/benefits/my-corrections/',
 ])
 
 function parseModule(file: string, source: string) {
@@ -177,19 +177,21 @@ function importSpecifiers(sourceFile: ts.SourceFile) {
 }
 
 function importedBindings(sourceFile: ts.SourceFile) {
-  const bindings = new Map<string, string>()
+  const bindings = new Map<string, { specifier: string; namespace: boolean }>()
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)
       || !statement.importClause
       || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue
     const specifier = statement.moduleSpecifier.text
     const clause = statement.importClause
-    if (clause.name) bindings.set(clause.name.text, specifier)
+    if (clause.name) bindings.set(clause.name.text, { specifier, namespace: false })
     if (clause.namedBindings) {
       if (ts.isNamespaceImport(clause.namedBindings)) {
-        bindings.set(clause.namedBindings.name.text, specifier)
+        bindings.set(clause.namedBindings.name.text, { specifier, namespace: true })
       } else {
-        for (const element of clause.namedBindings.elements) bindings.set(element.name.text, specifier)
+        for (const element of clause.namedBindings.elements) {
+          bindings.set(element.name.text, { specifier, namespace: false })
+        }
       }
     }
   }
@@ -202,7 +204,7 @@ function importedBindings(sourceFile: ts.SourceFile) {
         if (!specifier) ts.forEachChild(candidate, findDynamicImport)
       }
       findDynamicImport(node.initializer)
-      if (specifier) bindings.set(node.name.text, specifier)
+      if (specifier) bindings.set(node.name.text, { specifier, namespace: false })
     }
     ts.forEachChild(node, visit)
   }
@@ -211,7 +213,7 @@ function importedBindings(sourceFile: ts.SourceFile) {
 }
 
 function correctionRouteComponents(sourceFile: ts.SourceFile) {
-  const components = new Set<string>()
+  const components = new Map<string, { binding: string; member?: string }>()
   const containsCorrectionPath = (node: ts.Node) => {
     let found = false
     const visit = (candidate: ts.Node) => {
@@ -222,8 +224,16 @@ function correctionRouteComponents(sourceFile: ts.SourceFile) {
     return found
   }
   const collectComponents = (node: ts.Node) => {
-    if ((ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) && ts.isIdentifier(node.tagName)) {
-      components.add(node.tagName.text)
+    if (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) {
+      if (ts.isIdentifier(node.tagName)) {
+        components.set(node.tagName.text, { binding: node.tagName.text })
+      } else if (ts.isPropertyAccessExpression(node.tagName) && ts.isIdentifier(node.tagName.expression)) {
+        const component = { binding: node.tagName.expression.text, member: node.tagName.name.text }
+        components.set(`${component.binding}.${component.member}`, component)
+      } else if (ts.isJsxNamespacedName(node.tagName)) {
+        const component = { binding: node.tagName.namespace.text, member: node.tagName.name.text }
+        components.set(`${component.binding}:${component.member}`, component)
+      }
     }
     ts.forEachChild(node, collectComponents)
   }
@@ -232,7 +242,7 @@ function correctionRouteComponents(sourceFile: ts.SourceFile) {
     ts.forEachChild(node, visit)
   }
   visit(sourceFile)
-  return [...components].sort(comparePaths)
+  return [...components.entries()].sort(([left], [right]) => comparePaths(left, right)).map(([, component]) => component)
 }
 
 function resolveLocalModule(repositoryRoot: string, importer: string, specifier: string, sourceFiles: ReadonlySet<string>) {
@@ -246,6 +256,77 @@ function resolveLocalModule(repositoryRoot: string, importer: string, specifier:
     ? [base]
     : [base, ...moduleExtensions.map((extension) => `${base}${extension}`), ...moduleExtensions.map((extension) => `${base}/index${extension}`)]
   return candidates.find((candidate) => sourceFiles.has(candidate))
+}
+
+function hasExportModifier(node: ts.Node) {
+  return ts.canHaveModifiers(node)
+    && Boolean(ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+}
+
+function directlyExports(sourceFile: ts.SourceFile, exportName: string) {
+  for (const statement of sourceFile.statements) {
+    if (exportName === 'default' && ts.isExportAssignment(statement)) return true
+    if (!hasExportModifier(statement)) continue
+    if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement))
+      && statement.name?.text === exportName) return true
+    if (ts.isVariableStatement(statement)
+      && statement.declarationList.declarations.some((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === exportName)) {
+      return true
+    }
+  }
+  return false
+}
+
+function resolveNamespaceExport(
+  repositoryRoot: string,
+  file: string,
+  exportName: string,
+  sourceFiles: ReadonlySet<string>,
+  parsedModules: ReadonlyMap<string, ts.SourceFile>,
+  visited = new Set<string>(),
+): string[] {
+  const key = `${file}\0${exportName}`
+  if (visited.has(key)) return []
+  visited.add(key)
+  const sourceFile = parsedModules.get(file)
+  if (!sourceFile) return []
+  const resolved = new Set<string>()
+  if (directlyExports(sourceFile, exportName)) resolved.add(file)
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isExportDeclaration(statement)) continue
+    if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+      for (const element of statement.exportClause.elements) {
+        if (element.name.text !== exportName) continue
+        if (!statement.moduleSpecifier || !ts.isStringLiteralLike(statement.moduleSpecifier)) {
+          if (directlyExports(sourceFile, element.propertyName?.text ?? element.name.text)) resolved.add(file)
+          continue
+        }
+        const target = resolveLocalModule(repositoryRoot, file, statement.moduleSpecifier.text, sourceFiles)
+        if (!target) continue
+        for (const match of resolveNamespaceExport(
+          repositoryRoot,
+          target,
+          element.propertyName?.text ?? element.name.text,
+          sourceFiles,
+          parsedModules,
+          visited,
+        )) resolved.add(match)
+      }
+    } else if (!statement.exportClause && statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+      const target = resolveLocalModule(repositoryRoot, file, statement.moduleSpecifier.text, sourceFiles)
+      if (!target) continue
+      for (const match of resolveNamespaceExport(
+        repositoryRoot,
+        target,
+        exportName,
+        sourceFiles,
+        parsedModules,
+        visited,
+      )) resolved.add(match)
+    }
+  }
+  return [...resolved].sort(comparePaths)
 }
 
 function correctionModuleClosure(
@@ -273,18 +354,32 @@ function correctionModuleClosure(
   }
 
   for (const [file, sourceFile] of parsedModules) {
-    const componentNames = correctionRouteComponents(sourceFile)
-    if (componentNames.length > 0) {
+    const components = correctionRouteComponents(sourceFile)
+    if (components.length > 0) {
       const bindings = importedBindings(sourceFile)
-      const routeBindings = componentNames
-        .map((component) => bindings.get(component))
-        .filter((specifier): specifier is string => Boolean(specifier && localImport.test(specifier)))
-      const specifiers = [...new Set(routeBindings)]
-      const candidates = specifiers.map((specifier) => resolveLocalModule(repositoryRoot, file, specifier, sourceFiles))
-      if (specifiers.length === 0 || candidates.some((target) => !target)) {
+      const routeBindings = components
+        .map((component) => ({ component, imported: bindings.get(component.binding) }))
+        .filter(({ imported }) => Boolean(imported && localImport.test(imported.specifier)))
+      const candidates = new Set<string>()
+      let unresolved = routeBindings.length === 0
+      for (const { component, imported } of routeBindings) {
+        const target = imported && resolveLocalModule(repositoryRoot, file, imported.specifier, sourceFiles)
+        if (!target) {
+          unresolved = true
+        } else if (component.member) {
+          const matches = imported.namespace
+            ? resolveNamespaceExport(repositoryRoot, target, component.member, sourceFiles, parsedModules)
+            : []
+          if (matches.length === 0) unresolved = true
+          for (const match of matches) candidates.add(match)
+        } else {
+          candidates.add(target)
+        }
+      }
+      if (unresolved) {
         violations.push({ file, rule: 'unresolved correction route component' })
       }
-      for (const candidate of candidates) if (candidate) roots.add(candidate)
+      for (const candidate of candidates) roots.add(candidate)
     }
   }
 

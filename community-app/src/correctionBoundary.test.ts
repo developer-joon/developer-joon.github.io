@@ -1,8 +1,9 @@
 /// <reference types="node" />
 
-import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { scanCorrectionBoundary } from './test/correctionBoundaryScanner'
 
@@ -21,6 +22,38 @@ function withFixture(files: Record<string, string | Buffer>, assertion: (root: s
 }
 
 const repositoryRoot = resolve(process.cwd(), '..')
+
+function stringSetInitializer(source: string, variableName: string) {
+  const sourceFile = ts.createSourceFile('source.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)
+        || declaration.name.text !== variableName
+        || !declaration.initializer
+        || !ts.isNewExpression(declaration.initializer)
+        || declaration.initializer.arguments?.length !== 1
+        || !ts.isArrayLiteralExpression(declaration.initializer.arguments[0])) continue
+      return declaration.initializer.arguments[0].elements
+        .filter(ts.isStringLiteralLike)
+        .map((literal) => literal.text)
+    }
+  }
+  throw new Error(`Missing string Set initializer: ${variableName}`)
+}
+
+function correctionRouteLiterals(source: string) {
+  const sourceFile = ts.createSourceFile('App.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const routes = new Set<string>()
+  const visit = (node: ts.Node) => {
+    if (ts.isStringLiteralLike(node) && /^\/community\/benefits\/[^/]*correction/.test(node.text)) {
+      routes.add(node.text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return [...routes].sort()
+}
 
 describe('Benefit Atlas correction workflow boundary', () => {
   it('finds a prohibited live issue template even when its filename looks like a test', () => {
@@ -191,14 +224,37 @@ describe('Benefit Atlas correction workflow boundary', () => {
     })
   })
 
-  it('maps the equivalent multiline correction requests route to its rendered component only', () => {
+  it('traces a namespace JSX correction route through a directory index and namespace re-export', () => {
+    withFixture({
+      'community-app/src/App.tsx': [
+        "import * as Pages from '@/routes/entry'",
+        "export function App({ pathname }: { pathname: string }) {",
+        "  if (pathname === '/community/benefits/correction') return <Pages.EntryPage />",
+        '  return null',
+        '}',
+      ].join('\n'),
+      'community-app/src/routes/entry/index.ts': "export * from './EntryPage'\n",
+      'community-app/src/routes/entry/EntryPage.tsx': [
+        "import { NeutralAction } from '../components/NeutralAction'",
+        'export function EntryPage() { return <NeutralAction /> }',
+      ].join('\n'),
+      'community-app/src/routes/components/NeutralAction.tsx': 'export const NeutralAction = () => <a href="/issues/new">Continue</a>\n',
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/routes/components/NeutralAction.tsx',
+        rule: 'GitHub issue creation URL',
+      })
+    })
+  })
+
+  it('maps the exact my-corrections route to a neutrally named rendered component only', () => {
     withFixture({
       'community-app/src/App.tsx': [
         "import { RequestsPage as RoutedPage } from './pages/RequestsPage'",
         "import { BugReportPage } from './pages/BugReportPage'",
         "export function App({ pathname }: { pathname: string }) {",
         '  if (',
-        "   pathname === '/community/benefits/correction/requests'",
+        "   pathname === '/community/benefits/my-corrections'",
         '  ) { return <RoutedPage /> }',
         "  if (pathname === '/community/bug-report') return <BugReportPage />",
         '  return null',
@@ -216,6 +272,15 @@ describe('Benefit Atlas correction workflow boundary', () => {
         file: 'community-app/src/pages/BugReportPage.tsx',
       }))
     })
+  })
+
+  it('keeps protected correction routes aligned with the actual App route literals', () => {
+    const appSource = readFileSync(resolve(repositoryRoot, 'community-app/src/App.tsx'), 'utf8')
+    const scannerSource = readFileSync(resolve(repositoryRoot, 'community-app/src/test/correctionBoundaryScanner.ts'), 'utf8')
+    const appRoutes = correctionRouteLiterals(appSource)
+    const protectedRoutes = stringSetInitializer(scannerSource, 'correctionRoutePaths').sort()
+
+    expect(protectedRoutes).toEqual(appRoutes.flatMap((route) => [route, `${route}/`]).sort())
   })
 
   it('ignores import-shaped comments and strings while following real module literals', () => {
@@ -246,13 +311,13 @@ describe('Benefit Atlas correction workflow boundary', () => {
     })
   })
 
-  it('traces correction request routes through dynamic imports and two re-export hops', () => {
+  it('traces my-corrections routes through dynamic imports and two re-export hops', () => {
     withFixture({
       'community-app/src/App.tsx': [
         "import { lazy } from 'react'",
         "const RoutedPage = lazy(() => import('./pages/EntryPage').then(module => ({ default: module.EntryPage })))",
         "export function App({ pathname }: { pathname: string }) {",
-        "  if (pathname === '/community/benefits/correction/requests') return <RoutedPage />",
+        "  if (pathname === '/community/benefits/my-corrections') return <RoutedPage />",
         '  return null',
         '}',
       ].join('\n'),
@@ -342,6 +407,25 @@ describe('Benefit Atlas correction workflow boundary', () => {
         '  return null',
         '}',
       ].join('\n'),
+    }, (root) => {
+      expect(scanCorrectionBoundary(root).violations).toContainEqual({
+        file: 'community-app/src/App.tsx',
+        rule: 'unresolved correction route component',
+      })
+    })
+  })
+
+  it('fails closed when a namespace JSX correction route member is not exported', () => {
+    withFixture({
+      'community-app/src/App.tsx': [
+        "import * as Pages from './pages'",
+        "export function App({ pathname }: { pathname: string }) {",
+        "  if (pathname === '/community/benefits/my-corrections') return <Pages.MissingPage />",
+        '  return null',
+        '}',
+      ].join('\n'),
+      'community-app/src/pages/index.ts': "export { ExistingPage } from './ExistingPage'\n",
+      'community-app/src/pages/ExistingPage.tsx': 'export const ExistingPage = () => null\n',
     }, (root) => {
       expect(scanCorrectionBoundary(root).violations).toContainEqual({
         file: 'community-app/src/App.tsx',
