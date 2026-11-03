@@ -1,5 +1,6 @@
 import copy
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -75,6 +76,106 @@ class ProductionPostRendererTests(unittest.TestCase):
             for number, entry in enumerate(self.real_map["entries"])
         }
 
+    def evidence_claim(self, **updates):
+        value = {
+            "claim_id": "claim-evidence",
+            "company_id": self.companies[0]["company_id"],
+            "status": "confirmed",
+            "source_ids": ["source-1"],
+            "source_evidence": [{"source_id": "source-1", "role": "primary_claim_evidence"}],
+        }
+        value.update(updates)
+        return value
+
+    def test_evidence_predicate_retains_bound_concrete_reference(self):
+        claim = self.evidence_claim()
+        self.assertTrue(self.renderer.has_meaningful_benefit_evidence(
+            claim["company_id"], [claim], {"source-1": {"url": "https://example.test/reference"}},
+            {claim["claim_id"]: {"assignment": {"state": "assigned", "benefit_type_ids": ["paid-leave"]}}},
+        ))
+
+    def test_evidence_predicate_rejects_metadata_http_gap_and_unknown_only_rows(self):
+        for status in ("unknown", "name_only", "unresolved", "not_researched"):
+            with self.subTest(status=status):
+                claim = self.evidence_claim(status=status)
+                assignment = {
+                    claim["claim_id"]: {
+                        "assignment": {"state": "assigned", "benefit_type_ids": ["paid-leave"]}
+                    }
+                }
+                source_map = {"source-1": {"url": "https://example.test/reference"}}
+                self.assertFalse(self.renderer.has_meaningful_benefit_evidence(
+                    claim["company_id"], [claim], source_map, assignment,
+                ))
+                entry = {"company_ids": [claim["company_id"]]}
+                self.assertEqual([], self.renderer.curate_installment_entries(
+                    [entry], {claim["company_id"]: [claim]}, source_map, assignment,
+                ))
+        metadata = self.evidence_claim(status="confirmed")
+        self.assertFalse(self.renderer.has_meaningful_benefit_evidence(
+            metadata["company_id"], [metadata],
+            {"source-1": {
+                "url": "https://example.test/search", "retention_mode": "metadata_only",
+                "access_observation": {"status": 403},
+            }},
+            {metadata["claim_id"]: {
+                "assignment": {"state": "assigned", "benefit_type_ids": ["paid-leave"]}
+            }},
+        ))
+
+    def test_evidence_predicate_retains_historical_and_conflicting_bound_sources(self):
+        for status in ("past", "conflict"):
+            with self.subTest(status=status):
+                claim = self.evidence_claim(status=status, claim_id=f"claim-{status}")
+                self.assertTrue(self.renderer.has_meaningful_benefit_evidence(
+                    claim["company_id"], [claim],
+                    {"source-1": {"url": "https://example.test/evidence"}},
+                    {claim["claim_id"]: {"assignment": {"state": "assigned", "benefit_type_ids": ["paid-leave"]}}},
+                ))
+
+    def test_curation_omits_empty_batch_and_keeps_only_meaningful_company_in_mixed_batch(self):
+        meaningful_id, empty_id = self.companies[0]["company_id"], self.companies[1]["company_id"]
+        claim = self.evidence_claim(company_id=meaningful_id)
+        entries = [{"batch_id": "mixed", "company_ids": [meaningful_id, empty_id]},
+                   {"batch_id": "empty", "company_ids": [empty_id]}]
+        curated = self.renderer.curate_installment_entries(
+            entries, {meaningful_id: [claim]}, {"source-1": {"url": "https://example.test/evidence"}},
+            {claim["claim_id"]: {"assignment": {"state": "assigned", "benefit_type_ids": ["paid-leave"]}}},
+        )
+        self.assertEqual(["mixed"], [entry["batch_id"] for entry in curated])
+        self.assertEqual([meaningful_id], curated[0]["company_ids"])
+        self.assertEqual([meaningful_id, empty_id], entries[0]["company_ids"])
+
+    def test_hub_uses_only_emitted_links_and_actual_scope_and_total_counts(self):
+        hub = next(row for row in self.render_map["entries"] if row["artifact_type"] == "hub")
+        installments = [
+            {"scope": "domestic", "title": "D1", "filename": "_posts/d1.md"},
+            {"scope": "domestic", "title": "D2", "filename": "_posts/d2.md"},
+            {"scope": "international", "title": "I1", "filename": "_posts/i1.md"},
+        ]
+        source_map = {
+            source_id: {"url": f"https://example.test/{source_id}"}
+            for source_id in hub["citation_source_mapping"]["population_source_ids"]
+        }
+        text = self.renderer.render_hub(hub, installments, source_map)
+        self.assertIn("전체 3개 배치", text)
+        self.assertIn("## 국내 2개 배치", text)
+        self.assertIn("## 해외 1개 배치", text)
+        self.assertEqual(3, text.count("{% post_url"))
+
+    def test_publication_removes_only_known_generated_posts_omitted_from_inventory(self):
+        rendered = self.rendered_posts()
+        omitted = sorted(rendered)[0]
+        rendered.pop(omitted)
+        stale = self.output / omitted
+        unrelated = self.output / "_posts/unrelated.md"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("old generated filler\n", encoding="utf-8")
+        unrelated.write_text("unrelated\n", encoding="utf-8")
+        self.renderer.publish_rendered_posts(rendered, self.output)
+        self.assertFalse(stale.exists())
+        self.assertEqual("unrelated\n", unrelated.read_text(encoding="utf-8"))
+
     def test_contract_map_has_81_unique_production_paths_and_2000_ids_once(self):
         entries = self.renderer.validate_render_map(self.real_map)
         installments = [row for row in entries if row["artifact_type"] == "installment"]
@@ -90,25 +191,34 @@ class ProductionPostRendererTests(unittest.TestCase):
         self.assertEqual(2000, len(set(ids)))
         self.assertTrue(all(len(row["company_ids"]) == 25 for row in installments))
 
-    def test_renders_81_deterministic_jekyll_posts_with_exact_company_partition(self):
+    def test_renders_only_evidence_bearing_batches_deterministically_without_mutating_ledgers(self):
+        ledger_hashes = {
+            path.relative_to(self.research): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in self.research.rglob("*") if path.is_file()
+        }
         first = self.render()
         snapshot = {path.relative_to(self.output): path.read_bytes() for path in sorted(self.output.rglob("*.md"))}
-        self.assertEqual(81, len(first))
-        self.assertEqual(81, len(snapshot))
-        for path in list(snapshot):
-            (self.output / path).unlink()
+        self.assertEqual(2, len(first))
+        self.assertEqual(2, len(snapshot))
         second = self.render()
         self.assertEqual(snapshot, {path.relative_to(self.output): path.read_bytes() for path in sorted(self.output.rglob("*.md"))})
         self.assertEqual(first, second)
+        self.assertEqual(ledger_hashes, {
+            path.relative_to(self.research): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in self.research.rglob("*") if path.is_file()
+        })
 
         all_text = "\n".join(raw.decode() for raw in snapshot.values())
         ids = re.findall(r"법인 ID: `([^`]+)`", all_text)
-        self.assertEqual(2000, len(ids))
-        self.assertEqual(2000, len(set(ids)))
+        self.assertEqual([self.companies[0]["company_id"]], ids)
+        self.assertNotIn(self.companies[1]["legal_name"], all_text)
+        self.assertNotIn("조사한 공식 경로", all_text)
+        self.assertNotIn("HTTP 200", all_text)
         self.assertNotIn("series-historical-audit", all_text)
         self.assertNotRegex(all_text, r"(?:종합|전체) 순위\s*[:：]?\s*\d|\b1위\b")
 
-        for entry in self.render_map["entries"]:
+        emitted = {str(path) for path in snapshot}
+        for entry in [row for row in self.render_map["entries"] if row["filename"] in emitted]:
             text = snapshot[Path(entry["filename"])].decode()
             self.assertTrue(text.startswith("---\n"))
             front = text.split("---\n", 2)[1]
@@ -119,7 +229,7 @@ class ProductionPostRendererTests(unittest.TestCase):
             self.assertEqual(entry["featured_image"], first_image)
             self.assertEqual(f"https://picsum.photos/seed/{entry['banner_seed']}/1600/900", first_image)
             if entry["artifact_type"] == "installment":
-                self.assertEqual(25, text.count("법인 ID: `"))
+                self.assertEqual(1, text.count("법인 ID: `"))
                 self.assertIn("복지가 없다는 뜻이 아닙니다", text)
                 self.assertIn("순위가 아닙니다", text)
 
@@ -138,7 +248,45 @@ class ProductionPostRendererTests(unittest.TestCase):
             self.assertEqual(list(range(1, len(seen) + 1)), seen, path)
             self.assertEqual(seen, sources, path)
 
-    def test_every_gap_renders_company_bound_route_status_and_precise_nonabsence_result(self):
+    def test_filtered_claim_sources_are_dense_first_use_ordered_and_orphan_free(self):
+        company = self.companies[0]
+        entry = copy.deepcopy(next(
+            row for row in self.render_map["entries"] if row["artifact_type"] == "installment"
+        ))
+        entry["company_ids"] = [company["company_id"]]
+        base = {
+            "company_id": company["company_id"], "benefit_name": "Bound benefit",
+            "detail": "Concrete benefit detail.", "status": "confirmed", "evidence_grade": "A",
+            "application_scope": {}, "checked_at": "2026-10-30T02:00:00Z",
+        }
+        first = {**base, "claim_id": "claim-a", "source_ids": ["source-b", "source-a"],
+                 "source_evidence": [{"source_id": "source-b"}, {"source_id": "source-a"}]}
+        second = {**base, "claim_id": "claim-b", "source_ids": ["source-a"],
+                  "source_evidence": [{"source_id": "source-a"}]}
+        unknown = {**base, "claim_id": "claim-gap", "status": "unknown",
+                   "source_ids": [], "source_evidence": [], "searched_source_ids": ["source-gap"]}
+        sources = {
+            key: {"url": f"https://example.test/{key}"}
+            for key in ("source-a", "source-b", "source-gap")
+        }
+        assignments = {
+            claim["claim_id"]: {"assignment": {"state": "assigned", "benefit_type_ids": ["paid-leave"]}}
+            for claim in (first, second)
+        }
+        text = self.renderer.render_installment(
+            entry, {company["company_id"]: company},
+            {company["company_id"]: [first, unknown, second]}, {}, sources, {}, assignments, self.taxonomy,
+        )
+        body, ledger = text.split("\n## Sources\n", 1)
+        self.assertNotIn("source-gap", text)
+        self.assertIn("Concrete benefit detail.[1][2]", body)
+        self.assertIn("Concrete benefit detail.[2]", body)
+        self.assertEqual(
+            ["https://example.test/source-b", "https://example.test/source-a"],
+            re.findall(r"^\[\d+\] (https://\S+)$", ledger, re.MULTILINE),
+        )
+
+    def test_gap_only_companies_do_not_render_company_sections(self):
         gaps_path = self.research / "series-research-gaps.jsonl"
         gaps = [json.loads(line) for line in gaps_path.read_text().splitlines()]
         gaps[0]["reason"] = (
@@ -150,22 +298,15 @@ class ProductionPostRendererTests(unittest.TestCase):
         )
         self.render()
         all_text = "\n".join(path.read_text(encoding="utf-8") for path in self.output.rglob("*.md"))
-        sections = re.findall(r"### ([^\n]+)\n\n(.*?)(?=\n### |\n## 해석 범위)", all_text, re.DOTALL)
-        gap_sections = [body for _, body in sections if "- 조사 결과:" in body]
-        self.assertEqual(1999, len(gap_sections))
-        for body in gap_sections:
-            self.assertIn("- 조사한 공식 경로:", body)
-            self.assertIn("- 관찰 상태:", body)
-            self.assertIn("- 조사 결과:", body)
-            self.assertIn("복지가 없다는 뜻이 아닙니다", body)
-            self.assertNotRegex(body, r"(?:source-|gap-route|discovery-|identity)[A-Za-z0-9:_-]*")
-            self.assertNotIn("content_sha256", body)
-            self.assertNotIn("supporting_quote", body)
+        self.assertNotIn(self.companies[1]["legal_name"], all_text)
+        self.assertNotIn("- 조사한 공식 경로:", all_text)
+        self.assertNotIn("- 관찰 상태:", all_text)
+        self.assertNotIn("- 조사 결과:", all_text)
         self.assertNotRegex(all_text, r"(?i)\b(?:response|content)[ _-]?sha256\b|\b[a-f0-9]{64}\b")
         self.assertNotRegex(all_text, r"(?i)\b(?:expected_marker|reviewer_id|review_id|approval[_ -]?status)\b")
         self.assertNotRegex(all_text, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z")
 
-    def test_gap_route_details_are_resolved_only_from_bound_source_and_check(self):
+    def test_metadata_and_http_route_do_not_make_company_meaningful(self):
         company_id = self.companies[1]["company_id"]
         gap = next(json.loads(line) for line in (self.research / "series-research-gaps.jsonl").read_text().splitlines()
                    if json.loads(line)["company_id"] == company_id)
@@ -193,23 +334,10 @@ class ProductionPostRendererTests(unittest.TestCase):
             "final_url": source["url"], "access_wall": "bot_or_network_block",
             "checked_at": "2026-10-30T02:00:00Z",
         }
-        text = self.renderer.render_installment(
-            {**next(row for row in self.render_map["entries"] if row.get("artifact_type") == "installment"),
-             "company_ids": [company_id]},
-            {company_id: self.companies[1]}, {}, {company_id: [gap]},
-            {source["source_id"]: source}, {source["source_id"]: check}, {}, self.taxonomy,
-        )
-        self.assertIn("Official registry", text)
-        self.assertIn(source["url"], text)
-        self.assertIn("HTTP 403", text)
-        self.assertIn("2026-10-30 02:00:00 UTC", text)
-        self.assertNotIn("bot_or_network_block", text)
-        self.assertNotIn(check["checked_at"], text)
-        self.assertNotIn(source["locator"], text)
-        self.assertNotIn(source["source_id"], text)
-        self.assertNotIn("expected_marker", text)
-        self.assertNotIn("SHA256", text)
-        self.assertNotIn("a" * 64, text)
+        entry = {"batch_id": "metadata-only", "company_ids": [company_id]}
+        self.assertEqual([], self.renderer.curate_installment_entries(
+            [entry], {}, {source["source_id"]: source}, {},
+        ))
 
     def test_replace_failure_restores_exact_prior_bytes_and_cleans_transaction_files(self):
         rendered = self.rendered_posts()
@@ -289,11 +417,11 @@ class ProductionPostRendererTests(unittest.TestCase):
             self.renderer.recover_publication(self.output)
         self.assertEqual(b"concurrent-owner\n", installed.read_bytes())
 
-    def test_publication_requires_the_exact_contract_filename_set(self):
+    def test_publication_rejects_paths_outside_generated_inventory(self):
         rendered = self.rendered_posts()
         value = rendered.pop(next(iter(rendered)))
         rendered["_posts/unexpected.md"] = value
-        with self.assertRaisesRegex(ValueError, "exact.*filename|filename.*contract"):
+        with self.assertRaisesRegex(ValueError, "generated filename subset"):
             self.renderer.publish_rendered_posts(rendered, self.output)
         self.assertFalse(self.output.exists())
 
@@ -445,7 +573,6 @@ class ProductionPostRendererTests(unittest.TestCase):
         value = copy.deepcopy(valid); value["items"][1] = copy.deepcopy(value["items"][0]); malformed.append(value)
         value = copy.deepcopy(valid); value["items"][0]["relative"] = "/absolute.md"; malformed.append(value)
         value = copy.deepcopy(valid); value["items"][0]["new_sha256"] = "2" * 63; malformed.append(value)
-        value = copy.deepcopy(valid); value["items"][0]["new_sha256"] = None; malformed.append(value)
         value = copy.deepcopy(valid); value["items"].reverse(); malformed.append(value)
         for journal in malformed:
             with self.subTest(state=journal.get("state")):
@@ -479,12 +606,12 @@ class ProductionPostRendererTests(unittest.TestCase):
         gap = next(json.loads(line) for line in (self.research / "series-research-gaps.jsonl").read_text().splitlines()
                    if json.loads(line)["company_id"] == company_id)
         gap["searched_official_source_ids"] = []
+        gaps_path = self.research / "series-research-gaps.jsonl"
+        gaps = [json.loads(line) for line in gaps_path.read_text().splitlines()]
+        gaps = [gap if row["company_id"] == company_id else row for row in gaps]
+        self.fixtures.write_jsonl(gaps_path, gaps)
         with self.assertRaisesRegex(ValueError, "official source-ID route|official route"):
-            self.renderer.render_installment(
-                {**next(row for row in self.render_map["entries"] if row.get("artifact_type") == "installment"),
-                 "company_ids": [company_id]},
-                {company_id: self.companies[1]}, {}, {company_id: [gap]}, {}, {}, {}, self.taxonomy,
-            )
+            self.render()
 
     def test_incomplete_series_is_blocked_without_writing_posts(self):
         progress_path = self.research / "series-progress.json"
@@ -496,7 +623,7 @@ class ProductionPostRendererTests(unittest.TestCase):
             self.render()
         self.assertFalse(self.output.exists())
 
-    def test_unknown_claim_renders_as_nonabsence_outcome_without_taxonomy_leak(self):
+    def test_unknown_claim_does_not_emit_a_filler_installment(self):
         claims_path = self.research / "benefit-claims.jsonl"
         claim = json.loads(claims_path.read_text().strip())
         claim.update(
@@ -525,13 +652,10 @@ class ProductionPostRendererTests(unittest.TestCase):
             {"state": "unclassified", "benefit_type_ids": [],
              "reason_code": "insufficient_claim_specific_evidence"},
         )
-        self.render()
-        first = self.output / self.render_map["entries"][1]["filename"]
-        text = first.read_text(encoding="utf-8")
-        section = text.split("### Verified Employer 0000", 1)[1].split("\n### ", 1)[0]
-        self.assertIn("복지가 없다는 뜻이 아닙니다", section)
-        self.assertNotIn("유급휴가", section)
-        self.assertIn("[1]", section)
+        emitted = self.render()
+        hub = next(row["filename"] for row in self.render_map["entries"] if row["artifact_type"] == "hub")
+        self.assertEqual([hub], emitted)
+        self.assertEqual([self.output / hub], list(self.output.rglob("*.md")))
 
     def test_missing_assignment_source_review_or_check_fails_closed(self):
         cases = (

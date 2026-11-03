@@ -2,6 +2,7 @@
 """Render the complete, approved company-benefits series into Jekyll posts."""
 
 import argparse
+import copy
 import fcntl
 import hashlib
 import importlib.util
@@ -213,13 +214,60 @@ def public_gap_message(gap, checks):
     return PUBLIC_GAP_MESSAGES["not_verified"]
 
 
+def has_meaningful_benefit_evidence(company_id, claims, source_map, assignments):
+    """Return whether a company has a concrete, source-bound benefit claim."""
+    for claim in claims:
+        if (claim.get("company_id") != company_id
+                or claim.get("status") not in {"confirmed", "limited", "past", "conflict"}):
+            continue
+        assignment = assignments.get(claim.get("claim_id"), {}).get("assignment", {})
+        if assignment.get("state") not in {"assigned", "unclassified"}:
+            continue
+        source_ids = claim.get("source_ids")
+        evidence = claim.get("source_evidence")
+        if not isinstance(source_ids, list) or not source_ids or not isinstance(evidence, list) or not evidence:
+            continue
+        evidence_ids = [item.get("source_id") for item in evidence if isinstance(item, dict)]
+        if set(evidence_ids) != set(source_ids) or any(not source_id for source_id in evidence_ids):
+            continue
+        bound = True
+        for source_id in source_ids:
+            source = source_map.get(source_id)
+            if (not isinstance(source, dict)
+                    or not str(source.get("url", "")).startswith("https://")
+                    or source.get("publication_eligible") is False
+                    or source.get("retention_mode") == "metadata_only"):
+                bound = False
+                break
+        if bound:
+            return True
+    return False
+
+
+def curate_installment_entries(entries, claims_by_company, source_map, assignments):
+    """Copy installments while dropping evidence-empty companies and batches."""
+    curated = []
+    for entry in entries:
+        company_ids = [
+            company_id for company_id in entry["company_ids"]
+            if has_meaningful_benefit_evidence(
+                company_id, claims_by_company.get(company_id, []), source_map, assignments
+            )
+        ]
+        if company_ids:
+            value = copy.deepcopy(entry)
+            value["company_ids"] = company_ids
+            curated.append(value)
+    return curated
+
+
 def render_installment(entry, company_map, claims_by_company, gaps_by_company, source_map, check_map, assignments, taxonomy):
     type_map = {item["id"]: item for item in taxonomy["benefit_types"]}
     cited = []
 
     def citations(source_ids):
         numbers = []
-        for source_id in sorted(set(source_ids)):
+        for source_id in dict.fromkeys(source_ids):
             source = source_map.get(source_id)
             if source is None or not str(source.get("url", "")).startswith("https://"):
                 raise ValueError(f"{source_id}: claim source is missing or not publication eligible")
@@ -232,7 +280,7 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
     parts.append(f"![{entry['body_image_alt']}]({entry['featured_image']})\n\n")
     parts.append(entry["intro_text"] + "\n\n")
     parts.append("> 이 글의 회사 순서는 순위가 아닙니다. 공개 근거 공백은 복지가 없다는 뜻이 아닙니다.\n\n")
-    parts.append("## 25개 보고 법인\n\n")
+    parts.append(f"## 근거가 확인된 {len(entry['company_ids'])}개 보고 법인\n\n")
     for company_id in entry["company_ids"]:
         company = company_map[company_id]
         scale, fiscal, financial_scope = format_scale(company)
@@ -241,50 +289,13 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
         parts.append(f"- 선정 단위: {company.get('selected_reporting_legal_entity', company['legal_name'])}\n")
         parts.append(f"- 관할·범위: {company.get('jurisdiction', '미상')} / {company.get('scope', entry['scope'])}\n")
         parts.append(f"- 규모 근거: {scale}; 회계연도 말 {fiscal}; 재무 범위 {financial_scope}\n")
-        claims = sorted(claims_by_company.get(company_id, []), key=lambda item: item["claim_id"])
-        gap_values = gaps_by_company.get(company_id, [])
+        claims = sorted((
+            claim for claim in claims_by_company.get(company_id, [])
+            if has_meaningful_benefit_evidence(company_id, [claim], source_map, assignments)
+        ), key=lambda item: item["claim_id"])
         if not claims:
-            if len(gap_values) != 1:
-                raise ValueError(f"{company_id}: missing exact approved gap")
-            gap = gap_values[0]
-            searched_ids = COMPANY_BENEFITS_SERIES.validate_gap_source_routes(gap, source_map)
-            route_checks = []
-            for source_id in searched_ids:
-                source = source_map.get(source_id)
-                check = check_map.get(source_id)
-                if source is None or check is None:
-                    raise ValueError(f"{company_id}: gap route lacks bound source/check")
-                route_checks.append(check)
-                url = str(source.get("url", ""))
-                if not url.startswith("https://") or check.get("url") != url:
-                    raise ValueError(f"{company_id}: gap route URL is missing or unbound")
-                owner = str(source.get("owner", ""))
-                title = str(source.get("title", ""))
-                label = title if title and source_id not in title else owner
-                if not label or source_id in label:
-                    label = "공식 검색 경로"
-                marker = citations([source_id])
-                parts.append(f"- 조사한 공식 경로: [{label}]({url}){marker}\n")
-                status = check.get("status")
-                status_text = f"HTTP {status}" if status is not None else "HTTP 상태 미기록"
-                parts.append(f"  - 관찰 상태: {status_text}\n")
-                if check.get("checked_at"):
-                    parts.append(f"  - 확인 시점: {public_check_time(check['checked_at'])}\n")
-            parts.append(
-                f"- 조사 결과: {public_gap_message(gap, route_checks)} {gap['nonabsence_wording']}\n\n"
-            )
-            continue
+            raise ValueError(f"{company_id}: curated company lacks meaningful benefit evidence")
         for claim in claims:
-            if claim.get("status") == "unknown":
-                marker = citations(claim.get("searched_source_ids", []))
-                parts.append(
-                    "- 근거 상태: 공식 공개 경로를 조사했지만 게시 가능한 복지 근거를 확인하지 못했습니다. "
-                    f"복지가 없다는 뜻이 아닙니다.{marker}\n"
-                )
-                parts.append(f"  - 조사 결과: {claim.get('detail', '공개자료에서 확인하지 못했습니다.')}\n")
-                searched_at = claim.get("searched_at", claim.get("checked_at"))
-                parts.append(f"  - 조사 시점: {public_check_time(searched_at) if searched_at else '미상'}\n")
-                continue
             assignment = assignments.get(claim["claim_id"])
             if assignment is None:
                 raise ValueError(f"{claim['claim_id']}: missing approved taxonomy assignment")
@@ -313,15 +324,22 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
 
 
 def render_hub(entry, installment_entries, source_map):
+    domestic = [row for row in installment_entries if row["scope"] == "domestic"]
+    international = [row for row in installment_entries if row["scope"] == "international"]
     parts = [front_matter(entry)]
     parts.append(f"![{entry['body_image_alt']}]({entry['featured_image']})\n\n")
-    parts.append(entry["intro_text"] + "\n\n")
+    intro = entry["intro_text"].replace(
+        "국내 40개 배치와 해외 40개 배치",
+        f"국내 {len(domestic)}개 배치와 해외 {len(international)}개 배치",
+    )
+    parts.append(intro + "\n\n")
     parts.append("> 이 디렉터리는 기업의 종합 순위나 우열표가 아닙니다. 근거를 확인하지 못했다는 기록은 복지 부재 판정이 아닙니다.\n\n")
-    parts.append("## 국내 40개 배치\n\n")
-    for item in [row for row in installment_entries if row["scope"] == "domestic"]:
+    parts.append(f"전체 {len(installment_entries)}개 배치가 근거를 포함해 발행되었습니다.\n\n")
+    parts.append(f"## 국내 {len(domestic)}개 배치\n\n")
+    for item in domestic:
         parts.append(f"- [{item['title']}]({{% post_url {Path(item['filename']).stem} %}})\n")
-    parts.append("\n## 해외 40개 배치\n\n")
-    for item in [row for row in installment_entries if row["scope"] == "international"]:
+    parts.append(f"\n## 해외 {len(international)}개 배치\n\n")
+    for item in international:
         parts.append(f"- [{item['title']}]({{% post_url {Path(item['filename']).stem} %}})\n")
     parts.append("\n## 읽는 법과 한계\n\n")
     parts.append(entry["summary_text"] + "\n\n")
@@ -513,7 +531,7 @@ def _validate_journal(raw, output_root):
         digest = item["old_sha256"]
         if item["old_exists"] != isinstance(digest, str):
             raise RuntimeError("invalid publication journal old hash state")
-        if not isinstance(item["new_sha256"], str):
+        if item["new_sha256"] is not None and not isinstance(item["new_sha256"], str):
             raise RuntimeError("invalid publication journal new hash state")
         for value in (digest, item["new_sha256"]):
             if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)):
@@ -588,7 +606,8 @@ def _recover_publication_locked(output_root):
     if journal["state"] == "committed":
         for item in items:
             current = _read_regular(output_root / item["relative"])
-            if current is None or _sha256(current) != item["new_sha256"]:
+            current_sha = _sha256(current) if current is not None else None
+            if current_sha != item["new_sha256"]:
                 raise RuntimeError("committed publication target hash mismatch")
         _finish_cleanup(journal_path, transaction_root)
         return True
@@ -643,9 +662,10 @@ def recover_publication(output_root):
 
 
 def publish_rendered_posts(rendered, output_root):
-    """Publish the exact 81-post contract as a durable transaction."""
-    if not isinstance(rendered, dict) or set(rendered) != EXPECTED_PUBLICATION_FILENAMES:
-        raise ValueError("publication transaction requires the exact 81 filename contract")
+    """Publish an emitted subset and remove only omitted known generated paths."""
+    if (not isinstance(rendered, dict) or not set(rendered).issubset(EXPECTED_PUBLICATION_FILENAMES)
+            or "_posts/2026-10-31-company-benefits-verified-directory-hub.md" not in rendered):
+        raise ValueError("publication transaction requires a generated filename subset including the hub")
     encoded = {}
     for relative, text in rendered.items():
         path = Path(relative)
@@ -660,13 +680,13 @@ def publish_rendered_posts(rendered, output_root):
         transaction_name = ".company-benefits-posts-transaction-" + uuid.uuid4().hex
         transaction_root = output_root.parent / transaction_name
         items = []
-        for relative in sorted(encoded):
+        for relative in sorted(EXPECTED_PUBLICATION_FILENAMES):
             old = _read_regular(output_root / relative)
             items.append({
                 "relative": relative,
                 "old_exists": old is not None,
                 "old_sha256": _sha256(old) if old is not None else None,
-                "new_sha256": _sha256(encoded[relative]),
+                "new_sha256": _sha256(encoded[relative]) if relative in encoded else None,
             })
         journal = {
             "schema_version": "company-benefits-publication-v2",
@@ -684,9 +704,10 @@ def publish_rendered_posts(rendered, output_root):
                 _fsync_dir(directory.parent)
             for item in items:
                 relative = item["relative"]
-                staged = transaction_root / "staged" / relative
-                _mkdir_no_symlinks(staged.parent)
-                _write_file_durable(staged, encoded[relative])
+                if item["new_sha256"] is not None:
+                    staged = transaction_root / "staged" / relative
+                    _mkdir_no_symlinks(staged.parent)
+                    _write_file_durable(staged, encoded[relative])
                 if item["old_exists"]:
                     old = _read_regular(output_root / relative)
                     if old is None or _sha256(old) != item["old_sha256"]:
@@ -704,12 +725,16 @@ def publish_rendered_posts(rendered, output_root):
                 current_sha = _sha256(current) if current is not None else None
                 if current_sha != item["old_sha256"] or (current is not None) != item["old_exists"]:
                     raise RuntimeError(f"concurrent publication target change: {target}")
-                staged = transaction_root / "staged" / item["relative"]
-                staged_raw = _read_regular(staged)
-                if staged_raw is None or _sha256(staged_raw) != item["new_sha256"]:
-                    raise RuntimeError("staged publication hash mismatch")
                 _assert_no_symlink(target)
-                os.replace(staged, target)
+                if item["new_sha256"] is None:
+                    if current is not None:
+                        target.unlink()
+                else:
+                    staged = transaction_root / "staged" / item["relative"]
+                    staged_raw = _read_regular(staged)
+                    if staged_raw is None or _sha256(staged_raw) != item["new_sha256"]:
+                        raise RuntimeError("staged publication hash mismatch")
+                    os.replace(staged, target)
                 _fsync_dir(target.parent)
             journal["state"] = "committed"
             _write_journal(journal_path, journal)
@@ -746,15 +771,16 @@ def render_series(research_root, render_map_path, output_root, taxonomy_path, as
         batch = batch_map.get(entry["batch_id"])
         if batch is None or batch.get("company_ids") != entry["company_ids"]:
             raise ValueError(f"{entry['batch_id']}: render map differs from active canonical batch")
+    emitted_installments = curate_installment_entries(
+        installments, claims_by_company, source_map, assignments
+    )
     rendered = {}
-    for entry in installments:
+    for entry in emitted_installments:
         rendered[entry["filename"]] = render_installment(
             entry, company_map, claims_by_company, gaps_by_company, source_map, check_map, assignments, taxonomy
         )
     hub = next(entry for entry in entries if entry["artifact_type"] == "hub")
-    rendered[hub["filename"]] = render_hub(hub, installments, source_map)
-    if len(rendered) != 81:
-        raise ValueError("renderer did not produce exactly 81 unique posts")
+    rendered[hub["filename"]] = render_hub(hub, emitted_installments, source_map)
     publish_rendered_posts(rendered, output_root)
     return sorted(rendered)
 
