@@ -156,7 +156,8 @@ class ProductionPostRendererTests(unittest.TestCase):
                 "remote": "원격근무", "retirement": "퇴직연금", "meals": "사내식당",
                 "inclusion": "접근성 편의",
             }[category_id]
-            record["statement"] = f"{category_text} 제도를 운영한다"
+            legal_entity = company["selected_reporting_legal_entity"]
+            record["statement"] = f"{legal_entity} 직원에게 {category_text} 지원 제도를 운영한다"
         if evidence_class == "community":
             record.update(
                 moderation={"status": "approved", "reviewer_id": "moderator::fixture",
@@ -202,15 +203,15 @@ class ProductionPostRendererTests(unittest.TestCase):
     def test_v2_only_reference_company_is_retained_and_rendered(self):
         company, text = self.render_v2_installment("reference")
         self.assertIn(company["legal_name"], text)
-        self.assertIn("유급휴가 제도를 운영한다", text)
+        self.assertIn("직원에게 유급휴가 지원 제도를 운영한다", text)
         self.assertIn("참고", text)
         self.assertIn("https://evidence.example/reference", text)
 
     def test_v2_only_community_company_is_retained_and_rendered(self):
         company, text = self.render_v2_installment("community")
         self.assertIn(company["legal_name"], text)
-        self.assertIn("유급휴가 제도를 운영한다", text)
-        self.assertEqual(2, text.count("유급휴가 제도를 운영한다"))
+        self.assertIn("직원에게 유급휴가 지원 제도를 운영한다", text)
+        self.assertEqual(2, text.count("직원에게 유급휴가 지원 제도를 운영한다"))
         self.assertIn("커뮤니티", text)
         self.assertIn("https://evidence.example/community", text)
 
@@ -258,6 +259,9 @@ class ProductionPostRendererTests(unittest.TestCase):
         }
         record["scope"] = copy.deepcopy(scope)
         source["scope"] = {key: value for key, value in scope.items() if key != "status"}
+        record["statement"] = record["supporting_quote"] = (
+            "{{site.secret}} 직원에게 유급휴가 지원 제도를 운영한다"
+        )
         source["url"] = "https://example.com/{{site.secret}}/[click](javascript:alert(1))?next=<tag>"
         record["source_locator"] = source["url"]
         text = self.renderer.render_installment(
@@ -284,6 +288,20 @@ class ProductionPostRendererTests(unittest.TestCase):
             [{"batch_id": "v2", "company_ids": [company_id]}], {}, {}, {},
             {company_id: {"leave": cell}}, indexes, self.taxonomy,
         ))
+
+    def test_v2_source_url_rejects_encoded_controls_at_nested_layers(self):
+        rejected = ("%0A", "%0d%0a", "%00", "%7F", "%250A", "%25250A")
+        for suffix in rejected:
+            with self.subTest(suffix=suffix):
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    self.renderer.publication_source_url({"url": "https://example.test/" + suffix})
+
+    def test_v2_source_url_preserves_safe_percent_encoded_targets(self):
+        for url in (
+                "https://example.test/%ED%95%9C%EA%B8%80",
+                "https://example.test/literal%25value"):
+            with self.subTest(url=url):
+                self.assertEqual(url, self.renderer.publication_source_url({"url": url}))
 
     def test_v2_semantic_filter_rejects_templates_shells_and_overlong_fields(self):
         company_id = self.companies[1]["company_id"]
@@ -315,6 +333,55 @@ class ProductionPostRendererTests(unittest.TestCase):
                 company_id, [], {}, {}, self.taxonomy, {category: cell}, indexes,
             ))
         self.assertEqual({category: True for category in accepted}, accepted)
+
+    def test_v2_semantic_filter_requires_bound_entity_and_employee_benefit_action(self):
+        company_id = self.companies[1]["company_id"]
+        rejected = (
+            "다른회사 직원에게 유급휴가를 제공한다",
+            "선정 법인은 유급휴가 제품을 고객에게 판매한다",
+            "선정 법인 유급휴가 채용 지원자는 지원하세요",
+        )
+        for prose in rejected:
+            with self.subTest(prose=prose):
+                cell, indexes = self.v2_evidence("reference", company_id)
+                record = next(iter(indexes["references"].values()))
+                entity = record["scope"]["legal_entities"][0]
+                record["statement"] = prose.replace("선정 법인", entity)
+                record["supporting_quote"] = record["statement"]
+                self.assertEqual([], self.renderer.publication_evidence(
+                    company_id, [], {}, {}, self.taxonomy, {"leave": cell}, indexes,
+                ))
+
+    def test_v2_semantic_filter_uses_safe_corporate_alias_boundaries(self):
+        company_id = self.companies[1]["company_id"]
+        cell, indexes = self.v2_evidence("reference", company_id, "meals")
+        record = next(iter(indexes["references"].values()))
+        source = next(iter(indexes["sources"].values()))
+        record["scope"]["legal_entities"] = ["SM Inc."]
+        source["scope"]["legal_entities"] = ["SM Inc."]
+        record["statement"] = record["supporting_quote"] = "SMC International 직원에게 식사를 제공한다"
+        self.assertEqual([], self.renderer.publication_evidence(
+            company_id, [], {}, {}, self.taxonomy, {"meals": cell}, indexes,
+        ))
+
+        record["scope"]["legal_entities"] = ["Acme Corporation"]
+        source["scope"]["legal_entities"] = ["Acme Corporation"]
+        record["statement"] = record["supporting_quote"] = "Acme employees receive meal benefits"
+        self.assertTrue(self.renderer.publication_evidence(
+            company_id, [], {}, {}, self.taxonomy, {"meals": cell}, indexes,
+        ))
+
+    def test_v2_semantic_filter_accepts_exact_short_bound_phrase(self):
+        company_id = self.companies[1]["company_id"]
+        cell, indexes = self.v2_evidence("community", company_id, "remote")
+        record = next(iter(indexes["community_reports"].values()))
+        source = next(iter(indexes["sources"].values()))
+        record["scope"]["legal_entities"] = ["(주)동방"]
+        source["scope"]["legal_entities"] = ["(주)동방"]
+        record["statement"] = "(주)동방 직원에게 원격근무를 지원한다"
+        self.assertTrue(self.renderer.publication_evidence(
+            company_id, [], {}, {}, self.taxonomy, {"remote": cell}, indexes,
+        ))
 
     def test_official_metadata_only_record_is_excluded_without_title_fallback(self):
         company_id = self.companies[1]["company_id"]
@@ -452,10 +519,19 @@ class ProductionPostRendererTests(unittest.TestCase):
         }
         self.assertLess(len(accepted_by_class["reference"]), len(indexes["references"]))
         self.assertLess(len(accepted_by_class["community"]), len(indexes["community_reports"]))
-        self.assertIn(
-            "community::KR-CRN-1101110339542::commute::source::ddd3905a7ca92d100df2d0d39e0457a83d822f82099f508b7a702bf3d3c74aed",
-            accepted_by_class["community"],
-        )
+        unrelated = {
+            "reference::KR-CRN-1101110124521::remote::source::17b99f0926942d37a11ca7869f3c9f65b999b37b0664891db98e673914ca8fcd",
+            "reference::KR-CRN-1101110275134::commute::source::9061e30657446b2edbc2489d65150278630aaaebd8a6bf5483fea16d8f6887a7",
+            "reference::KR-CRN-1101110275134::meals::source::99e21807671bc376186cfbaedabd5f789f0c1bf1490b23e40106817bd24a6c77",
+            "reference::KR-CRN-1101116536481::remote::source::19ece2cb777958e86d67dca90a167e41065491aa8c52e1295ed03a080ffcefb1",
+            "reference::KR-CRN-1301110007533::health::source::18142efd5e9f2a4f9c5543b8761d0eaf961670f64a7dd0219c3884784ed97a6d",
+            "reference::KR-CRN-1101110032112::health::source::103020a18534202fa6c625b18b9217fda2c147213fb7470bb7fa96601b0de28e",
+            "reference::KR-CRN-1101110032112::remote::source::76fe2ceaed50cf8e5b34fca012b5a1d5de3d975044c9dd23e8e9d6271946de40",
+            "reference::KR-CRN-1101110339542::growth::source::796880f75862076c414697ba4933b6f7fefb8f458272ca6f6b7dc3520f45f1ca",
+            "reference::KR-CRN-1101110339542::remote::source::877650622b854c0af35f21b1acd838cf2fa06a7b1ff857e1ad2a2199d62f6d68",
+            "reference::KR-CRN-1801110015362::retirement::source::003156e8b9ece82fb49fbca82b4aa9c251c928a4c64312c7000d2515ecbbf9f8",
+        }
+        self.assertTrue(unrelated.isdisjoint(accepted_by_class["reference"]))
         self.assertNotIn(
             "reference::KR-CRN-1101110005002::leave::source::10153c7ca422defc8d3675f066f8ae2d8166aca959be3c870e6626baeceb489f",
             accepted_by_class["reference"],
@@ -465,6 +541,15 @@ class ProductionPostRendererTests(unittest.TestCase):
             accepted_by_class["community"],
         )
         self.assertEqual(set(), accepted_by_class["official"])
+
+    def test_renderer_does_not_call_private_schema_validator_api(self):
+        company_id = self.companies[1]["company_id"]
+        cell, indexes = self.v2_evidence("reference", company_id)
+        with mock.patch.object(self.renderer, "load_module", side_effect=AssertionError("private API")):
+            self.assertTrue(self.renderer.publication_evidence(
+                company_id, [], {}, {}, self.taxonomy, {"leave": cell}, indexes,
+            ))
+        self.assertNotIn("_schema_validators", SCRIPT.read_text(encoding="utf-8"))
 
     def test_v2_mismatched_malformed_and_noneligible_evidence_is_rejected(self):
         company_id = self.companies[1]["company_id"]
@@ -642,23 +727,34 @@ class ProductionPostRendererTests(unittest.TestCase):
 
     def test_render_series_consumes_validated_v2_cells_and_indexes(self):
         original_validate = self.renderer.validate_complete_inputs
+        original_curate = self.renderer.curate_installment_entries
         company = self.companies[1]
         cell, indexes = self.v2_evidence("reference", company["company_id"])
+        validation_completed = False
 
         def validated_with_v2(*args):
+            nonlocal validation_completed
             values = list(original_validate(*args))
             values[8] = copy.deepcopy(values[8])
             values[8][company["company_id"]]["leave"] = cell
             for ledger, records in indexes.items():
                 values[11][ledger].update(records)
+            validation_completed = True
             return tuple(values)
 
-        with mock.patch.object(self.renderer, "validate_complete_inputs", side_effect=validated_with_v2):
+        def curate_validated_tuple(*args):
+            self.assertTrue(validation_completed)
+            self.assertIs(args[4][company["company_id"]]["leave"], cell)
+            self.assertIn(next(iter(indexes["references"])), args[5]["references"])
+            return original_curate(*args)
+
+        with (mock.patch.object(self.renderer, "validate_complete_inputs", side_effect=validated_with_v2),
+              mock.patch.object(self.renderer, "curate_installment_entries", side_effect=curate_validated_tuple)):
             emitted = self.render()
         self.assertEqual(2, len(emitted))
         text = "\n".join(path.read_text(encoding="utf-8") for path in self.output.rglob("*.md"))
         self.assertIn(company["legal_name"], text)
-        self.assertIn("유급휴가 제도를 운영한다", text)
+        self.assertIn("직원에게 유급휴가 지원 제도를 운영한다", text)
         self.assertIn("https://evidence.example/reference", text)
 
     def test_citations_are_contiguous_and_sources_follow_first_seen_order(self):

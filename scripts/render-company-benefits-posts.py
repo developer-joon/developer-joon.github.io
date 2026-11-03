@@ -16,7 +16,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 EXPECTED_SCOPES = ("domestic", "international")
 STATUS_LABELS = {
@@ -46,16 +46,16 @@ V2_SOURCE_TIERS = {
 # Reviewed literal variants complement the Korean taxonomy labels. They are a
 # publication filter only: no claim text is generated or split from these terms.
 CATEGORY_PUBLICATION_TERMS = {
-    "leave": ("유급휴가", "리프레시 휴가", "경조휴가", "연차", "휴가"),
-    "family": ("육아휴직", "출산휴가", "보육", "어린이집", "자녀", "가족 행사"),
-    "health": ("건강검진", "건강보험", "의료", "치과", "시력", "심리상담", "웰니스", "보험"),
-    "growth": ("직무교육", "학비", "등록금", "자격", "어학", "자기계발", "경력개발", "도서구입"),
-    "housing": ("주택", "주거", "기숙사", "사택", "우리사주", "주식매입", "재무복지", "법률지원"),
-    "commute": ("통근버스", "통근", "교통", "차량", "주차", "유류비", "셔틀"),
-    "remote": ("유연근무", "시차", "원격근무", "재택근무", "재택 근무", "탄력 근무"),
-    "retirement": ("퇴직연금", "퇴직저축", "퇴직금", "퇴직", "장기근속", "401(k)"),
-    "meals": ("식사", "사내식당", "구내식당", "구내 식당", "복지포인트", "동호회", "휴양", "편의시설", "선물"),
-    "inclusion": ("접근성", "합리적 편의", "포용", "다양성", "장애 지원", "돌봄", "ERG"),
+    "leave": ("유급휴가", "리프레시 휴가", "경조휴가", "연차", "휴가", "paid leave", "leave"),
+    "family": ("육아휴직", "출산휴가", "보육", "어린이집", "자녀", "가족 행사", "parental leave"),
+    "health": ("건강검진", "건강보험", "의료", "치과", "시력", "심리상담", "웰니스", "보험", "health insurance"),
+    "growth": ("직무교육", "학비", "등록금", "자격", "어학", "자기계발", "경력개발", "도서구입", "tuition"),
+    "housing": ("주택", "주거", "기숙사", "사택", "우리사주", "주식매입", "재무복지", "법률지원", "housing"),
+    "commute": ("통근버스", "통근", "교통", "차량", "주차", "유류비", "셔틀", "commute"),
+    "remote": ("유연근무", "시차", "원격근무", "재택근무", "재택 근무", "탄력 근무", "remote work"),
+    "retirement": ("퇴직연금", "퇴직저축", "퇴직금", "퇴직", "장기근속", "401(k)", "retirement"),
+    "meals": ("식사", "사내식당", "구내식당", "구내 식당", "복지포인트", "동호회", "휴양", "편의시설", "선물", "meal"),
+    "inclusion": ("접근성", "합리적 편의", "포용", "다양성", "장애 지원", "돌봄", "ERG", "accessibility"),
 }
 PAGE_SHELL_PATTERN = re.compile(
     r"(?i)(?:\bwindow\b|clientWidth|heightVH|\bdocument\.|javascript:|"
@@ -68,7 +68,33 @@ TEMPLATE_PROSE_PATTERNS = (
     re.compile(r"공개\s*복지\s*페이지가.*관련\s*항목을\s*열거"),
     re.compile(r"관련\s*항목을\s*열거한다"),
 )
-_V2_SCHEMA_VALIDATORS = None
+EMPLOYEE_TERMS = ("직원", "임직원", "구성원", "사원", "근로자", "employee", "employees", "staff", "workforce")
+BENEFIT_ACTION_TERMS = (
+    "지원", "제공", "운영", "지급", "부여", "이용", "가입", "시행", "사용", "보장",
+    "benefit", "benefits", "allowance", "provide", "provides", "provided", "receive",
+    "receives", "offer", "offers", "operate", "paid", "coverage",
+)
+CORPORATE_FORM_PATTERN = re.compile(
+    r"(?i)(?:주식회사|유한회사|합자회사|합명회사|유한책임회사|\(\s*주\s*\)|㈜|"
+    r"\b(?:incorporated|inc|corporation|corp|limited|ltd|company|co|llc)\b\.?)"
+)
+GENERIC_ENTITY_ALIASES = {"company", "corporation", "inc", "corp", "ltd", "co", "회사", "기업"}
+
+V2_RECORD_KEYS = {
+    "official": {"claim_id", "cell_id", "company_id", "category_id", "jurisdiction", "source_ids",
+                 "source_tier", "scope_status", "scope", "conflict_status", "publication_eligibility"},
+    "reference": {"reference_id", "cell_id", "company_id", "category_id", "source_id", "source_tier",
+                  "statement", "supporting_quote", "source_locator", "reliability", "currentness", "scope",
+                  "conflict_status", "publication_eligibility", "checked_at"},
+    "community": {"community_report_id", "cell_id", "company_id", "category_id", "source_id", "source_tier",
+                  "statement", "reliability", "currentness", "scope_status", "scope", "conflict_status",
+                  "moderation", "frozen_snapshot", "publication_eligibility"},
+}
+V2_CELL_KEYS = {"cell_id", "company_id", "category_id", "jurisdiction", "state", "coverage_policy_id",
+                "attempt_ids", "official_claim_ids", "reference_ids", "community_report_ids", "reliability",
+                "currentness", "scope_status", "conflict_status", "publication_eligibility", "assessed_at"}
+V2_SOURCE_KEYS = {"source_id", "source_tier", "title", "url", "retrieved_at", "content_sha256", "reliability",
+                  "currentness", "scope_status", "scope", "conflict_status", "publication_eligibility"}
 
 
 def load_module(path, name):
@@ -298,33 +324,65 @@ def publication_plain_text(value):
 
 
 def publication_source_url(source):
-    """Return a deterministic inert URL without changing target semantics."""
+    """Return a deterministic inert URL without changing valid target semantics."""
     url = source.get("url") if isinstance(source, dict) else None
-    if (not isinstance(url, str)
-            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in url)
-            or not _credential_free_https(source)):
+    if not isinstance(url, str):
+        raise ValueError("publication source URL is invalid")
+    decoded = url
+    for _ in range(4):
+        if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in decoded):
+            raise ValueError("publication source URL is invalid")
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    if not _credential_free_https(source):
         raise ValueError("publication source URL is invalid")
     return quote(url, safe=":/?#@!$&+,;=%")
 
 
-def _v2_schema_valid(ledger, value):
-    """Apply the repository's authoritative v2 JSON Schema validator."""
-    global _V2_SCHEMA_VALIDATORS
-    if _V2_SCHEMA_VALIDATORS is None:
-        validator = load_module(
-            Path(__file__).with_name("validate-benefits-v2-package.py"),
-            "benefits_v2_publication_validator",
-        )
-        errors = []
-        _V2_SCHEMA_VALIDATORS = validator._schema_validators(
-            Path(__file__).resolve().parents[1], errors
-        )
-        if errors or len(_V2_SCHEMA_VALIDATORS) != len(validator.SCHEMAS):
-            raise RuntimeError("authoritative v2 schemas are unavailable: " + "; ".join(errors))
-    try:
-        return not list(_V2_SCHEMA_VALIDATORS[ledger][1].iter_errors(value))
-    except (KeyError, TypeError, ValueError):
+def _valid_scope_shape(scope, reference=False):
+    keys = {"countries", "legal_entities", "roles", "employment_types"}
+    if reference:
+        keys.add("status")
+    if not isinstance(scope, dict) or set(scope) != keys:
         return False
+    for field in ("countries", "legal_entities", "roles", "employment_types"):
+        values = scope.get(field)
+        if (not isinstance(values, list) or not values or len(values) != len(set(values))
+                or any(not isinstance(value, str) or not value for value in values)):
+            return False
+    return all(re.fullmatch(r"[A-Z]{2}", country) for country in scope["countries"])
+
+
+def _valid_v2_cell_shape(cell):
+    if not isinstance(cell, dict) or set(cell) != V2_CELL_KEYS:
+        return False
+    if not _timezone_aware_timestamp(cell.get("assessed_at")):
+        return False
+    for field in ("attempt_ids", "official_claim_ids", "reference_ids", "community_report_ids"):
+        values = cell.get(field)
+        if not isinstance(values, list) or len(values) != len(set(values)):
+            return False
+    return True
+
+
+def _valid_v2_record_shape(evidence_class, record):
+    if not isinstance(record, dict) or set(record) != V2_RECORD_KEYS[evidence_class]:
+        return False
+    scope = record.get("scope")
+    if not _valid_scope_shape(scope, reference=evidence_class == "reference"):
+        return False
+    if evidence_class == "official":
+        return isinstance(record.get("source_ids"), list) and bool(record["source_ids"])
+    statement = record.get("statement")
+    if not isinstance(statement, str) or not 1 <= len(statement) <= 2000:
+        return False
+    if evidence_class == "reference":
+        quote_text = record.get("supporting_quote")
+        return (isinstance(quote_text, str) and 1 <= len(quote_text) <= 2000
+                and _timezone_aware_timestamp(record.get("checked_at")))
+    return True
 
 
 def _same_v2_scope(record_scope, source_scope):
@@ -345,20 +403,69 @@ def _category_terms(category_id, taxonomy):
     return tuple(sorted(terms, key=lambda value: (-len(value), value)))
 
 
-def _eligible_publication_prose(value, category_id, taxonomy):
+def _entity_name_patterns(legal_entity):
+    if not isinstance(legal_entity, str) or not legal_entity.strip():
+        return ()
+    exact = " ".join(legal_entity.split())
+    alias = " ".join(CORPORATE_FORM_PATTERN.sub(" ", exact).split()).strip(" ,.-")
+    names = [exact]
+    if (alias.casefold() not in GENERIC_ENTITY_ALIASES and len(re.sub(r"[^0-9A-Za-z가-힣]", "", alias)) >= 3
+            and alias.casefold() != exact.casefold()):
+        names.append(alias)
+    patterns = []
+    for name in names:
+        escaped = re.escape(name).replace(r"\ ", r"\s+")
+        if re.search(r"[가-힣]", name):
+            patterns.append(re.compile(
+                r"(?<![0-9A-Za-z가-힣])" + escaped
+                + r"(?=$|[\s,.;:!?)]|은|는|이|가|의|에서|에게|에는|을|를|과|와|도)", re.IGNORECASE))
+        else:
+            patterns.append(re.compile(
+                r"(?<![0-9A-Za-z])" + escaped + r"(?![0-9A-Za-z])", re.IGNORECASE))
+    return tuple(patterns)
+
+
+def _all_term_positions(value, terms):
+    positions = []
+    for term in terms:
+        start = value.find(term.casefold())
+        while start >= 0:
+            positions.append(start)
+            start = value.find(term.casefold(), start + 1)
+    return positions
+
+
+def _entity_benefit_phrase(value, legal_entities, category_id, taxonomy):
+    folded = value.casefold()
+    entity_positions = [match.start() for entity in legal_entities
+                        for pattern in _entity_name_patterns(entity)
+                        for match in pattern.finditer(value)]
+    employee_positions = _all_term_positions(folded, EMPLOYEE_TERMS)
+    action_positions = _all_term_positions(folded, BENEFIT_ACTION_TERMS)
+    category_positions = _all_term_positions(folded, _category_terms(category_id, taxonomy))
+    return any(
+        max(entity, employee, action, category) - min(entity, employee, action, category) <= 160
+        for entity in entity_positions
+        for employee in employee_positions
+        for action in action_positions
+        for category in category_positions
+    )
+
+
+def _eligible_publication_prose(value, category_id, taxonomy, legal_entities):
     if (not isinstance(value, str) or not value.strip()
             or len(value) > PUBLICATION_PROSE_MAX_CHARS
             or any(ord(char) < 32 and char not in "\t\n\r" for char in value)
             or any(pattern.search(value) for pattern in TEMPLATE_PROSE_PATTERNS)
-            or PAGE_SHELL_PATTERN.search(value)):
+            or PAGE_SHELL_PATTERN.search(value)
+            or not isinstance(legal_entities, list) or not legal_entities):
         return False
-    folded = value.casefold()
-    return any(term.casefold() in folded for term in _category_terms(category_id, taxonomy))
+    return _entity_benefit_phrase(value, legal_entities, category_id, taxonomy)
 
 
 def _canonical_v2_source(source_id, source):
-    if (not _v2_schema_valid("sources", source)
-            or not isinstance(source, dict) or source.get("source_id") != source_id
+    if (not isinstance(source, dict) or set(source) != V2_SOURCE_KEYS
+            or source.get("source_id") != source_id
             or not re.fullmatch(r"source::[A-Za-z0-9][A-Za-z0-9._:-]{2,220}", source_id)
             or source.get("source_tier") not in V2_SOURCE_TIERS
             or not isinstance(source.get("title"), str) or not source["title"]
@@ -412,9 +519,7 @@ def _valid_community_review(record):
 
 
 def _valid_v2_record_binding(evidence_class, record_id, record, cell, source):
-    ledger = {"official": "official_claims", "reference": "references",
-              "community": "community_reports"}[evidence_class]
-    if not _v2_schema_valid("cells", cell) or not _v2_schema_valid(ledger, record):
+    if not _valid_v2_cell_shape(cell) or not _valid_v2_record_shape(evidence_class, record):
         return False
     if evidence_class == "official":
         return (
@@ -552,8 +657,9 @@ def publication_evidence(company_id, claims, source_map, assignments, taxonomy,
                 if evidence_class == "community":
                     quote = statement
                 prose = (statement, quote)
-                if any(not _eligible_publication_prose(value, category_id, taxonomy)
-                       for value in prose):
+                legal_entities = record.get("scope", {}).get("legal_entities")
+                if any(not _eligible_publication_prose(
+                        value, category_id, taxonomy, legal_entities) for value in prose):
                     continue
                 evidence.append({
                     "evidence_class": evidence_class, "record_id": record_id,
