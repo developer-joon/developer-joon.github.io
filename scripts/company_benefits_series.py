@@ -34,6 +34,7 @@ IDENTITY_ALGORITHM = "sec-submissions-identity"
 IDENTITY_VERSION = "1"
 IDENTITY_SOURCE_FIELDS = {"entity_identity", "legal_name", "registry_id", "tax_id"}
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+COMPANY_ID_PATTERN = re.compile(r"^(?!v2(?:::|$))[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 OFFICIAL_DISCOVERY_SOURCE_TYPES = {
     "government_register", "regulator_filing", "public_enterprise_disclosure",
     "exchange_filing", "official_company_report",
@@ -78,7 +79,8 @@ def canonical_v2_gap_id(batch, company_id):
     batch_id, company_ids = batch.get("batch_id"), batch.get("company_ids")
     if (batch_id not in BATCH_IDS or not isinstance(company_ids, list)
             or len(company_ids) != BATCH_SIZE
-            or any(not isinstance(item, str) or not item for item in company_ids)
+            or any(not isinstance(item, str) or not COMPANY_ID_PATTERN.fullmatch(item)
+                   for item in company_ids)
             or len(set(company_ids)) != BATCH_SIZE):
         raise ValueError("canonical batch membership context is invalid for a v2 gap ID")
     if not isinstance(company_id, str) or not company_id or company_id not in company_ids:
@@ -87,8 +89,8 @@ def canonical_v2_gap_id(batch, company_id):
 
 
 def legacy_gap_id(company_id):
-    if not isinstance(company_id, str) or not company_id:
-        raise ValueError("legacy gap company_id must be a nonempty string")
+    if not isinstance(company_id, str) or not COMPANY_ID_PATTERN.fullmatch(company_id):
+        raise ValueError("legacy gap company_id is outside the authoritative company ID language")
     return f"{LEGACY_GAP_ID_PREFIX}{company_id}"
 
 

@@ -13,6 +13,7 @@ RESEARCH = ROOT / "docs" / "research" / "company-benefits"
 SCHEMA = RESEARCH / "schema"
 CONTRACT_FILES = (
     "company-gap.schema.json",
+    "series-batch.schema.json",
     "company-category-cell.schema.json",
     "research-attempt.schema.json",
     "official-claim-v2.schema.json",
@@ -268,6 +269,43 @@ class V2ContractTests(unittest.TestCase):
                 self.assert_invalid("company-gap.schema.json", invalid)
                 with self.assertRaises(ValueError):
                     self.series.validate_v2_gap_id(invalid, batch)
+
+    def test_gap_schema_and_runtime_share_the_authoritative_company_id_language(self):
+        company_ids = ["acme:division"] + [f"company-{number:02d}" for number in range(2, 26)]
+        batch = {"batch_id": "domestic-01", "company_ids": company_ids}
+        record = {
+            "audit_id": "company-gap::v2::domestic-01::acme:division",
+            "company_id": "acme:division",
+            "disposition": "nonpublishable",
+            "reason": "No public information was verified.",
+            "searched_official_source_ids": ["source-1"],
+            "searched_official_urls": [],
+            "nonabsence_wording": "This does not mean the benefit is absent.",
+            "researcher_id": "researcher-1",
+        }
+        self.assert_valid("company-gap.schema.json", record)
+        self.assertEqual(record["audit_id"], self.series.validate_v2_gap_id(record, batch))
+
+        batch_record = {
+            "manifest_version": "1",
+            "batch_id": "domestic-01",
+            "scope": "domestic",
+            "batch_number": 1,
+            "company_list_sha256": HASH,
+            "effective_sequence_sha256": HASH,
+            "replacement_events_sha256": HASH,
+            "company_ids": company_ids,
+        }
+        self.assert_valid("series-batch.schema.json", batch_record)
+
+        for reserved in ("v2", "v2::reserved"):
+            invalid_batch = copy.deepcopy(batch_record)
+            invalid_batch["company_ids"][0] = reserved
+            with self.subTest(reserved=reserved):
+                self.assert_invalid("series-batch.schema.json", invalid_batch)
+                invalid_context = dict(batch, company_ids=invalid_batch["company_ids"])
+                with self.assertRaises(ValueError):
+                    self.series.canonical_v2_gap_id(invalid_context, reserved)
 
     def progress_entry(self, batch_id, status="pending"):
         entry = {
