@@ -134,6 +134,13 @@ class SeriesIntegrationTests(unittest.TestCase):
                  "checked_at": "2026-10-22T05:00:00Z"}
         return [source], [check]
 
+    def canonical_gap(self, company_id):
+        return {"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}",
+                "company_id": company_id, "disposition": "nonpublishable",
+                "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
+                "searched_official_source_ids": [], "searched_official_urls": [],
+                "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+
     def test_rejects_unapproved_package(self):
         self.package(status="review_pending")
         with self.assertRaisesRegex(ValueError, "approved"):
@@ -207,7 +214,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             self.module.load_package(self.input, self.root)
 
     def test_rejects_forged_review_audit_not_bound_to_exact_candidate_payload(self):
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -229,7 +236,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             self.module.load_package(self.input, self.root)
 
     def test_rejects_legacy_shaped_unbound_review_audit(self):
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -264,7 +271,7 @@ class SeriesIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside (canonical )?batch"):
             self.module.load_package(self.input, self.root)
 
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -275,7 +282,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             self.module.load_package(self.input, self.root)
 
     def test_rejects_cross_batch_id_collision_and_evidence_files(self):
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -292,7 +299,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             self.module.load_package(self.input, self.root)
 
     def test_valid_gap_only_package_is_deterministic(self):
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -342,7 +349,7 @@ class SeriesIntegrationTests(unittest.TestCase):
         )
 
     def test_load_package_cannot_delegate_frozen_source_byte_validation(self):
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -383,7 +390,7 @@ class SeriesIntegrationTests(unittest.TestCase):
         review = copy.deepcopy(self.fixture.reviews[0])
         review.update(review_id=f"review-{company_id}", claim_id=claim_id, researcher_id="gap-researcher")
         review["source_entailment_reviews"][0]["source_id"] = source_id
-        gaps = [{"audit_id": f"company-gap::{item_id}", "company_id": item_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{item_id}", "company_id": item_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -405,6 +412,19 @@ class SeriesIntegrationTests(unittest.TestCase):
         _, _, records = self.module.load_package(self.input, self.root)
 
         self.assertEqual([claim], records["claims.jsonl"])
+
+    def test_rejects_byte_identical_batch_qualified_gap_duplicate(self):
+        gap = self.canonical_gap(self.batch["company_ids"][0])
+        raw = self.module.series.jsonl_bytes([gap])
+        existing_path = Path(self.tmp.name) / "existing-gaps.jsonl"
+        incoming_path = Path(self.tmp.name) / "incoming-gaps.jsonl"
+        existing_path.write_bytes(raw)
+        incoming_path.write_bytes(raw)
+        records = [gap]
+        with self.assertRaisesRegex(ValueError, "collision"):
+            self.module.validate_record_collisions(
+                "gaps.jsonl", incoming_path, existing_path, records, records
+            )
 
     def test_rejects_byte_identical_v2_duplicate_id(self):
         name = V2_FILES["attempts"]
@@ -445,8 +465,34 @@ class SeriesIntegrationTests(unittest.TestCase):
         self.assertEqual(self.module.series.read_jsonl(self.input / "gaps.jsonl"), records["gaps.jsonl"])
         self.assertEqual(sources, records["sources.jsonl"])
 
-    def test_real_v2_integration_preserves_legacy_audit_ledgers_byte_for_byte(self):
+    def test_batch_qualified_gap_ids_do_not_collide_with_frozen_legacy_company_gap(self):
+        gaps = [self.canonical_gap(company_id) for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        legacy = [dict(gap, audit_id=f"company-gap::{gap['company_id']}",
+                       reason="different frozen legacy outcome") for gap in gaps]
+        self.module.series.write_jsonl(self.root / "series-research-gaps.jsonl", legacy)
+
+        _, _, records = self.module.load_package(self.input, self.root)
+
+        self.assertEqual([gap["audit_id"] for gap in gaps],
+                         [gap["audit_id"] for gap in records["gaps.jsonl"]])
+
+    def test_rejects_nonidentical_legacy_gap_collision(self):
         gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "new outcome",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        frozen = [dict(gap, reason="frozen outcome") for gap in gaps]
+        self.module.series.write_jsonl(self.root / "series-research-gaps.jsonl", frozen)
+        with self.assertRaisesRegex(ValueError, "legacy|collision|byte"):
+            self.module.load_package(self.input, self.root)
+
+    def test_real_v2_integration_preserves_legacy_audit_ledgers_byte_for_byte(self):
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -485,7 +531,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             )
 
     def test_zero_claim_25_gap_reviews_are_exact_and_orphans_fail(self):
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -534,7 +580,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             "entity_binding_status": "exact_entity", "retention_mode": "metadata_only", "reuse_status": "discovery_only",
             "access_observation": {"status": 200, "final_url": "https://dart.fss.or.kr/dsab002/main.do", "access_wall": "none"},
         }
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [source["source_id"]], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}

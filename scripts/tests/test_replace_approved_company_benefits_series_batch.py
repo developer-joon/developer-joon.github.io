@@ -80,7 +80,7 @@ class ApprovedBatchReplacementTests(unittest.TestCase):
     def _write_package(self, batch=None, approved_at="2026-10-24T00:00:00Z"):
         batch = batch or self.batch
         gaps = [{
-            "audit_id": f"company-gap::{company_id}", "company_id": company_id,
+            "audit_id": f"company-gap::v2::{batch['batch_id']}::{company_id}", "company_id": company_id,
             "researcher_id": "replacement-researcher", "disposition": "nonpublishable",
             "reason": "공개 공식 자료에서 확인하지 못했습니다.",
             "searched_official_source_ids": ["replacement-exact-route"], "searched_official_urls": [],
@@ -282,7 +282,9 @@ class ApprovedBatchReplacementTests(unittest.TestCase):
         research.mkdir()
         for name, target in legacy_targets.items():
             field = id_fields[name]
-            raw = self.module.series.jsonl_bytes([{field: f"frozen-{field}", "value": 1}])
+            record = ({field: "company-gap::legacy-company", "company_id": "legacy-company", "value": 1}
+                      if name == "gaps.jsonl" else {field: f"frozen-{field}", "value": 1})
+            raw = self.module.series.jsonl_bytes([record])
             (package / name).write_bytes(raw)
             (research / target).write_bytes(raw)
 
@@ -294,8 +296,10 @@ class ApprovedBatchReplacementTests(unittest.TestCase):
             with self.subTest(name=name):
                 field = id_fields[name]
                 original = (research / target).read_bytes()
+                record = ({field: "company-gap::legacy-company", "company_id": "legacy-company", "value": 2}
+                          if name == "gaps.jsonl" else {field: f"frozen-{field}", "value": 2})
                 (research / target).write_bytes(
-                    self.module.series.jsonl_bytes([{field: f"frozen-{field}", "value": 2}])
+                    self.module.series.jsonl_bytes([record])
                 )
                 with self.assertRaisesRegex(ValueError, f"cross-batch {field} collision"):
                     self.module._validate_immutable_legacy_projections(

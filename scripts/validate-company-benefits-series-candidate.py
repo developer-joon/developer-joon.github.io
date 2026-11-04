@@ -21,8 +21,6 @@ ALL_ARTIFACT_FILES = (*CANDIDATE_FILES, *V2_FILES)
 ALLOWED_FILES = {"candidate.json", *ALL_ARTIFACT_FILES}
 HASH = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_FIELDS = {"request_id", "target_type", "target_id", "researcher_id", "status"}
-GAP_FIELDS = {"audit_id", "company_id", "disposition", "reason", "searched_official_source_ids",
-              "searched_official_urls", "nonabsence_wording", "researcher_id"}
 LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:\\|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
 FILESYSTEM_ROOTS = {
     "applications", "bin", "boot", "dev", "etc", "home", "lib", "lib64", "media", "mnt", "opt",
@@ -245,6 +243,7 @@ def validate_candidate(candidate_dir, research_root):
         _reject_local_absolute_paths(records[name], name)
 
     verifier = _load_verifier()
+    contract = verifier.company_benefits_series
     v2_records = {
         ledger: records[filename]
         for ledger, filename in verifier.company_benefits_series.V2_LEDGER_FILES.items()
@@ -313,12 +312,17 @@ def validate_candidate(candidate_dir, research_root):
         raise ValueError("claim schema validation failed:\n" + "\n".join(claim_errors))
 
     gap_by_company = {}
+    gap_schema = verifier.load_schema("company-gap.schema.json")
+    gap_errors = []
+    candidate_gap_raw = contract.jsonl_raw_record_map(candidate_dir / "gaps.jsonl", "audit_id")
+    frozen_gap_raw = contract.jsonl_raw_record_map(research_root / "series-research-gaps.jsonl", "audit_id")
     for gap in gaps:
         company_id = gap.get("company_id")
-        if set(gap) != GAP_FIELDS:
-            raise ValueError(f"{gap.get('audit_id')}: gap schema mismatch")
-        if company_id not in position or gap.get("audit_id") != f"company-gap::{company_id}":
-            raise ValueError(f"{gap.get('audit_id')}: canonical gap ID must exactly bind company_id")
+        verifier.validate_structure(gap, gap_schema, gap.get("audit_id", "gap[missing-id]"), gap_errors)
+        contract.validate_v2_gap_id(
+            gap, batch, raw_record=candidate_gap_raw.get(gap.get("audit_id")),
+            frozen_legacy_records=frozen_gap_raw,
+        )
         wording = gap.get("nonabsence_wording", "")
         if gap.get("disposition") != "nonpublishable" or not any(
                 phrase in wording for phrase in ("복지가 없다는 뜻이 아닙니다", "복지가 없다는 뜻이 아니다")):
@@ -327,6 +331,8 @@ def validate_candidate(candidate_dir, research_root):
             raise ValueError(f"{gap.get('audit_id')}: gap researcher does not bind candidate researcher")
         verifier.company_benefits_series.validate_gap_source_routes(gap, sources)
         gap_by_company.setdefault(company_id, []).append(gap)
+    if gap_errors:
+        raise ValueError("gap schema validation failed:\n" + "\n".join(gap_errors))
 
     referenced_source_ids = {source_id for claim in claims
                              for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}

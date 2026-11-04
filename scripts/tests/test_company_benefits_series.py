@@ -49,6 +49,21 @@ class SeriesContractTests(unittest.TestCase):
             self.root, as_of=date(2026, 10, 29),
             approved_freeze_anchors=self.fixture.approved_freeze_anchors())
 
+    def test_v2_gap_id_requires_authoritative_batch_membership(self):
+        batch = next(item for item in self.series.read_jsonl(self.root / "series-batches.jsonl")
+                     if item["batch_id"] == "domestic-01")
+        company_id = batch["company_ids"][0]
+        expected = f"company-gap::v2::domestic-01::{company_id}"
+        self.assertEqual(expected, self.series.canonical_v2_gap_id(batch, company_id))
+        self.series.validate_v2_gap_id({"audit_id": expected, "company_id": company_id}, batch)
+        for invalid_batch in (None, {}, {"batch_id": "domestic-01", "company_ids": []}):
+            with self.subTest(batch=invalid_batch):
+                with self.assertRaisesRegex(ValueError, "batch|membership"):
+                    self.series.canonical_v2_gap_id(invalid_batch, company_id)
+        wrong = dict(batch, batch_id="domestic-35")
+        with self.assertRaisesRegex(ValueError, "gap ID|batch"):
+            self.series.validate_v2_gap_id({"audit_id": expected, "company_id": company_id}, wrong)
+
     def use_legacy_contract(self):
         for filename in V2_FILES.values():
             self.series.write_jsonl(self.root / filename, [])

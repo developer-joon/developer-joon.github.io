@@ -86,6 +86,13 @@ def validate_record_collisions(name, incoming_path, existing_path, incoming_reco
     overlaps = set(incoming_by_id) & set(existing_by_id)
     if overlaps and name not in IMMUTABLE_LEGACY_FILES:
         raise ValueError(f"cross-batch {field} collision")
+    if name == "gaps.jsonl" and any(
+        not incoming_by_id[item_id].get("company_id")
+        or item_id != f"{series.LEGACY_GAP_ID_PREFIX}{incoming_by_id[item_id].get('company_id')}"
+        or existing_by_id[item_id].get("company_id") != incoming_by_id[item_id].get("company_id")
+        for item_id in overlaps
+    ):
+        raise ValueError(f"cross-batch {field} collision")
     if any(incoming_raw[item_id] != existing_raw[item_id] for item_id in overlaps):
         raise ValueError(f"cross-batch {field} collision")
 
@@ -326,6 +333,13 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
     existing["checks.jsonl"] = series.read_source_checks(research_root / TARGETS["checks.jsonl"])
+    incoming_gap_raw = series.jsonl_raw_record_map(input_dir / "gaps.jsonl", "audit_id")
+    frozen_gap_raw = series.jsonl_raw_record_map(research_root / TARGETS["gaps.jsonl"], "audit_id")
+    for gap in records["gaps.jsonl"]:
+        series.validate_v2_gap_id(
+            gap, batch, raw_record=incoming_gap_raw.get(gap.get("audit_id")),
+            frozen_legacy_records=frozen_gap_raw,
+        )
     collision_files = list(series.V2_LEDGER_FILES.values())
     if validate_immutable_legacy_collisions:
         collision_files[:0] = IMMUTABLE_LEGACY_FILES
@@ -343,8 +357,10 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
         claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
     gaps_by_company = {}
     for gap in gaps:
-        if not str(gap.get("audit_id", "")).startswith("company-gap::"):
-            raise ValueError("external batch gaps must be explicit company-gap records")
+        series.validate_v2_gap_id(
+            gap, batch, raw_record=incoming_gap_raw.get(gap.get("audit_id")),
+            frozen_legacy_records=frozen_gap_raw,
+        )
         gaps_by_company.setdefault(gap.get("company_id"), []).append(gap)
     for company_id in company_ids:
         company_claims = claims_by_company.get(company_id, [])

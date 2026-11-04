@@ -36,13 +36,19 @@ def compile_candidate(scratch_dir, output_dir, research_root):
     if set(draft) != fields or draft.get("schema_version") != "1":
         raise ValueError("scratch draft manifest schema mismatch")
     batch = validator._canonical_batch(research_root, draft.get("batch_id"))
+    contract = validator._load_verifier().company_benefits_series
     position = {company_id: index for index, company_id in enumerate(batch["company_ids"])}
     sources = sorted(validator.read_jsonl(scratch_dir / "sources.jsonl"), key=lambda item: item.get("source_id", ""))
     claims = sorted(validator.read_jsonl(scratch_dir / "claims.jsonl"),
                     key=lambda item: (position.get(item.get("company_id"), 10**9), item.get("claim_id", "")))
-    gaps = sorted(validator.read_jsonl(scratch_dir / "gaps.jsonl"),
-                  key=lambda item: position.get(item.get("company_id"), 10**9))
-    category_position = {category: index for index, category in enumerate(validator._load_verifier().company_benefits_series.V2_CATEGORIES)}
+    supplied_gaps = validator.read_jsonl(scratch_dir / "gaps.jsonl")
+    gaps = []
+    for supplied in supplied_gaps:
+        gap = dict(supplied)
+        gap["audit_id"] = contract.compiled_v2_gap_id(gap, batch)
+        gaps.append(gap)
+    gaps.sort(key=lambda item: position.get(item.get("company_id"), 10**9))
+    category_position = {category: index for index, category in enumerate(contract.V2_CATEGORIES)}
     cells = sorted(validator.read_jsonl(scratch_dir / "company-category-cells.jsonl"),
                    key=lambda item: (position.get(item.get("company_id"), 10**9),
                                      category_position.get(item.get("category_id"), 10**9)))

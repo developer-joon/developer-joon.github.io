@@ -67,6 +67,76 @@ V2_STRUCTURAL_BINDING_FIELDS = {
     "attempts": ("source_ids",),
     "official_claims": ("source_ids",),
 }
+V2_GAP_ID_PREFIX = "company-gap::v2::"
+LEGACY_GAP_ID_PREFIX = "company-gap::"
+
+
+def canonical_v2_gap_id(batch, company_id):
+    """Build a v2 gap ID from one authoritative batch membership."""
+    if not isinstance(batch, dict):
+        raise ValueError("canonical batch membership context is required for a v2 gap ID")
+    batch_id, company_ids = batch.get("batch_id"), batch.get("company_ids")
+    if (batch_id not in BATCH_IDS or not isinstance(company_ids, list)
+            or len(company_ids) != BATCH_SIZE
+            or any(not isinstance(item, str) or not item for item in company_ids)
+            or len(set(company_ids)) != BATCH_SIZE):
+        raise ValueError("canonical batch membership context is invalid for a v2 gap ID")
+    if not isinstance(company_id, str) or not company_id or company_id not in company_ids:
+        raise ValueError("v2 gap company_id is outside authoritative batch membership")
+    return f"{V2_GAP_ID_PREFIX}{batch_id}::{company_id}"
+
+
+def legacy_gap_id(company_id):
+    if not isinstance(company_id, str) or not company_id:
+        raise ValueError("legacy gap company_id must be a nonempty string")
+    return f"{LEGACY_GAP_ID_PREFIX}{company_id}"
+
+
+def compiled_v2_gap_id(gap, batch):
+    """Normalize only the historical unqualified spelling at compilation time."""
+    if not isinstance(gap, dict):
+        raise ValueError("compiled v2 gap must be an object")
+    company_id, audit_id = gap.get("company_id"), gap.get("audit_id")
+    canonical = canonical_v2_gap_id(batch, company_id)
+    if audit_id not in {canonical, legacy_gap_id(company_id)}:
+        raise ValueError(f"{audit_id}: v2 gap ID has an arbitrary namespace, company, or batch binding")
+    return canonical
+
+
+def jsonl_raw_record_map(path, field):
+    """Return exact nonblank JSONL record bytes keyed by a unique string ID."""
+    result = {}
+    path = Path(path)
+    raw_records = path.read_bytes().splitlines() if path.is_file() else []
+    for raw in raw_records:
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path.name}: invalid JSON") from exc
+        record_id = record.get(field) if isinstance(record, dict) else None
+        if not isinstance(record_id, str) or not record_id or record_id in result:
+            raise ValueError(f"{path.name}: requires unique nonempty {field}")
+        result[record_id] = raw
+    return result
+
+
+def validate_v2_gap_id(gap, batch, *, raw_record=None, frozen_legacy_records=None):
+    """Accept canonical v2 IDs, or exact already-frozen legacy records only."""
+    if not isinstance(gap, dict):
+        raise ValueError("v2 gap must be an object")
+    company_id, audit_id = gap.get("company_id"), gap.get("audit_id")
+    canonical = canonical_v2_gap_id(batch, company_id)
+    if audit_id == canonical:
+        return canonical
+    legacy = legacy_gap_id(company_id)
+    if audit_id == legacy:
+        frozen = (frozen_legacy_records or {}).get(legacy)
+        if raw_record is not None and frozen is not None and raw_record == frozen:
+            return legacy
+        raise ValueError(f"{audit_id}: legacy gap ID is accepted only for an immutable byte-identical frozen record")
+    raise ValueError(f"{audit_id}: canonical v2 gap ID must exactly bind authoritative batch and company")
 
 
 def validate_v2_record_structure(records, batch):

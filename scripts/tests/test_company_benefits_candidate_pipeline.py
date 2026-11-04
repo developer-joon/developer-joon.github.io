@@ -105,7 +105,8 @@ class CandidatePipelineTests(unittest.TestCase):
 
     def gap(self, company_id):
         return {
-            "audit_id": f"company-gap::{company_id}", "company_id": company_id, "disposition": "nonpublishable",
+            "audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}",
+            "company_id": company_id, "disposition": "nonpublishable",
             "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
             "searched_official_source_ids": ["kr-dart-exact-entity-route"], "searched_official_urls": [],
             "nonabsence_wording": "복지가 없다는 뜻이 아닙니다.", "researcher_id": "researcher-a",
@@ -328,9 +329,9 @@ class CandidatePipelineTests(unittest.TestCase):
         self.gaps.reverse()
         self.gaps[0]["audit_id"] = "gap-0"
         self.write_candidate()
-        with self.assertRaisesRegex(ValueError, "canonical gap"):
+        with self.assertRaisesRegex(ValueError, "canonical.*gap"):
             self.validator.validate_candidate(self.candidate, self.root)
-        self.gaps[0]["audit_id"] = f"company-gap::{self.company_ids[0]}"
+        self.gaps[0]["audit_id"] = self.gap(self.company_ids[0])["audit_id"]
         self.write_candidate()
         manifest = json.loads((self.candidate / "candidate.json").read_bytes())
         manifest["artifacts"]["gaps.jsonl"] = "0" * 64
@@ -849,6 +850,58 @@ class CandidatePipelineTests(unittest.TestCase):
         self.compiler.compile_candidate(scratch, compiled, self.root)
         self.assertEqual(first, {path.name: path.read_bytes() for path in compiled.iterdir()})
         self.validator.validate_candidate(compiled, self.root)
+
+    def test_compiler_migrates_legacy_gap_ids_to_batch_qualified_ids(self):
+        scratch = Path(self.tmp.name) / "scratch-gap-id-migration"
+        compiled = Path(self.tmp.name) / "compiled-gap-id-migration"
+        scratch.mkdir()
+        draft = {key: self.batch[key] for key in (
+            "batch_id", "company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256"
+        )}
+        draft.update(schema_version="1", researcher_id="researcher-a")
+        (scratch / "draft.json").write_bytes(json_bytes(draft))
+        (scratch / "sources.jsonl").write_bytes(jsonl_bytes(self.sources))
+        (scratch / "claims.jsonl").write_bytes(jsonl_bytes(self.claims))
+        legacy = [dict(gap, audit_id=f"company-gap::{gap['company_id']}") for gap in self.gaps]
+        (scratch / "gaps.jsonl").write_bytes(jsonl_bytes(legacy))
+        write_records(scratch, self.v2_records, jsonl_bytes)
+
+        self.compiler.compile_candidate(scratch, compiled, self.root)
+
+        gaps = self.validator.read_jsonl(compiled / "gaps.jsonl")
+        self.assertEqual(
+            [f"company-gap::v2::{self.batch['batch_id']}::{company_id}" for company_id in self.company_ids],
+            [gap["audit_id"] for gap in gaps],
+        )
+        requests = self.validator.read_jsonl(compiled / "review-requests.jsonl")
+        self.assertEqual([gap["audit_id"] for gap in gaps], [request["target_id"] for request in requests])
+
+    def test_candidate_rejects_wrong_batch_arbitrary_and_unfrozen_legacy_gap_ids(self):
+        original = self.gaps[0]["audit_id"]
+        for audit_id in (
+            f"company-gap::v2::domestic-35::{self.company_ids[0]}",
+            f"other-gap::v2::{self.batch['batch_id']}::{self.company_ids[0]}",
+            f"company-gap::{self.company_ids[0]}",
+        ):
+            with self.subTest(audit_id=audit_id):
+                self.gaps[0]["audit_id"] = audit_id
+                self.requests[0] = self.request(audit_id, "gap")
+                self.write_candidate()
+                with self.assertRaisesRegex(ValueError, "gap ID|canonical|legacy|batch"):
+                    self.validator.validate_candidate(self.candidate, self.root)
+        self.gaps[0]["audit_id"] = original
+        self.requests[0] = self.request(original, "gap")
+        self.write_candidate()
+
+    def test_promoter_rejects_mixed_gap_id_review_binding(self):
+        reviews = [{"review_id": f"review::{gap['audit_id']}", "record_id": gap["audit_id"],
+                    "researcher_id": "researcher-a", "reviewer_id": "reviewer-b", "decision": "approved",
+                    "reviewed_at": "2026-10-30T02:00:00Z", "issues": [], "resolution": "approved",
+                    "quote_entailment_confirmed": True} for gap in self.gaps]
+        reviews[0]["record_id"] = f"company-gap::{self.company_ids[0]}"
+        self.write_review_bundle(reviews=reviews)
+        with self.assertRaisesRegex(ValueError, "orphan|coverage|binding"):
+            self.promoter.promote(self.candidate, self.review, self.output, self.root)
 
     def test_promotion_rejects_missing_duplicate_orphan_and_cross_target_reviews(self):
         cases = []
