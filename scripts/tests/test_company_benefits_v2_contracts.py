@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RESEARCH = ROOT / "docs" / "research" / "company-benefits"
 SCHEMA = RESEARCH / "schema"
 CONTRACT_FILES = (
+    "company-gap.schema.json",
     "company-category-cell.schema.json",
     "research-attempt.schema.json",
     "official-claim-v2.schema.json",
@@ -239,6 +240,34 @@ class V2ContractTests(unittest.TestCase):
         if not (RESEARCH / "research-coverage-policies.json").is_file():
             missing.append("research-coverage-policies.json")
         self.assertEqual([], missing)
+
+    def test_gap_schema_and_runtime_reject_the_same_noncanonical_id_forms(self):
+        company_ids = [f"company-{number:02d}" for number in range(1, 26)]
+        batch = {"batch_id": "domestic-01", "company_ids": company_ids}
+        base = {
+            "audit_id": "company-gap::v2::domestic-01::company-01",
+            "company_id": "company-01",
+            "disposition": "nonpublishable",
+            "reason": "No public information was verified.",
+            "searched_official_source_ids": ["source-1"],
+            "searched_official_urls": [],
+            "nonabsence_wording": "This does not mean the benefit is absent.",
+            "researcher_id": "researcher-1",
+        }
+        self.assert_valid("company-gap.schema.json", base)
+        self.assertEqual(base["audit_id"], self.series.validate_v2_gap_id(base, batch))
+
+        for audit_id in (
+            "company-gap::v2::domestic-00::company-01",
+            "company-gap::v2::domestic-41::company-01",
+            "company-gap::v2::international-99::company-01",
+            "company-gap::v2",
+        ):
+            invalid = dict(base, audit_id=audit_id)
+            with self.subTest(audit_id=audit_id):
+                self.assert_invalid("company-gap.schema.json", invalid)
+                with self.assertRaises(ValueError):
+                    self.series.validate_v2_gap_id(invalid, batch)
 
     def progress_entry(self, batch_id, status="pending"):
         entry = {
