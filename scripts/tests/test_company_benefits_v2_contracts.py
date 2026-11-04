@@ -307,6 +307,10 @@ class V2ContractTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.series.canonical_v2_gap_id(invalid_context, reserved)
 
+                empty_records = {ledger: [] for ledger in self.series.V2_LEDGER_FILES}
+                with self.assertRaises(ValueError):
+                    self.series.validate_v2_record_structure(empty_records, invalid_context)
+
     def progress_entry(self, batch_id, status="pending"):
         entry = {
             "batch_id": batch_id,

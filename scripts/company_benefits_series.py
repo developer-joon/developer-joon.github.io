@@ -186,8 +186,11 @@ def validate_v2_record_structure(records, batch):
 
     company_ids = batch.get("company_ids") if isinstance(batch, dict) else None
     if (not isinstance(company_ids, list) or len(company_ids) != BATCH_SIZE
-            or any(not isinstance(value, str) or not value for value in company_ids)):
-        raise ValueError("canonical batch company_ids must be an array of exactly 25 nonempty strings")
+            or any(not isinstance(value, str) or not COMPANY_ID_PATTERN.fullmatch(value)
+                   for value in company_ids)):
+        raise ValueError(
+            "canonical batch company_ids must contain exactly 25 authoritative company IDs"
+        )
     if len(set(company_ids)) != BATCH_SIZE:
         raise ValueError("canonical batch must contain exactly 25 unique companies")
     return records
