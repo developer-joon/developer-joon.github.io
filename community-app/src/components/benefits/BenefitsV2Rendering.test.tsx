@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 import { BenefitsHeatmapTable } from './BenefitsHeatmapTable'
 import { BenefitClaimGroup } from './BenefitClaimGroup'
+import { BenefitV2EvidenceGroup } from './BenefitV2EvidenceGroup'
 import { CompanyCompareTray } from './CompanyCompareTray'
 import { FitResultList } from './FitResultList'
-import { categories, type CategoryOutcome, type CompanyListing } from '../../types/benefits'
+import { categories, type BenefitCompanyView, type CategoryOutcome, type CompanyListing, type Detail } from '../../types/benefits'
 import { parseQuery } from '../../lib/benefitsQueryState'
 const notice = '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.'
 const insufficient = (category_id: (typeof categories)[number]): CategoryOutcome => ({ kind: 'insufficient_evidence', category_id, reason_code: 'not_researched', nonabsence_notice: notice, searched_source_ids: [], searched_at: null })
@@ -116,4 +117,34 @@ it('keeps mobile targets at 56px and wraps long evidence URLs', () => {
   expect(mobile).toMatch(/\.benefits-status,[\s\S]*min-height:\s*56px/)
   expect(css).toContain('.benefits-evidence a,')
   expect(css).toMatch(/\.benefits-evidence a,[^}]+overflow-wrap:\s*anywhere/)
+})
+
+it('marks projected companies with an accessible lineage badge and pending companies explicitly', () => {
+  const projected = { ...researchedCompany(1), lineage: { legacy: company(1), approved_v2: researchedCompany(1) } } as BenefitCompanyView
+  const pending = { ...company(2), lineage: { legacy: company(2) } } as BenefitCompanyView
+  render(<BenefitsHeatmapTable companies={[projected, pending]} selectedCategories={['leave']} compare={[]} toggle={() => undefined} link={() => '#'} projectionActive />)
+  expect(screen.getByLabelText('승인 v2 조사 적용')).toBeVisible()
+  expect(screen.getByText('v2 승인 조사 미적용')).toBeVisible()
+})
+
+it('renders approved-v2 evidence in distinct official, reference and lower-tier community sections', () => {
+  const detail = {
+    official_claims: [{ claim_id: `official::${'a'.repeat(64)}`, category_id: 'leave', source_ids: ['source::official'], scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'] }, scope_status: 'exact_entity', source_tier: 'official_government', conflict_status: 'none' }],
+    references: [{ reference_id: 'reference::1', category_id: 'leave', source_id: 'source::reference', statement: '연차 휴가 제도를 안내합니다.', supporting_quote: '연차 휴가를 사용할 수 있습니다.' }],
+    community_reports: [{ community_report_id: 'community::1', category_id: 'leave', source_id: 'source::community', statement: '직원 커뮤니티의 휴가 사용 보고입니다.' }],
+    sources: [
+      { source_id: 'source::official', title: '고용노동부 공개 기록', url: 'https://official.example/record' },
+      { source_id: 'source::reference', title: '기업 채용 안내', url: 'https://company.example/benefits' },
+      { source_id: 'source::community', title: '직원 커뮤니티 스냅샷', url: 'https://community.example/report' },
+    ],
+  } as unknown as Detail
+  render(<><h2>승인 v2 조사 근거</h2><BenefitV2EvidenceGroup category="leave" detail={detail} /></>)
+  expect(screen.getByRole('heading', { name: '승인 v2 조사 근거' })).toBeVisible()
+  expect(screen.getByText('공식 기록')).toBeVisible()
+  expect(screen.getByText('연차 휴가 제도를 안내합니다.')).toBeVisible()
+  expect(screen.getByText('연차 휴가를 사용할 수 있습니다.')).toBeVisible()
+  expect(screen.getByText('커뮤니티 보고 · 하위 근거 계층')).toBeVisible()
+  expect(screen.getByText('직원 커뮤니티의 휴가 사용 보고입니다.')).toBeVisible()
+  expect(screen.getAllByRole('link')).toHaveLength(3)
+  for (const link of screen.getAllByRole('link')) { expect(link).toHaveAttribute('target', '_blank'); expect(link).toHaveAttribute('rel', 'noopener noreferrer') }
 })

@@ -115,3 +115,12 @@ it('renders the Benefit Atlas evidence banner outside the explorer workspace wit
   expect(hero).toHaveTextContent('2000개 기업')
   expect(hero).toHaveTextContent('생성일 2026-10-31')
 })
+
+it('derives the Korean approved-v2 coverage banner from manifest counts', () => {
+  const manifest = {
+    data_version: 'company-benefits-2026-10-31-v1', company_count: 2000, generated_at: '2026-10-31T14:59:59Z',
+    approved_v2_projection: { approved_batch_count: 38, total_batch_count: 80, projected_company_count: 950, total_company_count: 2000 },
+  } as unknown as Manifest
+  render(<BenefitsExplorerShell route="heatmap" query="" manifest={manifest}><p>탐색 결과</p></BenefitsExplorerShell>)
+  expect(screen.getByText('승인 v2 조사 · 전체 80개 중 38개 batch · 950/2,000개 기업')).toBeVisible()
+})

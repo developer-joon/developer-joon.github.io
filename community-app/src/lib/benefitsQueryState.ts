@@ -72,13 +72,17 @@ export function presetCategories(preset: QueryState['preset']): Category[] {
   return { parenting: ['family','leave','health'], growth: ['growth','leave'], housing: ['housing','commute'], health: ['health','leave'], remote: ['remote','commute'], custom: [] }[preset] as Category[]
 }
 
-export function filterBenefitsCompanies(companies: CompanyListing[], state: QueryState) {
+export function filterBenefitsCompanies<T extends CompanyListing>(companies: T[], state: QueryState): T[] {
   const visibleCategories = state.categories.length ? state.categories : categories
+  const hasEvidence = (company: CompanyListing) => categories.some((category) => {
+    const outcome = outcomeFor(company, category)
+    return isResearchedOutcome(outcome) ? outcome.state !== 'no_public_info' : outcome.kind === 'evidenced'
+  })
   const filtered = companies.filter((company) =>
     (state.scope === 'all' || company.scope === state.scope) &&
     `${company.display_name} ${company.legal_name}`.toLocaleLowerCase().includes(state.q.toLocaleLowerCase()) &&
     (!state.country || company.registered_head_office_country === state.country || company.incorporation_country === state.country) &&
-    (state.evidence === 'all' || visibleCategories.some((category) => researchStateFor(outcomeFor(company, category)) === 'official_verified')) &&
+    (state.evidence === 'all' || hasEvidence(company)) &&
     (!state.statuses.length || visibleCategories.some((category) => {
       const outcome = outcomeFor(company, category)
       if (isResearchedOutcome(outcome)) return state.statuses.includes(outcome.state === 'official_verified' ? 'confirmed' : outcome.state === 'reference' ? 'bounded' : 'insufficient_evidence')
