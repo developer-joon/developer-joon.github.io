@@ -688,6 +688,69 @@ def test_additive_projection_accepts_only_approved_checkpoint_and_complete_gate_
     assert sum(metadata["cell_state_counts"].values()) == 9500
 
 
+def test_approved_projection_main_passes_one_bounded_manifest_snapshot_to_emission(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("approved_projection_main_snapshot", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    base = tmp_path / "base"
+    base.mkdir()
+    manifest_path = base / "manifest.json"
+    original_raw = b'{"artifact_protocol":"v1","data_version":"base-v1"}'
+    manifest_path.write_bytes(original_raw)
+    original_capture = module._read_regular_file_once
+    captures = []
+
+    def capture_then_replace(*args, **kwargs):
+        capture = original_capture(*args, **kwargs)
+        captures.append(capture)
+        manifest_path.write_bytes(b'{' + b' ' * (module.BASE_MANIFEST_MAX_BYTES + 1) + b'}')
+        return capture
+
+    argv = [
+        "--research-root", str(tmp_path / "research"), "--output-root", str(tmp_path / "output"),
+        "--taxonomy", str(TAXONOMY), "--data-version", "approved-v2-test",
+        "--generated-at", "2026-11-05T00:00:00Z", "--as-of", "2026-11-05",
+        "--freeze-anchor-receipt", str(tmp_path / "freeze.json"),
+        "--effective-selection-receipt", str(tmp_path / "selection.json"),
+        "--mode", "approved-v2-projection", "--base-artifact-root", str(base),
+    ]
+    with mock.patch.object(module, "approved_projection_gate", return_value=({}, (), {"projection_kind": "approved_v2_additive"})), \
+            mock.patch.object(module, "_read_regular_file_once", side_effect=capture_then_replace), \
+            mock.patch.object(module, "emit_artifacts") as emit:
+        assert module.main(argv) == 0
+    assert len(captures) == 1
+    emitted = emit.call_args.args
+    assert emitted[5]["base_data_version"] == "base-v1"
+    assert emitted[5]["base_manifest_sha256"] == hashlib.sha256(original_raw).hexdigest()
+    assert emitted[7] == captures[0]
+
+
+def test_approved_projection_main_rejects_oversized_base_manifest_before_parsing(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("approved_projection_main_oversize", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "manifest.json").write_bytes(
+        b'{"artifact_protocol":"v1","data_version":"base-v1","padding":"'
+        + b'x' * module.BASE_MANIFEST_MAX_BYTES + b'"}'
+    )
+    argv = [
+        "--research-root", str(tmp_path / "research"), "--output-root", str(tmp_path / "output"),
+        "--taxonomy", str(TAXONOMY), "--data-version", "approved-v2-test",
+        "--generated-at", "2026-11-05T00:00:00Z", "--as-of", "2026-11-05",
+        "--freeze-anchor-receipt", str(tmp_path / "freeze.json"),
+        "--effective-selection-receipt", str(tmp_path / "selection.json"),
+        "--mode", "approved-v2-projection", "--base-artifact-root", str(base),
+    ]
+    with mock.patch.object(module, "approved_projection_gate", return_value=({}, (), {"projection_kind": "approved_v2_additive"})), \
+            mock.patch.object(module, "emit_artifacts") as emit:
+        assert module.main(argv) == 1
+    emit.assert_not_called()
+
+
 def test_additive_projection_emits_39_batch_checkpoint_with_final_25_company_chunk(tmp_path):
     research = tmp_path / "research"
     make_in_progress_projection_fixture(research, approved_count=39, pending_batch_ids={"domestic-22"})

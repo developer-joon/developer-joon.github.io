@@ -1019,7 +1019,8 @@ def base_artifact_inventory(base_root, manifest, manifest_capture):
 
 
 def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
-                   projection_metadata=None, base_artifact_root=None):
+                   projection_metadata=None, base_artifact_root=None,
+                   base_manifest_capture=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", data_version):
         raise ValueError("data version is unsafe")
     generated_at = utc_time(generated_at, "generated_at")
@@ -1041,10 +1042,12 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
             base_artifact_root = base_artifact_root.resolve(strict=True)
             if not base_artifact_root.is_dir():
                 raise ValueError("additive projection base root must be a directory")
-            base_manifest_path = base_artifact_root / "manifest.json"
-            manifest_raw, manifest_mode, manifest_identity = _read_regular_file_once(
-                base_manifest_path, "base artifact manifest", BASE_MANIFEST_MAX_BYTES
-            )
+            if base_manifest_capture is None:
+                base_manifest_capture = _read_regular_file_once(
+                    base_artifact_root / "manifest.json", "base artifact manifest",
+                    BASE_MANIFEST_MAX_BYTES,
+                )
+            manifest_raw, manifest_mode, manifest_identity = base_manifest_capture
             base_manifest = json.loads(
                 manifest_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys
             )
@@ -1054,7 +1057,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
                     or sha256(manifest_raw) != projection_metadata["base_manifest_sha256"]):
                 raise ValueError("additive projection base manifest must exactly bind the unmodified active v1 lineage")
             base_snapshot = base_artifact_inventory(
-                base_artifact_root, base_manifest, (manifest_raw, manifest_mode, manifest_identity)
+                base_artifact_root, base_manifest, base_manifest_capture
             )
             for relative, (raw, mode) in base_snapshot.items():
                 target = staging / relative
@@ -1240,14 +1243,20 @@ def main(argv=None):
                 args.research_root, args.taxonomy, args.as_of,
                 args.freeze_anchor_receipt, args.effective_selection_receipt,
             )
-            base_manifest_path = args.base_artifact_root / "manifest.json"
-            base_manifest = read_json(base_manifest_path)
+            base_manifest_capture = _read_regular_file_once(
+                args.base_artifact_root / "manifest.json", "base artifact manifest",
+                BASE_MANIFEST_MAX_BYTES,
+            )
+            base_manifest_raw = base_manifest_capture[0]
+            base_manifest = json.loads(
+                base_manifest_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys
+            )
             metadata = freeze_snapshot({
                 **metadata, "base_data_version": base_manifest.get("data_version"),
-                "base_manifest_sha256": sha256(base_manifest_path.read_bytes()),
+                "base_manifest_sha256": sha256(base_manifest_raw),
             })
             emit_artifacts(args.output_root, args.data_version, args.generated_at, taxonomy, inputs,
-                           metadata, args.base_artifact_root)
+                           metadata, args.base_artifact_root, base_manifest_capture)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(f"production artifact generation failed: {exc}", file=sys.stderr)
         return 1

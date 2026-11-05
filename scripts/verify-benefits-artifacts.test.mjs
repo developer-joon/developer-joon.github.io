@@ -50,6 +50,25 @@ test('rejects symlinks and non-regular entries in the active tree', () => fixtur
   await assert.rejects(assertExactArtifactInventory(root, value), /unsafe artifact entry/)
 }))
 
+test('artifact inventory rejects replacement of a bound version directory', () => fixture(async (root, value) => {
+  const versionRoot = path.join(root, 'community/data/company-benefits', value.data_version)
+  const parked = path.join(root, 'parked-version')
+  const attacker = path.join(root, 'attacker-version')
+  let swapped = false
+  await mkdir(attacker)
+  await assert.rejects(
+    assertExactArtifactInventory(root, value, { boundedReadHooks: { afterDirectoryOpen: async ({ pathname }) => {
+      if (!swapped && pathname === versionRoot) {
+        swapped = true
+        await rename(versionRoot, parked)
+        await symlink(attacker, versionRoot)
+      }
+    } } }),
+    /version directory.*identity changed/i,
+  )
+  assert.equal(swapped, true)
+}))
+
 test('release root rejects secret-unmanifested.txt and rogue versions', () => fixture(async (root, value) => {
   const releaseRoot = path.join(root, 'community/data/company-benefits')
   await writeFile(path.join(releaseRoot, 'manifest.json'), '{}\n')
@@ -99,6 +118,31 @@ test('manifest bounded read rejects an oversized pathname swap after its opened-
         }
       } } }),
       /manifest.*byte limit|changed during bounded read/i,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('manifest read rejects release-root replacement with an attacker symlink', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benefits-release-root-race-'))
+  const releaseRoot = path.join(root, 'community/data/company-benefits')
+  const target = path.join(releaseRoot, 'manifest.json')
+  const parked = path.join(root, 'parked-company-benefits')
+  const attacker = path.join(root, 'attacker-company-benefits')
+  try {
+    await mkdir(releaseRoot, { recursive: true })
+    await mkdir(attacker)
+    await writeFile(target, '{}\n')
+    await writeFile(path.join(attacker, 'manifest.json'), '{}\n')
+    await assert.rejects(
+      verifyBenefitsArtifacts(root, { boundedReadHooks: { afterInitialStat: async ({ pathname }) => {
+        if (pathname === target) {
+          await rename(releaseRoot, parked)
+          await symlink(attacker, releaseRoot)
+        }
+      } } }),
+      /release root.*changed|company-benefits.*identity/i,
     )
   } finally {
     await rm(root, { recursive: true, force: true })
