@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, categories, claimSchema, detailSchema, listingChunkSchema, manifestSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema, type CompanyListing, type Detail } from './benefits'
+import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, categories, claimSchema, detailSchema, listingChunkSchema, manifestSchema, sourcesDocumentSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema, type CompanyListing, type Detail } from './benefits'
 
 function validManifest() {
   const descriptor = { url: 'community/data/company-benefits/v2/taxonomy.json', sha256: 'a'.repeat(64), record_count: 10, byte_count: 100 }
@@ -290,6 +290,25 @@ function vNextDetailWithReference() {
     sources: [{ source_id: 'source::reference', source_tier: 'other_public_web', title: 'Reference', url: 'https://reference.example/leave', retrieved_at: '2026-11-01T00:00:00Z', content_sha256: 'a'.repeat(64), reliability: 'medium', currentness: 'current', scope_status: 'exact_entity', scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [] }, conflict_status: 'none', publication_eligibility: 'reference_only' }],
   }
 }
+
+it.each([
+  'http://reference.example/leave',
+  'javascript:alert(1)',
+  'data:text/html,unsafe',
+  'https://user:password@reference.example/leave',
+])('rejects unsafe approved-v2 public source URL: %s', (url) => {
+  const detail = vNextDetailWithReference()
+  detail.sources[0].url = url
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+
+  const inventory = {
+    schema_version: 1,
+    artifact_kind: 'company_benefits_sources',
+    data_version: 'approved-v2-checkpoint-39',
+    sources: detail.sources,
+  }
+  expect(sourcesDocumentSchema.safeParse(inventory).success).toBe(false)
+})
 
 it('rejects v2 evidence bound to another company or a noncanonical cell', () => {
   const valid = vNextDetailWithReference()

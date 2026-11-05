@@ -148,3 +148,20 @@ it('renders approved-v2 evidence in distinct official, reference and lower-tier 
   expect(screen.getAllByRole('link')).toHaveLength(3)
   for (const link of screen.getAllByRole('link')) { expect(link).toHaveAttribute('target', '_blank'); expect(link).toHaveAttribute('rel', 'noopener noreferrer') }
 })
+
+it.each([
+  'http://company.example/benefits',
+  'javascript:alert(1)',
+  'data:text/html,unsafe',
+  'https://user:password@company.example/benefits',
+])('does not render an unsafe approved-v2 source href: %s', (url) => {
+  const detail = {
+    official_claims: [],
+    references: [{ reference_id: 'reference::1', category_id: 'leave', source_id: 'source::reference', statement: '참고 자료입니다.', supporting_quote: '근거 인용문' }],
+    community_reports: [],
+    sources: [{ source_id: 'source::reference', title: '안전하지 않은 출처', url }],
+  } as unknown as Detail
+  render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
+  expect(screen.queryByRole('link', { name: '안전하지 않은 출처' })).not.toBeInTheDocument()
+  expect(document.querySelectorAll('a')).toHaveLength(0)
+})

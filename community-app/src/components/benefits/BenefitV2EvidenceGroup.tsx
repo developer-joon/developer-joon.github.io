@@ -1,9 +1,12 @@
-import { categoryLabels, type Category, type Detail } from '../../types/benefits'
+import { categoryLabels, safePublicSourceUrlSchema, type Category, type Detail } from '../../types/benefits'
 
 const scopeText = (scope: { countries: string[]; legal_entities: string[]; roles: string[]; employment_types: string[] }) => `국가 ${scope.countries.join(', ') || '명시되지 않음'} · 법인 ${scope.legal_entities.join(', ') || '명시되지 않음'} · 직군 ${scope.roles.join(', ') || '명시되지 않음'} · 고용형태 ${scope.employment_types.join(', ') || '명시되지 않음'}`
 
 export function BenefitV2EvidenceGroup({ category, detail }: { category: Category; detail: Detail }) {
-  const sources = new Map((detail.sources ?? []).map((source) => [source.source_id, source]))
+  const sources = new Map((detail.sources ?? []).flatMap((source) => {
+    const url = safePublicSourceUrlSchema.safeParse(source.url)
+    return url.success ? [[source.source_id, { ...source, url: url.data }] as const] : []
+  }))
   const official = (detail.official_claims ?? []).filter((record) => record.category_id === category)
   const references = (detail.references ?? []).filter((record) => record.category_id === category)
   const community = (detail.community_reports ?? []).filter((record) => record.category_id === category)
