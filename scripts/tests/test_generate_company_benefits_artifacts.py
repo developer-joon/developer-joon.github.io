@@ -629,6 +629,28 @@ def test_specific_benefit_count_counts_same_category_records_by_canonical_id():
     assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 2
 
 
+def test_specific_benefit_count_rejects_ineligible_or_missing_bound_source_records():
+    module_spec = importlib.util.spec_from_file_location("artifact_specific_benefit_sources", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    record = {
+        "reference_id": "reference::record-1", "source_id": "source::reference",
+        "publication_eligibility": "reference_only",
+    }
+    ineligible = {
+        "source::reference": {
+            "source_id": "source::reference", "publication_eligibility": "ineligible",
+        },
+    }
+    assert module.specific_benefit_record_ids([record], [], ineligible) == set()
+    with raises(KeyError):
+        module.specific_benefit_record_ids([record], [], {})
+    rebound = {**record, "source_id": "source::rebound"}
+    with raises(KeyError):
+        module.specific_benefit_record_ids([rebound], [], ineligible)
+
+
 def test_taxonomy_has_reviewed_shape_and_conservative_dol_mappings():
     taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
     assert len(taxonomy["categories"]) == 10

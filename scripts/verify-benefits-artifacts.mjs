@@ -288,6 +288,30 @@ export function assertUniqueProjectionEvidenceIds(details) {
   for (const detail of details) recordProjectionEvidenceIds(detail, seen)
 }
 
+export function assertSpecificBenefitInventory(listingCompany, detail) {
+  const sourceEligibility = new Map(detail.sources.map((source) => [source.source_id, source.publication_eligibility]))
+  const counts = new Map()
+  const record = (categoryId, canonicalId) => {
+    if (!counts.has(categoryId)) counts.set(categoryId, new Set())
+    counts.get(categoryId).add(canonicalId)
+  }
+  for (const reference of detail.references) {
+    if (['eligible', 'reference_only'].includes(reference.publication_eligibility)
+      && ['eligible', 'reference_only'].includes(sourceEligibility.get(reference.source_id))) {
+      record(reference.category_id, reference.reference_id)
+    }
+  }
+  for (const report of detail.community_reports) {
+    if (report.publication_eligibility === 'eligible' && sourceEligibility.get(report.source_id) === 'eligible') {
+      record(report.category_id, report.community_report_id)
+    }
+  }
+  for (const outcome of listingCompany.category_outcomes) {
+    const actual = counts.get(outcome.category_id)?.size ?? 0
+    if (actual !== outcome.specific_benefit_count) throw Error(`approved projection specific benefit inventory mismatch: ${listingCompany.company_id}:${outcome.category_id}`)
+  }
+}
+
 function recordProjectionEvidenceIds(detail, seen) {
   const records = [
     ...detail.claims.map((record) => ['claim_id', record]),
@@ -339,6 +363,7 @@ async function verifyApprovedV2ProjectionBound(releaseRoot, projection, baseById
     if (!baseDetailCompany) throw Error(`approved projection canonical base detail identity unavailable: ${id}`)
     assertCompanyDetailIdentityProjection(baseDetailCompany, detail.company)
     assertCompanyDetailEvidence(listingCompany, detail)
+    assertSpecificBenefitInventory(listingCompany, detail)
     recordProjectionEvidenceIds(detail, evidenceIds)
     for (const sourceId of detail.category_outcomes.flatMap((outcome) => outcome.searched_source_ids)) requiredSourceIds.add(sourceId)
     for (const sourceId of detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id))) requiredSourceIds.add(sourceId)
