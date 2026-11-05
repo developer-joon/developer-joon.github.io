@@ -6,10 +6,10 @@
 
 ## 공개 표면
 
-다음 공개 표면은 모두 `수익실험실`로 변경한다.
+페이지 제목·콘텐츠·메타데이터의 브랜드는 `수익실험실`로 변경한다. 전역 메뉴는 후속 사용자 결정에 따라 영어 라벨 `Revenue Lab`을 사용한다.
 
-- Jekyll 전역 메뉴
-- React Community 전역 메뉴
+- Jekyll 전역 메뉴: `Revenue Lab`
+- React Community 전역 메뉴: `Revenue Lab`
 - 홈페이지 front matter 제목과 H1
 - `/lab/` 페이지 제목, H1, 설명
 - About 페이지의 브랜드 소개 문구

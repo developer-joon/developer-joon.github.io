@@ -7,6 +7,7 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const brandName = '수익실험실'
+const menuLabel = 'Revenue Lab'
 const oldBrandName = '0 → 1'
 const heroPath = '/images/revenue-lab/hero.png'
 const socialImagePath = '/images/revenue-lab/cover.png'
@@ -329,11 +330,11 @@ test('the canonical lab permalink remains /lab/', () => {
   assert.equal(labFrontMatter.permalink, '/lab/')
 })
 
-test('_data/settings.yml labels exactly one /lab/ menu item 수익실험실', () => {
+test('_data/settings.yml labels exactly one /lab/ menu item Revenue Lab', () => {
   const labItems = readMenuItems().filter(({ url }) => url === '/lab/')
 
   assert.equal(labItems.length, 1, '_data/settings.yml must define exactly one /lab/ menu item')
-  assert.equal(labItems[0].title, brandName)
+  assert.equal(labItems[0].title, menuLabel)
 })
 
 test('the homepage and lab page share separate hero and social images', () => {
