@@ -361,6 +361,43 @@ for (const [label, mutate] of [
 }
 
 for (const [tokenLabel, token] of [
+  ['whitespace-prefixed end tag', '< /div>'],
+  ['whitespace-prefixed start tag', '< div>'],
+  ['whitespace-only token', '< >'],
+  ['whitespace-after-slash end tag', '</ div>'],
+  ['invalid hash opener', '<#invalid>'],
+  ['lone angle bracket', '<'],
+]) {
+  for (const [location, mutate] of [
+    ['inside head', (html) => html.replace('<title>', `${token}<title>`)],
+    ['inside body', (html) => html.replace('</body>', `${token}</body>`)],
+    ['outside html', (html) => html.replace('</html>', `</html>${token}`)],
+  ]) {
+    test(`rejects a ${tokenLabel} ${location}`, async () => {
+      await withArtifact(async (root) => {
+        const artifactPath = path.join(root, 'index.html')
+        await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+        const result = verify(root)
+        assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${tokenLabel} ${location}`)
+        assert.match(result.stderr, /index\.html.*explicit.*document html/)
+      })
+    })
+  }
+}
+
+test('accepts escaped comparison operators in generated body text', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('</body>', '<p>1 &lt; 2 and 3 &gt; 2</p></body>'))
+
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+for (const [tokenLabel, token] of [
   ['malformed start tag', '<div a=>'],
   ['malformed end tag', '</div class=x>'],
   ['malformed declaration', '<!not-doctype>'],

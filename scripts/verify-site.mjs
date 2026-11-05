@@ -262,8 +262,8 @@ function extractDocumentTitle(html) {
 
     const next = html[tagStart + 1]
     if (!next || !/[A-Za-z!/?]/.test(next)) {
-      position = tagStart + 1
-      continue
+      error ??= 'html'
+      break
     }
 
     const tagEnd = findTagEnd(html, tagStart + 1)
@@ -272,8 +272,8 @@ function extractDocumentTitle(html) {
       break
     }
     let source = html.slice(tagStart + 1, tagEnd)
-    const closing = /^\s*\//.test(source)
-    if (closing) source = source.replace(/^\s*\/\s*/, '')
+    const closing = source.startsWith('/')
+    if (closing) source = source.slice(1)
     if (/^!doctype\b/i.test(source)) {
       if (!/^!doctype[\t\n\f\r ]+html[\t\n\f\r ]*$/i.test(source)) error ??= 'html'
       if (inHtml || htmlStarts !== 0 || doctypeSeen) error ??= 'html'
