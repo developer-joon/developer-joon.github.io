@@ -1,9 +1,9 @@
 ---
-title: 0 → 1
+title: 수익실험실
 subtitle: 수익모델의 진행·종료·검증 상태를 기록하는 실험실
-description: '개발자와 AI가 수익모델을 검증하는 실험실. 종료한 트레이딩 실험의 교훈과 블로그 운영, 자동화 기록, 꼬리노트 앱 출시 전 수익 실험을 투명하게 공개합니다.'
+description: '수익실험실은 개발자와 AI가 수익모델을 검증하는 공간입니다. 종료한 트레이딩 실험의 교훈과 블로그 운영, 자동화 기록, 꼬리노트 앱 출시 전 수익 실험을 투명하게 공개합니다.'
 permalink: /lab/
-featured_image: /images/2026-02-24-Zero-To-One-Dashboard/cover.jpg
+featured_image: /images/revenue-lab/cover.png
 ---
 
 <!-- 상태 대시보드 -->

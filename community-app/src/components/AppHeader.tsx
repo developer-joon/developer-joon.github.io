@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 const globalLinks = [
-  { label: '0 → 1', href: '/lab/' },
+  { label: '수익실험실', href: '/lab/' },
   { label: 'Blog', href: '/blog/' },
   { label: 'Community', href: '/community/' },
   { label: 'Benefit Atlas', href: '/community/benefits/' },
