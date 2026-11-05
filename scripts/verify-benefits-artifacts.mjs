@@ -284,7 +284,7 @@ export function assertProjectionCompanyJoin(companies, baseById) {
 }
 
 export function assertUniqueProjectionEvidenceIds(details) {
-  const seen = { claim_id: new Set(), reference_id: new Set(), community_report_id: new Set() }
+  const seen = new Set()
   for (const detail of details) recordProjectionEvidenceIds(detail, seen)
 }
 
@@ -321,8 +321,8 @@ function recordProjectionEvidenceIds(detail, seen) {
   ]
   for (const [idField, record] of records) {
     const id = record[idField]
-    if (seen[idField].has(id)) throw Error(`approved projection duplicate ${idField}: ${id}`)
-    seen[idField].add(id)
+    if (seen.has(id)) throw Error(`approved projection duplicate canonical evidence ID: ${id}`)
+    seen.add(id)
   }
 }
 
@@ -353,7 +353,7 @@ async function verifyApprovedV2ProjectionBound(releaseRoot, projection, baseById
   const shardIds = Object.keys(projection.company_shards)
   if (shardIds.length !== byId.size || shardIds.some((id) => !byId.has(id))) throw Error('approved projection listing/shard company set mismatch')
   const requiredSourceIds = new Set()
-  const evidenceIds = { claim_id: new Set(), reference_id: new Set(), community_report_id: new Set() }
+  const evidenceIds = new Set()
   for (const [id, descriptor] of Object.entries(projection.company_shards)) {
     const detail = detailSchema.parse(await load(descriptor))
     const listingCompany = byId.get(id)
