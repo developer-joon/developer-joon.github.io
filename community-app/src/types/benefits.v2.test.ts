@@ -317,6 +317,46 @@ it('rejects v2 evidence bound to another company or a noncanonical cell', () => 
   expect(detailSchema.safeParse({ ...valid, references: [{ ...valid.references[0], cell_id: 'cell::KR-CRN-0000000000002::leave' }] }).success).toBe(false)
 })
 
+it('fails closed when projected evidence or its bound source is not publication eligible', () => {
+  const valid = vNextDetailWithReference()
+  expect(detailSchema.safeParse(valid).success).toBe(true)
+
+  const ineligibleRecord = structuredClone(valid)
+  ineligibleRecord.references[0].publication_eligibility = 'ineligible'
+  expect(detailSchema.safeParse(ineligibleRecord).success).toBe(false)
+
+  for (const publication_eligibility of ['discovery_only', 'ineligible'] as const) {
+    const ineligibleSource = structuredClone(valid)
+    ineligibleSource.sources[0].publication_eligibility = publication_eligibility
+    expect(detailSchema.safeParse(ineligibleSource).success).toBe(false)
+  }
+
+  const conservative = structuredClone(valid)
+  conservative.references[0].publication_eligibility = 'reference_only'
+  conservative.sources[0].publication_eligibility = 'reference_only'
+  expect(detailSchema.safeParse(conservative).success).toBe(true)
+
+  type MutableVNextDetail = Record<string, unknown> & { company: { company_id: string }; category_outcomes: unknown[]; references: unknown[]; official_claims: unknown[]; community_reports: unknown[]; sources: Array<Record<string, unknown>> }
+  const official = structuredClone(valid) as unknown as MutableVNextDetail
+  const claimId = `official::${'a'.repeat(64)}`
+  official.category_outcomes[0] = { ...task7Official, official_claim_ids: [claimId] }
+  official.references = []
+  official.official_claims = [{ claim_id: claimId, cell_id: `cell::${official.company.company_id}::leave`, company_id: official.company.company_id, category_id: 'leave', jurisdiction: 'KR', source_ids: ['source::reference'], source_tier: 'official_government', scope_status: 'exact_entity', scope: official.sources[0].scope, conflict_status: 'none', publication_eligibility: 'eligible' }]
+  official.sources[0] = { ...official.sources[0], source_tier: 'official_government', reliability: 'high', publication_eligibility: 'eligible' }
+  expect(detailSchema.safeParse(official).success).toBe(true)
+  official.sources[0].publication_eligibility = 'reference_only'
+  expect(detailSchema.safeParse(official).success).toBe(false)
+
+  const community = structuredClone(valid) as unknown as MutableVNextDetail
+  community.category_outcomes[0] = { ...task7Official, state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] }
+  community.references = []
+  community.community_reports = [{ community_report_id: 'community::record-1', cell_id: `cell::${community.company.company_id}::leave`, company_id: community.company.company_id, category_id: 'leave', source_id: 'source::reference', source_tier: 'user_submission', statement: 'Employee report.', reliability: 'low', currentness: 'current', scope_status: 'exact_entity', scope: community.sources[0].scope, conflict_status: 'none', frozen_snapshot: { locator: 'https://reference.example/snapshot', content_sha256: 'b'.repeat(64), frozen_at: '2026-11-01T00:00:00Z' }, publication_eligibility: 'eligible' }]
+  community.sources[0] = { ...community.sources[0], source_tier: 'user_submission', reliability: 'low', publication_eligibility: 'eligible' }
+  expect(detailSchema.safeParse(community).success).toBe(true)
+  community.sources[0].publication_eligibility = 'discovery_only'
+  expect(detailSchema.safeParse(community).success).toBe(false)
+})
+
 it('requires exact detail claim IDs and rejects official claims in lower-tier cells', () => {
   const category_outcomes = categories.map(task7Outcome)
   const listing = { company_id: 'KR-CRN-0000000000001', category_outcomes } as unknown as CompanyListing

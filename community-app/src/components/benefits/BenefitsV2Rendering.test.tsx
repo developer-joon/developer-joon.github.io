@@ -149,6 +149,36 @@ it('renders approved-v2 evidence in distinct official, reference and lower-tier 
   for (const link of screen.getAllByRole('link')) { expect(link).toHaveAttribute('target', '_blank'); expect(link).toHaveAttribute('rel', 'noopener noreferrer') }
 })
 
+it('renders material reference and community evidence limitations with accessible Korean labels', () => {
+  const detail = {
+    official_claims: [],
+    references: [{
+      reference_id: 'reference::limited', category_id: 'leave', source_id: 'source::reference', statement: '과거 그룹 단위 참고 자료입니다.', supporting_quote: '휴가 제도 운영',
+      reliability: 'low', currentness: 'historical', scope: { status: 'group_only', countries: ['KR'], legal_entities: ['Test Group'], roles: ['engineer'], employment_types: ['full-time'] }, conflict_status: 'contradictory',
+    }],
+    community_reports: [{
+      community_report_id: 'community::limited', category_id: 'leave', source_id: 'source::community', statement: '범위 미확인 커뮤니티 보고입니다.',
+      reliability: 'low', currentness: 'unknown', scope_status: 'unresolved', scope: { countries: ['KR'], legal_entities: [], roles: [], employment_types: [] }, conflict_status: 'disclosed',
+    }],
+    sources: [
+      { source_id: 'source::reference', title: '과거 참고 자료', url: 'https://reference.example/benefits' },
+      { source_id: 'source::community', title: '커뮤니티 스냅샷', url: 'https://community.example/report' },
+    ],
+  } as unknown as Detail
+  render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
+  const reference = screen.getByRole('article', { name: '참고 자료 근거 제한' })
+  expect(reference).toHaveTextContent('신뢰도: 낮음')
+  expect(reference).toHaveTextContent('현재성: 과거 정보')
+  expect(reference).toHaveTextContent('적용 범위 상태: 그룹 단위')
+  expect(reference).toHaveTextContent('법인 Test Group')
+  expect(reference).toHaveTextContent('상충 상태: 모순됨')
+  const community = screen.getByRole('article', { name: '커뮤니티 보고 근거 제한' })
+  expect(community).toHaveTextContent('신뢰도: 낮음')
+  expect(community).toHaveTextContent('현재성: 확인되지 않음')
+  expect(community).toHaveTextContent('적용 범위 상태: 미확인')
+  expect(community).toHaveTextContent('상충 상태: 상충 정보 공개됨')
+})
+
 it.each([
   'http://company.example/benefits',
   'javascript:alert(1)',

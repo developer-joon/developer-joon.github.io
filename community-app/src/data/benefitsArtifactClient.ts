@@ -4,6 +4,7 @@ import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, assertCompan
 const RESPONSE_LIMIT = 12_000_000
 const SHARD_LIMIT = 256_000
 const BATCH_LIMIT = 1_000_000
+const FETCH_CONCURRENCY = 4
 
 type Descriptor = { url: string; sha256: string; record_count: number; byte_count: number }
 type ArtifactContext = { data_version: string }
@@ -14,6 +15,27 @@ const requestUrl = (manifest: ArtifactContext, descriptor: Descriptor) => {
   const segments = descriptor.url.split('/')
   if (descriptor.url !== `community/data/company-benefits/${manifest.data_version}/${segments.slice(4).join('/')}` || segments.some((segment) => !safePathSegment.test(segment))) throw new Error('artifact 경로 오류')
   return `/${segments.map((segment) => encodeURIComponent(segment)).join('/')}`
+}
+
+async function runBounded<T>(tasks: Array<(signal: AbortSignal) => Promise<T>>, signal?: AbortSignal): Promise<T[]> {
+  signal?.throwIfAborted()
+  const controller = new AbortController()
+  const abortFromCaller = () => controller.abort(signal?.reason)
+  signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const results: T[] = Array.from({ length: tasks.length })
+  let next = 0; let failed = false; let firstFailure: unknown
+  const worker = async () => {
+    while (!failed && !controller.signal.aborted && next < tasks.length) {
+      const index = next++
+      try { results[index] = await tasks[index](controller.signal) }
+      catch (error) { if (!failed) { failed = true; firstFailure = error; controller.abort(error) } }
+    }
+  }
+  try { await Promise.allSettled(Array.from({ length: Math.min(FETCH_CONCURRENCY, tasks.length) }, worker)) }
+  finally { signal?.removeEventListener('abort', abortFromCaller) }
+  if (failed) throw firstFailure
+  signal?.throwIfAborted()
+  return results
 }
 
 export class BenefitsArtifactClient {
@@ -103,15 +125,21 @@ export class BenefitsArtifactClient {
     return companies
   }
 
-  private async loadApprovedV2Listings(manifest: Manifest, signal?: AbortSignal) {
+  private async loadApprovedV2Projection(manifest: Manifest, signal?: AbortSignal) {
     const projection = manifest.approved_v2_projection
     if (!projection) return undefined
-    const chunks = await Promise.all(projection.listing_chunks.map(async (descriptor) => {
-      const chunk = await this.payload(projection, descriptor, approvedV2ListingChunkSchema, (value) => value.companies.length, signal)
+    type ProjectionResource = { kind: 'listing'; companies: CompanyListing[] } | { kind: 'sources'; document: SourcesDocument }
+    const tasks: Array<(workerSignal: AbortSignal) => Promise<ProjectionResource>> = projection.listing_chunks.map((descriptor) => async (workerSignal) => {
+      const chunk = await this.payload(projection, descriptor, approvedV2ListingChunkSchema, (value) => value.companies.length, workerSignal)
       if (chunk.artifact_protocol !== 'vNext' || chunk.data_version !== projection.data_version || chunk.taxonomy_version !== manifest.taxonomy_version || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw new Error('approved projection 목록 chunk 메타데이터 불일치')
       chunk.companies.forEach((company) => { if (!projection.company_shards[company.company_id]) throw new Error('approved projection 목록 회사 참조 불일치') })
-      return chunk.companies
-    }))
+      return { kind: 'listing', companies: chunk.companies }
+    })
+    tasks.push(async (workerSignal) => ({ kind: 'sources', document: await this.payload(projection, projection.sources, sourcesDocumentSchema, (value) => value.sources.length, workerSignal) }))
+    const resources = await runBounded(tasks, signal)
+    const chunks = resources.flatMap((resource) => resource.kind === 'listing' ? [resource.companies] : [])
+    const approvedV2Sources = resources.find((resource): resource is Extract<ProjectionResource, { kind: 'sources' }> => resource.kind === 'sources')?.document
+    if (!approvedV2Sources) throw new Error('approved projection source inventory 누락')
     const companies = chunks.flat()
     if (companies.length !== projection.projected_company_count) throw new Error('approved projection 회사 개수 불일치')
     assertListingOutcomes(companies)
@@ -121,20 +149,18 @@ export class BenefitsArtifactClient {
       counts[outcome.state]++
     }
     if (JSON.stringify(counts) !== JSON.stringify(projection.cell_state_counts)) throw new Error('approved projection cell inventory 불일치')
-    return companies
+    return { companies, approvedV2Sources }
   }
 
   async loadAtlas(signal?: AbortSignal): Promise<BenefitAtlasData> {
     const manifest = await this.loadManifest(signal)
     const legacy = await this.loadListingChunks(manifest, signal)
     if (!manifest.approved_v2_projection) return { manifest, companies: legacy.map((company) => ({ ...company, lineage: { legacy: company } })) }
-    const projection = manifest.approved_v2_projection
-    const [projected, approvedV2Sources] = await Promise.all([
-      this.loadApprovedV2Listings(manifest, signal),
-      this.payload(projection, projection.sources, sourcesDocumentSchema, (value) => value.sources.length, signal),
-    ])
+    const projected = await this.loadApprovedV2Projection(manifest, signal)
+    if (!projected) throw new Error('approved projection inventory 누락')
+    const { companies: projectedCompanies, approvedV2Sources } = projected
     const baseById = new Map(legacy.map((company) => [company.company_id, company]))
-    const projectedById = new Map(projected!.map((company) => {
+    const projectedById = new Map(projectedCompanies.map((company) => {
       const base = baseById.get(company.company_id)
       if (!base || base.population_sequence !== company.population_sequence) throw new Error('approved projection canonical company join mismatch')
       assertCompanyIdentityProjection(base, company)

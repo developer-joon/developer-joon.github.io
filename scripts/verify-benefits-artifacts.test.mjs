@@ -354,6 +354,19 @@ test('projection verifier rejects cross-company and bogus-cell evidence after de
   await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /company|cell|binding/i)
 }))
 
+test('projection verifier rejects ineligible evidence and bound sources after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, source, version, baseById, baseDetailById }) => {
+  const ineligibleRecord = structuredClone(detail)
+  ineligibleRecord.references[0].publication_eligibility = 'ineligible'
+  projection.company_shards[company_id] = { company_id, ...await writeProjectionArtifact(root, version, `companies/${company_id}.json`, ineligibleRecord, 1) }
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /publication eligibility/i)
+
+  const ineligibleSource = structuredClone(detail)
+  ineligibleSource.sources[0].publication_eligibility = 'ineligible'
+  projection.company_shards[company_id] = { company_id, ...await writeProjectionArtifact(root, version, `companies/${company_id}.json`, ineligibleSource, 1) }
+  projection.sources = await writeProjectionArtifact(root, version, 'sources.json', { schema_version: 1, artifact_kind: 'company_benefits_sources', data_version: version, sources: [{ ...source, publication_eligibility: 'ineligible' }] }, 1)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /publication eligibility/i)
+}))
+
 test('projection verifier rejects listing and full base-detail identity drift after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
   const listingDescriptor = projection.listing_chunks[0]
   const listing = JSON.parse(await readFile(path.join(root, listingDescriptor.url), 'utf8'))
