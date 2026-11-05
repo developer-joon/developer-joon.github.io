@@ -166,13 +166,13 @@ it('renders material reference and community evidence limitations with accessibl
     ],
   } as unknown as Detail
   render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
-  const reference = screen.getByRole('article', { name: '휴가·근무시간 참고 자료 구체 혜택' })
+  const reference = screen.getByRole('article', { name: /과거 그룹 단위 참고 자료입니다.*참고 자료 1번 구체 혜택/ })
   expect(reference).toHaveTextContent('신뢰도: 낮음')
   expect(reference).toHaveTextContent('현재성: 과거 정보')
   expect(reference).toHaveTextContent('적용 범위 상태: 그룹 단위')
   expect(reference).toHaveTextContent('법인 Test Group')
   expect(reference).toHaveTextContent('상충 상태: 모순됨')
-  const community = screen.getByRole('article', { name: '휴가·근무시간 커뮤니티 보고 구체 혜택' })
+  const community = screen.getByRole('article', { name: /범위 미확인 커뮤니티 보고입니다.*커뮤니티 보고 1번 구체 혜택/ })
   expect(community).toHaveTextContent('신뢰도: 낮음')
   expect(community).toHaveTextContent('현재성: 확인되지 않음')
   expect(community).toHaveTextContent('적용 범위 상태: 미확인')
@@ -192,7 +192,7 @@ it.each([
     sources: [{ source_id: 'source::reference', title: '안전하지 않은 출처', url, publication_eligibility: 'reference_only' }],
   } as unknown as Detail
   render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
-  expect(screen.getByRole('article', { name: '휴가·근무시간 참고 자료 구체 혜택' })).toHaveTextContent('참고 자료입니다.')
+  expect(screen.getByRole('article', { name: /참고 자료입니다.*참고 자료 1번 구체 혜택/ })).toHaveTextContent('참고 자료입니다.')
   expect(screen.queryByRole('link', { name: /안전하지 않은 출처/ })).not.toBeInTheDocument()
   expect(document.querySelectorAll('a')).toHaveLength(0)
 })
@@ -252,4 +252,94 @@ it('keeps official-only evidence as verification context and excludes it from co
   expect(screen.queryByRole('article', { name: /구체 혜택/ })).not.toBeInTheDocument()
   expect(screen.getByText('구체 혜택 확인 필요 — 공식 출처와 적용 범위는 확인됐지만, 공개 데이터에 혜택명과 지원 내용이 구조화되지 않았습니다.')).toBeVisible()
   expect(screen.getByRole('article', { name: '휴가·근무시간 공식 검증 맥락' })).toHaveTextContent('정부 공개 기록')
+})
+
+it('gives repeated reference and community cards unique heading-based accessible names', () => {
+  const scope = { countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'] }
+  const detail = {
+    official_claims: [],
+    references: [1, 2].map((number) => ({
+      reference_id: `reference::${number}`, category_id: 'leave', source_id: 'source::shared', statement: '동일한 휴가 혜택을 제공합니다.', supporting_quote: `근거 ${number}`,
+      reliability: 'medium', currentness: 'current', scope: { ...scope, status: 'exact_entity' }, conflict_status: 'none', publication_eligibility: 'reference_only',
+    })),
+    community_reports: [1, 2].map((number) => ({
+      community_report_id: `community::${number}`, category_id: 'leave', source_id: 'source::community', statement: '동일한 휴가 혜택을 제공합니다.',
+      reliability: 'low', currentness: 'current', scope_status: 'exact_entity', scope, conflict_status: 'none', publication_eligibility: 'eligible',
+    })),
+    sources: [
+      { source_id: 'source::shared', title: '공유 참고 자료', url: 'https://reference.example/shared', publication_eligibility: 'reference_only' },
+      { source_id: 'source::community', title: '공유 커뮤니티 자료', url: 'https://community.example/shared', publication_eligibility: 'eligible' },
+    ],
+  } as unknown as Detail
+
+  render(<BenefitV2EvidenceSection detail={detail} />)
+
+  const cards = screen.getAllByRole('article', { name: /동일한 휴가 혜택을 제공합니다/ })
+  expect(cards).toHaveLength(4)
+  const headingIds = cards.map((card) => card.getAttribute('aria-labelledby'))
+  expect(headingIds.every(Boolean)).toBe(true)
+  expect(new Set(headingIds).size).toBe(4)
+  expect(new Set(cards.map((card) => document.getElementById(card.getAttribute('aria-labelledby')!)?.textContent)).size).toBe(4)
+  for (const headingId of headingIds) expect(document.getElementById(headingId!)).toHaveAttribute('id', headingId)
+})
+
+it('keeps long unbroken benefit statements and quotes intact and applies narrow-width wrapping', () => {
+  const longToken = `benefit-${'x'.repeat(240)}`
+  const detail = {
+    official_claims: [],
+    references: [{ reference_id: 'reference::long', category_id: 'leave', source_id: 'source::long', statement: longToken, supporting_quote: longToken, publication_eligibility: 'reference_only' }],
+    community_reports: [],
+    sources: [{ source_id: 'source::long', title: '긴 자료', url: 'https://reference.example/long', publication_eligibility: 'reference_only' }],
+  } as unknown as Detail
+
+  render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
+
+  expect(screen.getAllByText(longToken)).toHaveLength(2)
+  const css = readFileSync('src/styles/benefits.css', 'utf8')
+  expect(css).toContain(`.benefits-specific-card h4,
+.benefits-specific-card blockquote {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}`)
+})
+
+it('precomputes safe sources and category records once for the full evidence section', () => {
+  let urlReads = 0
+  let referenceCategoryReads = 0
+  let officialCategoryReads = 0
+  const source = { source_id: 'source::once', title: '한 번 읽는 출처', publication_eligibility: 'reference_only' }
+  Object.defineProperty(source, 'url', { enumerable: true, get: () => { urlReads += 1; return 'https://reference.example/once' } })
+  const reference = { reference_id: 'reference::once', source_id: 'source::once', statement: '한 번 분류하는 혜택', supporting_quote: '한 번 분류하는 근거', publication_eligibility: 'reference_only' }
+  Object.defineProperty(reference, 'category_id', { enumerable: true, get: () => { referenceCategoryReads += 1; return 'leave' } })
+  const official = { claim_id: `official::${'b'.repeat(64)}`, source_ids: ['source::once'], scope: { countries: ['KR'], legal_entities: [], roles: [], employment_types: [] } }
+  Object.defineProperty(official, 'category_id', { enumerable: true, get: () => { officialCategoryReads += 1; return 'leave' } })
+  const detail = { official_claims: [official], references: [reference], community_reports: [], sources: [source] } as unknown as Detail
+
+  render(<BenefitV2EvidenceSection detail={detail} />)
+
+  expect(urlReads).toBe(1)
+  expect(referenceCategoryReads).toBe(1)
+  expect(officialCategoryReads).toBe(1)
+})
+
+it('renders multiple official sources as a distinct semantic list', () => {
+  const detail = {
+    official_claims: [{
+      claim_id: `official::${'c'.repeat(64)}`, category_id: 'leave', source_ids: ['source::one', 'source::two'],
+      scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [] },
+    }],
+    references: [], community_reports: [],
+    sources: [
+      { source_id: 'source::one', title: '첫 번째 공식 출처', url: 'https://official.example/one', publication_eligibility: 'eligible' },
+      { source_id: 'source::two', title: '두 번째 공식 출처', url: 'https://official.example/two', publication_eligibility: 'eligible' },
+    ],
+  } as unknown as Detail
+
+  render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
+
+  const article = screen.getByRole('article', { name: '휴가·근무시간 공식 검증 맥락' })
+  const sourceList = within(article).getByRole('list')
+  expect(within(sourceList).getAllByRole('listitem')).toHaveLength(2)
+  expect(within(sourceList).getByRole('link', { name: '첫 번째 공식 출처' })).toHaveAttribute('href', 'https://official.example/one')
+  expect(within(sourceList).getByRole('link', { name: '두 번째 공식 출처' })).toHaveAttribute('href', 'https://official.example/two')
 })

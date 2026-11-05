@@ -397,6 +397,11 @@
   background: #111f32;
 }
 .benefits-specific-card--community { border-top-color: #e0ae5f; }
+.benefits-specific-card h4,
+.benefits-specific-card blockquote {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .benefits-specific-card h4 {
   margin: 8px 0 16px;
   color: #f4f8fd;
