@@ -66,6 +66,7 @@ export function assertApprovedProjectionBaseHash(rawManifest) {
 }
 
 export function assertProjectionCompanyJoin(companies, baseById) {
+  if (!(baseById instanceof Map) || baseById.size === 0) throw Error('approved projection canonical base listing index unavailable')
   for (const company of companies) {
     const base = baseById.get(company.company_id)
     if (!base || base.population_sequence !== company.population_sequence) throw Error('approved projection canonical company/population_sequence join mismatch')
@@ -80,15 +81,16 @@ export async function verifyApprovedV2Projection(root, projection, baseById) {
     const value = JSON.parse(raw); rejectForbiddenKeys(value, descriptor.url); return value
   }
   await assertExactArtifactInventory(root, projection)
-  const companies = []; const byId = new Map()
+  const companies = []; const byId = new Map(); let previousSequence = 0
   const expectedChunkCount = Math.ceil(projection.projected_company_count / 50)
   if (projection.listing_chunks.length !== expectedChunkCount) throw Error('approved projection listing chunk count mismatch')
   for (const [index, descriptor] of projection.listing_chunks.entries()) {
     const chunk = approvedV2ListingChunkSchema.parse(await load(descriptor))
-    const firstSequence = index * 50 + 1
     const recordCount = Math.min(50, projection.projected_company_count - index * 50)
-    const lastSequence = firstSequence + recordCount - 1
-    if (chunk.artifact_protocol !== 'vNext' || chunk.data_version !== projection.data_version || descriptor.chunk_index !== index + 1 || descriptor.record_count !== recordCount || descriptor.first_sequence !== firstSequence || descriptor.last_sequence !== lastSequence || chunk.companies.length !== recordCount || chunk.chunk_index !== index + 1 || chunk.sequence_start !== firstSequence || chunk.sequence_end !== lastSequence || chunk.companies.some((company, row) => company.population_sequence !== firstSequence + row)) throw Error(`approved projection listing chunk metadata/sequence mismatch: ${descriptor.url}`)
+    const firstSequence = chunk.companies[0]?.population_sequence
+    const lastSequence = chunk.companies.at(-1)?.population_sequence
+    if (chunk.artifact_protocol !== 'vNext' || chunk.data_version !== projection.data_version || descriptor.chunk_index !== index + 1 || descriptor.record_count !== recordCount || descriptor.first_sequence !== firstSequence || descriptor.last_sequence !== lastSequence || chunk.companies.length !== recordCount || chunk.chunk_index !== index + 1 || chunk.sequence_start !== firstSequence || chunk.sequence_end !== lastSequence || firstSequence <= previousSequence || chunk.companies.some((company, row) => row > 0 && company.population_sequence <= chunk.companies[row - 1].population_sequence)) throw Error(`approved projection listing chunk metadata/sequence mismatch: ${descriptor.url}`)
+    previousSequence = lastSequence
     companies.push(...chunk.companies)
   }
   assertListingOutcomes(companies)
@@ -97,11 +99,14 @@ export async function verifyApprovedV2Projection(root, projection, baseById) {
   assertProjectionCompanyJoin(companies, baseById)
   for (const company of companies) byId.set(company.company_id, company)
   if (byId.size !== companies.length) throw Error('approved projection duplicate company')
+  const shardIds = Object.keys(projection.company_shards)
+  if (shardIds.length !== byId.size || shardIds.some((id) => !byId.has(id))) throw Error('approved projection listing/shard company set mismatch')
   const requiredSourceIds = new Set()
   for (const [id, descriptor] of Object.entries(projection.company_shards)) {
     const detail = detailSchema.parse(await load(descriptor))
-    if (detail.artifact_protocol !== 'vNext' || descriptor.company_id !== id || detail.company.company_id !== id || detail.data_version !== projection.data_version) throw Error(`approved projection company shard mismatch: ${id}`)
-    assertCompanyDetailEvidence(byId.get(id), detail)
+    const listingCompany = byId.get(id)
+    if (!listingCompany || detail.artifact_protocol !== 'vNext' || descriptor.company_id !== id || detail.company.company_id !== id || detail.company.population_sequence !== listingCompany.population_sequence || detail.data_version !== projection.data_version) throw Error(`approved projection company shard mismatch: ${id}`)
+    assertCompanyDetailEvidence(listingCompany, detail)
     for (const sourceId of detail.category_outcomes.flatMap((outcome) => outcome.searched_source_ids)) requiredSourceIds.add(sourceId)
     for (const sourceId of detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id))) requiredSourceIds.add(sourceId)
     for (const sourceId of detail.official_claims.flatMap((claim) => claim.source_ids)) requiredSourceIds.add(sourceId)

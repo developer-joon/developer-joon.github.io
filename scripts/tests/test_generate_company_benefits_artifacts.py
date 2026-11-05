@@ -633,12 +633,13 @@ def test_build_company_projects_all_searched_sources_and_exact_derived_metadata(
                and outcome["community_report_count"] == 0 for outcome in detail["category_outcomes"])
 
 
-def make_in_progress_projection_fixture(root, approved_count=38):
+def make_in_progress_projection_fixture(root, approved_count=38, pending_batch_ids=()):
     make_research_fixture(root)
     batches = series.read_jsonl(root / "series-batches.jsonl")
     progress = json.loads((root / "series-progress.json").read_text())
-    approved_ids = {batch["batch_id"] for batch in batches[:approved_count]}
-    approved_companies = {company_id for batch in batches[:approved_count] for company_id in batch["company_ids"]}
+    approved_batches = [batch for batch in batches if batch["batch_id"] not in pending_batch_ids][:approved_count]
+    approved_ids = {batch["batch_id"] for batch in approved_batches}
+    approved_companies = {company_id for batch in approved_batches for company_id in batch["company_ids"]}
     for entry in progress["batches"]:
         if entry["batch_id"] not in approved_ids:
             entry["status"] = "pending"
@@ -689,7 +690,7 @@ def test_additive_projection_accepts_only_approved_checkpoint_and_complete_gate_
 
 def test_additive_projection_emits_39_batch_checkpoint_with_final_25_company_chunk(tmp_path):
     research = tmp_path / "research"
-    make_in_progress_projection_fixture(research, approved_count=39)
+    make_in_progress_projection_fixture(research, approved_count=39, pending_batch_ids={"domestic-22"})
     module_spec = importlib.util.spec_from_file_location("approved_projection_odd_checkpoint", SCRIPT)
     assert module_spec is not None and module_spec.loader is not None
     module = importlib.util.module_from_spec(module_spec)
@@ -714,7 +715,46 @@ def test_additive_projection_emits_39_batch_checkpoint_with_final_25_company_chu
     assert [chunk["record_count"] for chunk in projection["listing_chunks"]] == [50] * 19 + [25]
     final = json.loads((output / "approved-v2-checkpoint-39/listings/companies-20.json").read_text())
     assert len(final["companies"]) == 25
-    assert (final["sequence_start"], final["sequence_end"]) == (951, 975)
+    assert (final["sequence_start"], final["sequence_end"]) == (976, 1000)
+
+
+def test_additive_projection_preserves_sparse_canonical_sequences_for_real_38_batch_shape(tmp_path):
+    research = tmp_path / "research"
+    make_in_progress_projection_fixture(
+        research, approved_count=38, pending_batch_ids={"domestic-22", "domestic-31"}
+    )
+    module_spec = importlib.util.spec_from_file_location("approved_projection_sparse", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    base = tmp_path / "base"
+    base.mkdir()
+    write_json(base / "manifest.json", {"artifact_protocol": "v1", "data_version": "base-v1"})
+    metadata = module.freeze_snapshot({
+        **module.thaw_snapshot(metadata),
+        "base_data_version": "base-v1",
+        "base_manifest_sha256": file_digest(base / "manifest.json"),
+    })
+    output = tmp_path / "projection-output"
+    module.emit_artifacts(output, "approved-v2-checkpoint-38", "2026-11-05T00:00:00Z",
+                          taxonomy, inputs, metadata, base)
+    manifest = json.loads((output / "manifest.json").read_text())
+    projection = manifest["approved_v2_projection"]
+    assert projection["projected_company_count"] == 950
+    assert projection["listing_chunks"][10]["first_sequence"] == 501
+    assert projection["listing_chunks"][10]["last_sequence"] == 575
+    sequences = []
+    for descriptor in projection["listing_chunks"]:
+        relative = descriptor["url"].removeprefix("community/data/company-benefits/")
+        chunk = json.loads((output / relative).read_text())
+        assert descriptor["record_count"] == len(chunk["companies"])
+        assert descriptor["first_sequence"] == chunk["companies"][0]["population_sequence"]
+        assert descriptor["last_sequence"] == chunk["companies"][-1]["population_sequence"]
+        sequences.extend(company["population_sequence"] for company in chunk["companies"])
+    assert sequences == sorted(sequences)
+    assert set(sequences).isdisjoint(set(range(526, 551)) | set(range(751, 776)))
 
 
 def test_additive_projection_rejects_cell_count_and_pending_company_leakage(tmp_path):

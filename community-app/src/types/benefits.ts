@@ -97,7 +97,11 @@ export type CompanyListing = z.infer<typeof companyListingSchema>
 export type Company = CompanyListing
 
 const listingChunkFields = { schema_version: z.literal(1), artifact_kind: z.literal('company_listing_chunk'), artifact_protocol: z.enum(['v1', 'vNext']).optional(), data_version: version, taxonomy_version: z.literal('benefit-taxonomy-v1'), chunk_index: z.number().int().min(1).max(40), sequence_start: z.number().int().min(1), sequence_end: z.number().int().max(2000) }
-const refineListingChunk = (chunk: { artifact_protocol?: 'v1' | 'vNext'; companies: CompanyListing[] }, ctx: z.RefinementCtx) => { if (chunk.companies.some((company) => company.category_outcomes.some((outcome) => chunk.artifact_protocol === 'vNext' ? !('state' in outcome) : 'state' in outcome))) ctx.addIssue({ code: 'custom', message: 'artifact protocol/outcome 불일치' }) }
+const refineListingChunk = (chunk: { artifact_protocol?: 'v1' | 'vNext'; sequence_start: number; sequence_end: number; companies: CompanyListing[] }, ctx: z.RefinementCtx) => {
+  if (chunk.companies.some((company) => company.category_outcomes.some((outcome) => chunk.artifact_protocol === 'vNext' ? !('state' in outcome) : 'state' in outcome))) ctx.addIssue({ code: 'custom', message: 'artifact protocol/outcome 불일치' })
+  const sequences = chunk.companies.map((company) => company.population_sequence)
+  if (sequences[0] !== chunk.sequence_start || sequences.at(-1) !== chunk.sequence_end || sequences.some((sequence, index) => index > 0 && sequence <= sequences[index - 1])) ctx.addIssue({ code: 'custom', message: '목록 canonical sequence/경계 불일치' })
+}
 export const listingChunkSchema = z.strictObject({ ...listingChunkFields, companies: z.array(companyListingSchema).length(50) }).superRefine(refineListingChunk)
 export const approvedV2ListingChunkSchema = z.strictObject({ ...listingChunkFields, companies: z.array(companyListingSchema).min(1).max(50) }).superRefine(refineListingChunk)
 export type ListingChunk = z.infer<typeof listingChunkSchema>
@@ -138,7 +142,11 @@ const approvedV2ProjectionSchema = z.strictObject({
   if (projection.listing_chunk_count !== Math.ceil(projection.projected_company_count / projection.listing_chunk_size) || projection.listing_chunks.length !== projection.listing_chunk_count || Object.keys(projection.company_shards).length !== projection.projected_company_count) ctx.addIssue({ code: 'custom', message: 'projection inventory 개수 불일치' })
   if (descriptors.some((descriptor) => !descriptor.url.startsWith(prefix)) || new Set(descriptors.map((descriptor) => descriptor.url)).size !== descriptors.length) ctx.addIssue({ code: 'custom', message: 'projection 경로 불일치' })
   if (projection.taxonomy.url !== `${prefix}taxonomy.json` || projection.sources.url !== `${prefix}sources.json` || projection.methodology.url !== `${prefix}methodology.json`) ctx.addIssue({ code: 'custom', message: 'projection 역할 경로 불일치' })
-  projection.listing_chunks.forEach((chunk, index) => { const recordCount = index === projection.listing_chunk_count - 1 ? projection.projected_company_count - index * projection.listing_chunk_size : projection.listing_chunk_size; const firstSequence = index * projection.listing_chunk_size + 1; if (chunk.url !== `${prefix}listings/companies-${String(index + 1).padStart(2, '0')}.json` || chunk.chunk_index !== index + 1 || chunk.record_count !== recordCount || chunk.first_sequence !== firstSequence || chunk.last_sequence !== firstSequence + recordCount - 1) ctx.addIssue({ code: 'custom', message: 'projection chunk 불일치' }) })
+  projection.listing_chunks.forEach((chunk, index) => {
+    const recordCount = index === projection.listing_chunk_count - 1 ? projection.projected_company_count - index * projection.listing_chunk_size : projection.listing_chunk_size
+    const previous = projection.listing_chunks[index - 1]
+    if (chunk.url !== `${prefix}listings/companies-${String(index + 1).padStart(2, '0')}.json` || chunk.chunk_index !== index + 1 || chunk.record_count !== recordCount || chunk.first_sequence > chunk.last_sequence || (previous && chunk.first_sequence <= previous.last_sequence)) ctx.addIssue({ code: 'custom', message: 'projection chunk 불일치' })
+  })
   for (const [id, shard] of Object.entries(projection.company_shards)) if (shard.company_id !== id || shard.url !== `${prefix}companies/${id}.json` || shard.record_count !== 1) ctx.addIssue({ code: 'custom', message: 'projection shard 불일치' })
 })
 

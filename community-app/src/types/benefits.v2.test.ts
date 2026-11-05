@@ -72,6 +72,10 @@ it('accepts an additive approved-v2 checkpoint without relabeling the active v1 
   delete manifest.cell_count
   delete manifest.cell_state_counts
   delete manifest.ledger_sha256
+  const sparseBounds = [
+    [1, 50], [51, 100], [101, 150], [151, 200], [201, 250], [251, 300], [301, 350], [351, 400], [401, 450], [451, 500],
+    [501, 575], [576, 625], [626, 675], [676, 725], [726, 800], [801, 850], [851, 900], [901, 950], [951, 1000],
+  ]
   const projection = {
     projection_kind: 'approved_v2_additive', projection_status: 'in_progress',
     base_data_version: manifest.data_version, base_manifest_sha256: 'f'.repeat(64), data_version: 'approved-v2-checkpoint-38',
@@ -83,13 +87,24 @@ it('accepts an additive approved-v2 checkpoint without relabeling the active v1 
     taxonomy: { ...manifest.taxonomy, url: 'community/data/company-benefits/approved-v2-checkpoint-38/taxonomy.json' },
     sources: { ...manifest.sources, url: 'community/data/company-benefits/approved-v2-checkpoint-38/sources.json' },
     methodology: { ...manifest.methodology, url: 'community/data/company-benefits/approved-v2-checkpoint-38/methodology.json' },
-    listing_chunks: Array.from({ length: 19 }, (_, i) => ({ ...manifest.taxonomy, url: `community/data/company-benefits/approved-v2-checkpoint-38/listings/companies-${String(i + 1).padStart(2, '0')}.json`, chunk_index: i + 1, first_sequence: i * 50 + 1, last_sequence: i * 50 + 50, record_count: 50 })),
+    listing_chunks: Array.from({ length: 19 }, (_, i) => {
+      const [first_sequence, last_sequence] = sparseBounds[i]
+      return { ...manifest.taxonomy, url: `community/data/company-benefits/approved-v2-checkpoint-38/listings/companies-${String(i + 1).padStart(2, '0')}.json`, chunk_index: i + 1, first_sequence, last_sequence, record_count: 50 }
+    }),
     company_shards: Object.fromEntries(Object.entries(manifest.company_shards).slice(0, 950).map(([id, value]: [string, any]) => [id, { ...value, url: `community/data/company-benefits/approved-v2-checkpoint-38/companies/${id}.json` }])),
   }
   expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: projection }).success).toBe(true)
   expect(manifestSchema.safeParse({ ...manifest, artifact_protocol: 'vNext', approved_v2_projection: projection }).success).toBe(false)
   expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: { ...projection, base_data_version: 'other' } }).success).toBe(false)
   expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: { ...projection, cell_count: 9499 } }).success).toBe(false)
+
+  const overlapping = structuredClone(projection)
+  overlapping.listing_chunks[11].first_sequence = overlapping.listing_chunks[10].last_sequence
+  expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: overlapping }).success).toBe(false)
+
+  const reversed = structuredClone(projection)
+  reversed.listing_chunks[10].last_sequence = reversed.listing_chunks[10].first_sequence - 1
+  expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: reversed }).success).toBe(false)
 })
 
 it('accepts a 39-batch projection descriptor inventory with one final 25-company chunk', () => {
@@ -112,7 +127,9 @@ it('accepts a 39-batch projection descriptor inventory with one final 25-company
     methodology: { ...manifest.methodology, url: `community/data/company-benefits/${dataVersion}/methodology.json` },
     listing_chunks: Array.from({ length: 20 }, (_, index) => {
       const record_count = index === 19 ? 25 : 50
-      return { ...manifest.taxonomy, url: `community/data/company-benefits/${dataVersion}/listings/companies-${String(index + 1).padStart(2, '0')}.json`, chunk_index: index + 1, first_sequence: index * 50 + 1, last_sequence: index * 50 + record_count, record_count }
+      const first_sequence = index <= 10 ? index * 50 + 1 : index * 50 + 26
+      const last_sequence = index < 10 ? index * 50 + 50 : index === 10 ? 575 : index === 19 ? 1000 : index * 50 + 75
+      return { ...manifest.taxonomy, url: `community/data/company-benefits/${dataVersion}/listings/companies-${String(index + 1).padStart(2, '0')}.json`, chunk_index: index + 1, first_sequence, last_sequence, record_count }
     }),
     company_shards: Object.fromEntries(Object.entries(manifest.company_shards).slice(0, 975).map(([id, value]: [string, any]) => [id, { ...value, url: `community/data/company-benefits/${dataVersion}/companies/${id}.json` }])),
   }
@@ -121,8 +138,7 @@ it('accepts a 39-batch projection descriptor inventory with one final 25-company
     { index: 19, values: { record_count: 0, last_sequence: 950 } },
     { index: 19, values: { record_count: 51, last_sequence: 1001 } },
     { index: 0, values: { record_count: 49, last_sequence: 49 } },
-    { index: 1, values: { first_sequence: 52, last_sequence: 101 } },
-    { index: 1, values: { first_sequence: 50, last_sequence: 99 } },
+    { index: 1, values: { first_sequence: 50, last_sequence: 100 } },
   ]) {
     const invalid = structuredClone(projection)
     Object.assign(invalid.listing_chunks[mutation.index], mutation.values)
