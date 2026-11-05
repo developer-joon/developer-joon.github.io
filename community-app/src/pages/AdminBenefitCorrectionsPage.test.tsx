@@ -47,7 +47,10 @@ describe('AdminBenefitCorrectionsPage', () => {
     const listAdminQueue = vi.fn().mockResolvedValue({ ok: true, data: { items: [submitted, submitted], hasMore: false, nextCursor: null } })
     page(corrections({ listAdminQueue }))
     expect(await screen.findByRole('heading', { name: '복지 정정 검토 데스크' })).toBeInTheDocument()
-    expect(listAdminQueue).toHaveBeenCalledWith({ status: 'active', limit: 50 }, expect.any(AbortSignal))
+    await waitFor(() => expect(listAdminQueue).toHaveBeenCalledWith(
+      { status: 'active', limit: 50 },
+      expect.any(AbortSignal),
+    ))
     expect(await screen.findAllByRole('button', { name: /복지 정정.*선택/ })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: /복지 정정.*선택/ }))
     const inspector = screen.getByRole('complementary', { name: '선택한 복지 정정 검토' })

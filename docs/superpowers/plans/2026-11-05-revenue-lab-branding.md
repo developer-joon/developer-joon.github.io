@@ -4,7 +4,7 @@
 
 **Goal:** 공개 사이트의 브랜드성 `0 → 1` 표기를 `수익실험실`로 통일하고 SEO 메타데이터와 1600×900 배너를 교체한다.
 
-**Architecture:** Jekyll front matter와 메뉴 데이터, React 전역 헤더를 같은 한국어 라벨로 맞춘다. 기존 `/lab/` canonical 경로와 일반 문맥의 `0→1`은 유지한다. 정적 계약 테스트와 최종 Docker artifact 검증으로 source와 생성물 양쪽을 확인한다.
+**Architecture:** Jekyll front matter와 페이지 콘텐츠는 한국어 브랜드 `수익실험실`을 사용하고, Jekyll 메뉴 데이터와 React 전역 헤더는 영어 라벨 `Revenue Lab`로 맞춘다. 기존 `/lab/` canonical 경로와 일반 문맥의 `0→1`은 유지한다. 정적 계약 테스트와 최종 Docker artifact 검증으로 source와 생성물 양쪽을 확인한다.
 
 **Tech Stack:** Jekyll/Liquid, React 19/TypeScript, Vitest, Node.js 24, Pillow, Docker
 
@@ -20,12 +20,12 @@
 
 **Step 1: Write failing tests**
 
-- `index.html`, `_pages/lab.md`, `_pages/about.md`, `_data/settings.yml`, React 헤더가 `수익실험실`을 포함해야 한다.
+- `index.html`, `_pages/lab.md`, `_pages/about.md`는 `수익실험실`을 포함하고, `_data/settings.yml`과 React 헤더의 `/lab/` 메뉴는 `Revenue Lab`이어야 한다.
 - 위 공개 브랜드 표면에는 `0 → 1`이 없어야 한다.
 - `/lab/` permalink는 유지해야 한다.
 - 홈과 `/lab/`는 hero용 `/images/revenue-lab/hero.png`와 소셜 카드용 `/images/revenue-lab/cover.png`를 각각 공유해야 한다.
 - 두 PNG의 IHDR은 1600×900이어야 한다.
-- React 메뉴 기대값을 `수익실험실`로 변경한다.
+- React 메뉴 기대값을 `Revenue Lab`로 변경한다.
 
 **Step 2: Verify RED**
 
@@ -60,7 +60,7 @@ git commit -m "test: define 수익실험실 brand contract"
 - 홈 title/H1을 `수익실험실`로 바꾸고 설명에 `수익실험실` 키워드를 자연스럽게 포함한다.
 - `/lab/` title을 `수익실험실`로 바꾸고 permalink는 유지한다.
 - About subtitle을 `수익실험실, 코드로 수익모델을 검증하는 실험`으로 바꾼다.
-- Jekyll/React 메뉴 라벨을 `수익실험실`로 바꾼다.
+- Jekyll/React 메뉴 라벨을 `Revenue Lab`로 바꾼다.
 - 홈과 `/lab/`의 `featured_image`를 `/images/revenue-lab/hero.png`, `social_image`를 `/images/revenue-lab/cover.png`로 맞춘다.
 
 **Step 2: Run focused text tests**
@@ -178,7 +178,7 @@ Export or inspect the final artifact and assert:
 - `/index.html` title and H1 contain `수익실험실`.
 - `/lab/index.html` title, H1, canonical, OG/Twitter metadata are correct.
 - `/images/revenue-lab/hero.png`와 `/images/revenue-lab/cover.png`가 존재하고 각각 source hash와 일치한다.
-- Jekyll and React navigation contain `수익실험실` and not the old brand label.
+- Jekyll and React navigation contain `Revenue Lab` and not the old brand label.
 - `/lab/` remains the canonical path.
 
 **Step 4: Independent review**
