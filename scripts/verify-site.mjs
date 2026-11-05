@@ -222,7 +222,7 @@ function extractDocumentTitle(html) {
   const lowerHtml = html.toLowerCase()
   const titles = []
   const inertStack = []
-  let inHead = false
+  let inHeadContentMode = false
   let sawHead = false
   let position = 0
 
@@ -260,7 +260,6 @@ function extractDocumentTitle(html) {
         continue
       }
       const name = match[1].toLowerCase()
-      if (name === 'head' && inertStack.length === 0) inHead = false
       if (inertElements.has(name) && inertStack.at(-1) === name) inertStack.pop()
       position = tagEnd + 1
       continue
@@ -275,7 +274,7 @@ function extractDocumentTitle(html) {
     if (tag.name === 'head' && inertStack.length === 0) {
       if (!sawHead) {
         sawHead = true
-        inHead = true
+        inHeadContentMode = true
       }
       position = tagEnd + 1
       continue
@@ -284,7 +283,7 @@ function extractDocumentTitle(html) {
 
     if (rawTextElements.has(tag.name)) {
       const closingTag = findRawTextClosingTag(html, lowerHtml, tagEnd + 1, tag.name)
-      if (tag.name === 'title' && inHead && inertStack.length === 0) {
+      if (tag.name === 'title' && inHeadContentMode && inertStack.length === 0) {
         if (!closingTag) return { error: 'unclosed', titles }
         titles.push(html.slice(tagEnd + 1, closingTag.start).trim())
       }

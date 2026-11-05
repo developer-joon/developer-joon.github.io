@@ -187,6 +187,36 @@ test('rejects duplicate effective document titles', async () => {
   })
 })
 
+test('rejects a duplicate title after an explicit head end but before body starts', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('</head><body>', '</head><title>Ria & Seoa PaPa – 0 → 1</title><body>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a post-head pre-body duplicate title')
+    assert.match(result.stderr, /index\.html must contain exactly one document title/)
+  })
+})
+
+test('accepts a sole expected title after an explicit head end but before body starts', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('<title>Ria & Seoa PaPa – 수익실험실</title>', '')
+        .replace('</head><body>', '</head><title>Ria & Seoa PaPa – 수익실험실</title><body>'),
+    )
+
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
 test('rejects a document title without a proper closing tag', async () => {
   await withArtifact(async (root) => {
     const artifactPath = path.join(root, 'index.html')
