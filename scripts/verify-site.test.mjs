@@ -360,6 +360,51 @@ for (const [label, mutate] of [
   })
 }
 
+for (const [tokenLabel, token] of [
+  ['malformed start tag', '<div a=>'],
+  ['malformed end tag', '</div class=x>'],
+  ['malformed declaration', '<!not-doctype>'],
+]) {
+  for (const [location, mutate] of [
+    ['before html', (html) => html.replace('<html>', `${token}<html>`)],
+    ['after html', (html) => html.replace('</html>', `</html>${token}`)],
+  ]) {
+    test(`rejects a ${tokenLabel} ${location}`, async () => {
+      await withArtifact(async (root) => {
+        const artifactPath = path.join(root, 'index.html')
+        await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+        const result = verify(root)
+        assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${tokenLabel} ${location}`)
+        assert.match(result.stderr, /index\.html.*explicit.*document html/)
+      })
+    })
+  }
+}
+
+for (const [tokenLabel, token] of [
+  ['malformed start tag', '<div a=>'],
+  ['malformed end tag', '</div class=x>'],
+  ['malformed declaration', '<!not-doctype>'],
+]) {
+  for (const [location, mutate] of [
+    ['before head', (html) => html.replace('<head>', `${token}<head>`)],
+    ['before title', (html) => html.replace('<title>', `${token}<title>`)],
+    ['before body', (html) => html.replace('<body>', `${token}<body>`)],
+  ]) {
+    test(`rejects a ${tokenLabel} ${location} inside the document`, async () => {
+      await withArtifact(async (root) => {
+        const artifactPath = path.join(root, 'index.html')
+        await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+        const result = verify(root)
+        assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${tokenLabel} ${location}`)
+        assert.match(result.stderr, /index\.html.*explicit.*document (?:html|head)/)
+      })
+    })
+  }
+}
+
 for (const [label, mutate] of [
   ['a second doctype before html', (html) => html.replace('<html>', '<!doctype html><html>')],
   ['a doctype after html', (html) => html.replace('</html>', '</html><!doctype html>')],
@@ -454,6 +499,42 @@ test('rejects a document title without a proper closing tag', async () => {
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unclosed document title')
     assert.match(result.stderr, /index\.html document title must have a proper closing tag/)
+  })
+})
+
+test('rejects a malformed document title closing tag', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('</title>', '</title hidden>'))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a malformed document title closing tag')
+    assert.match(result.stderr, /index\.html document title must have a proper closing tag/)
+  })
+})
+
+test('rejects an unterminated tag-like token after the document html', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, `${html}<div`)
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unterminated tag-like token')
+    assert.match(result.stderr, /index\.html.*explicit.*document html/)
+  })
+})
+
+test('rejects an unterminated comment after the document html', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, `${html}<!-- malformed`)
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unterminated comment')
+    assert.match(result.stderr, /index\.html.*explicit.*document html/)
   })
 })
 

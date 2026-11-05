@@ -207,7 +207,9 @@ function findRawTextClosingTag(html, lowerHtml, position, name) {
     const boundary = html[closingStart + closingPrefix.length]
     if (boundary === '>' || htmlWhitespace.test(boundary ?? '')) {
       const closingEnd = findTagEnd(html, closingStart + closingPrefix.length)
-      return closingEnd === -1 ? null : { start: closingStart, end: closingEnd + 1 }
+      if (closingEnd === -1) return null
+      const suffix = html.slice(closingStart + closingPrefix.length, closingEnd)
+      return { start: closingStart, end: closingEnd + 1, invalid: /[^\t\n\f\r ]/.test(suffix) }
     }
     position = closingStart + closingPrefix.length
   }
@@ -215,7 +217,8 @@ function findRawTextClosingTag(html, lowerHtml, position, name) {
 }
 
 function skipRawTextElement(html, lowerHtml, position, name) {
-  return findRawTextClosingTag(html, lowerHtml, position, name)?.end ?? -1
+  const closingTag = findRawTextClosingTag(html, lowerHtml, position, name)
+  return closingTag && !closingTag.invalid ? closingTag.end : -1
 }
 
 function extractDocumentTitle(html) {
@@ -249,30 +252,37 @@ function extractDocumentTitle(html) {
 
     if (html.startsWith('<!--', tagStart)) {
       const commentEnd = html.indexOf('-->', tagStart + 4)
-      if (commentEnd === -1) break
+      if (commentEnd === -1) {
+        error ??= 'html'
+        break
+      }
       position = commentEnd + 3
       continue
     }
 
     const next = html[tagStart + 1]
-    if (!next || !/[A-Za-z!/]/.test(next)) {
+    if (!next || !/[A-Za-z!/?]/.test(next)) {
       position = tagStart + 1
       continue
     }
 
     const tagEnd = findTagEnd(html, tagStart + 1)
-    if (tagEnd === -1) break
+    if (tagEnd === -1) {
+      error ??= 'html'
+      break
+    }
     let source = html.slice(tagStart + 1, tagEnd)
     const closing = /^\s*\//.test(source)
     if (closing) source = source.replace(/^\s*\/\s*/, '')
-    if (/^\s*!\s*doctype\b/i.test(source)) {
+    if (/^!doctype\b/i.test(source)) {
+      if (!/^!doctype[\t\n\f\r ]+html[\t\n\f\r ]*$/i.test(source)) error ??= 'html'
       if (inHtml || htmlStarts !== 0 || doctypeSeen) error ??= 'html'
       doctypeSeen = true
       position = tagEnd + 1
       continue
     }
     if (/^\s*[!?]/.test(source)) {
-      if (!inHtml) error ??= 'html'
+      error ??= 'html'
       position = tagEnd + 1
       continue
     }
@@ -280,6 +290,7 @@ function extractDocumentTitle(html) {
     if (closing) {
       const match = /^([A-Za-z0-9:-]+)\s*$/.exec(source)
       if (!match) {
+        error ??= 'html'
         position = tagEnd + 1
         continue
       }
@@ -304,6 +315,7 @@ function extractDocumentTitle(html) {
 
     const tag = parseStartTag(source)
     if (!tag) {
+      error ??= 'html'
       position = tagEnd + 1
       continue
     }
@@ -354,7 +366,7 @@ function extractDocumentTitle(html) {
     }
     if (tag.name === 'title') {
       const closingTag = findRawTextClosingTag(html, lowerHtml, tagEnd + 1, tag.name)
-      if (!closingTag) return { error: 'unclosed-title', titles }
+      if (!closingTag || closingTag.invalid) return { error: 'unclosed-title', titles }
       titles.push(html.slice(tagEnd + 1, closingTag.start).trim())
       if (!inHead) error ??= 'title-outside-head'
       position = closingTag.end
