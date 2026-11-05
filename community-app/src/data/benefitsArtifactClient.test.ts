@@ -20,7 +20,7 @@ function artifacts() {
 const noPublicInfo = (category_id: (typeof categories)[number]) => ({
   category_id, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', conflict_status: 'none', publication_eligibility: 'discovery_only',
   assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0,
-  benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: ['scope_limit', 'currentness_limit'], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [],
+  benefit_type_count: 0, specific_benefit_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: ['scope_limit', 'currentness_limit'], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [],
   kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, nonabsence_notice: notice, reason_code: 'searched_not_found', searched_at: '2026-11-01T00:00:00Z', source_tiers: [],
 })
 

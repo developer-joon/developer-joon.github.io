@@ -692,6 +692,22 @@ def merged_scope(records):
     return result
 
 
+def specific_benefit_record_ids(reference_records, community_records, source_index):
+    """Select emitted concrete-content records by canonical ID and bound-source eligibility."""
+    selected = []
+    for record in reference_records:
+        source = source_index[record["source_id"]]
+        if (record.get("publication_eligibility") in {"eligible", "reference_only"}
+                and source.get("publication_eligibility") in {"eligible", "reference_only"}):
+            selected.append(record["reference_id"])
+    for record in community_records:
+        source = source_index[record["source_id"]]
+        if (record.get("publication_eligibility") == "eligible"
+                and source.get("publication_eligibility") == "eligible"):
+            selected.append(record["community_report_id"])
+    return set(selected)
+
+
 def build_company(company, population_sequence, claims, gap, taxonomy, assignments, source_map, cells,
                   v2_indexes=None):
     v2_indexes = v2_indexes or {
@@ -796,6 +812,9 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
             "claim_count": evidence_count,
             "benefit_type_count": (0 if cell["state"] == "no_public_info" else
                                    len({type_id for _, type_ids, _ in category_claims[category_id] for type_id in type_ids})),
+            "specific_benefit_count": len(specific_benefit_record_ids(
+                reference_records, community_records, v2_indexes["sources"]
+            )),
             "scope": merged_scope(evidence_records),
             "limitation_codes": limitation_codes, "last_checked_at": assessed_at,
             "searched_source_ids": searched_source_ids,

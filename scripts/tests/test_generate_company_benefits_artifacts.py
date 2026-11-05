@@ -506,6 +506,129 @@ def internal_review_keys(value):
     return found
 
 
+def build_specific_benefit_count_detail(record_kinds):
+    module_spec = importlib.util.spec_from_file_location("artifact_specific_benefit_count", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    company = {
+        "company_id": "KR-CRN-0000000000001", "legal_name": "Specific Benefit Co",
+        "scope": "domestic", "jurisdiction": "KR",
+    }
+    categories = [item["id"] for item in taxonomy["categories"]]
+    base_cell = {
+        "state": "no_public_info", "reliability": "none", "currentness": "unknown",
+        "scope_status": "unresolved", "conflict_status": "none",
+        "publication_eligibility": "discovery_only", "assessed_at": "2026-11-01T00:00:00Z",
+        "official_claim_ids": [], "reference_ids": [], "community_report_ids": [],
+        "attempt_ids": [],
+    }
+    cells = {category: {**copy.deepcopy(base_cell), "category_id": category}
+             for category in categories}
+    scope = {
+        "countries": ["KR"], "legal_entities": [company["legal_name"]],
+        "roles": [], "employment_types": [],
+    }
+    indexes = {
+        "attempts": {}, "official_claims": {}, "references": {},
+        "community_reports": {}, "sources": {},
+    }
+    for index, kind in enumerate(record_kinds, 1):
+        source_id = f"source::{kind}-{index}"
+        if kind == "official":
+            record_id = "official::" + f"{index:064x}"
+            indexes["official_claims"][record_id] = {
+                "claim_id": record_id, "cell_id": f"cell::{company['company_id']}::leave",
+                "company_id": company["company_id"], "category_id": "leave", "jurisdiction": "KR",
+                "source_ids": [source_id], "source_tier": "official_government",
+                "scope_status": "exact_entity", "scope": scope, "conflict_status": "none",
+                "publication_eligibility": "eligible",
+            }
+            cells["leave"]["official_claim_ids"].append(record_id)
+            source_tier, reliability, source_eligibility = "official_government", "high", "eligible"
+        elif kind == "reference":
+            record_id = f"reference::record-{index}"
+            indexes["references"][record_id] = {
+                "reference_id": record_id, "cell_id": f"cell::{company['company_id']}::leave",
+                "company_id": company["company_id"], "category_id": "leave", "source_id": source_id,
+                "source_tier": "other_public_web", "statement": "Paid leave is reported.",
+                "supporting_quote": "Same quote must not control the count.",
+                "source_locator": f"https://reference.example/{index}", "reliability": "medium",
+                "currentness": "current", "scope": {"status": "exact_entity", **scope},
+                "conflict_status": "none", "publication_eligibility": "reference_only",
+                "checked_at": "2026-11-01T00:00:00Z",
+            }
+            cells["leave"]["reference_ids"].append(record_id)
+            source_tier, reliability, source_eligibility = "other_public_web", "medium", "reference_only"
+        elif kind == "community":
+            record_id = f"community::record-{index}"
+            indexes["community_reports"][record_id] = {
+                "community_report_id": record_id, "cell_id": f"cell::{company['company_id']}::leave",
+                "company_id": company["company_id"], "category_id": "leave", "source_id": source_id,
+                "source_tier": "user_submission", "statement": "Employees report paid leave.",
+                "reliability": "low", "currentness": "current", "scope_status": "exact_entity",
+                "scope": scope, "conflict_status": "none", "moderation": {"status": "approved"},
+                "frozen_snapshot": {"locator": f"https://community.example/{index}",
+                                    "content_sha256": "b" * 64, "frozen_at": "2026-11-01T00:00:00Z"},
+                "publication_eligibility": "eligible",
+            }
+            cells["leave"]["community_report_ids"].append(record_id)
+            source_tier, reliability, source_eligibility = "user_submission", "low", "eligible"
+        else:
+            raise AssertionError(f"unsupported test record kind: {kind}")
+        indexes["sources"][source_id] = {
+            "source_id": source_id, "source_tier": source_tier, "title": "Source title must not count",
+            "url": f"https://source.example/{kind}/{index}", "retrieved_at": "2026-11-01T00:00:00Z",
+            "content_sha256": "a" * 64, "reliability": reliability, "currentness": "current",
+            "scope_status": "exact_entity", "scope": scope, "conflict_status": "none",
+            "publication_eligibility": source_eligibility,
+        }
+    if record_kinds:
+        if "official" in record_kinds:
+            cells["leave"].update(state="official_verified", reliability="high",
+                                   publication_eligibility="official_claim")
+        elif "reference" in record_kinds:
+            cells["leave"].update(state="reference", reliability="medium",
+                                   publication_eligibility="reference_only")
+        else:
+            cells["leave"].update(state="community_report", reliability="low",
+                                   publication_eligibility="community_only")
+        cells["leave"].update(currentness="current", scope_status="exact_entity")
+    return module.build_company(company, 1, [], None, taxonomy, {}, {}, cells, indexes)
+
+
+def outcome_by_category(detail, category_id):
+    return next(outcome for outcome in detail["category_outcomes"]
+                if outcome["category_id"] == category_id)
+
+
+def test_specific_benefit_count_includes_eligible_reference_statement():
+    detail = build_specific_benefit_count_detail(["reference"])
+    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 1
+
+
+def test_specific_benefit_count_includes_eligible_community_statement():
+    detail = build_specific_benefit_count_detail(["community"])
+    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 1
+
+
+def test_specific_benefit_count_is_zero_for_official_only_evidence():
+    detail = build_specific_benefit_count_detail(["official"])
+    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 0
+
+
+def test_specific_benefit_count_is_zero_for_no_public_info():
+    detail = build_specific_benefit_count_detail([])
+    assert all(outcome["specific_benefit_count"] == 0
+               for outcome in detail["category_outcomes"])
+
+
+def test_specific_benefit_count_counts_same_category_records_by_canonical_id():
+    detail = build_specific_benefit_count_detail(["reference", "reference"])
+    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 2
+
+
 def test_taxonomy_has_reviewed_shape_and_conservative_dol_mappings():
     taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
     assert len(taxonomy["categories"]) == 10
