@@ -8,7 +8,8 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib'
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const brandName = '수익실험실'
 const oldBrandName = '0 → 1'
-const coverPath = '/images/revenue-lab/cover.png'
+const heroPath = '/images/revenue-lab/hero.png'
+const socialImagePath = '/images/revenue-lab/cover.png'
 
 function readRepositoryFile(relativePath) {
   return readFileSync(resolve(repositoryRoot, relativePath), 'utf8')
@@ -148,7 +149,10 @@ function validatePngScanlineFilters(inflated, width, height, channels) {
   }
 }
 
-function validateRevenueLabPng(png) {
+function validateRevenueLabPng(relativeImagePath) {
+  const imagePath = resolve(repositoryRoot, `.${relativeImagePath}`)
+  assert.ok(existsSync(imagePath), `${relativeImagePath} must exist`)
+  const png = readFileSync(imagePath)
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
   assert.ok(png.length >= signature.length, 'PNG signature must be present')
   assert.deepEqual(png.subarray(0, signature.length), signature, 'PNG signature must be valid')
@@ -228,9 +232,10 @@ function validateRevenueLabPng(png) {
   validatePngScanlineFilters(inflated, width, height, channels)
 }
 
-const indexFrontMatter = readFrontMatterScalars('index.html', ['title', 'description', 'featured_image'])
-const labFrontMatter = readFrontMatterScalars('_pages/lab.md', ['title', 'description', 'permalink', 'featured_image'])
+const indexFrontMatter = readFrontMatterScalars('index.html', ['title', 'description', 'featured_image', 'social_image'])
+const labFrontMatter = readFrontMatterScalars('_pages/lab.md', ['title', 'description', 'permalink', 'featured_image', 'social_image'])
 const aboutFrontMatter = readFrontMatterScalars('_pages/about.md', ['subtitle'])
+const defaultLayout = readRepositoryFile('_layouts/default.html')
 
 const brandFrontMatter = [
   ['index.html', indexFrontMatter],
@@ -331,13 +336,30 @@ test('_data/settings.yml labels exactly one /lab/ menu item 수익실험실', ()
   assert.equal(labItems[0].title, brandName)
 })
 
-test('the homepage and lab page share the revenue lab cover image', () => {
-  assert.equal(indexFrontMatter.featured_image, coverPath)
-  assert.equal(labFrontMatter.featured_image, coverPath)
+test('the homepage and lab page share separate hero and social images', () => {
+  assert.equal(indexFrontMatter.featured_image, heroPath)
+  assert.equal(labFrontMatter.featured_image, heroPath)
+  assert.equal(indexFrontMatter.social_image, socialImagePath)
+  assert.equal(labFrontMatter.social_image, socialImagePath)
 })
 
-test('the revenue lab cover is a valid 1600×900 PNG', () => {
-  const imagePath = resolve(repositoryRoot, `.${coverPath}`)
-  assert.ok(existsSync(imagePath), `${coverPath} must exist`)
-  validateRevenueLabPng(readFileSync(imagePath))
+test('the revenue lab hero and social card are valid 1600×900 PNGs', () => {
+  for (const imagePath of [heroPath, socialImagePath]) {
+    validateRevenueLabPng(imagePath)
+  }
+})
+
+test('Twitter and Open Graph metadata prefer social_image then featured_image', () => {
+  const assignment = "{% assign social_image = page.social_image | default: page.featured_image | default: '/images/demo/about.jpg' %}"
+  assert.equal(defaultLayout.match(/\{% assign social_image = [^%]+%\}/gu)?.length, 1)
+  assert.ok(defaultLayout.includes(assignment))
+
+  assert.match(
+    defaultLayout,
+    /<meta name="twitter:image:src" content="\{\{ social_image \| absolute_url \}\}">/u,
+  )
+  assert.match(
+    defaultLayout,
+    /<meta property="og:image" content="\{\{ social_image \| absolute_url \}\}" \/>/u,
+  )
 })
