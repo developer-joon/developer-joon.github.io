@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 540" fill="none">
+  <rect width="1600" height="540" fill="#071725"/>
+  <path d="M-120 418C90 286 238 482 448 342C654 205 805 350 1018 214C1214 89 1398 201 1718 42" stroke="#184A58" stroke-width="2"/>
+  <path d="M-86 458C126 332 266 514 476 382C676 256 843 386 1052 254C1248 130 1438 238 1702 106" stroke="#123D4C" stroke-width="1.5"/>
+  <path d="M-62 374C118 260 286 420 470 302C668 174 820 300 1000 180C1190 54 1394 144 1672 18" stroke="#1B5964" stroke-width="1.5"/>
+  <path d="M120 540C248 396 218 250 352 168C482 88 572 196 706 120C844 42 954 64 1088 0" stroke="#0F3544" stroke-width="1.5"/>
+  <path d="M566 540C682 434 638 308 770 230C910 146 1014 238 1154 154C1268 86 1358 92 1486 0" stroke="#164955" stroke-width="2"/>
+  <path d="M1012 540C1114 450 1086 344 1194 286C1318 220 1428 298 1600 202" stroke="#123D4C" stroke-width="1.5"/>
+  <polyline points="86,432 274,356 448,342 624,286 806,310 1018,214 1230,182 1452,128 1600,54" stroke="#47A99B" stroke-width="2" opacity="0.55"/>
+  <polyline points="352,168 512,224 706,120 884,170 1088,72 1286,116 1486,24" stroke="#2A7E79" stroke-width="1.5" opacity="0.55"/>
+  <line x1="274" y1="356" x2="352" y2="168" stroke="#2A6970" stroke-width="1" opacity="0.6"/>
+  <line x1="806" y1="310" x2="884" y2="170" stroke="#2A6970" stroke-width="1" opacity="0.6"/>
+  <line x1="1230" y1="182" x2="1286" y2="116" stroke="#2A6970" stroke-width="1" opacity="0.6"/>
+  <circle cx="86" cy="432" r="5" fill="#67D6C1" opacity="0.7"/>
+  <circle cx="274" cy="356" r="7" fill="#67D6C1" opacity="0.82"/>
+  <circle cx="448" cy="342" r="4" fill="#A7E8DB" opacity="0.7"/>
+  <circle cx="624" cy="286" r="6" fill="#67D6C1" opacity="0.78"/>
+  <circle cx="806" cy="310" r="4" fill="#A7E8DB" opacity="0.72"/>
+  <circle cx="1018" cy="214" r="8" fill="#67D6C1" opacity="0.84"/>
+  <circle cx="1230" cy="182" r="5" fill="#A7E8DB" opacity="0.72"/>
+  <circle cx="1452" cy="128" r="7" fill="#67D6C1" opacity="0.8"/>
+  <circle cx="352" cy="168" r="5" fill="#4AB7A8" opacity="0.72"/>
+  <circle cx="706" cy="120" r="6" fill="#4AB7A8" opacity="0.7"/>
+  <circle cx="1088" cy="72" r="5" fill="#4AB7A8" opacity="0.72"/>
+  <circle cx="1486" cy="24" r="4" fill="#4AB7A8" opacity="0.7"/>
+</svg>

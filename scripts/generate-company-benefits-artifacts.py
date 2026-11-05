@@ -8,11 +8,14 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import urlparse
 
 COMPANY_ID = re.compile(r"^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$")
@@ -24,8 +27,27 @@ UNKNOWN_MARKERS = (
 NONABSENCE_NOTICE = "이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다."
 
 
+def freeze_snapshot(value):
+    if isinstance(value, dict):
+        return MappingProxyType({key: freeze_snapshot(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(freeze_snapshot(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(freeze_snapshot(item) for item in value)
+    return value
+
+
+def thaw_snapshot(value):
+    """Create plain JSON containers without exposing the validated snapshot."""
+    if isinstance(value, Mapping):
+        return {key: thaw_snapshot(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [thaw_snapshot(item) for item in value]
+    return value
+
+
 def canonical_bytes(value):
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
+    return json.dumps(thaw_snapshot(value), ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
 
 
 def sha256(raw):
@@ -388,35 +410,103 @@ def validate_inputs(root, taxonomy, taxonomy_sha256):
     return _assemble_inputs(root, taxonomy, taxonomy_sha256)
 
 
+def _capture_regular_file(path, label):
+    path = Path(path)
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{label} must be a regular file")
+    return path.read_bytes(), stat.S_IMODE(metadata.st_mode)
+
+
+def _capture_research_tree(root):
+    """Capture every verifier-visible research file without following links."""
+    root = Path(root)
+    snapshot = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"publication research snapshot rejects symlink: {path.relative_to(root)}")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(root)
+        snapshot[relative] = _capture_regular_file(path, relative.as_posix())
+    current = set()
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"publication research snapshot rejects symlink: {path.relative_to(root)}")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(root)
+        _capture_regular_file(path, relative.as_posix())
+        current.add(relative)
+    if current != set(snapshot):
+        raise ValueError("publication research tree changed while snapshotting")
+    for relative, (raw, mode) in snapshot.items():
+        if _capture_regular_file(root / relative, relative.as_posix()) != (raw, mode):
+            raise ValueError("publication research tree changed while snapshotting")
+    return snapshot
+
+
+def _materialize_snapshot(snapshot, destination):
+    destination = Path(destination)
+    for relative, (raw, mode) in snapshot.items():
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        target.chmod(mode)
+
+
 def publication_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
                      effective_selection_receipt):
-    """Own the complete validation and input-loading operation before output."""
+    """Validate one byte snapshot and return recursively immutable inputs."""
     root = Path(research_root)
     series = load_verifier().company_benefits_series
-    if series.progress_contract_version(read_json(root / "series-progress.json")) != "2":
+    snapshot = _capture_research_tree(root)
+    policy_relative = Path("research-coverage-policies.json")
+    if policy_relative not in snapshot:
+        raise ValueError("publication snapshot is missing research-coverage-policies.json")
+    progress_relative = Path("series-progress.json")
+    if progress_relative not in snapshot:
+        raise ValueError("publication snapshot is missing series-progress.json")
+    progress_raw = snapshot[progress_relative][0]
+    progress = json.loads(progress_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    if series.progress_contract_version(progress) != "2":
         raise ValueError("v2 artifact publication requires explicit progress_version=2")
-    v2_snapshot = {
-        ledger: (root / filename).read_bytes()
-        for ledger, filename in series.V2_LEDGER_FILES.items()
-    }
-    verify_active_ledgers(
-        root, as_of, freeze_anchor_receipt, effective_selection_receipt
-    )
     taxonomy_path = Path(taxonomy_path)
-    taxonomy = read_json(taxonomy_path)
-    taxonomy_contract(taxonomy)
-    v2_records = {
-        ledger: read_jsonl_bytes(v2_snapshot[ledger], series.V2_LEDGER_FILES[ledger])
-        for ledger in series.V2_LEDGER_FILES
-    }
-    series.validate_complete_v2_progress(root, records=v2_records)
-    if any((root / series.V2_LEDGER_FILES[ledger]).read_bytes() != raw
-           for ledger, raw in v2_snapshot.items()):
-        raise ValueError("v2 source ledger changed during publication validation")
-    inputs = _assemble_inputs(
-        root, taxonomy, hashlib.sha256(taxonomy_path.read_bytes()).hexdigest(), v2_snapshot
-    )
-    return taxonomy, inputs
+    taxonomy_raw, _ = _capture_regular_file(taxonomy_path, "taxonomy")
+    receipts = {}
+    for name, path in (("freeze", freeze_anchor_receipt), ("effective", effective_selection_receipt)):
+        if path is not None:
+            receipts[name] = _capture_regular_file(path, f"{name} receipt")
+
+    with tempfile.TemporaryDirectory(prefix="company-benefits-publication-snapshot-") as directory:
+        snapshot_base = Path(directory)
+        snapshot_root = snapshot_base / "research"
+        _materialize_snapshot(snapshot, snapshot_root)
+        snapshot_receipts = {}
+        for name, value in receipts.items():
+            target = snapshot_base / "external" / f"{name}.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(value[0])
+            target.chmod(value[1])
+            snapshot_receipts[name] = target
+        verify_active_ledgers(
+            snapshot_root, as_of, snapshot_receipts.get("freeze"), snapshot_receipts.get("effective")
+        )
+        taxonomy = json.loads(taxonomy_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+        taxonomy_contract(taxonomy)
+        v2_snapshot = {
+            ledger: snapshot[Path(filename)][0]
+            for ledger, filename in series.V2_LEDGER_FILES.items()
+        }
+        v2_records = {
+            ledger: read_jsonl_bytes(v2_snapshot[ledger], series.V2_LEDGER_FILES[ledger])
+            for ledger in series.V2_LEDGER_FILES
+        }
+        series.validate_complete_v2_progress(snapshot_root, records=v2_records)
+        inputs = _assemble_inputs(
+            snapshot_root, taxonomy, hashlib.sha256(taxonomy_raw).hexdigest(), v2_snapshot
+        )
+    return freeze_snapshot(taxonomy), freeze_snapshot(inputs)
 
 
 def bounded_claim(claim):
@@ -430,7 +520,7 @@ def bounded_claim(claim):
 def unknown_projection(value, fallback):
     if isinstance(value, str) and value.strip():
         return value
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         reason = value.get("reason")
         if isinstance(reason, str) and reason.strip():
             return {"kind": "unknown", "reason": reason}
@@ -445,7 +535,7 @@ def public_v2_record(record, timestamp_fields=()):
     for field in timestamp_fields:
         if field in projected:
             projected[field] = utc_time(projected[field], field)
-    if isinstance(projected.get("frozen_snapshot"), dict):
+    if isinstance(projected.get("frozen_snapshot"), Mapping):
         projected["frozen_snapshot"] = dict(projected["frozen_snapshot"])
         projected["frozen_snapshot"]["frozen_at"] = utc_time(
             projected["frozen_snapshot"]["frozen_at"], "frozen_at"
@@ -687,12 +777,12 @@ def public_taxonomy(taxonomy):
 
 
 def scan_forbidden_keys(value, path="$"):
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         for key, child in value.items():
             if FORBIDDEN_KEY.search(key):
                 raise ValueError(f"prohibited numeric/ranking key at {path}.{key}")
             scan_forbidden_keys(child, f"{path}.{key}")
-    elif isinstance(value, list):
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for index, child in enumerate(value):
             scan_forbidden_keys(child, f"{path}[{index}]")
 

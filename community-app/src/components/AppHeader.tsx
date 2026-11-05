@@ -4,13 +4,14 @@ const globalLinks = [
   { label: '0 → 1', href: '/lab/' },
   { label: 'Blog', href: '/blog/' },
   { label: 'Community', href: '/community/' },
-  { label: '기업 복지 탐색기', href: '/community/benefits/' },
+  { label: 'Benefit Atlas', href: '/community/benefits/' },
   { label: 'Shop', href: '/shop/' },
   { label: 'About', href: '/about' },
 ] as const
 
 export function AppHeader() {
-  const onBenefitsRoute = window.location.pathname.startsWith('/community/benefits/')
+  const pathname = window.location.pathname
+  const onBenefitsRoute = pathname === '/community/benefits' || pathname.startsWith('/community/benefits/')
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileNavigation, setMobileNavigation] = useState(() => window.matchMedia?.('(max-width: 1023px)').matches ?? true)
   const toggleRef = useRef<HTMLButtonElement>(null)

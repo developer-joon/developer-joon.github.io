@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommunityRepository } from '../data/communityRepository'
 import { parseCommunityQuery, serializeCommunityQuery } from '../lib/queryState'
@@ -71,7 +71,9 @@ describe('CommunityHomePage', () => {
     expect(listingHeading.parentElement).toContainElement(writeLink)
     expect(writeLink.parentElement).toContainElement(screen.getByRole('group', { name: '게시글 정렬' }))
     expect(screen.getByRole('region', { name: '계정 작업' })).not.toContainElement(writeLink)
-    expect(boardHeading.closest('section')).not.toContainElement(screen.getByRole('link', { name: '기업 복지 탐색기' }))
+    const communityMain = screen.getByRole('main')
+    expect(within(communityMain).queryByRole('link', { name: /^(Benefit Atlas|기업 복지 탐색기)$/ })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: '주요 메뉴' })).getByRole('link', { name: 'Benefit Atlas' })).toHaveAttribute('href', '/community/benefits/')
   })
 
   it('shows one accessible session-expiry notice for concurrent recovered public reads', async () => {

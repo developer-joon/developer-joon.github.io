@@ -1,3 +1,6 @@
+.community-page.benefits-page {
+  overflow-x: clip;
+}
 .community-page.benefits-page main {
   max-width: 1600px;
   padding: 32px clamp(16px, 3vw, 48px);
@@ -8,23 +11,67 @@
   font-size: 14px;
   line-height: 1.6;
 }
-.benefits-heading {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  align-items: flex-start;
+.community-page.benefits-page main.benefits-main {
+  width: 100%;
+  max-width: none;
+  padding-inline: 0;
+  padding-block: 0;
+  margin-inline: 0;
+  overflow: hidden;
 }
-.benefits-heading h1 {
-  font-size: clamp(26px, 3vw, 40px);
-  margin: 4px 0;
+.benefit-atlas-hero {
+  position: relative;
+  isolation: isolate;
+  min-width: 0;
+  overflow: hidden;
+  background: #071725 url('/images/community/benefit-atlas.svg') center / cover no-repeat;
+  border-block: 1px solid #244c5b;
 }
-.benefits-heading p {
-  margin: 0;
-  color: #a7b9d0;
+.benefit-atlas-hero::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: rgb(3 17 29 / 42%);
+}
+.benefit-atlas-hero__inner {
+  box-sizing: border-box;
+  padding-block: clamp(64px, 10vw, 132px);
+}
+.benefit-atlas-hero h1 {
+  max-width: 12ch;
+  margin: 8px 0 0;
+  color: #f3fbff;
+  font-size: clamp(36px, 7vw, 60px);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -.04em;
+  word-break: keep-all;
+}
+.benefit-atlas-hero__copy {
+  max-width: 34rem;
+  margin: 18px 0 0;
+  color: #c5dce3;
+  font-size: clamp(17px, 2.2vw, 21px);
+  line-height: 1.65;
+  word-break: keep-all;
 }
 .benefits-kicker {
-  letter-spacing: 0.08em;
+  margin: 0;
+  color: #83e5d0;
+  letter-spacing: .14em;
   font-size: 12px;
+  font-weight: 700;
+}
+.benefit-atlas-hero .benefits-version {
+  margin: 28px 0 0;
+  color: #9dbac4;
+  overflow-wrap: anywhere;
+}
+.benefits-main > .benefits-workspace {
+  box-sizing: border-box;
+  min-width: 0;
+  padding-block: 32px 56px;
 }
 .fixture-badge {
   position: fixed;
@@ -148,7 +195,7 @@
 }
 .benefits-correction-link {
   display: inline-flex;
-  min-height: 44px;
+  min-height: 56px;
   align-items: center;
   padding: 8px 14px;
   border: 1px solid #7ee8ce;
@@ -170,6 +217,15 @@
 }
 .benefit-correction-form { display: grid; gap: 20px; }
 .benefit-correction-form label { display: grid; gap: 8px; color: #d8e9fc; font-weight: 700; }
+.benefit-correction-warning,
+.benefit-correction-review-note {
+  padding: 12px 14px;
+  border-left: 3px solid #7ee8ce;
+  background: #091426;
+  overflow-wrap: anywhere;
+}
+.benefit-correction-warning { border-left-color: #ffc45c; color: #ffe4a4; }
+.benefit-correction-field-help { margin: -14px 0 0; color: #b9cbe0; font-size: 13px; }
 .benefit-correction-form input,
 .benefit-correction-form select,
 .benefit-correction-form textarea {
@@ -185,7 +241,7 @@
 .benefit-correction-form input[readonly] { color: #b9cbe0; }
 .benefit-correction-form button,
 .benefit-correction-gate button,
-.benefit-corrections-list button { min-height: 52px; padding: 12px 18px; }
+.benefit-corrections-list button { min-height: 56px; padding: 12px 18px; }
 .benefit-corrections-list { display: grid; gap: 16px; }
 .benefit-correction-card { border: 1px solid #30425c; background: #091426; padding: 18px; overflow-wrap: anywhere; }
 .benefit-correction-card header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; color: #7ee8ce; }
@@ -421,9 +477,6 @@
   .benefits-filter-content {
     max-height: 60vh;
     overflow: auto;
-  }
-  .benefits-heading {
-    gap: 8px;
   }
   .fixture-badge {
     padding: 6px;

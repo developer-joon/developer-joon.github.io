@@ -147,17 +147,18 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
   }
 
   if (auth.loading) return <CorrectionShell><p role="status">로그인 상태를 확인하고 있습니다.</p></CorrectionShell>
-  if (!auth.user) return <CorrectionShell><section className="benefit-correction-gate"><h1>복지 정보 수정 요청</h1><p>요청을 안전하게 저장하고 처리 상태를 확인하려면 로그인이 필요합니다.</p><button type="button" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeCorrectionPath(currentPath))} disabled={auth.pending}>Google로 로그인하고 요청하기</button>{auth.error && <p role="alert">{auth.error}</p>}</section></CorrectionShell>
+  if (!auth.user) return <CorrectionShell><section className="benefit-correction-gate"><h1>복지 정보 수정 요청</h1><p>요청 제출과 처리 상태 확인에는 Google 로그인이 필요합니다.</p><p>Google 로그인 후 작성 중인 입력 내용은 이 기기에 임시 저장되며, 로그인 완료 뒤 이 수정 요청 화면으로 돌아옵니다.</p><button type="button" onClick={() => void auth.signIn(DEFAULT_AUTH_PROVIDER, safeCorrectionPath(currentPath))} disabled={auth.pending}>Google로 로그인하고 요청하기</button>{auth.error && <p role="alert">{auth.error}</p>}</section></CorrectionShell>
   if (loadError) return <CorrectionShell><section role="alert"><h1>요청 화면을 열 수 없습니다</h1><p>{loadError}</p><button type="button" onClick={() => window.location.reload()}>다시 시도</button></section></CorrectionShell>
   if (!draft || !companies) return <CorrectionShell><p role="status">수정 요청 화면을 준비하고 있습니다.</p></CorrectionShell>
-  if (submitted) return <CorrectionShell><section><h1>요청 접수 완료</h1><p role="status">수정 요청이 접수되었습니다. 내 수정 요청에서 처리 상태를 확인할 수 있습니다.</p><a className="benefits-correction-link" href="/community/benefits/my-corrections/">내 수정 요청 보기</a></section></CorrectionShell>
+  if (submitted) return <CorrectionShell><section><h1>요청 접수 완료</h1><p role="status">수정 요청이 접수되었습니다. 내 수정 요청에서 검토 상태를 확인할 수 있습니다.</p><a className="benefits-correction-link" href="/community/benefits/my-corrections/">내 수정 요청</a></section></CorrectionShell>
 
-  return <CorrectionShell><section className="benefit-correction-panel"><h1>복지 정보 수정 요청</h1><p>공개 HTTPS 자료만 입력해 주세요. 개인정보, 비공개·로그인 필요·유료 자료는 제출하지 마세요.</p><form onSubmit={submit} className="benefit-correction-form">
+  return <CorrectionShell><section className="benefit-correction-panel"><h1>복지 정보 수정 요청</h1><p className="benefit-correction-warning">개인정보, 비공개·사내 문서, 로그인해야 볼 수 있는 문서, 유료 자료는 제출하지 마세요. 공개적으로 접근 가능한 HTTPS 근거 URL이 필요합니다.</p><p className="benefit-correction-review-note">승인은 검토 결정이며 공개 데이터가 즉시 변경되지는 않습니다. 게시는 별도의 조사·산출물(artifact) 검증과 운영자 적용을 거쳐야 합니다.</p><form onSubmit={submit} className="benefit-correction-form">
     <label>기업<select value={draft.companyId} onChange={event => update({ companyId: event.target.value })} required><option value="">기업 선택</option>{companies.map(company => <option key={company.company_id} value={company.company_id}>{company.display_name} ({company.company_id})</option>)}</select></label>
     <label>복지 분야<select value={draft.categoryId} onChange={event => update({ categoryId: event.target.value as BenefitCorrectionDraft['categoryId'] })} required><option value="">분야 선택</option>{BENEFIT_CATEGORIES.map(category => <option key={category} value={category}>{categoryLabels[category]}</option>)}</select></label>
     <label>현재 표시 내용<input value={draft.currentText} readOnly /></label>
     <label>제안 내용<textarea value={draft.proposedText} maxLength={5000} onChange={event => update({ proposedText: event.target.value })} required /></label>
-    <label>적용 범위<textarea value={draft.scopeText} maxLength={2000} onChange={event => update({ scopeText: event.target.value })} required /></label>
+    <label>적용 범위<textarea value={draft.scopeText} maxLength={2000} aria-describedby="benefit-correction-scope-help" onChange={event => update({ scopeText: event.target.value })} required /></label>
+    <p id="benefit-correction-scope-help" className="benefit-correction-field-help">국가·관할, 대상 법인, 직군, 고용 형태, 적용 시점·기간을 적어 주세요.</p>
     <label>공개 HTTPS 근거 URL<input type="url" value={draft.sourceUrl} maxLength={2048} onChange={event => update({ sourceUrl: event.target.value })} required /></label>
     <p>관찰한 데이터 버전: <code>{draft.observedDataVersion}</code></p>
     {submitError && <p role="alert">{submitError}</p>}

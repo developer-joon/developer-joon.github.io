@@ -26,6 +26,7 @@ const extractScssBlock = (source: string, marker: string): string => {
 const tokens = read('src/styles/tokens.css')
 const globalCss = read('src/styles/global.css')
 const communityCss = read('src/styles/community.css')
+const benefitsCss = read('src/styles/benefits.css')
 const jekyllHeaderScss = read('../_sass/_includes/_header.scss')
 const jekyllSettings = read('../_data/settings.yml')
 const entryHtml = [
@@ -39,6 +40,12 @@ const entryHtml = [
   'benefits/my-corrections/index.html',
   'admin/benefit-corrections/index.html',
 ].map(read)
+const benefitsExplorerEntries = [
+  ['benefits/index.html', '복지 현황'],
+  ['benefits/fit/index.html', '조건 탐색'],
+  ['benefits/company/index.html', '기업 근거 상세'],
+  ['benefits/methodology/index.html', '조사 기준·정정 이력'],
+] as const
 const shellSources = [
   'src/pages/CommunityHomePage.tsx',
   'src/pages/PostDetailPage.tsx',
@@ -127,6 +134,183 @@ function relativeLuminance(hex: string) {
 function contrastRatio(foreground: string, background: string) {
   const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a)
   return (lighter + 0.05) / (darker + 0.05)
+}
+
+const allowedSvgAttributes: Record<string, readonly string[]> = {
+  svg: ['xmlns', 'viewBox', 'fill'],
+  rect: ['width', 'height', 'rx', 'ry', 'fill'],
+  path: ['d', 'stroke', 'stroke-width'],
+  polyline: ['points', 'stroke', 'stroke-width', 'opacity'],
+  line: ['x1', 'y1', 'x2', 'y2', 'stroke', 'stroke-width', 'opacity'],
+  circle: ['cx', 'cy', 'r', 'fill', 'opacity'],
+}
+
+const requiredSvgAttributes: Record<string, readonly string[]> = {
+  svg: ['xmlns', 'viewBox'],
+  rect: ['width', 'height'],
+  path: ['d'],
+  polyline: ['points'],
+  line: ['x1', 'y1', 'x2', 'y2'],
+  circle: ['cx', 'cy', 'r'],
+}
+
+const svgDecimalSource = '-?(?:0|[1-9]\\d*)(?:\\.\\d+)?'
+const safeSvgDecimal = new RegExp(`^${svgDecimalSource}$`)
+const safeSvgPaintValue = /^(?:none|#[0-9a-f]{6})$/i
+const safeSvgOpacityValue = /^(?:0(?:\.\d{1,2})?|1(?:\.0{1,2})?)$/
+const maxSvgCoordinate = 10_000
+const maxSvgStrokeWidth = 10
+
+function isBoundedSvgDecimal(value: string, minimum: number, maximum: number, minimumIsExclusive = false) {
+  if (!safeSvgDecimal.test(value)) return false
+  const number = Number(value)
+  return Number.isFinite(number) && (minimumIsExclusive ? number > minimum : number >= minimum) && number <= maximum
+}
+
+function isSafeSvgViewBox(value: string) {
+  const match = value.match(new RegExp(`^(${svgDecimalSource}) +(${svgDecimalSource}) +(${svgDecimalSource}) +(${svgDecimalSource})$`))
+  return Boolean(match
+    && isBoundedSvgDecimal(match[1], -maxSvgCoordinate, maxSvgCoordinate)
+    && isBoundedSvgDecimal(match[2], -maxSvgCoordinate, maxSvgCoordinate)
+    && isBoundedSvgDecimal(match[3], 0, maxSvgCoordinate, true)
+    && isBoundedSvgDecimal(match[4], 0, maxSvgCoordinate, true))
+}
+
+function isSafeSvgPoints(value: string) {
+  const pointList = new RegExp(`^${svgDecimalSource},${svgDecimalSource}(?: +${svgDecimalSource},${svgDecimalSource})*$`)
+  return pointList.test(value)
+    && [...value.matchAll(new RegExp(svgDecimalSource, 'g'))]
+      .every((match) => isBoundedSvgDecimal(match[0], -maxSvgCoordinate, maxSvgCoordinate))
+}
+
+function isSafeSvgPath(value: string) {
+  const decimalAtCursor = new RegExp(svgDecimalSource, 'y')
+  let cursor = 0
+
+  const skipSpaces = () => {
+    while (value[cursor] === ' ') cursor += 1
+  }
+  const readDecimal = () => {
+    decimalAtCursor.lastIndex = cursor
+    const match = decimalAtCursor.exec(value)
+    if (!match || !isBoundedSvgDecimal(match[0], -maxSvgCoordinate, maxSvgCoordinate)) return false
+    cursor = decimalAtCursor.lastIndex
+    return true
+  }
+  const readSeparator = () => {
+    const start = cursor
+    skipSpaces()
+    if (value[cursor] === ',') {
+      cursor += 1
+      skipSpaces()
+      return true
+    }
+    return cursor > start
+  }
+  const readCoordinate = (separatorRequired = false) => {
+    if (separatorRequired) {
+      if (!readSeparator()) return false
+    } else {
+      skipSpaces()
+    }
+    return readDecimal()
+  }
+
+  skipSpaces()
+  if (value[cursor] !== 'M') return false
+  cursor += 1
+  if (!readCoordinate() || !readCoordinate(true)) return false
+  skipSpaces()
+
+  let cubicSegments = 0
+  while (cursor < value.length) {
+    if (value[cursor] !== 'C') return false
+    cursor += 1
+    if (!readCoordinate()) return false
+    for (let coordinate = 1; coordinate < 6; coordinate += 1) {
+      if (!readCoordinate(true)) return false
+    }
+    cubicSegments += 1
+    skipSpaces()
+  }
+
+  return cubicSegments > 0
+}
+
+function isSafeSvgAttributeValue(attribute: string, value: string) {
+  if (attribute === 'xmlns') return value === 'http://www.w3.org/2000/svg'
+  if (attribute === 'viewBox') return isSafeSvgViewBox(value)
+  if (attribute === 'fill' || attribute === 'stroke') return safeSvgPaintValue.test(value)
+  if (attribute === 'opacity') return safeSvgOpacityValue.test(value)
+  if (attribute === 'stroke-width') return isBoundedSvgDecimal(value, 0, maxSvgStrokeWidth, true)
+  if (attribute === 'width' || attribute === 'height' || attribute === 'r') {
+    return isBoundedSvgDecimal(value, 0, maxSvgCoordinate, true)
+  }
+  if (attribute === 'rx' || attribute === 'ry') return isBoundedSvgDecimal(value, 0, maxSvgCoordinate)
+  if (['x1', 'y1', 'x2', 'y2', 'cx', 'cy'].includes(attribute)) {
+    return isBoundedSvgDecimal(value, -maxSvgCoordinate, maxSvgCoordinate)
+  }
+  if (attribute === 'points') return isSafeSvgPoints(value)
+  if (attribute === 'd') return isSafeSvgPath(value)
+  return false
+}
+
+function validateDecorativeSvg(svg: string) {
+  const errors: string[] = []
+  const svgWithoutNamespace = svg.replace(/\sxmlns="http:\/\/www\.w3\.org\/2000\/svg"/, '')
+  const tagPattern = /<\/?[a-z][\w-]*(?:\s+[a-z][\w-]*\s*=\s*"[^"]*")*\s*\/?>/gi
+  const tags = [...svg.matchAll(tagPattern)].map((match) => match[0])
+  const openElements: string[] = []
+  let rootCount = 0
+
+  if (!/^<svg\b/.test(svg)) errors.push('missing svg root')
+  if (/<style\b|\sstyle\s*=|@import\b|url\s*\(/i.test(svg)) errors.push('forbidden CSS construct')
+  if (/<script\b|\son[a-z]+\s*=|<foreignObject\b|<text\b|&(?:#\d+|#x[\da-f]+|[a-z][\w.-]*);/i.test(svg)) {
+    errors.push('forbidden active content')
+  }
+  if (/(?:href|src)\s*=|(?:https?:)?\/\/|data:/i.test(svgWithoutNamespace)) errors.push('external resource reference')
+  if (svg.replace(tagPattern, '').trim()) errors.push('non-element content or malformed markup')
+
+  for (const tag of tags) {
+    const element = tag.match(/^<\/?([a-z][\w-]*)/i)?.[1]
+    if (!element || !allowedSvgAttributes[element]) {
+      errors.push(`element not allowed: ${element ?? tag}`)
+      continue
+    }
+
+    if (tag.startsWith('</')) {
+      if (tag !== `</${element}>` || openElements.pop() !== element) errors.push(`invalid closing element: ${element}`)
+      continue
+    }
+
+    if (element === 'svg') {
+      rootCount += 1
+      if (openElements.length > 0) errors.push('nested svg root')
+    } else if (openElements.length === 0) {
+      errors.push(`element outside svg root: ${element}`)
+    }
+
+    const seenAttributes = new Set<string>()
+    for (const attributeMatch of tag.matchAll(/\s+([a-z][\w-]*)\s*=\s*"([^"]*)"/gi)) {
+      const attribute = attributeMatch[1]
+      const value = attributeMatch[2]
+      if (!allowedSvgAttributes[element].includes(attribute)) errors.push(`attribute not allowed on ${element}: ${attribute}`)
+      if (!isSafeSvgAttributeValue(attribute, value)) errors.push(`attribute value not allowed for ${attribute}: ${value}`)
+      if (seenAttributes.has(attribute)) errors.push(`duplicate attribute on ${element}: ${attribute}`)
+      seenAttributes.add(attribute)
+    }
+
+    for (const requiredAttribute of requiredSvgAttributes[element]) {
+      if (!seenAttributes.has(requiredAttribute)) errors.push(`missing required attribute on ${element}: ${requiredAttribute}`)
+    }
+
+    if (!tag.endsWith('/>')) openElements.push(element)
+  }
+
+  if (rootCount !== 1) errors.push('expected exactly one svg root')
+  if (openElements.length > 0) errors.push(`unclosed element: ${openElements.at(-1)}`)
+
+  return errors
 }
 
 describe('Jekyll visual contract', () => {
@@ -335,8 +519,144 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('keeps Benefit Atlas correction CTAs on the internal workflow only', () => {
+    const companyPage = read('src/pages/BenefitsCompanyPage.tsx')
+    const methodologyPage = read('src/pages/BenefitsMethodologyPage.tsx')
+    const correctionLink = read('src/components/benefits/BenefitsCorrectionLink.tsx')
+
+    expect(companyPage).toContain('<BenefitsCorrectionLink')
+    expect(methodologyPage).toContain('<BenefitsCorrectionLink')
+    expect(correctionLink).toContain('정보 수정 요청')
+    expect(correctionLink).toContain('/community/benefits/correction/')
+  })
+
+  it('keeps correction actions at the existing 56px touch target', () => {
+    expect(benefitsCss).toMatch(/\.benefits-correction-link\s*\{[^}]*min-height:\s*56px;/)
+    expect(benefitsCss).toMatch(/\.benefit-correction-form button,[\s\S]*\.benefit-corrections-list button\s*\{[^}]*min-height:\s*56px;/)
+  })
+
+  it('uses the Benefit Atlas brand in every explorer document title', () => {
+    for (const [path, pageTitle] of benefitsExplorerEntries) {
+      const html = read(path)
+
+      expect(html).toContain(`<title>${pageTitle} · Benefit Atlas</title>`)
+      expect(html).not.toContain('기업 복지 탐색기')
+    }
+  })
+
   it('exposes the benefits explorer in the Jekyll menu with full-document navigation', () => {
-    expect(jekyllSettings).toMatch(/- title: "기업 복지 탐색기"\s+url: "\/community\/benefits\/"\s+no_ajax: true/)
+    expect(jekyllSettings).toMatch(/- title: "Benefit Atlas"\s+url: "\/community\/benefits\/"\s+no_ajax: true/)
+    expect(jekyllSettings).not.toContain('- title: "기업 복지 탐색기"')
+  })
+
+  it('keeps the Benefit Atlas hero full bleed with the shared responsive inner wrap', () => {
+    const shellSource = read('src/components/benefits/BenefitsExplorerShell.tsx')
+
+    expect(shellSource).toMatch(/<main className="benefits-main">\s*<section className="benefit-atlas-hero"/)
+    expect(shellSource).toMatch(/<section className="benefit-atlas-hero"[^>]*>\s*<div className="benefit-atlas-hero__inner community-wrap">/)
+    expect(shellSource).toMatch(/<\/section>\s*<div className="benefits-workspace community-wrap">/)
+    expect(shellSource.match(/<h1\b/g)).toHaveLength(1)
+    expect(benefitsCss).toMatch(/\.community-page\.benefits-page main\.benefits-main\s*\{[^}]*max-width:\s*none;[^}]*padding-inline:\s*0;/)
+    expect(benefitsCss).toContain("url('/images/community/benefit-atlas.svg')")
+    expect(benefitsCss).toMatch(/\.benefit-atlas-hero\s*\{[^}]*overflow:\s*hidden;/)
+    expect(benefitsCss).toMatch(/\.benefit-atlas-hero h1\s*\{[^}]*font-size:\s*clamp\([^;]+\);[^}]*word-break:\s*keep-all;/)
+    expect(benefitsCss).toMatch(/\.benefit-atlas-hero__copy\s*\{[^}]*word-break:\s*keep-all;/)
+    expect(benefitsCss).toMatch(/@media \(max-width:\s*699px\)[\s\S]*\.benefits-tabs a\s*\{[^}]*min-height:\s*56px;/)
+  })
+
+  it('uses a safe local decorative SVG for the Benefit Atlas field', () => {
+    const svg = read('../images/community/benefit-atlas.svg')
+
+    expect(svg).toMatch(/^<svg\b/)
+    expect(svg).toMatch(/<(?:path|circle|line|polyline)\b/)
+    expect(validateDecorativeSvg(svg)).toEqual([])
+    expect(svg).not.toMatch(/Benefit Atlas|BREADLAB|기업 복지/i)
+  })
+
+  it.each([
+    ['style element', '<svg xmlns="http://www.w3.org/2000/svg"><style>path{fill:red}</style><path d="M0 0"/></svg>'],
+    ['inline style attribute', '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0" style="fill:url(/paint.svg#x)"/></svg>'],
+    ['CSS import', '<svg xmlns="http://www.w3.org/2000/svg"><style>@import "/track.css";</style><path d="M0 0"/></svg>'],
+    ['CSS resource URL', '<svg xmlns="http://www.w3.org/2000/svg"><style>path{fill:url(/paint.svg#x)}</style><path d="M0 0"/></svg>'],
+    ['comment-obfuscated paint URL', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="u/**/rl(/paint.svg#x)"/></svg>'],
+    ['escape-obfuscated paint URL', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="u\\72 l(/paint.svg#x)"/></svg>'],
+    ['paint variable', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="var(--paint)"/></svg>'],
+    ['paint function', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="rgb(0 0 0)"/></svg>'],
+    ['arbitrary paint token', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="red"/></svg>'],
+    ['paint control character', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="#071725\u0001"/></svg>'],
+  ])('rejects decorative SVG mutations containing %s', (_label, mutation) => {
+    expect(validateDecorativeSvg(mutation)).not.toEqual([])
+  })
+
+  it.each([
+    ['missing M coordinate', 'M0'],
+    ['truncated C segment', 'M0 0 C1 2 3'],
+    ['coordinates after Z', 'Z 1 2'],
+    ['arc with an invalid flag', 'M0 0 A1 1 0 2 0 3 3'],
+    ['unsupported L command', 'M0 0 L1 1'],
+    ['unsupported A command', 'M0 0 A1 1 0 0 0 3 3'],
+    ['unsupported Z command', 'M0 0 C1 2 3 4 5 6 Z'],
+    ['missing all M coordinates', 'M C1 2 3 4 5 6'],
+    ['extra number after C segment', 'M0 0 C1 2 3 4 5 6 7'],
+    ['multiple M commands', 'M0 0 C1 2 3 4 5 6 M7 8 C9 10 11 12 13 14'],
+    ['M command after C', 'C1 2 3 4 5 6 M0 0'],
+    ['empty C segment', 'M0 0 C'],
+    ['repeated comma separator', 'M0,,0 C1 2 3 4 5 6'],
+    ['comma before C command', 'M0 0,C1 2 3 4 5 6'],
+    ['missing numeric separator', 'M0 0 C1 2 3 4 5-6'],
+  ])('rejects decorative SVG path grammar mutation: %s', (_label, path) => {
+    const mutation = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="${path}"/></svg>`
+    expect(validateDecorativeSvg(mutation)).not.toEqual([])
+  })
+
+  it('accepts the local M-plus-cubic-C path grammar with comma or space separators', () => {
+    expect(isSafeSvgPath('M0,0 C1,2 3,4 5,6 C7 8 9 10 11 12')).toBe(true)
+  })
+
+  it.each([
+    ['missing xmlns', '<svg viewBox="0 0 10 10"><path d="M0 0"/></svg>'],
+    ['wrong xmlns', '<svg xmlns="https://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0"/></svg>'],
+    ['duplicate xmlns', '<svg xmlns="http://www.w3.org/2000/svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0"/></svg>'],
+    ['missing viewBox', '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'],
+    ['malformed viewBox', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="not a viewbox"><path d="M0 0"/></svg>'],
+    ['zero viewBox width', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 0 10"><path d="M0 0"/></svg>'],
+    ['negative viewBox height', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 -1"><path d="M0 0"/></svg>'],
+    ['negative width', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="-1" height="1"/></svg>'],
+    ['zero height', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1" height="0"/></svg>'],
+    ['non-finite height', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1" height="Infinity"/></svg>'],
+    ['functional width', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="calc(1)" height="1"/></svg>'],
+    ['negative rx', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1" height="1" rx="-1"/></svg>'],
+    ['functional ry', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1" height="1" ry="var(--r)"/></svg>'],
+    ['out-of-bounds coordinate', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="10001" y1="0" x2="1" y2="1"/></svg>'],
+    ['non-finite coordinate', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="NaN" y1="0" x2="1" y2="1"/></svg>'],
+    ['functional coordinate', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="var(--x)" cy="1" r="1"/></svg>'],
+    ['negative radius', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" cy="1" r="-1"/></svg>'],
+    ['non-finite radius', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" cy="1" r="Infinity"/></svg>'],
+    ['functional radius', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" cy="1" r="calc(1)"/></svg>'],
+    ['empty points', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><polyline points=""/></svg>'],
+    ['unpaired points', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><polyline points="0,0 1"/></svg>'],
+    ['functional points', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><polyline points="0,0 calc(1),1"/></svg>'],
+    ['path prose', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="not path data"/></svg>'],
+    ['path function', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="Mcalc(1) 0"/></svg>'],
+    ['path illegal character', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0@"/></svg>'],
+    ['path control character', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0\u0001"/></svg>'],
+    ['rect missing width', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect height="1"/></svg>'],
+    ['rect missing height', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="1"/></svg>'],
+    ['path missing d', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path/></svg>'],
+    ['polyline missing points', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><polyline/></svg>'],
+    ['line missing x1', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line y1="0" x2="1" y2="1"/></svg>'],
+    ['line missing y1', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="0" x2="1" y2="1"/></svg>'],
+    ['line missing x2', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="0" y1="0" y2="1"/></svg>'],
+    ['line missing y2', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><line x1="0" y1="0" x2="1"/></svg>'],
+    ['circle missing cx', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cy="1" r="1"/></svg>'],
+    ['circle missing cy', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" r="1"/></svg>'],
+    ['circle missing r', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="1" cy="1"/></svg>'],
+  ])('rejects decorative SVG root or geometry mutation: %s', (_label, mutation) => {
+    expect(validateDecorativeSvg(mutation)).not.toEqual([])
+  })
+
+  it('does not retain the removed benefits heading selector', () => {
+    expect(benefitsCss).not.toMatch(/\.benefits-heading\b/)
   })
 
   it('keeps the Community banner full width while wrapping its title and listing content', () => {
