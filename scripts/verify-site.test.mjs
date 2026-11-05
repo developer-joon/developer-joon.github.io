@@ -64,9 +64,9 @@ async function put(root, relativePath, content = '') {
 async function makeValidArtifact() {
   const root = await mkdtemp(path.join(tmpdir(), 'verify-site-test-'))
   const routes = [
-    ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>', 'https://www.breadlab.ai/', '<a class="menu__list__item__link js-no-ajax" href="/community/">Community</a>'],
+    ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/', '<a class="menu__list__item__link js-no-ajax" href="/community/">Community</a>'],
     ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/', ''],
-    ['lab/index.html', '<title>0 → 1 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
+    ['lab/index.html', '<title>수익실험실 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
     ['blog/ceph-cluster-install-with-helm.html', '<title>[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm', ''],
     ['404.html', '<title>Page Not Found – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/404.html', ''],
   ]
@@ -126,9 +126,25 @@ test('accepts a minimal valid generated artifact', async () => {
   })
 })
 
+for (const [relativePath, staleTitle] of [
+  ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>'],
+  ['lab/index.html', '<title>0 → 1 – Ria & Seoa PaPa</title>'],
+]) {
+  test(`rejects the stale 0 → 1 title for ${relativePath}`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, relativePath)
+      const html = await readFile(artifactPath, 'utf8')
+      await writeFile(artifactPath, html.replace(/<title>[^<]+<\/title>/, staleTitle))
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted the stale title for ${relativePath}`)
+      assert.match(result.stderr, new RegExp(`${relativePath.replaceAll('/', '\\/')} is missing expected title`))
+    })
+  })
+}
+
 test('rejects a generated homepage Community link without the AJAX opt-out class', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link" href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link" href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a Community link handled by the Jekyll AJAX loader')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -137,7 +153,7 @@ test('rejects a generated homepage Community link without the AJAX opt-out class
 
 test('rejects a non-breaking space between Community navigation classes', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link\u00a0js-no-ajax" href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link\u00a0js-no-ajax" href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly treated non-ASCII whitespace as an HTML class separator')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -146,7 +162,7 @@ test('rejects a non-breaking space between Community navigation classes', async 
 
 test('rejects prefixed data attributes masquerading as href and class', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a data-href="/community/" data-class="js-no-ajax">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a data-href="/community/" data-class="js-no-ajax">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly treated data-href and data-class as navigation attributes')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -155,7 +171,7 @@ test('rejects prefixed data attributes masquerading as href and class', async ()
 
 test('rejects a Community AJAX opt-out that exists only in commented markup', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><!-- <a href="/community/" class="js-no-ajax">Community</a> --><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><!-- <a href="/community/" class="js-no-ajax">Community</a> --><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a commented-out AJAX opt-out')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -164,7 +180,7 @@ test('rejects a Community AJAX opt-out that exists only in commented markup', as
 
 test('rejects a Community AJAX opt-out that exists only in a plain-text script', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><script type="text/plain"><a href="/community/" class="js-no-ajax">Community</a></script><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><script type="text/plain"><a href="/community/" class="js-no-ajax">Community</a></script><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an AJAX opt-out inside a plain-text script')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -173,7 +189,7 @@ test('rejects a Community AJAX opt-out that exists only in a plain-text script',
 
 test('rejects a Community AJAX opt-out that exists only in a template', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><template><a href="/community/" class="js-no-ajax">Community</a></template><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><template><a href="/community/" class="js-no-ajax">Community</a></template><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an AJAX opt-out inside a template')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -182,7 +198,7 @@ test('rejects a Community AJAX opt-out that exists only in a template', async ()
 
 test('rejects a Community AJAX opt-out after a plaintext start tag', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><plaintext><a href="/community/" class="js-no-ajax">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><plaintext><a href="/community/" class="js-no-ajax">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly parsed markup after a plaintext start tag')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -191,7 +207,7 @@ test('rejects a Community AJAX opt-out after a plaintext start tag', async () =>
 
 test('rejects a Community AJAX opt-out inside select content', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><select><a href="/community/" class="js-no-ajax">Community</a></select><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><select><a href="/community/" class="js-no-ajax">Community</a></select><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an anchor from select content')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -200,7 +216,7 @@ test('rejects a Community AJAX opt-out inside select content', async () => {
 
 test('rejects a Community AJAX opt-out inside frameset noframes content', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><frameset><noframes><a href="/community/" class="js-no-ajax">Community</a></noframes></frameset><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><frameset><noframes><a href="/community/" class="js-no-ajax">Community</a></noframes></frameset><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an anchor from frameset noframes content')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -213,7 +229,7 @@ for (const [container, openingTag, closingTag] of [
 ]) {
   test(`treats a self-closing flag on a ${container} as ignored`, async () => {
     await withArtifact(async (root) => {
-      await put(root, 'index.html', `<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/">${openingTag}<a href="/community/" class="js-no-ajax">Community</a>${closingTag}<a href="/community/">Community</a>`)
+      await put(root, 'index.html', `<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/">${openingTag}<a href="/community/" class="js-no-ajax">Community</a>${closingTag}<a href="/community/">Community</a>`)
       const result = verify(root)
       assert.notEqual(result.status, 0, `verifier unexpectedly honored a self-closing flag on a ${container}`)
       assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -223,7 +239,7 @@ for (const [container, openingTag, closingTag] of [
 
 test('rejects an unmarked Community menu link despite a marked body-link decoy', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link">Community</a></nav><main><a href="/community/" class="js-no-ajax">Community</a></main>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link">Community</a></nav><main><a href="/community/" class="js-no-ajax">Community</a></main>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a marked body-link decoy for an unmarked menu link')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -232,7 +248,7 @@ test('rejects an unmarked Community menu link despite a marked body-link decoy',
 
 test('accepts a marked Community menu link without imposing the opt-out on a body link', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav><main><a href="/community/">Community</a></main>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav><main><a href="/community/">Community</a></main>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -240,7 +256,7 @@ test('accepts a marked Community menu link without imposing the opt-out on a bod
 
 test('rejects duplicate Community menu links when any lacks the AJAX opt-out', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a><a href="/community/" class="menu__list__item__link">Community</a></nav>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a><a href="/community/" class="menu__list__item__link">Community</a></nav>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unmarked duplicate menu link')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -249,7 +265,7 @@ test('rejects duplicate Community menu links when any lacks the AJAX opt-out', a
 
 test('rejects a marked Community body link when no actual menu link exists', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><main><a href="/community/" class="js-no-ajax">Community</a></main>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><main><a href="/community/" class="js-no-ajax">Community</a></main>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a body link in place of the Community menu link')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -258,7 +274,7 @@ test('rejects a marked Community body link when no actual menu link exists', asy
 
 test('accepts a marked Community link with a greater-than sign in a quoted attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -266,7 +282,7 @@ test('accepts a marked Community link with a greater-than sign in a quoted attri
 
 test('accepts visible Community text inside nested markup with a quoted greater-than attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
