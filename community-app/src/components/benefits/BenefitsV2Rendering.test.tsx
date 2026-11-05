@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 import { BenefitsHeatmapTable } from './BenefitsHeatmapTable'
 import { BenefitClaimGroup } from './BenefitClaimGroup'
+import { BenefitV2EvidenceGroup } from './BenefitV2EvidenceGroup'
 import { CompanyCompareTray } from './CompanyCompareTray'
 import { FitResultList } from './FitResultList'
-import { categories, type CategoryOutcome, type CompanyListing } from '../../types/benefits'
+import { categories, type BenefitCompanyView, type CategoryOutcome, type CompanyListing, type Detail } from '../../types/benefits'
 import { parseQuery } from '../../lib/benefitsQueryState'
 const notice = '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.'
 const insufficient = (category_id: (typeof categories)[number]): CategoryOutcome => ({ kind: 'insufficient_evidence', category_id, reason_code: 'not_researched', nonabsence_notice: notice, searched_source_ids: [], searched_at: null })
@@ -116,4 +117,81 @@ it('keeps mobile targets at 56px and wraps long evidence URLs', () => {
   expect(mobile).toMatch(/\.benefits-status,[\s\S]*min-height:\s*56px/)
   expect(css).toContain('.benefits-evidence a,')
   expect(css).toMatch(/\.benefits-evidence a,[^}]+overflow-wrap:\s*anywhere/)
+})
+
+it('marks projected companies with an accessible lineage badge and pending companies explicitly', () => {
+  const projected = { ...researchedCompany(1), lineage: { legacy: company(1), approved_v2: researchedCompany(1) } } as BenefitCompanyView
+  const pending = { ...company(2), lineage: { legacy: company(2) } } as BenefitCompanyView
+  render(<BenefitsHeatmapTable companies={[projected, pending]} selectedCategories={['leave']} compare={[]} toggle={() => undefined} link={() => '#'} projectionActive />)
+  expect(screen.getByLabelText('승인 v2 조사 적용')).toBeVisible()
+  expect(screen.getByText('v2 승인 조사 미적용')).toBeVisible()
+})
+
+it('renders approved-v2 evidence in distinct official, reference and lower-tier community sections', () => {
+  const detail = {
+    official_claims: [{ claim_id: `official::${'a'.repeat(64)}`, category_id: 'leave', source_ids: ['source::official'], scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'] }, scope_status: 'exact_entity', source_tier: 'official_government', conflict_status: 'none' }],
+    references: [{ reference_id: 'reference::1', category_id: 'leave', source_id: 'source::reference', statement: '연차 휴가 제도를 안내합니다.', supporting_quote: '연차 휴가를 사용할 수 있습니다.' }],
+    community_reports: [{ community_report_id: 'community::1', category_id: 'leave', source_id: 'source::community', statement: '직원 커뮤니티의 휴가 사용 보고입니다.' }],
+    sources: [
+      { source_id: 'source::official', title: '고용노동부 공개 기록', url: 'https://official.example/record' },
+      { source_id: 'source::reference', title: '기업 채용 안내', url: 'https://company.example/benefits' },
+      { source_id: 'source::community', title: '직원 커뮤니티 스냅샷', url: 'https://community.example/report' },
+    ],
+  } as unknown as Detail
+  render(<><h2>승인 v2 조사 근거</h2><BenefitV2EvidenceGroup category="leave" detail={detail} /></>)
+  expect(screen.getByRole('heading', { name: '승인 v2 조사 근거' })).toBeVisible()
+  expect(screen.getByText('공식 기록')).toBeVisible()
+  expect(screen.getByText('연차 휴가 제도를 안내합니다.')).toBeVisible()
+  expect(screen.getByText('연차 휴가를 사용할 수 있습니다.')).toBeVisible()
+  expect(screen.getByText('커뮤니티 보고 · 하위 근거 계층')).toBeVisible()
+  expect(screen.getByText('직원 커뮤니티의 휴가 사용 보고입니다.')).toBeVisible()
+  expect(screen.getAllByRole('link')).toHaveLength(3)
+  for (const link of screen.getAllByRole('link')) { expect(link).toHaveAttribute('target', '_blank'); expect(link).toHaveAttribute('rel', 'noopener noreferrer') }
+})
+
+it('renders material reference and community evidence limitations with accessible Korean labels', () => {
+  const detail = {
+    official_claims: [],
+    references: [{
+      reference_id: 'reference::limited', category_id: 'leave', source_id: 'source::reference', statement: '과거 그룹 단위 참고 자료입니다.', supporting_quote: '휴가 제도 운영',
+      reliability: 'low', currentness: 'historical', scope: { status: 'group_only', countries: ['KR'], legal_entities: ['Test Group'], roles: ['engineer'], employment_types: ['full-time'] }, conflict_status: 'contradictory',
+    }],
+    community_reports: [{
+      community_report_id: 'community::limited', category_id: 'leave', source_id: 'source::community', statement: '범위 미확인 커뮤니티 보고입니다.',
+      reliability: 'low', currentness: 'unknown', scope_status: 'unresolved', scope: { countries: ['KR'], legal_entities: [], roles: [], employment_types: [] }, conflict_status: 'disclosed',
+    }],
+    sources: [
+      { source_id: 'source::reference', title: '과거 참고 자료', url: 'https://reference.example/benefits' },
+      { source_id: 'source::community', title: '커뮤니티 스냅샷', url: 'https://community.example/report' },
+    ],
+  } as unknown as Detail
+  render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
+  const reference = screen.getByRole('article', { name: '참고 자료 근거 제한' })
+  expect(reference).toHaveTextContent('신뢰도: 낮음')
+  expect(reference).toHaveTextContent('현재성: 과거 정보')
+  expect(reference).toHaveTextContent('적용 범위 상태: 그룹 단위')
+  expect(reference).toHaveTextContent('법인 Test Group')
+  expect(reference).toHaveTextContent('상충 상태: 모순됨')
+  const community = screen.getByRole('article', { name: '커뮤니티 보고 근거 제한' })
+  expect(community).toHaveTextContent('신뢰도: 낮음')
+  expect(community).toHaveTextContent('현재성: 확인되지 않음')
+  expect(community).toHaveTextContent('적용 범위 상태: 미확인')
+  expect(community).toHaveTextContent('상충 상태: 상충 정보 공개됨')
+})
+
+it.each([
+  'http://company.example/benefits',
+  'javascript:alert(1)',
+  'data:text/html,unsafe',
+  'https://user:password@company.example/benefits',
+])('does not render an unsafe approved-v2 source href: %s', (url) => {
+  const detail = {
+    official_claims: [],
+    references: [{ reference_id: 'reference::1', category_id: 'leave', source_id: 'source::reference', statement: '참고 자료입니다.', supporting_quote: '근거 인용문' }],
+    community_reports: [],
+    sources: [{ source_id: 'source::reference', title: '안전하지 않은 출처', url }],
+  } as unknown as Detail
+  render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
+  expect(screen.queryByRole('link', { name: '안전하지 않은 출처' })).not.toBeInTheDocument()
+  expect(document.querySelectorAll('a')).toHaveLength(0)
 })

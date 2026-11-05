@@ -13,6 +13,7 @@ export function BenefitsExplorerShell({ route, query, manifest, children }: { ro
           <h1 id="benefit-atlas-title">Benefit Atlas</h1>
           <p className="benefit-atlas-hero__copy">기업별 공개 근거와 확인 범위를 한눈에 탐색하세요.</p>
           {manifest && <p className="benefits-version">데이터 {manifest.data_version} · {manifest.company_count}개 기업 · 생성일 {manifest.generated_at.slice(0, 10)}</p>}
+          {manifest?.approved_v2_projection && <p className="benefits-coverage">승인 v2 조사 · 전체 {manifest.approved_v2_projection.total_batch_count}개 중 {manifest.approved_v2_projection.approved_batch_count}개 batch · {manifest.approved_v2_projection.projected_company_count.toLocaleString('en-US')}/{manifest.approved_v2_projection.total_company_count.toLocaleString('en-US')}개 기업</p>}
         </div>
       </section>
       <div className="benefits-workspace community-wrap">

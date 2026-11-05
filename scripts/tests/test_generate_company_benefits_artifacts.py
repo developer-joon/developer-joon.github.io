@@ -590,6 +590,8 @@ def test_build_company_preserves_v1_claims_and_projects_v2_evidence():
     leave = detail["category_outcomes"][0]
     assert leave["reference_ids"] == [reference_id] and leave["community_report_ids"] == [community_id]
     assert leave["claim_count"] == 3 and leave["last_checked_at"] == "2026-11-01T01:02:03Z"
+    assert leave["source_tiers"] == ["community_employee_review", "official_government", "other_public_web"]
+    assert (leave["official_claim_count"], leave["reference_count"], leave["community_report_count"]) == (1, 1, 1)
     assert "reason_code" not in leave
 
 
@@ -626,6 +628,325 @@ def test_build_company_projects_all_searched_sources_and_exact_derived_metadata(
     assert not internal_review_keys(detail["sources"])
     assert all(set(outcome["limitation_codes"]) == {"scope_limit", "currentness_limit"}
                and len(outcome["limitation_codes"]) == 2 for outcome in detail["category_outcomes"])
+    assert all(outcome["source_tiers"] == [] for outcome in detail["category_outcomes"])
+    assert all(outcome["official_claim_count"] == 0 and outcome["reference_count"] == 0
+               and outcome["community_report_count"] == 0 for outcome in detail["category_outcomes"])
+
+
+def make_in_progress_projection_fixture(root, approved_count=38, pending_batch_ids=()):
+    make_research_fixture(root)
+    batches = series.read_jsonl(root / "series-batches.jsonl")
+    progress = json.loads((root / "series-progress.json").read_text())
+    approved_batches = [batch for batch in batches if batch["batch_id"] not in pending_batch_ids][:approved_count]
+    approved_ids = {batch["batch_id"] for batch in approved_batches}
+    approved_companies = {company_id for batch in approved_batches for company_id in batch["company_ids"]}
+    for entry in progress["batches"]:
+        if entry["batch_id"] not in approved_ids:
+            entry["status"] = "pending"
+            entry["claim_count"] = 0
+            entry["no_claim_count"] = 0
+            entry["cell_count"] = 0
+            for field in ("approved_at", "reviewer_ids", "cell_set_sha256", "v2_ledger_sha256"):
+                entry.pop(field, None)
+    progress["status"] = "in_progress"
+    write_json(root / "series-progress.json", progress)
+    for ledger, filename in series.V2_LEDGER_FILES.items():
+        records = series.read_jsonl(root / filename)
+        if ledger == "sources":
+            used = set()
+            for other in ("attempts", "official_claims"):
+                for record in series.read_jsonl(root / series.V2_LEDGER_FILES[other]):
+                    if record.get("company_id") in approved_companies:
+                        used.update(record.get("source_ids", []))
+            for other in ("references", "community_reports"):
+                for record in series.read_jsonl(root / series.V2_LEDGER_FILES[other]):
+                    if record.get("company_id") in approved_companies:
+                        used.add(record.get("source_id"))
+            records = [record for record in records if record.get("source_id") in used]
+        else:
+            records = [record for record in records if record.get("company_id") in approved_companies]
+        write_jsonl(root / filename, records)
+    return approved_companies
+
+
+def test_additive_projection_accepts_only_approved_checkpoint_and_complete_gate_stays_closed(tmp_path):
+    research = tmp_path / "research"
+    approved_companies = make_in_progress_projection_fixture(research)
+    module_spec = importlib.util.spec_from_file_location("approved_projection", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    with raises(ValueError):
+        module.validate_inputs(research, taxonomy, file_digest(TAXONOMY))
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    assert len(inputs[0]) == len(approved_companies) == 950
+    assert metadata["projection_kind"] == "approved_v2_additive"
+    assert metadata["projection_status"] == "in_progress"
+    assert metadata["approved_batch_count"] == 38
+    assert metadata["projected_company_count"] == 950
+    assert metadata["cell_count"] == 9500
+    assert sum(metadata["cell_state_counts"].values()) == 9500
+
+
+def test_approved_projection_main_passes_one_bounded_manifest_snapshot_to_emission(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("approved_projection_main_snapshot", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    base = tmp_path / "base"
+    base.mkdir()
+    manifest_path = base / "manifest.json"
+    original_raw = b'{"artifact_protocol":"v1","data_version":"base-v1"}'
+    manifest_path.write_bytes(original_raw)
+    original_capture = module._read_regular_file_once
+    captures = []
+
+    def capture_then_replace(*args, **kwargs):
+        capture = original_capture(*args, **kwargs)
+        captures.append(capture)
+        manifest_path.write_bytes(b'{' + b' ' * (module.BASE_MANIFEST_MAX_BYTES + 1) + b'}')
+        return capture
+
+    argv = [
+        "--research-root", str(tmp_path / "research"), "--output-root", str(tmp_path / "output"),
+        "--taxonomy", str(TAXONOMY), "--data-version", "approved-v2-test",
+        "--generated-at", "2026-11-05T00:00:00Z", "--as-of", "2026-11-05",
+        "--freeze-anchor-receipt", str(tmp_path / "freeze.json"),
+        "--effective-selection-receipt", str(tmp_path / "selection.json"),
+        "--mode", "approved-v2-projection", "--base-artifact-root", str(base),
+    ]
+    with mock.patch.object(module, "approved_projection_gate", return_value=({}, (), {"projection_kind": "approved_v2_additive"})), \
+            mock.patch.object(module, "_read_regular_file_once", side_effect=capture_then_replace), \
+            mock.patch.object(module, "emit_artifacts") as emit:
+        assert module.main(argv) == 0
+    assert len(captures) == 1
+    emitted = emit.call_args.args
+    assert emitted[5]["base_data_version"] == "base-v1"
+    assert emitted[5]["base_manifest_sha256"] == hashlib.sha256(original_raw).hexdigest()
+    assert emitted[7] == captures[0]
+
+
+def test_approved_projection_main_rejects_oversized_base_manifest_before_parsing(tmp_path):
+    module_spec = importlib.util.spec_from_file_location("approved_projection_main_oversize", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "manifest.json").write_bytes(
+        b'{"artifact_protocol":"v1","data_version":"base-v1","padding":"'
+        + b'x' * module.BASE_MANIFEST_MAX_BYTES + b'"}'
+    )
+    argv = [
+        "--research-root", str(tmp_path / "research"), "--output-root", str(tmp_path / "output"),
+        "--taxonomy", str(TAXONOMY), "--data-version", "approved-v2-test",
+        "--generated-at", "2026-11-05T00:00:00Z", "--as-of", "2026-11-05",
+        "--freeze-anchor-receipt", str(tmp_path / "freeze.json"),
+        "--effective-selection-receipt", str(tmp_path / "selection.json"),
+        "--mode", "approved-v2-projection", "--base-artifact-root", str(base),
+    ]
+    with mock.patch.object(module, "approved_projection_gate", return_value=({}, (), {"projection_kind": "approved_v2_additive"})), \
+            mock.patch.object(module, "emit_artifacts") as emit:
+        assert module.main(argv) == 1
+    emit.assert_not_called()
+
+
+def test_additive_projection_emits_39_batch_checkpoint_with_final_25_company_chunk(tmp_path):
+    research = tmp_path / "research"
+    make_in_progress_projection_fixture(research, approved_count=39, pending_batch_ids={"domestic-22"})
+    module_spec = importlib.util.spec_from_file_location("approved_projection_odd_checkpoint", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    base = tmp_path / "base"
+    base.mkdir()
+    write_json(base / "manifest.json", {"artifact_protocol": "v1", "data_version": "base-v1"})
+    metadata = module.freeze_snapshot({
+        **module.thaw_snapshot(metadata),
+        "base_data_version": "base-v1",
+        "base_manifest_sha256": file_digest(base / "manifest.json"),
+    })
+    output = tmp_path / "projection-output"
+    module.emit_artifacts(output, "approved-v2-checkpoint-39", "2026-11-05T00:00:00Z",
+                          taxonomy, inputs, metadata, base)
+    manifest = json.loads((output / "manifest.json").read_text())
+    projection = manifest["approved_v2_projection"]
+    assert projection["projected_company_count"] == 975
+    assert projection["listing_chunk_count"] == 20
+    assert [chunk["record_count"] for chunk in projection["listing_chunks"]] == [50] * 19 + [25]
+    final = json.loads((output / "approved-v2-checkpoint-39/listings/companies-20.json").read_text())
+    assert len(final["companies"]) == 25
+    assert (final["sequence_start"], final["sequence_end"]) == (976, 1000)
+
+
+def test_additive_projection_preserves_sparse_canonical_sequences_for_real_38_batch_shape(tmp_path):
+    research = tmp_path / "research"
+    make_in_progress_projection_fixture(
+        research, approved_count=38, pending_batch_ids={"domestic-22", "domestic-31"}
+    )
+    module_spec = importlib.util.spec_from_file_location("approved_projection_sparse", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    base = tmp_path / "base"
+    base.mkdir()
+    write_json(base / "manifest.json", {"artifact_protocol": "v1", "data_version": "base-v1"})
+    metadata = module.freeze_snapshot({
+        **module.thaw_snapshot(metadata),
+        "base_data_version": "base-v1",
+        "base_manifest_sha256": file_digest(base / "manifest.json"),
+    })
+    output = tmp_path / "projection-output"
+    module.emit_artifacts(output, "approved-v2-checkpoint-38", "2026-11-05T00:00:00Z",
+                          taxonomy, inputs, metadata, base)
+    manifest = json.loads((output / "manifest.json").read_text())
+    projection = manifest["approved_v2_projection"]
+    assert projection["projected_company_count"] == 950
+    assert projection["listing_chunks"][10]["first_sequence"] == 501
+    assert projection["listing_chunks"][10]["last_sequence"] == 575
+    sequences = []
+    for descriptor in projection["listing_chunks"]:
+        relative = descriptor["url"].removeprefix("community/data/company-benefits/")
+        chunk = json.loads((output / relative).read_text())
+        assert descriptor["record_count"] == len(chunk["companies"])
+        assert descriptor["first_sequence"] == chunk["companies"][0]["population_sequence"]
+        assert descriptor["last_sequence"] == chunk["companies"][-1]["population_sequence"]
+        sequences.extend(company["population_sequence"] for company in chunk["companies"])
+    assert sequences == sorted(sequences)
+    assert set(sequences).isdisjoint(set(range(526, 551)) | set(range(751, 776)))
+
+
+def test_additive_projection_rejects_every_unmanifested_base_root_entry(tmp_path):
+    research = tmp_path / "research"
+    make_in_progress_projection_fixture(research)
+    module_spec = importlib.util.spec_from_file_location("approved_projection_base_inventory", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+
+    def add_file(base):
+        (base / "unrelated.txt").write_text("private")
+
+    def add_directory(base):
+        (base / "unrelated" / "private.txt").parent.mkdir()
+        (base / "unrelated" / "private.txt").write_text("private")
+
+    def add_hidden_file(base):
+        (base / ".private").write_text("private")
+
+    def add_symlink(base):
+        (base / "linked-manifest.json").symlink_to(base / "manifest.json")
+
+    for index, mutate in enumerate((add_file, add_directory, add_hidden_file, add_symlink)):
+        base = tmp_path / f"base-{index}"
+        base.mkdir()
+        write_json(base / "manifest.json", {"artifact_protocol": "v1", "data_version": "base-v1"})
+        bound_metadata = module.freeze_snapshot({
+            **module.thaw_snapshot(metadata),
+            "base_data_version": "base-v1",
+            "base_manifest_sha256": file_digest(base / "manifest.json"),
+        })
+        mutate(base)
+        output = tmp_path / f"projection-output-{index}"
+        with raises(ValueError):
+            module.emit_artifacts(output, "approved-v2-checkpoint-38", "2026-11-05T00:00:00Z",
+                                  taxonomy, inputs, bound_metadata, base)
+        assert not output.exists()
+
+    base = tmp_path / "base-tampered"
+    listed = base / "base-v1" / "taxonomy.json"
+    listed.parent.mkdir(parents=True)
+    listed.write_bytes(b'{}\n')
+    write_json(base / "manifest.json", {
+        "artifact_protocol": "v1", "data_version": "base-v1",
+        "taxonomy": {
+            "url": "community/data/company-benefits/base-v1/taxonomy.json",
+            "sha256": file_digest(listed), "byte_count": listed.stat().st_size, "record_count": 0,
+        },
+    })
+    bound_metadata = module.freeze_snapshot({
+        **module.thaw_snapshot(metadata),
+        "base_data_version": "base-v1",
+        "base_manifest_sha256": file_digest(base / "manifest.json"),
+    })
+    listed.write_bytes(b'{"tampered":true}\n')
+    output = tmp_path / "projection-output-tampered"
+    with raises(ValueError):
+        module.emit_artifacts(output, "approved-v2-checkpoint-38", "2026-11-05T00:00:00Z",
+                              taxonomy, inputs, bound_metadata, base)
+    assert not output.exists()
+
+
+def test_additive_projection_materializes_validated_base_bytes_after_path_swap(tmp_path):
+    research = tmp_path / "research"
+    make_in_progress_projection_fixture(research)
+    module_spec = importlib.util.spec_from_file_location("approved_projection_base_snapshot", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    base = tmp_path / "base"
+    listed = base / "base-v1" / "taxonomy.json"
+    listed.parent.mkdir(parents=True)
+    original_bytes = b'{"trusted":true}\n'
+    listed.write_bytes(original_bytes)
+    write_json(base / "manifest.json", {
+        "artifact_protocol": "v1", "data_version": "base-v1",
+        "taxonomy": {
+            "url": "community/data/company-benefits/base-v1/taxonomy.json",
+            "sha256": hashlib.sha256(original_bytes).hexdigest(),
+            "byte_count": len(original_bytes), "record_count": 0,
+        },
+    })
+    metadata = module.freeze_snapshot({
+        **module.thaw_snapshot(metadata),
+        "base_data_version": "base-v1",
+        "base_manifest_sha256": file_digest(base / "manifest.json"),
+    })
+    external = tmp_path / "external.json"
+    external.write_bytes(b'{"attacker":true}\n')
+    original_inventory = module.base_artifact_inventory
+
+    def swap_after_validation(base_root, manifest, manifest_capture):
+        snapshot = original_inventory(base_root, manifest, manifest_capture)
+        listed.unlink()
+        listed.symlink_to(external)
+        return snapshot
+
+    output = tmp_path / "projection-output"
+    with mock.patch.object(module, "base_artifact_inventory", side_effect=swap_after_validation):
+        module.emit_artifacts(output, "approved-v2-checkpoint-38", "2026-11-05T00:00:00Z",
+                              taxonomy, inputs, metadata, base)
+    assert (output / "base-v1" / "taxonomy.json").read_bytes() == original_bytes
+
+
+def test_additive_projection_rejects_cell_count_and_pending_company_leakage(tmp_path):
+    research = tmp_path / "research"
+    approved_companies = make_in_progress_projection_fixture(research)
+    module_spec = importlib.util.spec_from_file_location("approved_projection_mutations", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    cells_path = research / series.V2_LEDGER_FILES["cells"]
+    original = series.read_jsonl(cells_path)
+    for mutated in (original[:-1], [*original, copy.deepcopy(original[-1])]):
+        write_jsonl(cells_path, mutated)
+        with raises(ValueError):
+            module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    pending_company = next(company["company_id"] for company in series.read_jsonl(research / "companies.jsonl")
+                           if company["company_id"] not in approved_companies)
+    leaked = copy.deepcopy(original[-1])
+    leaked["company_id"] = pending_company
+    write_jsonl(cells_path, [*original, leaked])
+    with raises(ValueError):
+        module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
 
 
 def test_assignment_validator_requires_hash_bound_independent_approval(tmp_path):
@@ -1015,6 +1336,11 @@ def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
         assert payload["company"]["company_id"] == company_id
     first_descriptor = manifest["company_shards"][fixture["companies"][0]["company_id"]]
     first_detail = json.loads((version / first_descriptor["url"].removeprefix(prefix)).read_text())
+    sources_document = json.loads((version / manifest["sources"]["url"].removeprefix(prefix)).read_text())
+    assert sources_document["schema_version"] == 1
+    assert sources_document["artifact_kind"] == "company_benefits_sources"
+    assert sources_document["data_version"] == manifest["data_version"]
+    assert len(sources_document["sources"]) == manifest["sources"]["record_count"]
     assert [claim["claim_id"] for claim in first_detail["claims"]] == [fixture["claim"]["claim_id"]]
     assert first_detail["sources"]
     outcomes = first_detail["category_outcomes"]
