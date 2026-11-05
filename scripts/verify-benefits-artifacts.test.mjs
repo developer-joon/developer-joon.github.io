@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertExactReleaseRootInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin, assertUniqueProjectionEvidenceIds, verifyApprovedV2Projection } from './verify-benefits-artifacts.mjs'
+import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertExactReleaseRootInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin, assertUniqueProjectionEvidenceIds, verifyApprovedV2Projection, verifyBenefitsArtifacts } from './verify-benefits-artifacts.mjs'
 import { assertExplicitCellInventory, categories } from '../community-app/src/types/benefits.ts'
 
 const descriptor = (url) => ({ url })
@@ -63,6 +63,67 @@ test('release root rejects secret-unmanifested.txt and rogue versions', () => fi
   const rogue = path.join(releaseRoot, 'rogue-version')
   await mkdir(rogue)
   await assert.rejects(assertExactReleaseRootInventory(root, value), /release root inventory/i)
+}))
+
+test('release inventory rejects a symlinked release root and parent chain', () => fixture(async (root, value) => {
+  const releaseRoot = path.join(root, 'community/data/company-benefits')
+  await writeFile(path.join(releaseRoot, 'manifest.json'), '{}\n')
+  const external = await mkdtemp(path.join(tmpdir(), 'benefits-external-'))
+  try {
+    await rename(releaseRoot, path.join(external, 'company-benefits'))
+    await symlink(path.join(external, 'company-benefits'), releaseRoot)
+    await assert.rejects(assertExactReleaseRootInventory(root, value), /unsafe.*directory|symlink|parent chain/i)
+
+    await rm(releaseRoot)
+    await mkdir(releaseRoot)
+    await rename(path.join(root, 'community/data'), path.join(external, 'data'))
+    await symlink(path.join(external, 'data'), path.join(root, 'community/data'))
+    await assert.rejects(assertExactReleaseRootInventory(root, value), /unsafe.*directory|symlink|parent chain/i)
+  } finally {
+    await rm(external, { recursive: true, force: true })
+  }
+}))
+
+test('manifest bounded read rejects an oversized pathname swap after its opened-file precheck', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benefits-manifest-race-'))
+  const target = path.join(root, 'community/data/company-benefits/manifest.json')
+  try {
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, '{}\n')
+    await assert.rejects(
+      verifyBenefitsArtifacts(root, { boundedReadHooks: { afterInitialStat: async ({ pathname, limit }) => {
+        if (pathname === target) {
+          await rename(pathname, `${pathname}.opened`)
+          await writeFile(pathname, '')
+          await truncate(pathname, limit + 1)
+        }
+      } } }),
+      /manifest.*byte limit|changed during bounded read/i,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('missing release directories retain the absent-manifest result while the site root is bound', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benefits-unavailable-'))
+  try {
+    assert.equal(await verifyBenefitsArtifacts(root), 'Benefits artifacts unavailable: no approved manifest.')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('fixture scan bounded read rejects growth after its opened-file precheck', () => fixture(async (root, value) => {
+  const target = path.join(root, value.taxonomy.url)
+  let mutated = false
+  await assert.rejects(
+    assertNoBenefitsFixtureLeaks(root, [], value.data_version, { boundedReadHooks: { afterInitialStat: async ({ pathname, limit }) => {
+      if (!mutated && pathname === target) { mutated = true; await truncate(pathname, limit + 1) }
+    } } }),
+    /byte limit|changed during bounded read/i,
+  )
+  assert.equal(mutated, true)
 }))
 
 test('rejects internal review diagnostics in public artifacts', () => fixture(async (root, value) => {
@@ -203,6 +264,18 @@ test('projection verifier rejects oversized descriptor byte counts before artifa
     verifyApprovedV2Projection(root, projection, baseById, baseDetailById),
     /byte count exceeds.*limit/i,
   )
+}))
+
+test('descriptor bounded read rejects growth after its opened-file precheck', () => projectionFixture(async ({ root, projection, baseById, baseDetailById }) => {
+  const target = path.join(root, projection.taxonomy.url)
+  let mutated = false
+  await assert.rejects(
+    verifyApprovedV2Projection(root, projection, baseById, baseDetailById, { boundedReadHooks: { afterInitialStat: async ({ pathname, limit }) => {
+      if (!mutated && pathname === target) { mutated = true; await truncate(pathname, limit + 1) }
+    } } }),
+    /byte limit|changed during bounded read/i,
+  )
+  assert.equal(mutated, true)
 }))
 
 for (const [name, mutate] of [

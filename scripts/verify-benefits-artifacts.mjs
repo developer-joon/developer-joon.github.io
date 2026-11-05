@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { lstat, readFile, readdir } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { manifestSchema, listingChunkSchema, approvedV2ListingChunkSchema, detailSchema, methodologySchema, sourcesDocumentSchema, categories, assertCompanyDetailEvidence, assertCompanyDetailIdentityProjection, assertCompanyIdentityProjection, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
 
@@ -8,6 +9,69 @@ const forbiddenKey = /score|rank|percentile|coverage(?:_percent)?|fitScore|rankO
 const internalReviewKeys = new Set(['review', 'review_id', 'researcher_id', 'reviewer_id', 'reviewed_at', 'requested_at', 'review_status', 'decision', 'quote_entailment_confirmed', 'source_entailment_reviews', 'conflict_determination', 'approval', 'approval_status', 'approved', 'approved_at', 'approved_by'])
 const manifestByteLimit = 16 * 1024 * 1024
 const descriptorByteLimits = { company: 2 * 1024 * 1024, listing: 16 * 1024 * 1024, sources: 64 * 1024 * 1024, small: 4 * 1024 * 1024 }
+
+const descriptorPath = (handle) => `/proc/self/fd/${handle.fd}`
+const isDescriptorRoot = (root) => root.startsWith('/proc/self/fd/')
+const isWithin = (parent, child) => child === parent || child.startsWith(`${parent}${path.sep}`)
+
+async function withBoundVerifierRoot(root, run) {
+  if (isDescriptorRoot(root)) return run(root, root)
+  if (constants.O_NOFOLLOW === undefined || constants.O_DIRECTORY === undefined) throw Error('safe benefits directory flags unavailable')
+  const displayRoot = path.resolve(root)
+  const handles = []
+  try {
+    const site = await open(displayRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+    handles.push(site)
+    if (!(await site.stat()).isDirectory()) throw Error('unsafe benefits parent chain directory: site root')
+    const resolvedSite = await realpath(displayRoot)
+    if (await realpath(descriptorPath(site)) !== resolvedSite) throw Error('unsafe benefits parent chain identity: site root')
+    let parent = site
+    for (const component of ['community', 'data', 'company-benefits']) {
+      let child
+      try {
+        child = await open(path.join(descriptorPath(parent), component), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+      } catch (error) {
+        if (error.code === 'ENOENT') return await run(descriptorPath(site), displayRoot)
+        throw Error(`unsafe benefits parent chain directory: ${component}`, { cause: error })
+      }
+      handles.push(child)
+      if (!(await child.stat()).isDirectory()) throw Error(`unsafe benefits parent chain directory: ${component}`)
+      const resolvedChild = await realpath(descriptorPath(child))
+      if (!isWithin(resolvedSite, resolvedChild)) throw Error(`unsafe benefits parent chain escaped site root: ${component}`)
+      parent = child
+    }
+    return await run(descriptorPath(site), displayRoot)
+  } finally {
+    await Promise.allSettled(handles.reverse().map((handle) => handle.close()))
+  }
+}
+
+const stableFileIdentity = (left, right) => left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs
+
+async function readBoundedRegularFile(pathname, limit, label, hooks = {}, displayPath = pathname) {
+  if (constants.O_NOFOLLOW === undefined) throw Error(`safe no-follow reads unavailable: ${label}`)
+  let handle
+  try {
+    handle = await open(pathname, constants.O_RDONLY | constants.O_NOFOLLOW)
+    const initial = await handle.stat({ bigint: true })
+    if (!initial.isFile() || initial.size > BigInt(limit)) throw Error(`${label} exceeds byte limit or is unsafe`)
+    await hooks.afterInitialStat?.({ pathname: displayPath, limit, stat: initial })
+    const beforeRead = await handle.stat({ bigint: true })
+    if (!beforeRead.isFile() || beforeRead.size > BigInt(limit) || !stableFileIdentity(initial, beforeRead)) throw Error(`${label} changed during bounded read or exceeds byte limit`)
+    const buffer = Buffer.alloc(Number(initial.size))
+    let offset = 0
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset)
+      if (bytesRead === 0) throw Error(`${label} changed during bounded read`)
+      offset += bytesRead
+    }
+    const final = await handle.stat({ bigint: true })
+    if (!final.isFile() || final.size > BigInt(limit) || !stableFileIdentity(initial, final)) throw Error(`${label} changed during bounded read or exceeds byte limit`)
+    return buffer.toString('utf8')
+  } finally {
+    await handle?.close()
+  }
+}
 
 async function filesRecursively(root) {
   const rootMetadata = await lstat(root)
@@ -43,19 +107,18 @@ function descriptorByteLimit(url) {
   return descriptorByteLimits.small
 }
 
-async function readDescriptor(root, descriptor) {
+async function readDescriptor(root, descriptor, options = {}) {
   const limit = descriptorByteLimit(descriptor.url)
   if (descriptor.byte_count > limit) throw Error(`benefits descriptor byte count exceeds artifact limit: ${descriptor.url}`)
   const target = path.join(root, descriptor.url)
-  const metadata = await lstat(target)
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > limit) throw Error(`benefits artifact exceeds byte limit or is unsafe: ${descriptor.url}`)
-  const raw = await readFile(target, 'utf8')
+  const displayTarget = path.join(options.displayRoot ?? root, descriptor.url)
+  const raw = await readBoundedRegularFile(target, limit, `benefits artifact ${descriptor.url}`, options.boundedReadHooks, displayTarget)
   if (Buffer.byteLength(raw) !== descriptor.byte_count) throw Error(`benefits byte count mismatch: ${descriptor.url}`)
   if (createHash('sha256').update(raw).digest('hex') !== descriptor.sha256) throw Error(`benefits hash mismatch: ${descriptor.url}`)
   return raw
 }
 
-export async function assertExactReleaseRootInventory(root, manifest) {
+async function assertExactReleaseRootInventoryBound(root, manifest) {
   const releaseRoot = path.join(root, 'community/data/company-benefits')
   const expected = new Map([['manifest.json', 'file'], [manifest.data_version, 'directory']])
   if (manifest.approved_v2_projection) expected.set(manifest.approved_v2_projection.data_version, 'directory')
@@ -68,7 +131,11 @@ export async function assertExactReleaseRootInventory(root, manifest) {
   }
 }
 
-export async function assertExactArtifactInventory(root, manifest) {
+export async function assertExactReleaseRootInventory(root, manifest) {
+  return withBoundVerifierRoot(root, (boundRoot) => assertExactReleaseRootInventoryBound(boundRoot, manifest))
+}
+
+async function assertExactArtifactInventoryBound(root, manifest) {
   const prefix = `community/data/company-benefits/${manifest.data_version}`
   const benefitsRoot = path.join(root, prefix)
   const files = await filesRecursively(benefitsRoot)
@@ -77,7 +144,11 @@ export async function assertExactArtifactInventory(root, manifest) {
   if (actual.length !== expected.length || actual.some((file, index) => file !== expected[index])) throw Error('benefits artifact inventory mismatch')
 }
 
-export async function assertNoBenefitsFixtureLeaks(root, descriptors = [], activeVersion = 'v2') {
+export async function assertExactArtifactInventory(root, manifest) {
+  return withBoundVerifierRoot(root, (boundRoot) => assertExactArtifactInventoryBound(boundRoot, manifest))
+}
+
+async function assertNoBenefitsFixtureLeaksBound(root, descriptors, activeVersion, options) {
   const benefitsRoot = path.join(root, `community/data/company-benefits/${activeVersion}`)
   let files = []
   try { files = await filesRecursively(benefitsRoot) } catch (error) { if (error.code !== 'ENOENT') throw error }
@@ -85,10 +156,15 @@ export async function assertNoBenefitsFixtureLeaks(root, descriptors = [], activ
   files = [...new Set(files)]
   for (const file of files) {
     const artifactPath = path.relative(root, file).split(path.sep).join('/')
-    const raw = await readFile(file, 'utf8').catch(() => '')
-    for (const pattern of forbiddenText) if (pattern.test(raw) || pattern.test(artifactPath)) throw Error(`forbidden benefits release content ${pattern}: ${file}`)
-    if (file.endsWith('.json')) { const value = JSON.parse(raw); rejectForbiddenKeys(value, file); if (JSON.stringify(value).includes('"publishable":false')) throw Error(`historical nonpublishable record: ${file}`) }
+    const displayFile = path.join(options.displayRoot ?? root, artifactPath)
+    const raw = await readBoundedRegularFile(file, descriptorByteLimit(artifactPath), `benefits fixture scan ${artifactPath}`, options.boundedReadHooks, displayFile)
+    for (const pattern of forbiddenText) if (pattern.test(raw) || pattern.test(artifactPath)) throw Error(`forbidden benefits release content ${pattern}: ${displayFile}`)
+    if (file.endsWith('.json')) { const value = JSON.parse(raw); rejectForbiddenKeys(value, displayFile); if (JSON.stringify(value).includes('"publishable":false')) throw Error(`historical nonpublishable record: ${displayFile}`) }
   }
+}
+
+export async function assertNoBenefitsFixtureLeaks(root, descriptors = [], activeVersion = 'v2', options = {}) {
+  return withBoundVerifierRoot(root, (boundRoot, displayRoot) => assertNoBenefitsFixtureLeaksBound(boundRoot, descriptors, activeVersion, { ...options, displayRoot }))
 }
 
 export function assertApprovedProjectionBaseHash(rawManifest) {
@@ -127,12 +203,12 @@ function recordProjectionEvidenceIds(detail, seen) {
   }
 }
 
-export async function verifyApprovedV2Projection(root, projection, baseById, baseDetailById) {
+async function verifyApprovedV2ProjectionBound(root, projection, baseById, baseDetailById, options) {
   const load = async (descriptor) => {
-    const raw = await readDescriptor(root, descriptor)
+    const raw = await readDescriptor(root, descriptor, options)
     const value = JSON.parse(raw); rejectForbiddenKeys(value, descriptor.url); return value
   }
-  await assertExactArtifactInventory(root, projection)
+  await assertExactArtifactInventoryBound(root, projection)
   const companies = []; const byId = new Map(); let previousSequence = 0
   const expectedChunkCount = Math.ceil(projection.projected_company_count / 50)
   if (projection.listing_chunks.length !== expectedChunkCount) throw Error('approved projection listing chunk count mismatch')
@@ -177,23 +253,26 @@ export async function verifyApprovedV2Projection(root, projection, baseById, bas
   const sourceDocument = sourcesDocumentSchema.parse(await load(projection.sources))
   const sourceIds = sourceDocument.sources.map((source) => source.source_id)
   if (sourceDocument.data_version !== projection.data_version || sourceIds.length !== projection.sources.record_count || sourceIds.length !== requiredSourceIds.size || sourceIds.some((sourceId) => !requiredSourceIds.has(sourceId))) throw Error('approved projection source inventory mismatch')
-  await assertNoBenefitsFixtureLeaks(root, manifestDescriptors(projection), projection.data_version)
+  await assertNoBenefitsFixtureLeaksBound(root, manifestDescriptors(projection), projection.data_version, options)
   return companies.length
 }
 
-export async function verifyBenefitsArtifacts(root) {
+export async function verifyApprovedV2Projection(root, projection, baseById, baseDetailById, options = {}) {
+  return withBoundVerifierRoot(root, (boundRoot, displayRoot) => verifyApprovedV2ProjectionBound(boundRoot, projection, baseById, baseDetailById, { ...options, displayRoot }))
+}
+
+async function verifyBenefitsArtifactsBound(root, options) {
   const manifestPath = path.join(root, 'community/data/company-benefits/manifest.json')
+  const displayManifestPath = path.join(options.displayRoot ?? root, 'community/data/company-benefits/manifest.json')
   let manifestRaw
   try {
-    const metadata = await lstat(manifestPath)
-    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > manifestByteLimit) throw Error('benefits manifest exceeds byte limit or is unsafe')
-    manifestRaw = await readFile(manifestPath, 'utf8')
-  } catch (error) { if (error.code === 'ENOENT') { await assertNoBenefitsFixtureLeaks(root); return 'Benefits artifacts unavailable: no approved manifest.' } throw error }
+    manifestRaw = await readBoundedRegularFile(manifestPath, manifestByteLimit, 'benefits manifest', options.boundedReadHooks, displayManifestPath)
+  } catch (error) { if (error.code === 'ENOENT') { await assertNoBenefitsFixtureLeaksBound(root, [], 'v2', options); return 'Benefits artifacts unavailable: no approved manifest.' } throw error }
   const rawManifest = JSON.parse(manifestRaw); const manifest = manifestSchema.parse(rawManifest); const companies = []; const byId = new Map(); const detailById = new Map()
-  await assertExactReleaseRootInventory(root, manifest)
-  await assertExactArtifactInventory(root, manifest)
+  await assertExactReleaseRootInventoryBound(root, manifest)
+  await assertExactArtifactInventoryBound(root, manifest)
   const load = async (descriptor) => {
-    const raw = await readDescriptor(root, descriptor)
+    const raw = await readDescriptor(root, descriptor, options)
     rejectForbiddenKeys(JSON.parse(raw), descriptor.url)
     return { raw, value: JSON.parse(raw) }
   }
@@ -218,12 +297,16 @@ export async function verifyBenefitsArtifacts(root) {
   if (methodology.data_version !== manifest.data_version) throw Error('benefits methodology version mismatch')
   await load(manifest.taxonomy); await load(manifest.sources)
   const descriptors = manifestDescriptors(manifest)
-  await assertNoBenefitsFixtureLeaks(root, descriptors, manifest.data_version)
+  await assertNoBenefitsFixtureLeaksBound(root, descriptors, manifest.data_version, options)
   let projectionMessage = ''
   if (manifest.approved_v2_projection) {
     assertApprovedProjectionBaseHash(rawManifest)
-    const projected = await verifyApprovedV2Projection(root, manifest.approved_v2_projection, byId, detailById)
+    const projected = await verifyApprovedV2ProjectionBound(root, manifest.approved_v2_projection, byId, detailById, options)
     projectionMessage = ` Additive approved-v2 projection: ${projected} approved companies; status in_progress.`
   }
   return `Benefits artifacts ${manifest.data_version}: ${companies.length} companies; ${manifest.listing_chunks.length} listing chunks; ${categories.length} categories.${projectionMessage}`
+}
+
+export async function verifyBenefitsArtifacts(root, options = {}) {
+  return withBoundVerifierRoot(root, (boundRoot, displayRoot) => verifyBenefitsArtifactsBound(boundRoot, { ...options, displayRoot }))
 }
