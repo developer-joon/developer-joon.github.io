@@ -148,9 +148,14 @@ const routeTitleDecoys = [
 ]
 const titleDecoyMarkup = [
   ['comment', (html, expectedTitle) => html.replace('</head>', `<!-- <title>${expectedTitle}</title> --></head>`)],
-  ['script', (html, expectedTitle) => html.replace('</head>', `<script>const decoy = '<title>${expectedTitle}</title>'</script></head>`)],
-  ['style', (html, expectedTitle) => html.replace('</head>', `<style>.decoy::after { content: '<title>${expectedTitle}</title>'; }</style></head>`)],
-  ['template', (html, expectedTitle) => html.replace('</head>', `<template><title>${expectedTitle}</title></template></head>`)],
+  ...['frameset', 'select', 'template'].map((container) => [
+    container,
+    (html, expectedTitle) => html.replace('</head>', `<${container}><title>${expectedTitle}</title></${container}></head>`),
+  ]),
+  ...['iframe', 'noembed', 'noframes', 'noscript', 'script', 'style', 'textarea', 'xmp'].map((container) => [
+    container,
+    (html, expectedTitle) => html.replace('</head>', `<${container}><title>${expectedTitle}</title></${container}></head>`),
+  ]),
 ]
 
 for (const [relativePath, expectedTitle, staleTitle] of routeTitleDecoys) {
@@ -282,6 +287,28 @@ for (const [label, mutate] of [
       const result = verify(root)
       assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label}`)
       assert.match(result.stderr, /index\.html.*document head|index\.html.*document title/)
+    })
+  })
+}
+
+for (const [label, mutate] of [
+  ['missing html', (html) => html.replace('<html>', '').replace('</html>', '')],
+  ['unclosed html', (html) => html.replace('</html>', '')],
+  ['duplicate html', (html) => html.replace('<html>', '<html><html>').replace('</html>', '</html></html>')],
+  ['head before html', (html) => html.replace('<html><head>', '<head>').replace('</head><body>', '</head><html><body>')],
+  ['head after html', (html) => html.replace('<html><head>', '<html>').replace('</head><body>', '<body>').replace('</body></html>', '</body></html><head></head>')],
+  ['head inside body', (html) => html.replace('<head>', '').replace('</head><body>', '<body><head></head>')],
+  ['head after body', (html) => html.replace('<head>', '').replace('</head><body>', '<body>').replace('</body>', '</body><head></head>')],
+  ['body before head closes', (html) => html.replace('</head><body>', '<body></head>')],
+]) {
+  test(`rejects a generated route with ${label} document structure`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label} document structure`)
+      assert.match(result.stderr, /index\.html.*explicit.*document (?:html|head)/)
     })
   })
 }

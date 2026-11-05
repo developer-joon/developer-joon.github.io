@@ -222,10 +222,14 @@ function extractDocumentTitle(html) {
   const lowerHtml = html.toLowerCase()
   const titles = []
   let position = 0
-  let templateDepth = 0
+  const inertStack = []
+  let htmlStarts = 0
+  let htmlEnds = 0
   let headStarts = 0
   let headEnds = 0
+  let inHtml = false
   let inHead = false
+  let bodyStarted = false
   let error = null
 
   while (position < html.length) {
@@ -262,13 +266,17 @@ function extractDocumentTitle(html) {
         continue
       }
       const name = match[1].toLowerCase()
-      if (name === 'template' && templateDepth > 0) {
-        templateDepth -= 1
-      } else if (templateDepth === 0 && name === 'head') {
+      if (inertStack.length > 0) {
+        if (inertStack.at(-1) === name) inertStack.pop()
+      } else if (name === 'html') {
+        htmlEnds += 1
+        if (!inHtml || inHead || htmlEnds !== 1) error ??= 'html'
+        inHtml = false
+      } else if (name === 'head') {
         headEnds += 1
-        if (!inHead || headEnds !== 1) error ??= 'head'
+        if (!inHead || !inHtml || bodyStarted || headEnds !== 1) error ??= 'head'
         inHead = false
-      } else if (templateDepth === 0 && name === 'title') {
+      } else if (name === 'title') {
         error ??= 'title-outside-head'
       }
       position = tagEnd + 1
@@ -281,18 +289,18 @@ function extractDocumentTitle(html) {
       continue
     }
 
-    if (tag.name === 'script' || tag.name === 'style') {
+    if (rawTextElements.has(tag.name) && tag.name !== 'title') {
       const afterRawText = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
       if (afterRawText === -1) break
       position = afterRawText
       continue
     }
-    if (tag.name === 'template') {
-      templateDepth += 1
+    if (inertElements.has(tag.name)) {
+      inertStack.push(tag.name)
       position = tagEnd + 1
       continue
     }
-    if (templateDepth > 0) {
+    if (inertStack.length > 0) {
       if (tag.name === 'title') {
         const afterTitle = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
         if (afterTitle === -1) break
@@ -303,10 +311,23 @@ function extractDocumentTitle(html) {
       continue
     }
 
+    if (tag.name === 'html') {
+      htmlStarts += 1
+      if (tag.selfClosing || inHtml || htmlStarts !== 1 || htmlEnds !== 0) error ??= 'html'
+      inHtml = true
+      position = tagEnd + 1
+      continue
+    }
     if (tag.name === 'head') {
       headStarts += 1
-      if (tag.selfClosing || inHead || headStarts !== 1 || headEnds !== 0) error ??= 'head'
+      if (tag.selfClosing || !inHtml || inHead || bodyStarted || headStarts !== 1 || headEnds !== 0) error ??= 'head'
       inHead = true
+      position = tagEnd + 1
+      continue
+    }
+    if (tag.name === 'body') {
+      if (!inHtml || inHead || headEnds !== 1) error ??= 'head'
+      bodyStarted = true
       position = tagEnd + 1
       continue
     }
@@ -322,6 +343,7 @@ function extractDocumentTitle(html) {
     position = tagEnd + 1
   }
 
+  if (htmlStarts !== 1 || htmlEnds !== 1 || inHtml) error ??= 'html'
   if (headStarts !== 1 || headEnds !== 1 || inHead) error ??= 'head'
   return { error, titles }
 }
@@ -575,6 +597,8 @@ async function main() {
     const documentTitle = extractDocumentTitle(html)
     if (documentTitle.error === 'unclosed-title') {
       fail(`${relativePath} document title must have a proper closing tag`)
+    } else if (documentTitle.error === 'html') {
+      fail(`${relativePath} must contain exactly one explicit, properly closed document html element`)
     } else if (documentTitle.error === 'head') {
       fail(`${relativePath} must contain exactly one explicit, properly closed document head`)
     } else if (documentTitle.error === 'title-outside-head') {

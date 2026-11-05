@@ -53,7 +53,7 @@ async function makeValidArtifact() {
     ['404.html', '<title>Page Not Found – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/404.html', ''],
   ]
   for (const [relativePath, title, canonical, body] of routes) {
-    await put(root, relativePath, `${title}<link rel="canonical" href="${canonical}">${body}`)
+    await put(root, relativePath, `<!doctype html><html><head>${title}<link rel="canonical" href="${canonical}"></head><body>${body}</body></html>`)
   }
   const shellTitles = new Map([
     ['community/index.html', '<title>Breadlab 커뮤니티</title>'],
