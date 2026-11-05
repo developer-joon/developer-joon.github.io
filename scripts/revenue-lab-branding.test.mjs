@@ -135,6 +135,15 @@ function readMenuItems() {
   return items
 }
 
+function validatePngScanlineFilters(inflated, width, height, channels) {
+  const rowStride = 1 + width * channels
+
+  for (let row = 0; row < height; row += 1) {
+    const filterType = inflated[row * rowStride]
+    assert.ok(filterType >= 0 && filterType <= 4, `PNG scanline ${row} filter type must be 0..4`)
+  }
+}
+
 function validateRevenueLabPng(png) {
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
   assert.ok(png.length >= signature.length, 'PNG signature must be present')
@@ -211,6 +220,7 @@ function validateRevenueLabPng(png) {
     height * (1 + width * channels),
     'PNG decompressed scanline length must match its dimensions and color type',
   )
+  validatePngScanlineFilters(inflated, width, height, channels)
 }
 
 const indexFrontMatter = readFrontMatterScalars('index.html', ['title', 'description', 'featured_image'])
@@ -222,6 +232,15 @@ const brandFrontMatter = [
   ['_pages/lab.md', labFrontMatter],
   ['_pages/about.md', aboutFrontMatter],
 ]
+
+test('PNG scanline validation rejects filter type 5', () => {
+  const inflated = Buffer.from([0, 0, 0, 0, 5, 0, 0, 0])
+
+  assert.throws(
+    () => validatePngScanlineFilters(inflated, 1, 2, 3),
+    /PNG scanline 1 filter type must be 0\.\.4/u,
+  )
+})
 
 test('front-matter scalar parsing strips only unquoted YAML comments', () => {
   const parsed = parseFrontMatterScalars([
