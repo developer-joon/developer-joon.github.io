@@ -296,6 +296,7 @@ function extractDocumentTitle(html) {
       }
       const name = match[1].toLowerCase()
       if (!inHtml) error ??= 'html'
+      if (inHtml && headStarts === 0 && name !== 'title') error ??= 'head'
       if (inertStack.length > 0) {
         if (inertStack.at(-1) === name) inertStack.pop()
       } else if (name === 'html') {
@@ -321,6 +322,7 @@ function extractDocumentTitle(html) {
     }
 
     if (!inHtml && tag.name !== 'html') error ??= 'html'
+    if (inHtml && headStarts === 0 && !['head', 'title'].includes(tag.name)) error ??= 'head'
 
     if (rawTextElements.has(tag.name) && tag.name !== 'title') {
       const afterRawText = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)

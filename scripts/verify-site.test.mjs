@@ -327,6 +327,35 @@ test('allows doctype, comments, and whitespace before the explicit document head
   })
 })
 
+for (const element of ['div', 'p', 'span', 'script']) {
+  test(`rejects a ${element} element before the explicit document head`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      const html = await readFile(artifactPath, 'utf8')
+      await writeFile(
+        artifactPath,
+        html.replace('<head>', `<${element}></${element}><head>`),
+      )
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${element} element before the document head`)
+      assert.match(result.stderr, /index\.html.*explicit.*document head/)
+    })
+  })
+}
+
+test('rejects an end element before the explicit document head', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('<head>', '</div><head>'))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an end element before the document head')
+    assert.match(result.stderr, /index\.html.*explicit.*document head/)
+  })
+})
+
 test('allows a BOM, ASCII whitespace, comments, and one doctype around the explicit document html', async () => {
   await withArtifact(async (root) => {
     const artifactPath = path.join(root, 'index.html')
