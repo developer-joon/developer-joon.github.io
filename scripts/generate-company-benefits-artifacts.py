@@ -905,7 +905,63 @@ def scan_forbidden_keys(value, path="$"):
             scan_forbidden_keys(child, f"{path}[{index}]")
 
 
-def base_artifact_inventory(base_root, manifest):
+BASE_MANIFEST_MAX_BYTES = 16 * 1024 * 1024
+BASE_ARTIFACT_MAX_BYTES = {
+    "companies": 2 * 1024 * 1024,
+    "listings": 16 * 1024 * 1024,
+    "sources.json": 64 * 1024 * 1024,
+    "taxonomy.json": 4 * 1024 * 1024,
+    "methodology.json": 4 * 1024 * 1024,
+}
+
+
+def _read_regular_file_once(path, label, max_bytes, expected_metadata=None):
+    """Read one no-follow file descriptor and reject identity/content races."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        identity = (before.st_dev, before.st_ino, before.st_mode, before.st_size,
+                    before.st_mtime_ns, before.st_ctime_ns)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{label} must be a regular file")
+        if expected_metadata is not None:
+            expected = (expected_metadata.st_dev, expected_metadata.st_ino, expected_metadata.st_mode,
+                        expected_metadata.st_size, expected_metadata.st_mtime_ns, expected_metadata.st_ctime_ns)
+            if identity != expected:
+                raise ValueError(f"{label} changed before capture")
+        if before.st_size > max_bytes:
+            raise ValueError(f"{label} exceeds the publication byte limit")
+        chunks = []
+        remaining = max_bytes + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+        after_identity = (after.st_dev, after.st_ino, after.st_mode, after.st_size,
+                          after.st_mtime_ns, after.st_ctime_ns)
+        if len(raw) > max_bytes or len(raw) != before.st_size or identity != after_identity:
+            raise ValueError(f"{label} changed while capturing")
+        return raw, stat.S_IMODE(before.st_mode), identity
+    finally:
+        os.close(descriptor)
+
+
+def _base_artifact_limit(relative):
+    parts = relative.parts
+    if "companies" in parts:
+        return BASE_ARTIFACT_MAX_BYTES["companies"]
+    if "listings" in parts:
+        return BASE_ARTIFACT_MAX_BYTES["listings"]
+    return BASE_ARTIFACT_MAX_BYTES.get(relative.name, 4 * 1024 * 1024)
+
+
+def base_artifact_inventory(base_root, manifest, manifest_capture):
+    """Return the exact validated base tree as an immutable byte snapshot."""
     prefix = f"community/data/company-benefits/{manifest.get('data_version')}/"
     descriptors = [descriptor for descriptor in [
         manifest.get("taxonomy"), manifest.get("sources"), manifest.get("methodology"),
@@ -925,21 +981,41 @@ def base_artifact_inventory(base_root, manifest):
         expected_files.add(relative)
         expected_descriptors[relative] = descriptor
     expected_directories = {parent for relative in expected_files for parent in relative.parents if parent != Path(".")}
-    actual_files = set()
+    actual_files = {}
     actual_directories = set()
     for entry in base_root.rglob("*"):
         relative = entry.relative_to(base_root)
         metadata = entry.lstat()
         if entry.is_symlink() or (not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode)):
             raise ValueError(f"unsafe base artifact entry: {relative}")
-        (actual_directories if stat.S_ISDIR(metadata.st_mode) else actual_files).add(relative)
-    if actual_files != expected_files or actual_directories != expected_directories:
+        if stat.S_ISDIR(metadata.st_mode):
+            actual_directories.add(relative)
+        else:
+            actual_files[relative] = metadata
+    if set(actual_files) != expected_files or actual_directories != expected_directories:
         raise ValueError("base artifact inventory contains unmanifested or missing entries")
+    manifest_raw, manifest_mode, manifest_identity = manifest_capture
+    manifest_metadata = actual_files[Path("manifest.json")]
+    observed_manifest_identity = (
+        manifest_metadata.st_dev, manifest_metadata.st_ino, manifest_metadata.st_mode,
+        manifest_metadata.st_size, manifest_metadata.st_mtime_ns, manifest_metadata.st_ctime_ns,
+    )
+    if manifest_identity != observed_manifest_identity:
+        raise ValueError("base artifact manifest changed while inventorying")
+    snapshot = {Path("manifest.json"): (manifest_raw, manifest_mode)}
     for relative, descriptor in expected_descriptors.items():
         artifact = base_root / relative
-        if descriptor.get("byte_count") != artifact.stat().st_size or descriptor.get("sha256") != sha256(artifact.read_bytes()):
+        byte_count = descriptor.get("byte_count")
+        limit = _base_artifact_limit(relative)
+        if isinstance(byte_count, bool) or not isinstance(byte_count, int) or byte_count <= 0 or byte_count > limit:
+            raise ValueError(f"base artifact descriptor byte count exceeds limit: {relative}")
+        raw, mode, _ = _read_regular_file_once(
+            artifact, relative.as_posix(), limit, actual_files[relative]
+        )
+        if byte_count != len(raw) or descriptor.get("sha256") != sha256(raw):
             raise ValueError(f"base artifact descriptor integrity mismatch: {relative}")
-    return sorted(expected_files)
+        snapshot[relative] = (raw, mode)
+    return snapshot
 
 
 def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
@@ -960,17 +1036,31 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
             if base_artifact_root is None:
                 raise ValueError("additive projection requires a base artifact root")
             base_artifact_root = Path(base_artifact_root)
+            if base_artifact_root.is_symlink():
+                raise ValueError("additive projection base root must not be a symlink")
+            base_artifact_root = base_artifact_root.resolve(strict=True)
+            if not base_artifact_root.is_dir():
+                raise ValueError("additive projection base root must be a directory")
             base_manifest_path = base_artifact_root / "manifest.json"
-            base_manifest = read_json(base_manifest_path)
+            manifest_raw, manifest_mode, manifest_identity = _read_regular_file_once(
+                base_manifest_path, "base artifact manifest", BASE_MANIFEST_MAX_BYTES
+            )
+            base_manifest = json.loads(
+                manifest_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys
+            )
             if (base_manifest.get("artifact_protocol") != "v1"
                     or base_manifest.get("approved_v2_projection") is not None
                     or base_manifest.get("data_version") != projection_metadata["base_data_version"]
-                    or sha256(base_manifest_path.read_bytes()) != projection_metadata["base_manifest_sha256"]):
+                    or sha256(manifest_raw) != projection_metadata["base_manifest_sha256"]):
                 raise ValueError("additive projection base manifest must exactly bind the unmodified active v1 lineage")
-            for relative in base_artifact_inventory(base_artifact_root, base_manifest):
+            base_snapshot = base_artifact_inventory(
+                base_artifact_root, base_manifest, (manifest_raw, manifest_mode, manifest_identity)
+            )
+            for relative, (raw, mode) in base_snapshot.items():
                 target = staging / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(base_artifact_root / relative, target)
+                target.write_bytes(raw)
+                target.chmod(mode)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise

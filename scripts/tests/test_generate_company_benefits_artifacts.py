@@ -820,6 +820,50 @@ def test_additive_projection_rejects_every_unmanifested_base_root_entry(tmp_path
     assert not output.exists()
 
 
+def test_additive_projection_materializes_validated_base_bytes_after_path_swap(tmp_path):
+    research = tmp_path / "research"
+    make_in_progress_projection_fixture(research)
+    module_spec = importlib.util.spec_from_file_location("approved_projection_base_snapshot", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    base = tmp_path / "base"
+    listed = base / "base-v1" / "taxonomy.json"
+    listed.parent.mkdir(parents=True)
+    original_bytes = b'{"trusted":true}\n'
+    listed.write_bytes(original_bytes)
+    write_json(base / "manifest.json", {
+        "artifact_protocol": "v1", "data_version": "base-v1",
+        "taxonomy": {
+            "url": "community/data/company-benefits/base-v1/taxonomy.json",
+            "sha256": hashlib.sha256(original_bytes).hexdigest(),
+            "byte_count": len(original_bytes), "record_count": 0,
+        },
+    })
+    metadata = module.freeze_snapshot({
+        **module.thaw_snapshot(metadata),
+        "base_data_version": "base-v1",
+        "base_manifest_sha256": file_digest(base / "manifest.json"),
+    })
+    external = tmp_path / "external.json"
+    external.write_bytes(b'{"attacker":true}\n')
+    original_inventory = module.base_artifact_inventory
+
+    def swap_after_validation(base_root, manifest, manifest_capture):
+        snapshot = original_inventory(base_root, manifest, manifest_capture)
+        listed.unlink()
+        listed.symlink_to(external)
+        return snapshot
+
+    output = tmp_path / "projection-output"
+    with mock.patch.object(module, "base_artifact_inventory", side_effect=swap_after_validation):
+        module.emit_artifacts(output, "approved-v2-checkpoint-38", "2026-11-05T00:00:00Z",
+                              taxonomy, inputs, metadata, base)
+    assert (output / "base-v1" / "taxonomy.json").read_bytes() == original_bytes
+
+
 def test_additive_projection_rejects_cell_count_and_pending_company_leakage(tmp_path):
     research = tmp_path / "research"
     approved_companies = make_in_progress_projection_fixture(research)

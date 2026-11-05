@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin, assertUniqueProjectionEvidenceIds, verifyApprovedV2Projection } from './verify-benefits-artifacts.mjs'
+import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertExactReleaseRootInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin, assertUniqueProjectionEvidenceIds, verifyApprovedV2Projection } from './verify-benefits-artifacts.mjs'
 import { assertExplicitCellInventory, categories } from '../community-app/src/types/benefits.ts'
 
 const descriptor = (url) => ({ url })
@@ -48,6 +48,21 @@ test('rejects symlinks and non-regular entries in the active tree', () => fixtur
   await rm(target)
   await symlink(path.join(root, value.sources.url), target)
   await assert.rejects(assertExactArtifactInventory(root, value), /unsafe artifact entry/)
+}))
+
+test('release root rejects secret-unmanifested.txt and rogue versions', () => fixture(async (root, value) => {
+  const releaseRoot = path.join(root, 'community/data/company-benefits')
+  await writeFile(path.join(releaseRoot, 'manifest.json'), '{}\n')
+  await assert.doesNotReject(assertExactReleaseRootInventory(root, value))
+  for (const name of ['secret-unmanifested.txt', '.hidden-release-note']) {
+    const target = path.join(releaseRoot, name)
+    await writeFile(target, 'private')
+    await assert.rejects(assertExactReleaseRootInventory(root, value), /release root inventory/i)
+    await rm(target)
+  }
+  const rogue = path.join(releaseRoot, 'rogue-version')
+  await mkdir(rogue)
+  await assert.rejects(assertExactReleaseRootInventory(root, value), /release root inventory/i)
 }))
 
 test('rejects internal review diagnostics in public artifacts', () => fixture(async (root, value) => {
@@ -135,14 +150,15 @@ async function projectionFixture(run, populationSequences = 50) {
     const projection = { data_version: version, projected_company_count: companyCount, cell_count: companyCount * 10, cell_state_counts: { official_verified: 0, reference: companyCount, community_report: 0, no_public_info: companyCount * 9 }, listing_chunks, company_shards, sources, methodology, taxonomy }
     const company_id = companies[0].company_id
     const baseById = new Map(companies.map((company) => [company.company_id, company]))
-    await run({ root, projection, company_id, detail: details.get(company_id), source, version, baseById })
+    const baseDetailById = new Map([...details].map(([id, detail]) => [id, structuredClone(detail.company)]))
+    await run({ root, projection, company_id, detail: details.get(company_id), source, version, baseById, baseDetailById })
   } finally {
     await rm(root, { recursive: true, force: true })
   }
 }
 
-test('projection verifier accepts a final partial listing chunk and rejects malformed chunk boundaries', () => projectionFixture(async ({ root, projection, version, baseById }) => {
-  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById))
+test('projection verifier accepts a final partial listing chunk and rejects malformed chunk boundaries', () => projectionFixture(async ({ root, projection, version, baseById, baseDetailById }) => {
+  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById, baseDetailById))
   const original = structuredClone(projection)
   const rewriteChunk = async (index, companies, metadata = {}) => {
     const descriptor = original.listing_chunks[index]
@@ -167,19 +183,27 @@ test('projection verifier accepts a final partial listing chunk and rejects malf
   for (const mutate of mutations) {
     Object.assign(projection, structuredClone(original))
     await mutate()
-    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /chunk|listing|sequence|count|canonical|duplicate|companies|array|expected/i)
+    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /chunk|listing|sequence|count|canonical|duplicate|companies|array|expected/i)
   }
   Object.assign(projection, structuredClone(original), { projected_company_count: 74 })
-  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /count/i)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /count/i)
 }, 75))
 
-test('projection verifier accepts sparse canonical sequences and binds truthful chunk descriptors', () => projectionFixture(async ({ root, projection, baseById }) => {
-  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById))
+test('projection verifier accepts sparse canonical sequences and binds truthful chunk descriptors', () => projectionFixture(async ({ root, projection, baseById, baseDetailById }) => {
+  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById, baseDetailById))
   assert.deepEqual(projection.listing_chunks.map(({ record_count, first_sequence, last_sequence }) => ({ record_count, first_sequence, last_sequence })), [
     { record_count: 50, first_sequence: 1, last_sequence: 50 },
     { record_count: 25, first_sequence: 76, last_sequence: 100 },
   ])
 }, [...Array.from({ length: 50 }, (_, index) => index + 1), ...Array.from({ length: 25 }, (_, index) => index + 76)]))
+
+test('projection verifier rejects oversized descriptor byte counts before artifact reads', () => projectionFixture(async ({ root, projection, baseById, baseDetailById }) => {
+  projection.taxonomy.byte_count = 100 * 1024 * 1024
+  await assert.rejects(
+    verifyApprovedV2Projection(root, projection, baseById, baseDetailById),
+    /byte count exceeds.*limit/i,
+  )
+}))
 
 for (const [name, mutate] of [
   ['projection company sequence changed while descriptor is rebound', (chunks) => { chunks[1][0].population_sequence = 75 }],
@@ -188,7 +212,7 @@ for (const [name, mutate] of [
   ['pending company is inserted with a correct-looking canonical sequence', (chunks) => { chunks[1][0] = { ...structuredClone(chunks[1][0]), company_id: 'KR-CRN-0000000000051', population_sequence: 51 } }],
   ['sparse canonical sequences are reordered', (chunks) => { [chunks[1][0], chunks[1][1]] = [chunks[1][1], chunks[1][0]] }],
 ]) {
-  test(`projection verifier rejects ${name}`, () => projectionFixture(async ({ root, projection, version, baseById }) => {
+  test(`projection verifier rejects ${name}`, () => projectionFixture(async ({ root, projection, version, baseById, baseDetailById }) => {
     const chunks = await Promise.all(projection.listing_chunks.map(async (entry) => JSON.parse(await readFile(path.join(root, entry.url), 'utf8')).companies))
     mutate(chunks)
     for (const [index, companies] of chunks.entries()) {
@@ -199,36 +223,36 @@ for (const [name, mutate] of [
       const rebound = await writeProjectionArtifact(root, version, `listings/companies-${String(index + 1).padStart(2, '0')}.json`, document, companies.length)
       projection.listing_chunks[index] = { ...rebound, chunk_index: index + 1, first_sequence: document.sequence_start, last_sequence: document.sequence_end }
     }
-    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /chunk|listing|sequence|canonical|duplicate|company|shard/i)
+    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /chunk|listing|sequence|canonical|duplicate|company|shard/i)
   }, [...Array.from({ length: 50 }, (_, index) => index + 1), ...Array.from({ length: 25 }, (_, index) => index + 76)]))
 }
 
-test('projection verifier rejects cross-company and bogus-cell evidence after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById }) => {
-  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById))
+test('projection verifier rejects cross-company and bogus-cell evidence after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
+  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById, baseDetailById))
   const mutated = structuredClone(detail)
   mutated.references[0].company_id = 'KR-CRN-0000000000002'
   mutated.references[0].cell_id = 'cell::KR-CRN-0000000000002::leave'
   const rebound = await writeProjectionArtifact(root, version, `companies/${company_id}.json`, mutated, 1)
   projection.company_shards[company_id] = { company_id, ...rebound }
-  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /company|cell|binding/i)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /company|cell|binding/i)
 }))
 
-test('projection verifier rejects listing and detail identity drift after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById }) => {
+test('projection verifier rejects listing and full base-detail identity drift after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
   const listingDescriptor = projection.listing_chunks[0]
   const listing = JSON.parse(await readFile(path.join(root, listingDescriptor.url), 'utf8'))
   listing.companies[0].legal_name = 'Rebound Listing Name'
   const reboundListing = await writeProjectionArtifact(root, version, 'listings/companies-01.json', listing, listing.companies.length)
   projection.listing_chunks[0] = { ...listingDescriptor, ...reboundListing }
-  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /identity/i)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /identity/i)
 
   listing.companies[0] = structuredClone(baseById.get(company_id))
   const restoredListing = await writeProjectionArtifact(root, version, 'listings/companies-01.json', listing, listing.companies.length)
   projection.listing_chunks[0] = { ...listingDescriptor, ...restoredListing }
   const mutatedDetail = structuredClone(detail)
-  mutatedDetail.company.jurisdiction = 'US'
+  mutatedDetail.company.registry_id = 'rebound-detail-only-registry'
   const reboundDetail = await writeProjectionArtifact(root, version, `companies/${company_id}.json`, mutatedDetail, 1)
   projection.company_shards[company_id] = { company_id, ...reboundDetail }
-  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /identity/i)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /identity/i)
 }))
 
 test('projection evidence IDs are globally unique across company shards', () => {
@@ -242,7 +266,7 @@ test('projection evidence IDs are globally unique across company shards', () => 
   }
 })
 
-test('projection verifier rejects a cross-company reference ID replay after descriptor rebinding', () => projectionFixture(async ({ root, projection, version, baseById }) => {
+test('projection verifier rejects a cross-company reference ID replay after descriptor rebinding', () => projectionFixture(async ({ root, projection, version, baseById, baseDetailById }) => {
   const [firstId, secondId] = Object.keys(projection.company_shards).slice(0, 2)
   const firstDescriptor = projection.company_shards[firstId]
   const secondDescriptor = projection.company_shards[secondId]
@@ -257,19 +281,19 @@ test('projection verifier rejects a cross-company reference ID replay after desc
   listing.companies.find((company) => company.company_id === secondId).category_outcomes = second.category_outcomes
   const reboundListing = await writeProjectionArtifact(root, version, 'listings/companies-01.json', listing, listing.companies.length)
   projection.listing_chunks[0] = { ...listingDescriptor, ...reboundListing }
-  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /duplicate reference_id/i)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /duplicate reference_id/i)
 }))
 
-test('projection verifier requires exact unique global source closure', () => projectionFixture(async ({ root, projection, source, version, baseById }) => {
+test('projection verifier requires exact unique global source closure', () => projectionFixture(async ({ root, projection, source, version, baseById, baseDetailById }) => {
   const base = { schema_version: 1, artifact_kind: 'company_benefits_sources', data_version: version }
   for (const inventory of [[], [source, source], [source, { ...source, source_id: 'source::orphan' }]]) {
     projection.sources = await writeProjectionArtifact(root, version, 'sources.json', { ...base, sources: inventory }, inventory.length)
-    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /source|record_count|duplicate|inventory/i)
+    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /source|record_count|duplicate|inventory/i)
   }
   for (const document of [{ ...base, schema_version: 2, sources: [source] }, { ...base, data_version: 'other-version', sources: [source] }]) {
     projection.sources = await writeProjectionArtifact(root, version, 'sources.json', document, 1)
-    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /source|version|schema/i)
+    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /source|version|schema/i)
   }
   projection.sources = await writeProjectionArtifact(root, version, 'sources.json', { ...base, sources: [source] }, 2)
-  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /source|record_count|inventory/i)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /source|record_count|inventory/i)
 }))

@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
-import { manifestSchema, listingChunkSchema, approvedV2ListingChunkSchema, detailSchema, methodologySchema, sourcesDocumentSchema, categories, assertCompanyDetailEvidence, assertCompanyIdentityProjection, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
+import { manifestSchema, listingChunkSchema, approvedV2ListingChunkSchema, detailSchema, methodologySchema, sourcesDocumentSchema, categories, assertCompanyDetailEvidence, assertCompanyDetailIdentityProjection, assertCompanyIdentityProjection, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
 
 const forbiddenText = [/fixture-v1/i, /"fixture"\s*:\s*true/i, /example-\d{3}/i, /example\.org/i, /rankings\.json/i, /rankings_url/i, /\/benefits\/rankings\//i, /가상 별빛|가상 검증기업|예시 데이터|모든 기업·정책·점수는 가상/]
 const forbiddenKey = /score|rank|percentile|coverage(?:_percent)?|fitScore|rankOrder/i
 const internalReviewKeys = new Set(['review', 'review_id', 'researcher_id', 'reviewer_id', 'reviewed_at', 'requested_at', 'review_status', 'decision', 'quote_entailment_confirmed', 'source_entailment_reviews', 'conflict_determination', 'approval', 'approval_status', 'approved', 'approved_at', 'approved_by'])
+const manifestByteLimit = 16 * 1024 * 1024
+const descriptorByteLimits = { company: 2 * 1024 * 1024, listing: 16 * 1024 * 1024, sources: 64 * 1024 * 1024, small: 4 * 1024 * 1024 }
 
 async function filesRecursively(root) {
   const rootMetadata = await lstat(root)
@@ -33,6 +35,38 @@ function rejectForbiddenKeys(value, location) {
   }
 }
 const manifestDescriptors = (manifest) => [manifest.taxonomy, manifest.sources, manifest.methodology, ...manifest.listing_chunks, ...Object.values(manifest.company_shards)]
+
+function descriptorByteLimit(url) {
+  if (url.includes('/companies/')) return descriptorByteLimits.company
+  if (url.includes('/listings/')) return descriptorByteLimits.listing
+  if (url.endsWith('/sources.json')) return descriptorByteLimits.sources
+  return descriptorByteLimits.small
+}
+
+async function readDescriptor(root, descriptor) {
+  const limit = descriptorByteLimit(descriptor.url)
+  if (descriptor.byte_count > limit) throw Error(`benefits descriptor byte count exceeds artifact limit: ${descriptor.url}`)
+  const target = path.join(root, descriptor.url)
+  const metadata = await lstat(target)
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > limit) throw Error(`benefits artifact exceeds byte limit or is unsafe: ${descriptor.url}`)
+  const raw = await readFile(target, 'utf8')
+  if (Buffer.byteLength(raw) !== descriptor.byte_count) throw Error(`benefits byte count mismatch: ${descriptor.url}`)
+  if (createHash('sha256').update(raw).digest('hex') !== descriptor.sha256) throw Error(`benefits hash mismatch: ${descriptor.url}`)
+  return raw
+}
+
+export async function assertExactReleaseRootInventory(root, manifest) {
+  const releaseRoot = path.join(root, 'community/data/company-benefits')
+  const expected = new Map([['manifest.json', 'file'], [manifest.data_version, 'directory']])
+  if (manifest.approved_v2_projection) expected.set(manifest.approved_v2_projection.data_version, 'directory')
+  const entries = await readdir(releaseRoot, { withFileTypes: true })
+  if (entries.length !== expected.size || entries.some((entry) => !expected.has(entry.name))) throw Error('benefits release root inventory mismatch')
+  for (const entry of entries) {
+    const metadata = await lstat(path.join(releaseRoot, entry.name))
+    const kind = metadata.isFile() ? 'file' : metadata.isDirectory() ? 'directory' : 'unsafe'
+    if (metadata.isSymbolicLink() || kind !== expected.get(entry.name)) throw Error('benefits release root inventory mismatch')
+  }
+}
 
 export async function assertExactArtifactInventory(root, manifest) {
   const prefix = `community/data/company-benefits/${manifest.data_version}`
@@ -76,26 +110,26 @@ export function assertProjectionCompanyJoin(companies, baseById) {
 
 export function assertUniqueProjectionEvidenceIds(details) {
   const seen = { claim_id: new Set(), reference_id: new Set(), community_report_id: new Set() }
-  for (const detail of details) {
-    const records = [
-      ...detail.claims.map((record) => ['claim_id', record]),
-      ...detail.official_claims.map((record) => ['claim_id', record]),
-      ...detail.references.map((record) => ['reference_id', record]),
-      ...detail.community_reports.map((record) => ['community_report_id', record]),
-    ]
-    for (const [idField, record] of records) {
-      const id = record[idField]
-      if (seen[idField].has(id)) throw Error(`approved projection duplicate ${idField}: ${id}`)
-      seen[idField].add(id)
-    }
+  for (const detail of details) recordProjectionEvidenceIds(detail, seen)
+}
+
+function recordProjectionEvidenceIds(detail, seen) {
+  const records = [
+    ...detail.claims.map((record) => ['claim_id', record]),
+    ...detail.official_claims.map((record) => ['claim_id', record]),
+    ...detail.references.map((record) => ['reference_id', record]),
+    ...detail.community_reports.map((record) => ['community_report_id', record]),
+  ]
+  for (const [idField, record] of records) {
+    const id = record[idField]
+    if (seen[idField].has(id)) throw Error(`approved projection duplicate ${idField}: ${id}`)
+    seen[idField].add(id)
   }
 }
 
-export async function verifyApprovedV2Projection(root, projection, baseById) {
+export async function verifyApprovedV2Projection(root, projection, baseById, baseDetailById) {
   const load = async (descriptor) => {
-    const target = path.join(root, descriptor.url); const raw = await readFile(target, 'utf8')
-    if (Buffer.byteLength(raw) !== descriptor.byte_count) throw Error(`benefits byte count mismatch: ${descriptor.url}`)
-    if (createHash('sha256').update(raw).digest('hex') !== descriptor.sha256) throw Error(`benefits hash mismatch: ${descriptor.url}`)
+    const raw = await readDescriptor(root, descriptor)
     const value = JSON.parse(raw); rejectForbiddenKeys(value, descriptor.url); return value
   }
   await assertExactArtifactInventory(root, projection)
@@ -119,20 +153,23 @@ export async function verifyApprovedV2Projection(root, projection, baseById) {
   if (byId.size !== companies.length) throw Error('approved projection duplicate company')
   const shardIds = Object.keys(projection.company_shards)
   if (shardIds.length !== byId.size || shardIds.some((id) => !byId.has(id))) throw Error('approved projection listing/shard company set mismatch')
-  const requiredSourceIds = new Set(); const details = []
+  const requiredSourceIds = new Set()
+  const evidenceIds = { claim_id: new Set(), reference_id: new Set(), community_report_id: new Set() }
   for (const [id, descriptor] of Object.entries(projection.company_shards)) {
     const detail = detailSchema.parse(await load(descriptor))
     const listingCompany = byId.get(id)
     if (!listingCompany || detail.artifact_protocol !== 'vNext' || descriptor.company_id !== id || detail.company.company_id !== id || detail.company.population_sequence !== listingCompany.population_sequence || detail.data_version !== projection.data_version) throw Error(`approved projection company shard mismatch: ${id}`)
     assertCompanyIdentityProjection(baseById.get(id), listingCompany, detail.company)
+    const baseDetailCompany = baseDetailById?.get(id)
+    if (!baseDetailCompany) throw Error(`approved projection canonical base detail identity unavailable: ${id}`)
+    assertCompanyDetailIdentityProjection(baseDetailCompany, detail.company)
     assertCompanyDetailEvidence(listingCompany, detail)
-    details.push(detail)
+    recordProjectionEvidenceIds(detail, evidenceIds)
     for (const sourceId of detail.category_outcomes.flatMap((outcome) => outcome.searched_source_ids)) requiredSourceIds.add(sourceId)
     for (const sourceId of detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id))) requiredSourceIds.add(sourceId)
     for (const sourceId of detail.official_claims.flatMap((claim) => claim.source_ids)) requiredSourceIds.add(sourceId)
     for (const record of [...detail.references, ...detail.community_reports]) requiredSourceIds.add(record.source_id)
   }
-  assertUniqueProjectionEvidenceIds(details)
   if (Object.keys(projection.company_shards).length !== projection.projected_company_count) throw Error('approved projection shard count mismatch')
   const methodology = methodologySchema.parse(await load(projection.methodology))
   if (methodology.data_version !== projection.data_version) throw Error('approved projection methodology version mismatch')
@@ -147,13 +184,16 @@ export async function verifyApprovedV2Projection(root, projection, baseById) {
 export async function verifyBenefitsArtifacts(root) {
   const manifestPath = path.join(root, 'community/data/company-benefits/manifest.json')
   let manifestRaw
-  try { manifestRaw = await readFile(manifestPath, 'utf8') } catch (error) { if (error.code === 'ENOENT') { await assertNoBenefitsFixtureLeaks(root); return 'Benefits artifacts unavailable: no approved manifest.' } throw error }
-  const rawManifest = JSON.parse(manifestRaw); const manifest = manifestSchema.parse(rawManifest); const companies = []; const byId = new Map()
+  try {
+    const metadata = await lstat(manifestPath)
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > manifestByteLimit) throw Error('benefits manifest exceeds byte limit or is unsafe')
+    manifestRaw = await readFile(manifestPath, 'utf8')
+  } catch (error) { if (error.code === 'ENOENT') { await assertNoBenefitsFixtureLeaks(root); return 'Benefits artifacts unavailable: no approved manifest.' } throw error }
+  const rawManifest = JSON.parse(manifestRaw); const manifest = manifestSchema.parse(rawManifest); const companies = []; const byId = new Map(); const detailById = new Map()
+  await assertExactReleaseRootInventory(root, manifest)
   await assertExactArtifactInventory(root, manifest)
   const load = async (descriptor) => {
-    const target = path.join(root, descriptor.url); const raw = await readFile(target, 'utf8')
-    if (Buffer.byteLength(raw) !== descriptor.byte_count) throw Error(`benefits byte count mismatch: ${descriptor.url}`)
-    if (createHash('sha256').update(raw).digest('hex') !== descriptor.sha256) throw Error(`benefits hash mismatch: ${descriptor.url}`)
+    const raw = await readDescriptor(root, descriptor)
     rejectForbiddenKeys(JSON.parse(raw), descriptor.url)
     return { raw, value: JSON.parse(raw) }
   }
@@ -170,6 +210,7 @@ export async function verifyBenefitsArtifacts(root) {
     const { value } = await load(descriptor); const detail = detailSchema.parse(value)
     if ((detail.artifact_protocol ?? 'v1') !== manifest.artifact_protocol || descriptor.record_count !== 1 || descriptor.company_id !== id || detail.company.company_id !== id || detail.data_version !== manifest.data_version) throw Error(`benefits company shard mismatch: ${id}`)
     assertCompanyDetailEvidence(byId.get(id), detail)
+    detailById.set(id, detail.company)
     for (const outcome of detail.category_outcomes) if (outcome.kind === 'insufficient_evidence' && !outcome.nonabsence_notice) throw Error(`missing nonabsence notice: ${id}`)
   }
   if (Object.keys(manifest.company_shards).length !== 2000) throw Error('benefits company shard count mismatch')
@@ -181,7 +222,7 @@ export async function verifyBenefitsArtifacts(root) {
   let projectionMessage = ''
   if (manifest.approved_v2_projection) {
     assertApprovedProjectionBaseHash(rawManifest)
-    const projected = await verifyApprovedV2Projection(root, manifest.approved_v2_projection, byId)
+    const projected = await verifyApprovedV2Projection(root, manifest.approved_v2_projection, byId, detailById)
     projectionMessage = ` Additive approved-v2 projection: ${projected} approved companies; status in_progress.`
   }
   return `Benefits artifacts ${manifest.data_version}: ${companies.length} companies; ${manifest.listing_chunks.length} listing chunks; ${categories.length} categories.${projectionMessage}`
