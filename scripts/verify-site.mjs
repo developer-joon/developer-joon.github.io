@@ -234,6 +234,16 @@ function extractDocumentTitle(html) {
 
   while (position < html.length) {
     const tagStart = html.indexOf('<', position)
+    const textEnd = tagStart === -1 ? html.length : tagStart
+    if (
+      inHtml
+      && !inHead
+      && inertStack.length === 0
+      && !bodyStarted
+      && /[^\t\n\f\r ]/.test(html.slice(position, textEnd))
+    ) {
+      bodyStarted = true
+    }
     if (tagStart === -1) break
 
     if (html.startsWith('<!--', tagStart)) {

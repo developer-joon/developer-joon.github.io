@@ -313,6 +313,50 @@ for (const [label, mutate] of [
   })
 }
 
+test('allows doctype, comments, and whitespace before the explicit document head', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('<html><head>', '<html>\n  <!-- generated metadata -->\n  <head>'),
+    )
+
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects body-starting text before the explicit document head', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('<html><head>', '<html>body text<head>'))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a head after body-starting text')
+    assert.match(result.stderr, /index\.html.*explicit.*document head/)
+  })
+})
+
+test('rejects body-starting text after a closed head before a second head decoy', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace(
+        '</head><body>',
+        '</head>body text<head><title>Ria & Seoa PaPa – 수익실험실</title></head><body>',
+      ),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a second head after body-starting text')
+    assert.match(result.stderr, /index\.html.*explicit.*document head/)
+  })
+})
+
 test('rejects non-whitespace body-starting text followed by an expected title decoy', async () => {
   await withArtifact(async (root) => {
     const artifactPath = path.join(root, 'index.html')
