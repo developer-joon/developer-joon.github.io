@@ -222,8 +222,7 @@ function extractDocumentTitle(html) {
   const lowerHtml = html.toLowerCase()
   const titles = []
   const inertStack = []
-  let inHeadContentMode = false
-  let sawHead = false
+  const inHeadContentMode = true
   let position = 0
 
   while (position < html.length) {
@@ -272,10 +271,6 @@ function extractDocumentTitle(html) {
     }
     if (tag.name === 'body' && inertStack.length === 0) break
     if (tag.name === 'head' && inertStack.length === 0) {
-      if (!sawHead) {
-        sawHead = true
-        inHeadContentMode = true
-      }
       position = tagEnd + 1
       continue
     }
