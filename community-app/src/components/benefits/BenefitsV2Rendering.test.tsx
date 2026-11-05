@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { BenefitsHeatmapTable } from './BenefitsHeatmapTable'
 import { BenefitClaimGroup } from './BenefitClaimGroup'
 import { BenefitV2EvidenceGroup, BenefitV2EvidenceSection } from './BenefitV2EvidenceGroup'
@@ -173,6 +173,123 @@ it('ranks projected concrete benefits ahead of evidence-only categories without 
   expect(cards[1]).toHaveTextContent('v2 승인 조사 미적용')
   expect(cards[2]).toHaveTextContent('구체 혜택 확인 필요')
   expect(cards[2]).toHaveTextContent('근거 부족')
+})
+
+it('uses concrete projected and legacy semantics across every fit state while excluding official-only evidence', () => {
+  const community = researchedCompany(41)
+  community.category_outcomes[0] = researched('leave', 'community_report', ['user_submission'], { specific_benefit_count: 1 })
+  const official = researchedCompany(42)
+  official.category_outcomes[0] = researched('leave', 'official_verified', ['official_government'], { specific_benefit_count: 1 })
+  const reference = researchedCompany(43)
+  reference.category_outcomes[0] = researched('leave', 'reference', ['other_public_web'], { specific_benefit_count: 1 })
+  const noPublicInfo = researchedCompany(44)
+  noPublicInfo.category_outcomes[0] = researched('leave', 'no_public_info', [], { specific_benefit_count: 0 })
+  const officialOnly = researchedCompany(45)
+  officialOnly.category_outcomes[0] = researched('leave', 'official_verified', ['official_government'], { specific_benefit_count: 0 })
+  const legacyConfirmed = company(46)
+  const legacyBounded = company(47)
+  legacyBounded.category_outcomes[0] = evidenced('leave', 'bounded')
+  const legacyInsufficient = company(48)
+  legacyInsufficient.category_outcomes[0] = insufficient('leave')
+  const companies = [community, official, reference, noPublicInfo, officialOnly, legacyConfirmed, legacyBounded, legacyInsufficient]
+
+  const { container } = render(<FitResultList
+    companies={companies}
+    state={parseQuery('?preset=custom&preferred_categories=leave&evidence=all')}
+    link={() => '#'}
+    projectionActive
+  />)
+
+  const cards = [...container.querySelectorAll<HTMLElement>('article[data-company-id]')]
+  expect(cards.map((card) => card.dataset.companyId)).toEqual([
+    community.company_id,
+    official.company_id,
+    reference.company_id,
+    legacyConfirmed.company_id,
+    legacyBounded.company_id,
+    noPublicInfo.company_id,
+    officialOnly.company_id,
+    legacyInsufficient.company_id,
+  ])
+  for (const card of cards.slice(0, 5)) expect(card).toHaveTextContent('공개 범위와 조건 일치')
+  for (const card of cards.slice(5)) expect(card).toHaveTextContent('근거 부족')
+  expect(cards[0]).toHaveTextContent('커뮤니티 보고')
+  expect(cards[0]).toHaveTextContent('혜택 내용 확인 1건')
+  expect(cards[5]).toHaveTextContent('공개 정보 없음')
+  expect(cards[6]).toHaveTextContent('구체 혜택 확인 필요')
+  expect(cards[3]).toHaveTextContent('v2 승인 조사 미적용')
+  expect(cards[4]).toHaveTextContent('v2 승인 조사 미적용')
+  expect(cards[7]).toHaveTextContent('v2 승인 조사 미적용')
+})
+
+it('represents every projected and legacy status mutation in comparison without treating evidence context as a benefit', () => {
+  const projectedStates = [
+    ['official_verified', ['official_government'], 1],
+    ['reference', ['other_public_web'], 1],
+    ['community_report', ['user_submission'], 1],
+    ['no_public_info', [], 0],
+  ] as const
+  const projected = projectedStates.map(([state, tiers, specificBenefitCount], index) => {
+    const item = researchedCompany(51 + index)
+    item.category_outcomes[0] = researched('leave', state, [...tiers], { specific_benefit_count: specificBenefitCount })
+    return item
+  })
+  const officialOnly = researchedCompany(55)
+  officialOnly.category_outcomes[0] = researched('leave', 'official_verified', ['official_government'], { specific_benefit_count: 0 })
+  const legacyConfirmed = company(56)
+  const legacyBounded = company(57)
+  legacyBounded.category_outcomes[0] = evidenced('leave', 'bounded')
+  const legacyInsufficient = company(58)
+  legacyInsufficient.category_outcomes[0] = insufficient('leave')
+
+  const props = { details: [], error: false, retry: () => undefined, remove: () => undefined, projectionActive: true }
+  const { rerender } = render(<CompanyCompareTray {...props} companies={projected} />)
+
+  const projectedRow = screen.getByRole('row', { name: /휴가·근무시간/ })
+  expect(within(projectedRow).getByText('공식 확인')).toBeVisible()
+  expect(within(projectedRow).getByText('기타 공개자료')).toBeVisible()
+  expect(within(projectedRow).getByText('커뮤니티 보고')).toBeVisible()
+  expect(within(projectedRow).getByText('공개 정보 없음')).toBeVisible()
+
+  rerender(<CompanyCompareTray {...props} companies={[officialOnly, legacyConfirmed, legacyBounded, legacyInsufficient]} />)
+  const legacyRow = screen.getByRole('row', { name: /휴가·근무시간/ })
+  expect(within(legacyRow).getByText('구체 혜택 확인 필요')).toBeVisible()
+  expect(within(legacyRow).getAllByText('v2 승인 조사 미적용')).toHaveLength(3)
+  expect(within(legacyRow).queryByText('혜택 내용 확인 1건')).not.toBeInTheDocument()
+})
+
+it('shows comparison loading and retryable error lifecycle before rendering details', () => {
+  const retry = vi.fn()
+  const item = researchedCompany(61)
+  const props = { companies: [item], retry, remove: () => undefined, projectionActive: true }
+  const { rerender } = render(<CompanyCompareTray {...props} details={undefined} error={false} />)
+
+  expect(screen.getByRole('status')).toHaveTextContent('비교 근거를 불러오고 있습니다.')
+  rerender(<CompanyCompareTray {...props} details={undefined} error />)
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  expect(screen.getByRole('alert')).toHaveTextContent('상세 근거 무결성 오류')
+  fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
+  expect(retry).toHaveBeenCalledOnce()
+
+  const detail = { company: { company_id: item.company_id }, references: [], community_reports: [], sources: [] } as unknown as Detail
+  rerender(<CompanyCompareTray {...props} details={[{ legacy: detail, approvedV2: detail }]} error={false} />)
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(screen.getByRole('region', { name: '기업 비교 표' })).toBeVisible()
+})
+
+it('keeps the comparison UI bound to the first four unique query companies', () => {
+  const companies = Array.from({ length: 5 }, (_, index) => company(71 + index))
+  const raw = `?compare=${companies.map((item) => item.company_id).join(',')}`
+  const state = parseQuery(raw, companies.map((item) => item.company_id))
+  const compared = state.compare.map((id) => companies.find((item) => item.company_id === id)!)
+
+  render(<CompanyCompareTray companies={compared} details={[]} error={false} retry={() => undefined} remove={() => undefined} />)
+
+  expect(state.notice).toBe(true)
+  expect(screen.getByRole('heading', { name: '선택 기업 비교 · 4/4' })).toBeVisible()
+  expect(screen.getAllByRole('button', { name: /비교 해제/ })).toHaveLength(4)
+  expect(screen.queryByRole('button', { name: `${companies[4].display_name} 비교 해제` })).not.toBeInTheDocument()
 })
 
 it('shows complete compare statements from projected details and one evidence-only warning', () => {
