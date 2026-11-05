@@ -220,6 +220,42 @@ function projectedOutcome(category_id) {
   return { ...base, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only', kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, limitation_codes: ['scope_limit', 'currentness_limit'], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_at: '2026-11-01T00:00:00Z' }
 }
 
+function officialProjectionDetail(detail, outcome, source) {
+  const official = structuredClone(detail)
+  const claim_id = `official::${'a'.repeat(64)}`
+  official.references = []
+  Object.assign(official.category_outcomes[0], {
+    state: 'official_verified',
+    reliability: outcome.reliability,
+    currentness: outcome.currentness,
+    publication_eligibility: 'official_claim',
+    official_claim_ids: [claim_id],
+    official_claim_count: 1,
+    reference_ids: [],
+    reference_count: 0,
+    source_tiers: ['official_government'],
+    limitation_codes: outcome.currentness === 'current' ? [] : ['currentness_limit'],
+  })
+  official.official_claims = [{
+    claim_id,
+    cell_id: `cell::${official.company.company_id}::leave`,
+    company_id: official.company.company_id,
+    category_id: 'leave',
+    jurisdiction: 'KR',
+    source_ids: [official.sources[0].source_id],
+    source_tier: 'official_government',
+    scope_status: 'exact_entity',
+    scope: official.sources[0].scope,
+    conflict_status: 'none',
+    publication_eligibility: 'eligible',
+  }]
+  Object.assign(official.sources[0], source, {
+    source_tier: 'official_government',
+    publication_eligibility: 'eligible',
+  })
+  return official
+}
+
 async function projectionFixture(run, populationSequences = 50) {
   const root = await mkdtemp(path.join(tmpdir(), 'benefits-projection-'))
   const version = 'approved-v2-test'
@@ -378,6 +414,45 @@ for (const [name, mutate] of [
     await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /limitation metadata/i)
   }))
 }
+
+async function rebindProjectionCompany(root, projection, company_id, detail, version) {
+  projection.company_shards[company_id] = {
+    company_id,
+    ...await writeProjectionArtifact(root, version, `companies/${company_id}.json`, detail, 1),
+  }
+  const listingIndex = projection.listing_chunks.findIndex((descriptor) =>
+    descriptor.first_sequence <= detail.company.population_sequence && descriptor.last_sequence >= detail.company.population_sequence)
+  const listingDescriptor = projection.listing_chunks[listingIndex]
+  const listing = JSON.parse(await readFile(path.join(root, listingDescriptor.url), 'utf8'))
+  listing.companies.find((company) => company.company_id === company_id).category_outcomes = detail.category_outcomes
+  projection.listing_chunks[listingIndex] = {
+    ...listingDescriptor,
+    ...await writeProjectionArtifact(root, version, `listings/companies-${String(listingIndex + 1).padStart(2, '0')}.json`, listing, listing.companies.length),
+  }
+  projection.cell_state_counts.reference--
+  projection.cell_state_counts.official_verified++
+}
+
+for (const [name, outcome, source] of [
+  ['favorable official outcome rebound to a low historical source', { reliability: 'high', currentness: 'current' }, { reliability: 'low', currentness: 'historical' }],
+  ['bounded official outcome rebound to a favorable source', { reliability: 'medium', currentness: 'historical' }, { reliability: 'high', currentness: 'current' }],
+]) {
+  test(`projection verifier rejects ${name} after descriptor rebinding`, () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
+    const reboundDetail = officialProjectionDetail(detail, outcome, source)
+    await rebindProjectionCompany(root, projection, company_id, reboundDetail, version)
+    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /limitation metadata/i)
+  }))
+}
+
+test('projection verifier accepts official source limitations matching the canonical cell outcome', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
+  const canonicalDetail = officialProjectionDetail(
+    detail,
+    { reliability: 'medium', currentness: 'historical' },
+    { reliability: 'medium', currentness: 'historical' },
+  )
+  await rebindProjectionCompany(root, projection, company_id, canonicalDetail, version)
+  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById, baseDetailById))
+}))
 
 test('projection verifier rejects listing and full base-detail identity drift after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
   const listingDescriptor = projection.listing_chunks[0]

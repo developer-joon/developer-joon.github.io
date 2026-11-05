@@ -248,7 +248,17 @@ export function assertCompanyDetailEvidence(listing: CompanyListing, detail: Det
     const actual = { ...(limitation.reliability === undefined ? {} : { reliability: source.reliability }), ...(limitation.currentness === undefined ? {} : { currentness: source.currentness }), scope_status: source.scope_status, scope: source.scope, conflict_status: source.conflict_status }
     if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error(`evidence/source limitation metadata 불일치: ${recordId}`)
   }
-  for (const claim of detail.official_claims ?? []) for (const sourceId of claim.source_ids) assertLimitationBinding(claim.claim_id, sourceId, claim)
+  for (const claim of detail.official_claims ?? []) {
+    const outcome = detail.category_outcomes.find((candidate) => candidate.category_id === claim.category_id)
+    if (!outcome || !('state' in outcome) || outcome.state !== 'official_verified') throw new Error(`공식 claim cell limitation metadata 누락: ${claim.claim_id}`)
+    for (const sourceId of claim.source_ids) {
+      assertLimitationBinding(claim.claim_id, sourceId, {
+        ...claim,
+        reliability: outcome.reliability,
+        currentness: outcome.currentness,
+      })
+    }
+  }
   for (const record of detail.references ?? []) {
     const { status: scope_status, ...scope } = record.scope
     assertLimitationBinding(record.reference_id, record.source_id, { reliability: record.reliability, currentness: record.currentness, scope_status, scope, conflict_status: record.conflict_status })

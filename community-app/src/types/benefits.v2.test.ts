@@ -291,6 +291,39 @@ function vNextDetailWithReference() {
   }
 }
 
+function vNextDetailWithOfficial(
+  outcome: { reliability: 'high' | 'medium'; currentness: 'current' | 'historical' | 'unknown' },
+  source: { reliability: 'high' | 'medium' | 'low' | 'unrated'; currentness: 'current' | 'historical' | 'unknown' },
+) {
+  const detail = vNextDetailWithReference()
+  const claimId = `official::${'a'.repeat(64)}`
+  detail.references = []
+  Object.assign(detail.category_outcomes[0], task7Official, outcome, {
+    official_claim_ids: [claimId],
+    limitation_codes: outcome.currentness === 'current' ? [] : ['currentness_limit'],
+  })
+  Object.assign(detail, {
+    official_claims: [{
+      claim_id: claimId,
+      cell_id: `cell::${detail.company.company_id}::leave`,
+      company_id: detail.company.company_id,
+      category_id: 'leave',
+      jurisdiction: 'KR',
+      source_ids: ['source::reference'],
+      source_tier: 'official_government',
+      scope_status: 'exact_entity',
+      scope: detail.sources[0].scope,
+      conflict_status: 'none',
+      publication_eligibility: 'eligible',
+    }],
+  })
+  Object.assign(detail.sources[0], source, {
+    source_tier: 'official_government',
+    publication_eligibility: 'eligible',
+  })
+  return detail
+}
+
 it.each([
   'http://reference.example/leave',
   'javascript:alert(1)',
@@ -404,6 +437,26 @@ it('binds official and community limitation metadata to every source', () => {
   expect(() => assertCompanyDetailEvidence(communityListing, community as unknown as Detail)).not.toThrow()
   Object.assign(community.sources[0].scope, { roles: ['executives'] })
   expect(() => assertCompanyDetailEvidence(communityListing, community as unknown as Detail)).toThrow(/limitation metadata/)
+})
+
+it.each([
+  ['favorable official outcome rebound to a low historical source', { reliability: 'high', currentness: 'current' }, { reliability: 'low', currentness: 'historical' }],
+  ['bounded official outcome rebound to a favorable source', { reliability: 'medium', currentness: 'historical' }, { reliability: 'high', currentness: 'current' }],
+] as const)('rejects %s', (_name, outcome, source) => {
+  const detail = vNextDetailWithOfficial(outcome, source)
+  const listing = { company_id: detail.company.company_id, category_outcomes: detail.category_outcomes } as unknown as CompanyListing
+  expect(detailSchema.safeParse(detail).success).toBe(true)
+  expect(() => assertCompanyDetailEvidence(listing, detail as unknown as Detail)).toThrow(/limitation metadata/)
+})
+
+it('accepts an official claim whose source limitations match its canonical cell outcome', () => {
+  const detail = vNextDetailWithOfficial(
+    { reliability: 'medium', currentness: 'historical' },
+    { reliability: 'medium', currentness: 'historical' },
+  )
+  const listing = { company_id: detail.company.company_id, category_outcomes: detail.category_outcomes } as unknown as CompanyListing
+  expect(detailSchema.safeParse(detail).success).toBe(true)
+  expect(() => assertCompanyDetailEvidence(listing, detail as unknown as Detail)).not.toThrow()
 })
 
 it('requires exact detail claim IDs and rejects official claims in lower-tier cells', () => {
