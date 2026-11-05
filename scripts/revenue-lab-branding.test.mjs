@@ -6,29 +6,53 @@ import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const brandName = '수익실험실'
-const oldBrandName = '0 → 1'
 const coverPath = '/images/revenue-lab/cover.png'
 
 function readRepositoryFile(relativePath) {
   return readFileSync(resolve(repositoryRoot, relativePath), 'utf8')
 }
 
-const publicBrandSurfaces = [
-  'index.html',
-  '_pages/lab.md',
-  '_pages/about.md',
-  '_data/settings.yml',
-  'community-app/src/components/AppHeader.tsx',
-]
+function readFrontMatter(relativePath) {
+  const content = readRepositoryFile(relativePath)
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u)
 
-for (const relativePath of publicBrandSurfaces) {
-  test(`${relativePath} uses the public 수익실험실 brand`, () => {
-    const content = readRepositoryFile(relativePath)
-
-    assert.ok(content.includes(brandName), `${relativePath} must include ${brandName}`)
-    assert.ok(!content.includes(oldBrandName), `${relativePath} must not include ${oldBrandName}`)
-  })
+  assert.ok(match, `${relativePath} must contain front matter`)
+  return match[1]
 }
+
+const exactBrandScalar = `(?:"${brandName}"|'${brandName}'|${brandName})`
+
+test('index.html uses the 수익실험실 brand in its title and hero heading', () => {
+  const frontMatter = readFrontMatter('index.html')
+  const homepage = readRepositoryFile('index.html')
+
+  assert.match(frontMatter, new RegExp(`^title:\\s*${exactBrandScalar}\\s*$`, 'mu'))
+  assert.match(homepage, /<h1>수익실험실<\/h1>/u)
+})
+
+test('_pages/lab.md uses 수익실험실 as its front-matter title', () => {
+  const frontMatter = readFrontMatter('_pages/lab.md')
+
+  assert.match(frontMatter, new RegExp(`^title:\\s*${exactBrandScalar}\\s*$`, 'mu'))
+})
+
+test('_pages/about.md starts its front-matter subtitle with 수익실험실', () => {
+  const frontMatter = readFrontMatter('_pages/about.md')
+
+  assert.match(frontMatter, /^subtitle:\s*(?:"수익실험실,|'수익실험실,|수익실험실,)/mu)
+})
+
+test('_data/settings.yml labels the /lab/ menu item 수익실험실', () => {
+  const settings = readRepositoryFile('_data/settings.yml')
+
+  assert.match(settings, /- title:\s*(?:"수익실험실"|'수익실험실'|수익실험실)\s*\r?\n\s*url:\s*["']\/lab\/["']\s*$/mu)
+})
+
+test('AppHeader labels the /lab/ link 수익실험실', () => {
+  const appHeader = readRepositoryFile('community-app/src/components/AppHeader.tsx')
+
+  assert.match(appHeader, /\{\s*label:\s*['"]수익실험실['"],\s*href:\s*['"]\/lab\/['"]\s*\}/u)
+})
 
 test('the canonical lab route remains /lab/ across Jekyll and React', () => {
   const labPage = readRepositoryFile('_pages/lab.md')
