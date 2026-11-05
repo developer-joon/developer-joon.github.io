@@ -221,9 +221,12 @@ function skipRawTextElement(html, lowerHtml, position, name) {
 function extractDocumentTitle(html) {
   const lowerHtml = html.toLowerCase()
   const titles = []
-  const inertStack = []
-  const inHeadContentMode = true
   let position = 0
+  let templateDepth = 0
+  let headStarts = 0
+  let headEnds = 0
+  let inHead = false
+  let error = null
 
   while (position < html.length) {
     const tagStart = html.indexOf('<', position)
@@ -259,7 +262,15 @@ function extractDocumentTitle(html) {
         continue
       }
       const name = match[1].toLowerCase()
-      if (inertElements.has(name) && inertStack.at(-1) === name) inertStack.pop()
+      if (name === 'template' && templateDepth > 0) {
+        templateDepth -= 1
+      } else if (templateDepth === 0 && name === 'head') {
+        headEnds += 1
+        if (!inHead || headEnds !== 1) error ??= 'head'
+        inHead = false
+      } else if (templateDepth === 0 && name === 'title') {
+        error ??= 'title-outside-head'
+      }
       position = tagEnd + 1
       continue
     }
@@ -269,28 +280,50 @@ function extractDocumentTitle(html) {
       position = tagEnd + 1
       continue
     }
-    if (tag.name === 'body' && inertStack.length === 0) break
-    if (tag.name === 'head' && inertStack.length === 0) {
+
+    if (tag.name === 'script' || tag.name === 'style') {
+      const afterRawText = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
+      if (afterRawText === -1) break
+      position = afterRawText
+      continue
+    }
+    if (tag.name === 'template') {
+      templateDepth += 1
       position = tagEnd + 1
       continue
     }
-    if (tag.name === 'plaintext') break
-
-    if (rawTextElements.has(tag.name)) {
-      const closingTag = findRawTextClosingTag(html, lowerHtml, tagEnd + 1, tag.name)
-      if (tag.name === 'title' && inHeadContentMode && inertStack.length === 0) {
-        if (!closingTag) return { error: 'unclosed', titles }
-        titles.push(html.slice(tagEnd + 1, closingTag.start).trim())
+    if (templateDepth > 0) {
+      if (tag.name === 'title') {
+        const afterTitle = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
+        if (afterTitle === -1) break
+        position = afterTitle
+      } else {
+        position = tagEnd + 1
       }
-      if (!closingTag) break
+      continue
+    }
+
+    if (tag.name === 'head') {
+      headStarts += 1
+      if (tag.selfClosing || inHead || headStarts !== 1 || headEnds !== 0) error ??= 'head'
+      inHead = true
+      position = tagEnd + 1
+      continue
+    }
+    if (tag.name === 'title') {
+      const closingTag = findRawTextClosingTag(html, lowerHtml, tagEnd + 1, tag.name)
+      if (!closingTag) return { error: 'unclosed-title', titles }
+      titles.push(html.slice(tagEnd + 1, closingTag.start).trim())
+      if (!inHead) error ??= 'title-outside-head'
       position = closingTag.end
       continue
     }
-    if (inertElements.has(tag.name)) inertStack.push(tag.name)
+
     position = tagEnd + 1
   }
 
-  return { titles }
+  if (headStarts !== 1 || headEnds !== 1 || inHead) error ??= 'head'
+  return { error, titles }
 }
 
 function hasCommunityAjaxOptOut(html) {
@@ -540,8 +573,12 @@ async function main() {
   for (const [relativePath, expectedTitle, canonical] of routeChecks) {
     const html = await readText(relativePath)
     const documentTitle = extractDocumentTitle(html)
-    if (documentTitle.error === 'unclosed') {
+    if (documentTitle.error === 'unclosed-title') {
       fail(`${relativePath} document title must have a proper closing tag`)
+    } else if (documentTitle.error === 'head') {
+      fail(`${relativePath} must contain exactly one explicit, properly closed document head`)
+    } else if (documentTitle.error === 'title-outside-head') {
+      fail(`${relativePath} document title tags must appear only inside the explicit document head`)
     } else if (documentTitle.titles.length !== 1) {
       fail(`${relativePath} must contain exactly one document title in head (found ${documentTitle.titles.length})`)
     } else if (documentTitle.titles[0] !== expectedTitle) {

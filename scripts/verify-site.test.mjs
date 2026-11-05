@@ -148,8 +148,9 @@ const routeTitleDecoys = [
 ]
 const titleDecoyMarkup = [
   ['comment', (html, expectedTitle) => html.replace('</head>', `<!-- <title>${expectedTitle}</title> --></head>`)],
-  ['body', (html, expectedTitle) => html.replace('</body>', `<div><title>${expectedTitle}</title></div></body>`)],
   ['script', (html, expectedTitle) => html.replace('</head>', `<script>const decoy = '<title>${expectedTitle}</title>'</script></head>`)],
+  ['style', (html, expectedTitle) => html.replace('</head>', `<style>.decoy::after { content: '<title>${expectedTitle}</title>'; }</style></head>`)],
+  ['template', (html, expectedTitle) => html.replace('</head>', `<template><title>${expectedTitle}</title></template></head>`)],
 ]
 
 for (const [relativePath, expectedTitle, staleTitle] of routeTitleDecoys) {
@@ -198,11 +199,11 @@ test('rejects a stale implied-head title before an explicit head containing the 
 
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly ignored a stale implied-head title')
-    assert.match(result.stderr, /index\.html must contain exactly one document title/)
+    assert.match(result.stderr, /index\.html document title tags must appear only inside the explicit document head/)
   })
 })
 
-test('accepts a sole expected title in the implied head before an explicit head', async () => {
+test('rejects a sole expected title before the explicit head', async () => {
   await withArtifact(async (root) => {
     const artifactPath = path.join(root, 'index.html')
     const html = await readFile(artifactPath, 'utf8')
@@ -212,7 +213,8 @@ test('accepts a sole expected title in the implied head before an explicit head'
     )
 
     const result = verify(root)
-    assert.equal(result.status, 0, result.stderr)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a title outside the explicit head')
+    assert.match(result.stderr, /index\.html.*document head|index\.html.*title.*head/)
   })
 })
 
@@ -227,11 +229,11 @@ test('rejects a duplicate title after an explicit head end but before body start
 
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a post-head pre-body duplicate title')
-    assert.match(result.stderr, /index\.html must contain exactly one document title/)
+    assert.match(result.stderr, /index\.html document title tags must appear only inside the explicit document head/)
   })
 })
 
-test('accepts a sole expected title after an explicit head end but before body starts', async () => {
+test('rejects a sole expected title after the explicit head end but before body starts', async () => {
   await withArtifact(async (root) => {
     const artifactPath = path.join(root, 'index.html')
     const html = await readFile(artifactPath, 'utf8')
@@ -240,6 +242,71 @@ test('accepts a sole expected title after an explicit head end but before body s
       html.replace('<title>Ria & Seoa PaPa – 수익실험실</title>', '')
         .replace('</head><body>', '</head><title>Ria & Seoa PaPa – 수익실험실</title><body>'),
     )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a post-head title')
+    assert.match(result.stderr, /index\.html.*document head|index\.html.*title.*head/)
+  })
+})
+
+for (const [label, mutate] of [
+  ['before head', (html) => html.replace('<head>', '<title>Ria & Seoa PaPa – 0 → 1</title><head>')],
+  ['after head before body', (html) => html.replace('</head><body>', '</head><title>Ria & Seoa PaPa – 0 → 1</title><body>')],
+  ['inside body', (html) => html.replace('</body>', '<title>Ria & Seoa PaPa – 0 → 1</title></body>')],
+  ['after body', (html) => html.replace('</html>', '<title>Ria & Seoa PaPa – 0 → 1</title></html>')],
+]) {
+  test(`rejects a real title ${label} despite a correct explicit-head title`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted a title ${label}`)
+      assert.match(result.stderr, /index\.html.*title.*head|index\.html.*exactly one document title/)
+    })
+  })
+}
+
+for (const [label, mutate] of [
+  ['missing head', (html) => html.replace('<head>', '').replace('</head>', '')],
+  ['unclosed head', (html) => html.replace('</head>', '')],
+  ['duplicate head', (html) => html.replace('<head>', '<head><head>')],
+  ['duplicate head end', (html) => html.replace('</head>', '</head></head>')],
+  ['missing title', (html) => html.replace('<title>Ria & Seoa PaPa – 수익실험실</title>', '')],
+]) {
+  test(`rejects a generated route with ${label}`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label}`)
+      assert.match(result.stderr, /index\.html.*document head|index\.html.*document title/)
+    })
+  })
+}
+
+test('rejects non-whitespace body-starting text followed by an expected title decoy', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('<title>Ria & Seoa PaPa – 수익실험실</title>', '')
+        .replace('</head><body>', '</head>body text<title>Ria & Seoa PaPa – 수익실험실</title><body>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a title after body-starting text')
+    assert.match(result.stderr, /index\.html.*title.*head|index\.html.*document title/)
+  })
+})
+
+test('allows semantic 0 → 1 body text with the correct explicit-head title', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('<body>', '<body><p>0 → 1</p>'))
 
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
