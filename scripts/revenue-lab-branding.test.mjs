@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { crc32, inflateSync } from 'node:zlib'
+import { crc32, deflateSync, inflateSync } from 'node:zlib'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const brandName = '수익실험실'
@@ -135,6 +135,10 @@ function readMenuItems() {
   return items
 }
 
+function inflatePngScanlines(compressed, expectedLength) {
+  return inflateSync(compressed, { maxOutputLength: expectedLength })
+}
+
 function validatePngScanlineFilters(inflated, width, height, channels) {
   const rowStride = 1 + width * channels
 
@@ -210,14 +214,15 @@ function validateRevenueLabPng(png) {
   assert.equal(ihdr[11], 0, 'PNG filter method must be 0')
   assert.equal(ihdr[12], 0, 'PNG interlace method must be 0')
 
+  const channels = colorType === 2 ? 3 : 4
+  const expectedInflatedLength = height * (1 + width * channels)
   let inflated
   assert.doesNotThrow(() => {
-    inflated = inflateSync(Buffer.concat(idatParts))
+    inflated = inflatePngScanlines(Buffer.concat(idatParts), expectedInflatedLength)
   }, 'PNG IDAT data must inflate successfully')
-  const channels = colorType === 2 ? 3 : 4
   assert.equal(
     inflated.length,
-    height * (1 + width * channels),
+    expectedInflatedLength,
     'PNG decompressed scanline length must match its dimensions and color type',
   )
   validatePngScanlineFilters(inflated, width, height, channels)
@@ -232,6 +237,19 @@ const brandFrontMatter = [
   ['_pages/lab.md', labFrontMatter],
   ['_pages/about.md', aboutFrontMatter],
 ]
+
+test('PNG inflation rejects data expanding beyond the expected scanline length', () => {
+  const expectedLength = 8
+  const compressed = deflateSync(Buffer.alloc(1024 * 1024))
+
+  assert.throws(
+    () => inflatePngScanlines(compressed, expectedLength),
+    {
+      code: 'ERR_BUFFER_TOO_LARGE',
+      message: `Cannot create a Buffer larger than ${expectedLength} bytes`,
+    },
+  )
+})
 
 test('PNG scanline validation rejects filter type 5', () => {
   const inflated = Buffer.from([0, 0, 0, 0, 5, 0, 0, 0])
