@@ -57,11 +57,59 @@ export async function assertNoBenefitsFixtureLeaks(root, descriptors = [], activ
   }
 }
 
+export function assertApprovedProjectionBaseHash(rawManifest) {
+  const expected = rawManifest.approved_v2_projection?.base_manifest_sha256
+  if (!expected) return
+  const activeManifest = { ...rawManifest }; delete activeManifest.approved_v2_projection
+  const actual = createHash('sha256').update(`${JSON.stringify(activeManifest)}\n`).digest('hex')
+  if (actual !== expected) throw Error('approved projection base manifest hash drift')
+}
+
+export function assertProjectionCompanyJoin(companies, baseById) {
+  for (const company of companies) {
+    const base = baseById.get(company.company_id)
+    if (!base || base.population_sequence !== company.population_sequence) throw Error('approved projection canonical company/population_sequence join mismatch')
+  }
+}
+
+export async function verifyApprovedV2Projection(root, projection, baseById) {
+  const load = async (descriptor) => {
+    const target = path.join(root, descriptor.url); const raw = await readFile(target, 'utf8')
+    if (Buffer.byteLength(raw) !== descriptor.byte_count) throw Error(`benefits byte count mismatch: ${descriptor.url}`)
+    if (createHash('sha256').update(raw).digest('hex') !== descriptor.sha256) throw Error(`benefits hash mismatch: ${descriptor.url}`)
+    const value = JSON.parse(raw); rejectForbiddenKeys(value, descriptor.url); return value
+  }
+  await assertExactArtifactInventory(root, projection)
+  const companies = []; const byId = new Map()
+  for (const descriptor of projection.listing_chunks) {
+    const chunk = listingChunkSchema.parse(await load(descriptor))
+    if (chunk.artifact_protocol !== 'vNext' || chunk.data_version !== projection.data_version || chunk.companies.length !== descriptor.record_count || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw Error(`approved projection listing metadata mismatch: ${descriptor.url}`)
+    companies.push(...chunk.companies)
+  }
+  assertListingOutcomes(companies)
+  assertExplicitCellInventory(companies, { artifact_protocol: 'vNext', cell_count: projection.cell_count, cell_state_counts: projection.cell_state_counts })
+  if (companies.length !== projection.projected_company_count) throw Error('approved projection company count mismatch')
+  assertProjectionCompanyJoin(companies, baseById)
+  for (const company of companies) byId.set(company.company_id, company)
+  if (byId.size !== companies.length) throw Error('approved projection duplicate company')
+  for (const [id, descriptor] of Object.entries(projection.company_shards)) {
+    const detail = detailSchema.parse(await load(descriptor))
+    if (detail.artifact_protocol !== 'vNext' || descriptor.company_id !== id || detail.company.company_id !== id || detail.data_version !== projection.data_version) throw Error(`approved projection company shard mismatch: ${id}`)
+    assertCompanyDetailEvidence(byId.get(id), detail)
+  }
+  if (Object.keys(projection.company_shards).length !== projection.projected_company_count) throw Error('approved projection shard count mismatch')
+  const methodology = methodologySchema.parse(await load(projection.methodology))
+  if (methodology.data_version !== projection.data_version) throw Error('approved projection methodology version mismatch')
+  await load(projection.taxonomy); await load(projection.sources)
+  await assertNoBenefitsFixtureLeaks(root, manifestDescriptors(projection), projection.data_version)
+  return companies.length
+}
+
 export async function verifyBenefitsArtifacts(root) {
   const manifestPath = path.join(root, 'community/data/company-benefits/manifest.json')
   let manifestRaw
   try { manifestRaw = await readFile(manifestPath, 'utf8') } catch (error) { if (error.code === 'ENOENT') { await assertNoBenefitsFixtureLeaks(root); return 'Benefits artifacts unavailable: no approved manifest.' } throw error }
-  const manifest = manifestSchema.parse(JSON.parse(manifestRaw)); const companies = []; const byId = new Map()
+  const rawManifest = JSON.parse(manifestRaw); const manifest = manifestSchema.parse(rawManifest); const companies = []; const byId = new Map()
   await assertExactArtifactInventory(root, manifest)
   const load = async (descriptor) => {
     const target = path.join(root, descriptor.url); const raw = await readFile(target, 'utf8')
@@ -91,5 +139,11 @@ export async function verifyBenefitsArtifacts(root) {
   await load(manifest.taxonomy); await load(manifest.sources)
   const descriptors = manifestDescriptors(manifest)
   await assertNoBenefitsFixtureLeaks(root, descriptors, manifest.data_version)
-  return `Benefits artifacts ${manifest.data_version}: ${companies.length} companies; ${manifest.listing_chunks.length} listing chunks; ${categories.length} categories.`
+  let projectionMessage = ''
+  if (manifest.approved_v2_projection) {
+    assertApprovedProjectionBaseHash(rawManifest)
+    const projected = await verifyApprovedV2Projection(root, manifest.approved_v2_projection, byId)
+    projectionMessage = ` Additive approved-v2 projection: ${projected} approved companies; status in_progress.`
+  }
+  return `Benefits artifacts ${manifest.data_version}: ${companies.length} companies; ${manifest.listing_chunks.length} listing chunks; ${categories.length} categories.${projectionMessage}`
 }

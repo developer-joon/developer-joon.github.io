@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { assertExactArtifactInventory, assertNoBenefitsFixtureLeaks } from './verify-benefits-artifacts.mjs'
+import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin } from './verify-benefits-artifacts.mjs'
 import { assertExplicitCellInventory, categories } from '../community-app/src/types/benefits.ts'
 
 const descriptor = (url) => ({ url })
@@ -66,4 +67,15 @@ test('vNext inventory rejects legacy outcomes and mismatched state totals', () =
   assert.doesNotThrow(() => assertExplicitCellInventory([{ category_outcomes: explicit }], vNext))
   assert.throws(() => assertExplicitCellInventory([{ category_outcomes: explicit }], { ...vNext, cell_state_counts: { ...vNext.cell_state_counts, no_public_info: 9 } }), /inventory/)
   assert.throws(() => assertExplicitCellInventory([{ category_outcomes: [{ kind: 'insufficient_evidence' }] }], vNext), /legacy/)
+})
+
+test('additive projection rejects base hash drift and pending company leakage', () => {
+  const active = { artifact_protocol: 'v1', data_version: 'release-v9' }
+  const digest = createHash('sha256').update(`${JSON.stringify(active)}\n`).digest('hex')
+  assert.doesNotThrow(() => assertApprovedProjectionBaseHash({ ...active, approved_v2_projection: { base_manifest_sha256: digest } }))
+  assert.throws(() => assertApprovedProjectionBaseHash({ ...active, approved_v2_projection: { base_manifest_sha256: '0'.repeat(64) } }), /hash drift/)
+  const base = new Map([['KR-CRN-0000000000001', { population_sequence: 1 }]])
+  assert.doesNotThrow(() => assertProjectionCompanyJoin([{ company_id: 'KR-CRN-0000000000001', population_sequence: 1 }], base))
+  assert.throws(() => assertProjectionCompanyJoin([{ company_id: 'KR-CRN-0000000000002', population_sequence: 1 }], base), /canonical company/)
+  assert.throws(() => assertProjectionCompanyJoin([{ company_id: 'KR-CRN-0000000000001', population_sequence: 2 }], base), /population_sequence/)
 })

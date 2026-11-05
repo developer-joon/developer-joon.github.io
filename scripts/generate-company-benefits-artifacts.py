@@ -410,6 +410,89 @@ def validate_inputs(root, taxonomy, taxonomy_sha256):
     return _assemble_inputs(root, taxonomy, taxonomy_sha256)
 
 
+def validate_approved_v2_projection_inputs(root, taxonomy, taxonomy_sha256):
+    """Validate and project only immutable approved batches from an in-progress v2 series."""
+    root = Path(root)
+    series = load_verifier().company_benefits_series
+    progress = read_json(root / "series-progress.json")
+    if series.progress_contract_version(progress) != "2" or progress.get("status") != "in_progress":
+        raise ValueError("approved v2 additive projection requires in-progress v2 progress")
+    companies = read_jsonl(root / "companies.jsonl")
+    batches = read_jsonl(root / "series-batches.jsonl")
+    if len(companies) != 2000 or len(batches) != 80:
+        raise ValueError("approved v2 projection requires the canonical 2,000-company/80-batch partition")
+    company_map = unique_map(companies, "company_id", "companies ledger")
+    if [company_id for batch in batches for company_id in batch.get("company_ids", [])] != list(company_map):
+        raise ValueError("series batches must bind the exact canonical company sequence")
+    entries = {entry.get("batch_id"): entry for entry in progress["batches"]}
+    if len(entries) != 80 or set(entries) != {batch.get("batch_id") for batch in batches}:
+        raise ValueError("progress must exactly bind all canonical batches")
+    approved_batches = [batch for batch in batches if entries[batch["batch_id"]]["status"] == "approved"]
+    if not approved_batches or len(approved_batches) == 80:
+        raise ValueError("additive projection requires a non-empty incomplete approved checkpoint")
+    approved_ids = [company_id for batch in approved_batches for company_id in batch["company_ids"]]
+    approved_set = set(approved_ids)
+    if len(approved_set) != len(approved_ids):
+        raise ValueError("approved batches overlap company membership")
+    records = series.read_v2_batch_records(root)
+    expected = {ledger: [] for ledger in series.V2_LEDGER_FILES}
+    for batch in approved_batches:
+        sliced = series.v2_batch_slice(records, batch)
+        entry = entries[batch["batch_id"]]
+        if len(sliced["cells"]) != 250 or series.v2_cell_set_sha256(sliced["cells"]) != entry["cell_set_sha256"]:
+            raise ValueError(f"{batch['batch_id']}: approved projection cell binding mismatch")
+        if series.v2_ledger_sha256(sliced) != entry["v2_ledger_sha256"]:
+            raise ValueError(f"{batch['batch_id']}: approved projection ledger hash mismatch")
+        series.validate_v2_package_records(sliced, batch, root)
+        for ledger in expected:
+            expected[ledger].extend(sliced[ledger])
+    for ledger in expected:
+        field = series.V2_ID_FIELDS[ledger]
+        actual_ids = {record.get(field) for record in records[ledger]}
+        expected_ids = {record.get(field) for record in expected[ledger]}
+        if actual_ids != expected_ids or len(actual_ids) != len(records[ledger]):
+            raise ValueError(f"{series.V2_LEDGER_FILES[ledger]} contains pending, duplicate, or unbound records")
+    cells = records["cells"]
+    if len(cells) != len(approved_ids) * 10 or any(cell.get("company_id") not in approved_set for cell in cells):
+        raise ValueError("approved projection requires exactly 250 cells per approved batch with no pending leakage")
+    expected_categories = {item["id"] for item in taxonomy["categories"]}
+    cells_by_company = {}
+    for cell in cells:
+        target = cells_by_company.setdefault(cell["company_id"], {})
+        if cell["category_id"] in target:
+            raise ValueError("approved projection contains a duplicate company/category cell")
+        target[cell["category_id"]] = cell
+    if set(cells_by_company) != approved_set or any(set(value) != expected_categories for value in cells_by_company.values()):
+        raise ValueError("approved projection company/category join is not exact")
+    state_counts = Counter(cell["state"] for cell in cells)
+    states = ("official_verified", "reference", "community_report", "no_public_info")
+    if set(state_counts) - set(states):
+        raise ValueError("approved projection contains unsupported cell state")
+    protocol_path = root / "population-protocol.json"
+    effective_path = root / "population" / "effective-selection-manifest.json"
+    protocol = read_json(protocol_path)
+    protocol_binding = {
+        "protocol_id": protocol["protocol_id"], "protocol_version": protocol["version"],
+        "protocol_sha256": sha256(protocol_path.read_bytes()),
+        "effective_selection_sha256": sha256(effective_path.read_bytes()),
+    }
+    indexes = {ledger: unique_map(records[ledger], series.V2_ID_FIELDS[ledger], f"v2 {ledger}")
+               for ledger in ("attempts", "official_claims", "references", "community_reports", "sources")}
+    selected = [company_map[company_id] for company_id in approved_ids]
+    inputs = (selected, company_map, {}, {}, {}, {}, {}, protocol_binding, cells_by_company,
+              {state: state_counts.get(state, 0) for state in states},
+              {filename: sha256((root / filename).read_bytes()) for filename in series.V2_LEDGER_FILES.values()}, indexes)
+    metadata = {
+        "projection_kind": "approved_v2_additive", "projection_status": "in_progress",
+        "approved_batch_count": len(approved_batches), "total_batch_count": 80,
+        "projected_company_count": len(selected), "total_company_count": 2000,
+        "cell_count": len(cells),
+        "cell_state_counts": {state: state_counts.get(state, 0) for state in states},
+        "population_sequences": {company_id: index for index, company_id in enumerate(company_map, 1)},
+    }
+    return freeze_snapshot(inputs), freeze_snapshot(metadata)
+
+
 def _capture_regular_file(path, label):
     path = Path(path)
     metadata = path.lstat()
@@ -507,6 +590,37 @@ def publication_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
             snapshot_root, taxonomy, hashlib.sha256(taxonomy_raw).hexdigest(), v2_snapshot
         )
     return freeze_snapshot(taxonomy), freeze_snapshot(inputs)
+
+
+def approved_projection_gate(research_root, taxonomy_path, as_of, freeze_anchor_receipt,
+                             effective_selection_receipt):
+    """Validate one captured in-progress checkpoint without weakening the complete gate."""
+    root = Path(research_root)
+    snapshot = _capture_research_tree(root)
+    taxonomy_raw, _ = _capture_regular_file(taxonomy_path, "taxonomy")
+    receipts = {}
+    for name, path in (("freeze", freeze_anchor_receipt), ("effective", effective_selection_receipt)):
+        if path is not None:
+            receipts[name] = _capture_regular_file(path, f"{name} receipt")
+    with tempfile.TemporaryDirectory(prefix="company-benefits-projection-snapshot-") as directory:
+        base = Path(directory)
+        snapshot_root = base / "research"
+        _materialize_snapshot(snapshot, snapshot_root)
+        snapshot_receipts = {}
+        for name, value in receipts.items():
+            target = base / "external" / f"{name}.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(value[0])
+            target.chmod(value[1])
+            snapshot_receipts[name] = target
+        verify_active_ledgers(snapshot_root, as_of, snapshot_receipts.get("freeze"),
+                              snapshot_receipts.get("effective"))
+        taxonomy = json.loads(taxonomy_raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+        taxonomy_contract(taxonomy)
+        inputs, metadata = validate_approved_v2_projection_inputs(
+            snapshot_root, taxonomy, hashlib.sha256(taxonomy_raw).hexdigest()
+        )
+    return freeze_snapshot(taxonomy), inputs, metadata
 
 
 def bounded_claim(claim):
@@ -685,6 +799,10 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
             "scope": merged_scope(evidence_records),
             "limitation_codes": limitation_codes, "last_checked_at": assessed_at,
             "searched_source_ids": searched_source_ids,
+            "source_tiers": sorted({record["source_tier"] for record in evidence_records}),
+            "official_claim_count": len(official_records),
+            "reference_count": len(reference_records),
+            "community_report_count": len(community_records),
         })
         if cell["state"] == "no_public_info":
             outcome["nonabsence_notice"] = NONABSENCE_NOTICE
@@ -787,7 +905,8 @@ def scan_forbidden_keys(value, path="$"):
             scan_forbidden_keys(child, f"{path}[{index}]")
 
 
-def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
+def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
+                   projection_metadata=None, base_artifact_root=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", data_version):
         raise ValueError("data version is unsafe")
     generated_at = utc_time(generated_at, "generated_at")
@@ -798,6 +917,27 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
     output_root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output_root.name}-", dir=output_root.parent))
     descriptors = {}
+    base_manifest = None
+    try:
+        if projection_metadata is not None:
+            if base_artifact_root is None:
+                raise ValueError("additive projection requires a base artifact root")
+            base_artifact_root = Path(base_artifact_root)
+            base_manifest_path = base_artifact_root / "manifest.json"
+            base_manifest = read_json(base_manifest_path)
+            if (base_manifest.get("artifact_protocol") != "v1"
+                    or base_manifest.get("approved_v2_projection") is not None
+                    or base_manifest.get("data_version") != projection_metadata["base_data_version"]
+                    or sha256(base_manifest_path.read_bytes()) != projection_metadata["base_manifest_sha256"]):
+                raise ValueError("additive projection base manifest must exactly bind the unmodified active v1 lineage")
+            for path in base_artifact_root.rglob("*"):
+                metadata = path.lstat()
+                if path.is_symlink() or (not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode)):
+                    raise ValueError(f"unsafe base artifact entry: {path.relative_to(base_artifact_root)}")
+            shutil.copytree(base_artifact_root, staging, dirs_exist_ok=True)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
     def write_version(relative, value, record_count):
         scan_forbidden_keys(value)
@@ -817,8 +957,10 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
     try:
         details = {}
         listing = []
-        for population_sequence, company in enumerate(companies, 1):
+        sequence_map = (projection_metadata or {}).get("population_sequences", {})
+        for generated_sequence, company in enumerate(companies, 1):
             company_id = company["company_id"]
+            population_sequence = sequence_map.get(company_id, generated_sequence)
             detail = build_company(
                 company, population_sequence,
                 claims_by_company.get(company_id, []),
@@ -832,7 +974,8 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
             details[company_id] = detail
             listing.append(detail["listing"])
         listing_descriptors = []
-        for index in range(40):
+        chunk_count = (len(listing) + 49) // 50
+        for index in range(chunk_count):
             rows = listing[index * 50:(index + 1) * 50]
             relative = Path("listings") / f"companies-{index + 1:02d}.json"
             payload = {
@@ -842,16 +985,16 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
                 "data_version": data_version,
                 "taxonomy_version": taxonomy["taxonomy_version"],
                 "chunk_index": index + 1,
-                "sequence_start": index * 50 + 1,
-                "sequence_end": index * 50 + 50,
+                "sequence_start": rows[0]["population_sequence"],
+                "sequence_end": rows[-1]["population_sequence"],
                 "companies": rows,
             }
             descriptor = write_version(relative, payload, len(rows))
             listing_descriptors.append({
                 **descriptor,
                 "chunk_index": index + 1,
-                "first_sequence": index * 50 + 1,
-                "last_sequence": index * 50 + 50,
+                "first_sequence": rows[0]["population_sequence"],
+                "last_sequence": rows[-1]["population_sequence"],
             })
         shard_descriptors = {}
         for company_id, detail in details.items():
@@ -895,7 +1038,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
         methodology_descriptor = write_version(Path("methodology.json"), methodology, len(methodology["paragraphs"]))
         taxonomy_payload = {"data_version": data_version, **public_taxonomy(taxonomy)}
         taxonomy_descriptor = write_version(Path("taxonomy.json"), taxonomy_payload, len(taxonomy["benefit_types"]))
-        manifest = {
+        generated_manifest = {
             "schema_version": 2,
             "artifact_kind": "company_benefits_manifest",
             "artifact_protocol": "vNext",
@@ -904,11 +1047,11 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
             "generated_at": generated_at,
             "protocol": protocol_binding,
             "taxonomy_version": taxonomy["taxonomy_version"],
-            "company_count": 2000,
+            "company_count": len(companies),
             "listing_chunk_size": 50,
-            "listing_chunk_count": 40,
+            "listing_chunk_count": chunk_count,
             "category_count": 10,
-            "cell_count": 20000,
+            "cell_count": len(companies) * 10,
             "cell_state_counts": state_counts,
             "ledger_sha256": ledger_sha256,
             "listing_chunks": listing_descriptors,
@@ -917,6 +1060,21 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs):
             "methodology": methodology_descriptor,
             "taxonomy": taxonomy_descriptor,
         }
+        if projection_metadata is None:
+            manifest = generated_manifest
+        else:
+            projection = {
+                key: value for key, value in projection_metadata.items()
+                if key != "population_sequences"
+            }
+            projection.update({
+                "base_data_version": base_manifest["data_version"], "data_version": data_version,
+                "listing_chunk_size": 50, "listing_chunk_count": chunk_count,
+                "ledger_sha256": ledger_sha256, "listing_chunks": listing_descriptors,
+                "company_shards": shard_descriptors, "sources": sources_descriptor,
+                "methodology": methodology_descriptor, "taxonomy": taxonomy_descriptor,
+            })
+            manifest = {**base_manifest, "approved_v2_projection": projection}
         scan_forbidden_keys(manifest)
         (staging / "manifest.json").write_bytes(canonical_bytes(manifest))
         if output_root.exists():
@@ -939,17 +1097,38 @@ def main(argv=None):
     parser.add_argument("--as-of", required=True, type=date.fromisoformat)
     parser.add_argument("--freeze-anchor-receipt", required=True, type=Path)
     parser.add_argument("--effective-selection-receipt", required=True, type=Path)
+    parser.add_argument("--mode", choices=("complete-v2", "approved-v2-projection"), default="complete-v2")
+    parser.add_argument("--base-artifact-root", type=Path)
     args = parser.parse_args(argv)
     try:
-        taxonomy, inputs = publication_gate(
-            args.research_root, args.taxonomy, args.as_of,
-            args.freeze_anchor_receipt, args.effective_selection_receipt,
-        )
-        emit_artifacts(args.output_root, args.data_version, args.generated_at, taxonomy, inputs)
+        if args.mode == "complete-v2":
+            taxonomy, inputs = publication_gate(
+                args.research_root, args.taxonomy, args.as_of,
+                args.freeze_anchor_receipt, args.effective_selection_receipt,
+            )
+            emit_artifacts(args.output_root, args.data_version, args.generated_at, taxonomy, inputs)
+        else:
+            if args.base_artifact_root is None:
+                raise ValueError("approved-v2-projection mode requires --base-artifact-root")
+            taxonomy, inputs, metadata = approved_projection_gate(
+                args.research_root, args.taxonomy, args.as_of,
+                args.freeze_anchor_receipt, args.effective_selection_receipt,
+            )
+            base_manifest_path = args.base_artifact_root / "manifest.json"
+            base_manifest = read_json(base_manifest_path)
+            metadata = freeze_snapshot({
+                **metadata, "base_data_version": base_manifest.get("data_version"),
+                "base_manifest_sha256": sha256(base_manifest_path.read_bytes()),
+            })
+            emit_artifacts(args.output_root, args.data_version, args.generated_at, taxonomy, inputs,
+                           metadata, args.base_artifact_root)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(f"production artifact generation failed: {exc}", file=sys.stderr)
         return 1
-    print("Generated immutable v2 artifacts for 2,000 companies in 40 listing chunks.")
+    if args.mode == "complete-v2":
+        print("Generated immutable v2 artifacts for 2,000 companies in 40 listing chunks.")
+    else:
+        print("Generated immutable additive approved-v2 projection; active v1 lineage unchanged.")
     return 0
 
 

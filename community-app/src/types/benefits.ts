@@ -56,7 +56,7 @@ const refineEvidence = <T extends { state: string; source_tiers: SourceTier[]; o
   const hasCommunity = tiers.has('community_employee_review') || tiers.has('user_submission')
   const countsMatch = outcome.official_claim_count === outcome.official_claim_ids.length && outcome.reference_count === outcome.reference_ids.length && outcome.community_report_count === outcome.community_report_ids.length
   const tiersMatch = (outcome.reference_count === 0 ? !hasReference : hasReference || hasOfficial) && (outcome.community_report_count === 0 ? !hasCommunity : hasCommunity)
-  const stateMatches = outcome.state === 'official_verified' ? hasOfficial : outcome.state === 'reference' ? !hasOfficial && hasReference : !hasOfficial && !hasReference && hasCommunity
+  const stateMatches = outcome.state === 'official_verified' ? outcome.official_claim_count > 0 && hasOfficial : outcome.state === 'reference' ? outcome.official_claim_count === 0 && outcome.reference_count > 0 && (hasReference || hasOfficial) : outcome.official_claim_count === 0 && outcome.reference_count === 0 && outcome.community_report_count > 0 && hasCommunity
   if (evidenceIds.length !== count || !countsMatch || !tiersMatch || !stateMatches || outcome.claim_count !== count || outcome.status !== status || outcome.last_checked_at !== outcome.assessed_at || JSON.stringify(outcome.limitation_codes) !== JSON.stringify(limitations)) ctx.addIssue({ code: 'custom', message: 'cell 파생 메타데이터 불일치' })
 }
 const officialOutcomeSchema = z.strictObject({ ...evidenceProjection, state: z.literal('official_verified'), reliability: z.enum(['high', 'medium']), scope_status: z.literal('exact_entity'), publication_eligibility: z.literal('official_claim'), official_claim_ids: z.array(z.string().min(1)).min(1) }).superRefine(refineEvidence)
@@ -117,11 +117,31 @@ export type Detail = z.infer<typeof detailSchema>
 
 export const methodologySchema = z.strictObject({ schema_version: z.literal(1), artifact_kind: z.literal('company_benefits_methodology'), data_version: version, taxonomy_version: z.literal('benefit-taxonomy-v1'), title: z.string().min(1), paragraphs: z.array(z.string().min(1)).min(1) })
 
+const stateCountsSchema = z.strictObject({ official_verified: z.number().int().nonnegative(), reference: z.number().int().nonnegative(), community_report: z.number().int().nonnegative(), no_public_info: z.number().int().nonnegative() })
+const ledgerHashesSchema = z.strictObject({ 'company-category-cells.jsonl': hash, 'research-attempts.jsonl': hash, 'official-claims-v2.jsonl': hash, 'reference-records.jsonl': hash, 'community-benefit-reports.jsonl': hash, 'sources-v2.jsonl': hash })
+const approvedV2ProjectionSchema = z.strictObject({
+  projection_kind: z.literal('approved_v2_additive'), projection_status: z.literal('in_progress'), base_data_version: version, base_manifest_sha256: hash, data_version: version,
+  approved_batch_count: z.number().int().min(1).max(79), total_batch_count: z.literal(80), projected_company_count: z.number().int().positive().max(1975), total_company_count: z.literal(2000),
+  cell_count: z.number().int().positive().max(19750), cell_state_counts: stateCountsSchema, listing_chunk_size: z.literal(50), listing_chunk_count: z.number().int().positive().max(40), ledger_sha256: ledgerHashesSchema,
+  taxonomy: descriptorSchema, sources: descriptorSchema, methodology: descriptorSchema,
+  listing_chunks: z.array(descriptorSchema.extend({ chunk_index: z.number().int().positive(), first_sequence: z.number().int().positive(), last_sequence: z.number().int().max(2000) })),
+  company_shards: z.record(companyId, descriptorSchema.extend({ company_id: companyId })),
+}).superRefine((projection, ctx) => {
+  const prefix = `community/data/company-benefits/${projection.data_version}/`
+  const descriptors = [projection.taxonomy, projection.sources, projection.methodology, ...projection.listing_chunks, ...Object.values(projection.company_shards)]
+  if (projection.projected_company_count !== projection.approved_batch_count * 25 || projection.cell_count !== projection.projected_company_count * categories.length || Object.values(projection.cell_state_counts).reduce((sum, count) => sum + count, 0) !== projection.cell_count) ctx.addIssue({ code: 'custom', message: 'projection 파생 개수 불일치' })
+  if (projection.listing_chunk_count !== Math.ceil(projection.projected_company_count / projection.listing_chunk_size) || projection.listing_chunks.length !== projection.listing_chunk_count || Object.keys(projection.company_shards).length !== projection.projected_company_count) ctx.addIssue({ code: 'custom', message: 'projection inventory 개수 불일치' })
+  if (descriptors.some((descriptor) => !descriptor.url.startsWith(prefix)) || new Set(descriptors.map((descriptor) => descriptor.url)).size !== descriptors.length) ctx.addIssue({ code: 'custom', message: 'projection 경로 불일치' })
+  if (projection.taxonomy.url !== `${prefix}taxonomy.json` || projection.sources.url !== `${prefix}sources.json` || projection.methodology.url !== `${prefix}methodology.json`) ctx.addIssue({ code: 'custom', message: 'projection 역할 경로 불일치' })
+  projection.listing_chunks.forEach((chunk, index) => { if (chunk.url !== `${prefix}listings/companies-${String(index + 1).padStart(2, '0')}.json` || chunk.chunk_index !== index + 1 || chunk.record_count !== (index === projection.listing_chunk_count - 1 ? projection.projected_company_count - index * projection.listing_chunk_size : projection.listing_chunk_size) || chunk.first_sequence > chunk.last_sequence) ctx.addIssue({ code: 'custom', message: 'projection chunk 불일치' }) })
+  for (const [id, shard] of Object.entries(projection.company_shards)) if (shard.company_id !== id || shard.url !== `${prefix}companies/${id}.json` || shard.record_count !== 1) ctx.addIssue({ code: 'custom', message: 'projection shard 불일치' })
+})
+
 export const manifestSchema = z.strictObject({
   schema_version: z.literal(2), artifact_kind: z.literal('company_benefits_manifest'), artifact_protocol: z.enum(['v1', 'vNext']), data_version: version, fixture: z.literal(false), generated_at: z.iso.datetime(),
   protocol: z.strictObject({ protocol_id: z.literal('company-benefits-population-v4'), protocol_version: z.literal('4.0.0'), protocol_sha256: hash, effective_selection_sha256: hash }), taxonomy_version: z.literal('benefit-taxonomy-v1'), company_count: z.literal(2000), listing_chunk_size: z.literal(50), listing_chunk_count: z.literal(40), category_count: z.literal(10), taxonomy: descriptorSchema, sources: descriptorSchema, methodology: descriptorSchema,
-  cell_count: z.literal(20000).optional(), cell_state_counts: z.strictObject({ official_verified: z.number().int().nonnegative(), reference: z.number().int().nonnegative(), community_report: z.number().int().nonnegative(), no_public_info: z.number().int().nonnegative() }).optional(),
-  ledger_sha256: z.strictObject({ 'company-category-cells.jsonl': hash, 'research-attempts.jsonl': hash, 'official-claims-v2.jsonl': hash, 'reference-records.jsonl': hash, 'community-benefit-reports.jsonl': hash, 'sources-v2.jsonl': hash }).optional(),
+  cell_count: z.literal(20000).optional(), cell_state_counts: stateCountsSchema.optional(),
+  ledger_sha256: ledgerHashesSchema.optional(), approved_v2_projection: approvedV2ProjectionSchema.optional(),
   listing_chunks: z.array(descriptorSchema.extend({ chunk_index: z.number().int().min(1).max(40), first_sequence: z.number().int().min(1), last_sequence: z.number().int().max(2000) })).length(40),
   company_shards: z.record(companyId, descriptorSchema.extend({ company_id: companyId })),
 }).superRefine((manifest, ctx) => {
@@ -137,6 +157,7 @@ export const manifestSchema = z.strictObject({
   if (manifest.artifact_protocol === 'vNext' && explicit.some((value) => value === undefined)) ctx.addIssue({ code: 'custom', message: 'vNext cell manifest 메타데이터 불완전' })
   if (manifest.artifact_protocol === 'v1' && explicit.some((value) => value !== undefined)) ctx.addIssue({ code: 'custom', message: 'v1 manifest에 vNext 메타데이터 포함' })
   if (manifest.cell_state_counts && (Object.values(manifest.cell_state_counts) as number[]).reduce((sum, count) => sum + count, 0) !== 20000) ctx.addIssue({ code: 'custom', message: 'cell 상태 합계 불일치' })
+  if (manifest.approved_v2_projection && (manifest.artifact_protocol !== 'v1' || manifest.approved_v2_projection.base_data_version !== manifest.data_version || manifest.approved_v2_projection.data_version === manifest.data_version)) ctx.addIssue({ code: 'custom', message: 'additive projection base binding 불일치' })
 })
 export type Manifest = z.infer<typeof manifestSchema>
 

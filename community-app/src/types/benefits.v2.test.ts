@@ -66,6 +66,32 @@ it('accepts schema v2 and rejects ranking semantics', () => {
   expect(manifestSchema.safeParse({ ...manifest, rankings_url: '/x' }).success).toBe(false)
 })
 
+it('accepts an additive approved-v2 checkpoint without relabeling the active v1 lineage', () => {
+  const manifest: any = validManifest()
+  manifest.artifact_protocol = 'v1'
+  delete manifest.cell_count
+  delete manifest.cell_state_counts
+  delete manifest.ledger_sha256
+  const projection = {
+    projection_kind: 'approved_v2_additive', projection_status: 'in_progress',
+    base_data_version: manifest.data_version, base_manifest_sha256: 'f'.repeat(64), data_version: 'approved-v2-checkpoint-38',
+    approved_batch_count: 38, total_batch_count: 80, projected_company_count: 950,
+    total_company_count: 2000, cell_count: 9500,
+    cell_state_counts: { official_verified: 142, reference: 1811, community_report: 49, no_public_info: 7498 },
+    listing_chunk_size: 50, listing_chunk_count: 19,
+    ledger_sha256: validManifest().ledger_sha256,
+    taxonomy: { ...manifest.taxonomy, url: 'community/data/company-benefits/approved-v2-checkpoint-38/taxonomy.json' },
+    sources: { ...manifest.sources, url: 'community/data/company-benefits/approved-v2-checkpoint-38/sources.json' },
+    methodology: { ...manifest.methodology, url: 'community/data/company-benefits/approved-v2-checkpoint-38/methodology.json' },
+    listing_chunks: Array.from({ length: 19 }, (_, i) => ({ ...manifest.taxonomy, url: `community/data/company-benefits/approved-v2-checkpoint-38/listings/companies-${String(i + 1).padStart(2, '0')}.json`, chunk_index: i + 1, first_sequence: i * 50 + 1, last_sequence: i * 50 + 50, record_count: 50 })),
+    company_shards: Object.fromEntries(Object.entries(manifest.company_shards).slice(0, 950).map(([id, value]: [string, any]) => [id, { ...value, url: `community/data/company-benefits/approved-v2-checkpoint-38/companies/${id}.json` }])),
+  }
+  expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: projection }).success).toBe(true)
+  expect(manifestSchema.safeParse({ ...manifest, artifact_protocol: 'vNext', approved_v2_projection: projection }).success).toBe(false)
+  expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: { ...projection, base_data_version: 'other' } }).success).toBe(false)
+  expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: { ...projection, cell_count: 9499 } }).success).toBe(false)
+})
+
 it.each([
   '/community/data/company-benefits/v2/taxonomy.json',
   'community/data/company-benefits/v2/../taxonomy.json',

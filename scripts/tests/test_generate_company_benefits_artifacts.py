@@ -590,6 +590,8 @@ def test_build_company_preserves_v1_claims_and_projects_v2_evidence():
     leave = detail["category_outcomes"][0]
     assert leave["reference_ids"] == [reference_id] and leave["community_report_ids"] == [community_id]
     assert leave["claim_count"] == 3 and leave["last_checked_at"] == "2026-11-01T01:02:03Z"
+    assert leave["source_tiers"] == ["community_employee_review", "official_government", "other_public_web"]
+    assert (leave["official_claim_count"], leave["reference_count"], leave["community_report_count"]) == (1, 1, 1)
     assert "reason_code" not in leave
 
 
@@ -626,6 +628,85 @@ def test_build_company_projects_all_searched_sources_and_exact_derived_metadata(
     assert not internal_review_keys(detail["sources"])
     assert all(set(outcome["limitation_codes"]) == {"scope_limit", "currentness_limit"}
                and len(outcome["limitation_codes"]) == 2 for outcome in detail["category_outcomes"])
+    assert all(outcome["source_tiers"] == [] for outcome in detail["category_outcomes"])
+    assert all(outcome["official_claim_count"] == 0 and outcome["reference_count"] == 0
+               and outcome["community_report_count"] == 0 for outcome in detail["category_outcomes"])
+
+
+def make_in_progress_projection_fixture(root, approved_count=38):
+    make_research_fixture(root)
+    batches = series.read_jsonl(root / "series-batches.jsonl")
+    progress = json.loads((root / "series-progress.json").read_text())
+    approved_ids = {batch["batch_id"] for batch in batches[:approved_count]}
+    approved_companies = {company_id for batch in batches[:approved_count] for company_id in batch["company_ids"]}
+    for entry in progress["batches"]:
+        if entry["batch_id"] not in approved_ids:
+            entry["status"] = "pending"
+            entry["claim_count"] = 0
+            entry["no_claim_count"] = 0
+            entry["cell_count"] = 0
+            for field in ("approved_at", "reviewer_ids", "cell_set_sha256", "v2_ledger_sha256"):
+                entry.pop(field, None)
+    progress["status"] = "in_progress"
+    write_json(root / "series-progress.json", progress)
+    for ledger, filename in series.V2_LEDGER_FILES.items():
+        records = series.read_jsonl(root / filename)
+        if ledger == "sources":
+            used = set()
+            for other in ("attempts", "official_claims"):
+                for record in series.read_jsonl(root / series.V2_LEDGER_FILES[other]):
+                    if record.get("company_id") in approved_companies:
+                        used.update(record.get("source_ids", []))
+            for other in ("references", "community_reports"):
+                for record in series.read_jsonl(root / series.V2_LEDGER_FILES[other]):
+                    if record.get("company_id") in approved_companies:
+                        used.add(record.get("source_id"))
+            records = [record for record in records if record.get("source_id") in used]
+        else:
+            records = [record for record in records if record.get("company_id") in approved_companies]
+        write_jsonl(root / filename, records)
+    return approved_companies
+
+
+def test_additive_projection_accepts_only_approved_checkpoint_and_complete_gate_stays_closed(tmp_path):
+    research = tmp_path / "research"
+    approved_companies = make_in_progress_projection_fixture(research)
+    module_spec = importlib.util.spec_from_file_location("approved_projection", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    with raises(ValueError):
+        module.validate_inputs(research, taxonomy, file_digest(TAXONOMY))
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    assert len(inputs[0]) == len(approved_companies) == 950
+    assert metadata["projection_kind"] == "approved_v2_additive"
+    assert metadata["projection_status"] == "in_progress"
+    assert metadata["approved_batch_count"] == 38
+    assert metadata["projected_company_count"] == 950
+    assert metadata["cell_count"] == 9500
+    assert sum(metadata["cell_state_counts"].values()) == 9500
+
+
+def test_additive_projection_rejects_cell_count_and_pending_company_leakage(tmp_path):
+    research = tmp_path / "research"
+    approved_companies = make_in_progress_projection_fixture(research)
+    module_spec = importlib.util.spec_from_file_location("approved_projection_mutations", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    cells_path = research / series.V2_LEDGER_FILES["cells"]
+    original = series.read_jsonl(cells_path)
+    for mutated in (original[:-1], [*original, copy.deepcopy(original[-1])]):
+        write_jsonl(cells_path, mutated)
+        with raises(ValueError):
+            module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    pending_company = next(company["company_id"] for company in series.read_jsonl(research / "companies.jsonl")
+                           if company["company_id"] not in approved_companies)
+    leaked = copy.deepcopy(original[-1])
+    leaked["company_id"] = pending_company
+    write_jsonl(cells_path, [*original, leaked])
+    with raises(ValueError):
+        module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
 
 
 def test_assignment_validator_requires_hash_bound_independent_approval(tmp_path):
