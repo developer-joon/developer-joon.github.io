@@ -1096,6 +1096,11 @@ def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
         assert payload["company"]["company_id"] == company_id
     first_descriptor = manifest["company_shards"][fixture["companies"][0]["company_id"]]
     first_detail = json.loads((version / first_descriptor["url"].removeprefix(prefix)).read_text())
+    sources_document = json.loads((version / manifest["sources"]["url"].removeprefix(prefix)).read_text())
+    assert sources_document["schema_version"] == 1
+    assert sources_document["artifact_kind"] == "company_benefits_sources"
+    assert sources_document["data_version"] == manifest["data_version"]
+    assert len(sources_document["sources"]) == manifest["sources"]["record_count"]
     assert [claim["claim_id"] for claim in first_detail["claims"]] == [fixture["claim"]["claim_id"]]
     assert first_detail["sources"]
     outcomes = first_detail["category_outcomes"]

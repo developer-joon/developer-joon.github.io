@@ -204,6 +204,30 @@ function task7Outcome(category_id: (typeof categories)[number]) {
   }
 }
 
+function vNextDetailWithReference() {
+  const company_id = 'KR-CRN-0000000000001'
+  const category_outcomes = categories.map((category_id) => category_id === 'leave' ? {
+    ...task7Official, category_id, state: 'reference', source_tiers: ['other_public_web'],
+    official_claim_ids: [], official_claim_count: 0, reference_ids: ['reference::record-1'], reference_count: 1,
+    reliability: 'medium', publication_eligibility: 'reference_only', limitation_codes: ['lower_tier_evidence'],
+  } : task7Outcome(category_id))
+  return {
+    schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'vNext', data_version: 'v2', taxonomy_version: 'benefit-taxonomy-v1',
+    company: { company_id, population_sequence: 1, legal_name: 'Test Co', scope: 'domestic', jurisdiction: 'KR', registry_id: '1', selected_reporting_legal_entity: 'Test Co', incorporation_country: 'KR', registered_head_office_country: 'KR', financial_consolidation_parent: { kind: 'unknown', reason: 'unknown' }, ultimate_parent: { kind: 'unknown', reason: 'unknown' }, benefit_policy_owner: { kind: 'unknown', reason: 'unknown' }, sector: 'non_financial', employment_evidence_scope: '', employment_boundary_note: '' },
+    category_outcomes, claims: [], official_claims: [],
+    references: [{ reference_id: 'reference::record-1', cell_id: `cell::${company_id}::leave`, company_id, category_id: 'leave', source_id: 'source::reference', source_tier: 'other_public_web', statement: 'Paid leave is reported.', supporting_quote: 'Paid leave', source_locator: 'https://reference.example/leave', reliability: 'medium', currentness: 'current', scope: { status: 'exact_entity', countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [] }, conflict_status: 'none', publication_eligibility: 'reference_only', checked_at: '2026-11-01T00:00:00Z' }],
+    community_reports: [],
+    sources: [{ source_id: 'source::reference', source_tier: 'other_public_web', title: 'Reference', url: 'https://reference.example/leave', retrieved_at: '2026-11-01T00:00:00Z', content_sha256: 'a'.repeat(64), reliability: 'medium', currentness: 'current', scope_status: 'exact_entity', scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [] }, conflict_status: 'none', publication_eligibility: 'reference_only' }],
+  }
+}
+
+it('rejects v2 evidence bound to another company or a noncanonical cell', () => {
+  const valid = vNextDetailWithReference()
+  expect(detailSchema.safeParse(valid).success).toBe(true)
+  expect(detailSchema.safeParse({ ...valid, references: [{ ...valid.references[0], company_id: 'KR-CRN-0000000000002' }] }).success).toBe(false)
+  expect(detailSchema.safeParse({ ...valid, references: [{ ...valid.references[0], cell_id: 'cell::KR-CRN-0000000000002::leave' }] }).success).toBe(false)
+})
+
 it('requires exact detail claim IDs and rejects official claims in lower-tier cells', () => {
   const category_outcomes = categories.map(task7Outcome)
   const listing = { company_id: 'KR-CRN-0000000000001', category_outcomes } as unknown as CompanyListing

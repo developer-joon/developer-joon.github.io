@@ -1022,7 +1022,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
                     raise ValueError(f"conflicting public source projection: {source['source_id']}")
                 source_inventory[source["source_id"]] = source
         public_sources = [source_inventory[source_id] for source_id in sorted(source_inventory)]
-        sources_descriptor = write_version(Path("sources.json"), {"data_version": data_version, "sources": public_sources}, len(public_sources))
+        sources_descriptor = write_version(Path("sources.json"), {"schema_version": 1, "artifact_kind": "company_benefits_sources", "data_version": data_version, "sources": public_sources}, len(public_sources))
         methodology = {
             "schema_version": 1,
             "artifact_kind": "company_benefits_methodology",

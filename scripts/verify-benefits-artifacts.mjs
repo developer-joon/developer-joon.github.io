@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
-import { manifestSchema, listingChunkSchema, detailSchema, methodologySchema, categories, assertCompanyDetailEvidence, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
+import { manifestSchema, listingChunkSchema, detailSchema, methodologySchema, sourcesDocumentSchema, categories, assertCompanyDetailEvidence, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
 
 const forbiddenText = [/fixture-v1/i, /"fixture"\s*:\s*true/i, /example-\d{3}/i, /example\.org/i, /rankings\.json/i, /rankings_url/i, /\/benefits\/rankings\//i, /가상 별빛|가상 검증기업|예시 데이터|모든 기업·정책·점수는 가상/]
 const forbiddenKey = /score|rank|percentile|coverage(?:_percent)?|fitScore|rankOrder/i
@@ -92,15 +92,23 @@ export async function verifyApprovedV2Projection(root, projection, baseById) {
   assertProjectionCompanyJoin(companies, baseById)
   for (const company of companies) byId.set(company.company_id, company)
   if (byId.size !== companies.length) throw Error('approved projection duplicate company')
+  const requiredSourceIds = new Set()
   for (const [id, descriptor] of Object.entries(projection.company_shards)) {
     const detail = detailSchema.parse(await load(descriptor))
     if (detail.artifact_protocol !== 'vNext' || descriptor.company_id !== id || detail.company.company_id !== id || detail.data_version !== projection.data_version) throw Error(`approved projection company shard mismatch: ${id}`)
     assertCompanyDetailEvidence(byId.get(id), detail)
+    for (const sourceId of detail.category_outcomes.flatMap((outcome) => outcome.searched_source_ids)) requiredSourceIds.add(sourceId)
+    for (const sourceId of detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id))) requiredSourceIds.add(sourceId)
+    for (const sourceId of detail.official_claims.flatMap((claim) => claim.source_ids)) requiredSourceIds.add(sourceId)
+    for (const record of [...detail.references, ...detail.community_reports]) requiredSourceIds.add(record.source_id)
   }
   if (Object.keys(projection.company_shards).length !== projection.projected_company_count) throw Error('approved projection shard count mismatch')
   const methodology = methodologySchema.parse(await load(projection.methodology))
   if (methodology.data_version !== projection.data_version) throw Error('approved projection methodology version mismatch')
-  await load(projection.taxonomy); await load(projection.sources)
+  await load(projection.taxonomy)
+  const sourceDocument = sourcesDocumentSchema.parse(await load(projection.sources))
+  const sourceIds = sourceDocument.sources.map((source) => source.source_id)
+  if (sourceDocument.data_version !== projection.data_version || sourceIds.length !== projection.sources.record_count || sourceIds.length !== requiredSourceIds.size || sourceIds.some((sourceId) => !requiredSourceIds.has(sourceId))) throw Error('approved projection source inventory mismatch')
   await assertNoBenefitsFixtureLeaks(root, manifestDescriptors(projection), projection.data_version)
   return companies.length
 }
