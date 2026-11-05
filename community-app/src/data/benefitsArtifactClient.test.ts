@@ -73,6 +73,17 @@ function withProjectionDetail() {
   manifest.approved_v2_projection = projection; fixture.bodies.set(manifestUrl, json(manifest)); return fixture
 }
 describe('artifact v2 listing client', () => {
+  it('cancels a streaming reader when byte accounting throws without masking the accounting error', async () => {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new TextEncoder().encode('{}')) },
+      cancel() { cancelled = true; throw new Error('cancel failed') },
+    })
+    const client = new BenefitsArtifactClient(async () => new Response(body), webcrypto.subtle as SubtleCrypto)
+    const raw = client as unknown as { raw(url: string, signal: AbortSignal | undefined, maxBytes: number, account: (bytes: number) => void): Promise<string> }
+    await expect(raw.raw('/accounting-failure', undefined, 100, () => { throw new Error('상세 데이터 배치 크기 초과') })).rejects.toThrow('상세 데이터 배치 크기 초과')
+    expect(cancelled).toBe(true)
+  })
   it('loads exactly 40 chunks with a concurrency ceiling of four', async () => { const { bodies } = artifacts(); let active = 0; let peak = 0; const client = new BenefitsArtifactClient(async (url) => { if (url.includes('/listings/')) { active++; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 1)); active-- } return new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 }) }, webcrypto.subtle as SubtleCrypto); const manifest = await client.loadManifest(); const companies = await client.loadListingChunks(manifest); expect(companies).toHaveLength(2000); expect(companies.at(-1)?.population_sequence).toBe(2000); expect(peak).toBeGreaterThan(1); expect(peak).toBeLessThanOrEqual(4) })
   it('fails closed on a corrupt chunk and evicts the failed cache', async () => { const { bodies } = artifacts(); const target = [...bodies.keys()].find((url) => url.includes('/listings/'))!; let corrupt = true; const client = new BenefitsArtifactClient(async (url) => new Response(url === target && corrupt ? `${bodies.get(url)} ` : bodies.get(url), { status: bodies.has(url) ? 200 : 404 }), webcrypto.subtle as SubtleCrypto); const manifest = await client.loadManifest(); await expect(client.loadListingChunks(manifest)).rejects.toThrow(); corrupt = false; await expect(client.loadListingChunks(manifest)).resolves.toHaveLength(2000) })
   it('rejects legacy category outcomes when the manifest declares explicit cells', async () => { const { bodies } = artifacts(); const manifestUrl = '/community/data/company-benefits/manifest.json'; const manifest = JSON.parse(bodies.get(manifestUrl)!); manifest.artifact_protocol = 'vNext'; manifest.cell_count = 20000; manifest.cell_state_counts = { official_verified: 0, reference: 0, community_report: 0, no_public_info: 20000 }; manifest.ledger_sha256 = { 'company-category-cells.jsonl': 'a'.repeat(64), 'research-attempts.jsonl': 'b'.repeat(64), 'official-claims-v2.jsonl': 'c'.repeat(64), 'reference-records.jsonl': 'd'.repeat(64), 'community-benefit-reports.jsonl': 'e'.repeat(64), 'sources-v2.jsonl': 'f'.repeat(64) }; bodies.set(manifestUrl, json(manifest)); const client = new BenefitsArtifactClient(async (url) => new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 }), webcrypto.subtle as SubtleCrypto); const loaded = await client.loadManifest(); await expect(client.loadListingChunks(loaded)).rejects.toThrow('메타데이터') })

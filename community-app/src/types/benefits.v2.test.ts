@@ -357,6 +357,55 @@ it('fails closed when projected evidence or its bound source is not publication 
   expect(detailSchema.safeParse(community).success).toBe(false)
 })
 
+it.each([
+  ['reliability', (detail: ReturnType<typeof vNextDetailWithReference>) => { Object.assign(detail.sources[0], { reliability: 'low' }) }],
+  ['currentness', (detail: ReturnType<typeof vNextDetailWithReference>) => { Object.assign(detail.sources[0], { currentness: 'historical' }) }],
+  ['scope status', (detail: ReturnType<typeof vNextDetailWithReference>) => { Object.assign(detail.sources[0], { scope_status: 'bounded_entity' }) }],
+  ['scope values', (detail: ReturnType<typeof vNextDetailWithReference>) => { Object.assign(detail.sources[0].scope, { roles: ['executives'] }) }],
+  ['conflict status', (detail: ReturnType<typeof vNextDetailWithReference>) => { Object.assign(detail.sources[0], { conflict_status: 'contradictory' }) }],
+])('rejects a reference whose bound source disagrees on %s', (_field, mutate) => {
+  const detail = vNextDetailWithReference()
+  const listing = { company_id: detail.company.company_id, category_outcomes: detail.category_outcomes } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(listing, detail as unknown as Detail)).not.toThrow()
+  mutate(detail)
+  expect(() => assertCompanyDetailEvidence(listing, detail as unknown as Detail)).toThrow(/limitation metadata/)
+})
+
+it('rejects favorable/adverse limitation metadata rebound in either direction', () => {
+  const favorableRecord = vNextDetailWithReference()
+  const listing = { company_id: favorableRecord.company.company_id, category_outcomes: favorableRecord.category_outcomes } as unknown as CompanyListing
+  Object.assign(favorableRecord.sources[0], { reliability: 'low', currentness: 'historical', scope_status: 'group_only', conflict_status: 'contradictory' })
+  expect(() => assertCompanyDetailEvidence(listing, favorableRecord as unknown as Detail)).toThrow(/limitation metadata/)
+
+  const favorableSource = vNextDetailWithReference()
+  Object.assign(favorableSource.references[0], { reliability: 'low', currentness: 'historical', conflict_status: 'contradictory' })
+  favorableSource.references[0].scope.status = 'group_only'
+  expect(() => assertCompanyDetailEvidence(listing, favorableSource as unknown as Detail)).toThrow(/limitation metadata/)
+})
+
+it('binds official and community limitation metadata to every source', () => {
+  const official = vNextDetailWithReference()
+  const claimId = `official::${'a'.repeat(64)}`
+  official.references = []
+  Object.assign(official.category_outcomes[0], task7Official, { official_claim_ids: [claimId] })
+  Object.assign(official, { official_claims: [{ claim_id: claimId, cell_id: `cell::${official.company.company_id}::leave`, company_id: official.company.company_id, category_id: 'leave', jurisdiction: 'KR', source_ids: ['source::reference'], source_tier: 'official_government', scope_status: 'exact_entity', scope: official.sources[0].scope, conflict_status: 'none', publication_eligibility: 'eligible' }] })
+  official.sources[0] = { ...official.sources[0], source_tier: 'official_government', reliability: 'high', publication_eligibility: 'eligible' }
+  const officialListing = { company_id: official.company.company_id, category_outcomes: official.category_outcomes } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(officialListing, official as unknown as Detail)).not.toThrow()
+  official.sources[0].conflict_status = 'disclosed'
+  expect(() => assertCompanyDetailEvidence(officialListing, official as unknown as Detail)).toThrow(/limitation metadata/)
+
+  const community = vNextDetailWithReference()
+  community.references = []
+  Object.assign(community.category_outcomes[0], task7Official, { state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] })
+  Object.assign(community, { community_reports: [{ community_report_id: 'community::record-1', cell_id: `cell::${community.company.company_id}::leave`, company_id: community.company.company_id, category_id: 'leave', source_id: 'source::reference', source_tier: 'user_submission', statement: 'Employee report.', reliability: 'low', currentness: 'current', scope_status: 'exact_entity', scope: structuredClone(community.sources[0].scope), conflict_status: 'none', frozen_snapshot: { locator: 'https://reference.example/snapshot', content_sha256: 'b'.repeat(64), frozen_at: '2026-11-01T00:00:00Z' }, publication_eligibility: 'eligible' }] })
+  community.sources[0] = { ...community.sources[0], source_tier: 'user_submission', reliability: 'low', publication_eligibility: 'eligible' }
+  const communityListing = { company_id: community.company.company_id, category_outcomes: community.category_outcomes } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(communityListing, community as unknown as Detail)).not.toThrow()
+  Object.assign(community.sources[0].scope, { roles: ['executives'] })
+  expect(() => assertCompanyDetailEvidence(communityListing, community as unknown as Detail)).toThrow(/limitation metadata/)
+})
+
 it('requires exact detail claim IDs and rejects official claims in lower-tier cells', () => {
   const category_outcomes = categories.map(task7Outcome)
   const listing = { company_id: 'KR-CRN-0000000000001', category_outcomes } as unknown as CompanyListing

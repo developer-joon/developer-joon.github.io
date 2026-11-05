@@ -240,6 +240,20 @@ export function assertCompanyDetailEvidence(listing: CompanyListing, detail: Det
   for (const record of [...(detail.official_claims ?? []), ...(detail.references ?? []), ...(detail.community_reports ?? [])]) {
     if (record.company_id !== detail.company.company_id || record.cell_id !== canonicalCellId(detail.company.company_id, record.category_id)) throw new Error('상세 evidence company/cell binding 불일치')
   }
+  const sources = new Map((detail.sources ?? []).flatMap((source) => 'scope_status' in source ? [[source.source_id, source] as const] : []))
+  const assertLimitationBinding = (recordId: string, sourceId: string, limitation: { reliability?: string; currentness?: string; scope_status: string; scope: { countries: string[]; legal_entities: string[]; roles: string[]; employment_types: string[] }; conflict_status: string }) => {
+    const source = sources.get(sourceId)
+    if (!source) throw new Error(`evidence bound source 누락: ${recordId}`)
+    const expected = { ...(limitation.reliability === undefined ? {} : { reliability: limitation.reliability }), ...(limitation.currentness === undefined ? {} : { currentness: limitation.currentness }), scope_status: limitation.scope_status, scope: limitation.scope, conflict_status: limitation.conflict_status }
+    const actual = { ...(limitation.reliability === undefined ? {} : { reliability: source.reliability }), ...(limitation.currentness === undefined ? {} : { currentness: source.currentness }), scope_status: source.scope_status, scope: source.scope, conflict_status: source.conflict_status }
+    if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error(`evidence/source limitation metadata 불일치: ${recordId}`)
+  }
+  for (const claim of detail.official_claims ?? []) for (const sourceId of claim.source_ids) assertLimitationBinding(claim.claim_id, sourceId, claim)
+  for (const record of detail.references ?? []) {
+    const { status: scope_status, ...scope } = record.scope
+    assertLimitationBinding(record.reference_id, record.source_id, { reliability: record.reliability, currentness: record.currentness, scope_status, scope, conflict_status: record.conflict_status })
+  }
+  for (const report of detail.community_reports ?? []) assertLimitationBinding(report.community_report_id, report.source_id, report)
   for (const category of categories) {
     const listed = outcomeFor(listing, category)
     const detailed = detail.category_outcomes.find((outcome) => outcome.category_id === category)

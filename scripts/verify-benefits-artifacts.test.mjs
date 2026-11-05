@@ -367,6 +367,18 @@ test('projection verifier rejects ineligible evidence and bound sources after de
   await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /publication eligibility/i)
 }))
 
+for (const [name, mutate] of [
+  ['favorable record rebound to an adverse source', (detail) => Object.assign(detail.sources[0], { reliability: 'low', currentness: 'historical', scope_status: 'group_only', conflict_status: 'contradictory' })],
+  ['adverse record rebound to a favorable source', (detail) => { Object.assign(detail.references[0], { reliability: 'low', currentness: 'historical', conflict_status: 'contradictory' }); detail.references[0].scope.status = 'group_only' }],
+]) {
+  test(`projection verifier rejects ${name}`, () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
+    const reboundDetail = structuredClone(detail)
+    mutate(reboundDetail)
+    projection.company_shards[company_id] = { company_id, ...await writeProjectionArtifact(root, version, `companies/${company_id}.json`, reboundDetail, 1) }
+    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /limitation metadata/i)
+  }))
+}
+
 test('projection verifier rejects listing and full base-detail identity drift after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
   const listingDescriptor = projection.listing_chunks[0]
   const listing = JSON.parse(await readFile(path.join(root, listingDescriptor.url), 'utf8'))

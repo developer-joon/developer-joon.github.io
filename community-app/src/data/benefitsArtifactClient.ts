@@ -60,9 +60,12 @@ export class BenefitsArtifactClient {
     try {
       while (true) {
         signal?.throwIfAborted(); const { done, value } = await reader.read(); if (done) break
-        if (!value || value.byteLength > maxBytes - size) { await reader.cancel(); throw new Error('데이터 크기 초과') }
+        if (!value || value.byteLength > maxBytes - size) throw new Error('데이터 크기 초과')
         size += value.byteLength; account?.(value.byteLength); chunks.push(value)
       }
+    } catch (error) {
+      try { await reader.cancel(error) } catch { /* Preserve the read/accounting failure. */ }
+      throw error
     } finally { signal?.removeEventListener('abort', abort) }
     const bytes = new Uint8Array(size); let offset = 0
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
