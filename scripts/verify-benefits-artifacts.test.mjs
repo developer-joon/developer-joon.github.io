@@ -97,33 +97,71 @@ function projectedOutcome(category_id) {
   return { ...base, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only', kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, limitation_codes: ['scope_limit', 'currentness_limit'], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_at: '2026-11-01T00:00:00Z' }
 }
 
-async function projectionFixture(run) {
+async function projectionFixture(run, companyCount = 50) {
   const root = await mkdtemp(path.join(tmpdir(), 'benefits-projection-'))
   const version = 'approved-v2-test'
   const outcomes = categories.map(projectedOutcome)
   const source = { source_id: 'source::reference', source_tier: 'other_public_web', title: 'Reference', url: 'https://reference.example/leave', retrieved_at: '2026-11-01T00:00:00Z', content_sha256: 'a'.repeat(64), reliability: 'medium', currentness: 'current', scope_status: 'exact_entity', scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [] }, conflict_status: 'none', publication_eligibility: 'reference_only' }
   const companies = []
   const details = new Map()
-  for (let index = 1; index <= 50; index++) {
+  for (let index = 1; index <= companyCount; index++) {
     const company_id = `KR-CRN-${String(index).padStart(13, '0')}`
     companies.push({ company_id, population_sequence: index, legal_name: 'Test Co', display_name: 'Test Co', scope: 'domestic', jurisdiction: 'KR', incorporation_country: 'KR', registered_head_office_country: 'KR', selected_reporting_legal_entity: 'Test Co', sector: 'non_financial', category_outcomes: outcomes })
     const reference = { reference_id: 'reference::record-1', cell_id: `cell::${company_id}::leave`, company_id, category_id: 'leave', source_id: source.source_id, source_tier: 'other_public_web', statement: 'Paid leave is reported.', supporting_quote: 'Paid leave', source_locator: source.url, reliability: 'medium', currentness: 'current', scope: { status: 'exact_entity', countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [] }, conflict_status: 'none', publication_eligibility: 'reference_only', checked_at: '2026-11-01T00:00:00Z' }
     details.set(company_id, { schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'vNext', data_version: version, taxonomy_version: 'benefit-taxonomy-v1', company: { company_id, population_sequence: index, legal_name: 'Test Co', scope: 'domestic', jurisdiction: 'KR', registry_id: String(index), selected_reporting_legal_entity: 'Test Co', incorporation_country: 'KR', registered_head_office_country: 'KR', financial_consolidation_parent: { kind: 'unknown', reason: 'unknown' }, ultimate_parent: { kind: 'unknown', reason: 'unknown' }, benefit_policy_owner: { kind: 'unknown', reason: 'unknown' }, sector: 'non_financial', employment_evidence_scope: '', employment_boundary_note: '' }, category_outcomes: outcomes, claims: [], official_claims: [], references: [reference], community_reports: [], sources: [source] })
   }
   try {
-    const listing = await writeProjectionArtifact(root, version, 'listings/companies-01.json', { schema_version: 1, artifact_kind: 'company_listing_chunk', artifact_protocol: 'vNext', data_version: version, taxonomy_version: 'benefit-taxonomy-v1', chunk_index: 1, sequence_start: 1, sequence_end: 50, companies }, 50)
+    const listing_chunks = []
+    for (let offset = 0; offset < companies.length; offset += 50) {
+      const rows = companies.slice(offset, offset + 50)
+      const chunk_index = listing_chunks.length + 1
+      const listing = await writeProjectionArtifact(root, version, `listings/companies-${String(chunk_index).padStart(2, '0')}.json`, { schema_version: 1, artifact_kind: 'company_listing_chunk', artifact_protocol: 'vNext', data_version: version, taxonomy_version: 'benefit-taxonomy-v1', chunk_index, sequence_start: rows[0].population_sequence, sequence_end: rows.at(-1).population_sequence, companies: rows }, rows.length)
+      listing_chunks.push({ ...listing, chunk_index, first_sequence: rows[0].population_sequence, last_sequence: rows.at(-1).population_sequence })
+    }
     const company_shards = {}
     for (const [company_id, detail] of details) company_shards[company_id] = { company_id, ...await writeProjectionArtifact(root, version, `companies/${company_id}.json`, detail, 1) }
     const sources = await writeProjectionArtifact(root, version, 'sources.json', { schema_version: 1, artifact_kind: 'company_benefits_sources', data_version: version, sources: [source] }, 1)
     const methodology = await writeProjectionArtifact(root, version, 'methodology.json', { schema_version: 1, artifact_kind: 'company_benefits_methodology', data_version: version, taxonomy_version: 'benefit-taxonomy-v1', title: 'Method', paragraphs: ['Method'] }, 1)
     const taxonomy = await writeProjectionArtifact(root, version, 'taxonomy.json', {}, 0)
-    const projection = { data_version: version, projected_company_count: 50, cell_count: 500, cell_state_counts: { official_verified: 0, reference: 50, community_report: 0, no_public_info: 450 }, listing_chunks: [{ ...listing, chunk_index: 1, first_sequence: 1, last_sequence: 50 }], company_shards, sources, methodology, taxonomy }
+    const projection = { data_version: version, projected_company_count: companyCount, cell_count: companyCount * 10, cell_state_counts: { official_verified: 0, reference: companyCount, community_report: 0, no_public_info: companyCount * 9 }, listing_chunks, company_shards, sources, methodology, taxonomy }
     const company_id = companies[0].company_id
     await run({ root, projection, company_id, detail: details.get(company_id), source, version, baseById: new Map(companies.map((company) => [company.company_id, { population_sequence: company.population_sequence }])) })
   } finally {
     await rm(root, { recursive: true, force: true })
   }
 }
+
+test('projection verifier accepts a final partial listing chunk and rejects malformed chunk boundaries', () => projectionFixture(async ({ root, projection, version, baseById }) => {
+  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById))
+  const original = structuredClone(projection)
+  const rewriteChunk = async (index, companies, metadata = {}) => {
+    const descriptor = original.listing_chunks[index]
+    const document = JSON.parse(await readFile(path.join(root, descriptor.url), 'utf8'))
+    document.companies = companies
+    document.sequence_start = metadata.sequence_start ?? companies[0]?.population_sequence ?? descriptor.first_sequence
+    document.sequence_end = metadata.sequence_end ?? companies.at(-1)?.population_sequence ?? descriptor.last_sequence
+    const rebound = await writeProjectionArtifact(root, version, `listings/companies-${String(index + 1).padStart(2, '0')}.json`, document, metadata.record_count ?? companies.length)
+    projection.listing_chunks[index] = { ...rebound, chunk_index: index + 1, first_sequence: metadata.first_sequence ?? document.sequence_start, last_sequence: metadata.last_sequence ?? document.sequence_end }
+  }
+  const first = JSON.parse(await readFile(path.join(root, original.listing_chunks[0].url), 'utf8')).companies
+  const final = JSON.parse(await readFile(path.join(root, original.listing_chunks[1].url), 'utf8')).companies
+  const mutations = [
+    async () => rewriteChunk(1, []),
+    async () => rewriteChunk(1, [...final, ...first.slice(0, 26)]),
+    async () => rewriteChunk(0, first.slice(0, 49)),
+    async () => rewriteChunk(1, final.slice(1)),
+    async () => rewriteChunk(1, [first.at(-1), ...final.slice(1)]),
+    async () => rewriteChunk(1, [final[1], final[0], ...final.slice(2)]),
+    async () => rewriteChunk(1, final, { record_count: 24 }),
+  ]
+  for (const mutate of mutations) {
+    Object.assign(projection, structuredClone(original))
+    await mutate()
+    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /chunk|listing|sequence|count|canonical|duplicate|companies|array|expected/i)
+  }
+  Object.assign(projection, structuredClone(original), { projected_company_count: 74 })
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById), /count/i)
+}, 75))
 
 test('projection verifier rejects cross-company and bogus-cell evidence after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById }) => {
   await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById))

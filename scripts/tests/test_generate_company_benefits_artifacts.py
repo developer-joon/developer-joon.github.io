@@ -687,6 +687,36 @@ def test_additive_projection_accepts_only_approved_checkpoint_and_complete_gate_
     assert sum(metadata["cell_state_counts"].values()) == 9500
 
 
+def test_additive_projection_emits_39_batch_checkpoint_with_final_25_company_chunk(tmp_path):
+    research = tmp_path / "research"
+    make_in_progress_projection_fixture(research, approved_count=39)
+    module_spec = importlib.util.spec_from_file_location("approved_projection_odd_checkpoint", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text())
+    inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
+    base = tmp_path / "base"
+    base.mkdir()
+    write_json(base / "manifest.json", {"artifact_protocol": "v1", "data_version": "base-v1"})
+    metadata = module.freeze_snapshot({
+        **module.thaw_snapshot(metadata),
+        "base_data_version": "base-v1",
+        "base_manifest_sha256": file_digest(base / "manifest.json"),
+    })
+    output = tmp_path / "projection-output"
+    module.emit_artifacts(output, "approved-v2-checkpoint-39", "2026-11-05T00:00:00Z",
+                          taxonomy, inputs, metadata, base)
+    manifest = json.loads((output / "manifest.json").read_text())
+    projection = manifest["approved_v2_projection"]
+    assert projection["projected_company_count"] == 975
+    assert projection["listing_chunk_count"] == 20
+    assert [chunk["record_count"] for chunk in projection["listing_chunks"]] == [50] * 19 + [25]
+    final = json.loads((output / "approved-v2-checkpoint-39/listings/companies-20.json").read_text())
+    assert len(final["companies"]) == 25
+    assert (final["sequence_start"], final["sequence_end"]) == (951, 975)
+
+
 def test_additive_projection_rejects_cell_count_and_pending_company_leakage(tmp_path):
     research = tmp_path / "research"
     approved_companies = make_in_progress_projection_fixture(research)

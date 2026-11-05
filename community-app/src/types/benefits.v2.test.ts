@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { assertCompanyDetailEvidence, categories, claimSchema, detailSchema, manifestSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema, type CompanyListing, type Detail } from './benefits'
+import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, categories, claimSchema, detailSchema, listingChunkSchema, manifestSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema, type CompanyListing, type Detail } from './benefits'
 
 function validManifest() {
   const descriptor = { url: 'community/data/company-benefits/v2/taxonomy.json', sha256: 'a'.repeat(64), record_count: 10, byte_count: 100 }
@@ -90,6 +90,44 @@ it('accepts an additive approved-v2 checkpoint without relabeling the active v1 
   expect(manifestSchema.safeParse({ ...manifest, artifact_protocol: 'vNext', approved_v2_projection: projection }).success).toBe(false)
   expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: { ...projection, base_data_version: 'other' } }).success).toBe(false)
   expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: { ...projection, cell_count: 9499 } }).success).toBe(false)
+})
+
+it('accepts a 39-batch projection descriptor inventory with one final 25-company chunk', () => {
+  const manifest: any = validManifest()
+  manifest.artifact_protocol = 'v1'
+  delete manifest.cell_count
+  delete manifest.cell_state_counts
+  delete manifest.ledger_sha256
+  const dataVersion = 'approved-v2-checkpoint-39'
+  const projection = {
+    projection_kind: 'approved_v2_additive', projection_status: 'in_progress',
+    base_data_version: manifest.data_version, base_manifest_sha256: 'f'.repeat(64), data_version: dataVersion,
+    approved_batch_count: 39, total_batch_count: 80, projected_company_count: 975,
+    total_company_count: 2000, cell_count: 9750,
+    cell_state_counts: { official_verified: 0, reference: 0, community_report: 0, no_public_info: 9750 },
+    listing_chunk_size: 50, listing_chunk_count: 20,
+    ledger_sha256: validManifest().ledger_sha256,
+    taxonomy: { ...manifest.taxonomy, url: `community/data/company-benefits/${dataVersion}/taxonomy.json` },
+    sources: { ...manifest.sources, url: `community/data/company-benefits/${dataVersion}/sources.json` },
+    methodology: { ...manifest.methodology, url: `community/data/company-benefits/${dataVersion}/methodology.json` },
+    listing_chunks: Array.from({ length: 20 }, (_, index) => {
+      const record_count = index === 19 ? 25 : 50
+      return { ...manifest.taxonomy, url: `community/data/company-benefits/${dataVersion}/listings/companies-${String(index + 1).padStart(2, '0')}.json`, chunk_index: index + 1, first_sequence: index * 50 + 1, last_sequence: index * 50 + record_count, record_count }
+    }),
+    company_shards: Object.fromEntries(Object.entries(manifest.company_shards).slice(0, 975).map(([id, value]: [string, any]) => [id, { ...value, url: `community/data/company-benefits/${dataVersion}/companies/${id}.json` }])),
+  }
+  expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: projection }).success).toBe(true)
+  for (const mutation of [
+    { index: 19, values: { record_count: 0, last_sequence: 950 } },
+    { index: 19, values: { record_count: 51, last_sequence: 1001 } },
+    { index: 0, values: { record_count: 49, last_sequence: 49 } },
+    { index: 1, values: { first_sequence: 52, last_sequence: 101 } },
+    { index: 1, values: { first_sequence: 50, last_sequence: 99 } },
+  ]) {
+    const invalid = structuredClone(projection)
+    Object.assign(invalid.listing_chunks[mutation.index], mutation.values)
+    expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: invalid }).success).toBe(false)
+  }
 })
 
 it.each([
@@ -203,6 +241,21 @@ function task7Outcome(category_id: (typeof categories)[number]) {
     reason_code: 'searched_not_found', searched_at: '2026-11-01T00:00:00Z',
   }
 }
+
+it('scopes partial listing chunks to the additive approved-v2 projection schema', () => {
+  const companies = Array.from({ length: 25 }, (_, index) => ({
+    company_id: `KR-CRN-${String(index + 1).padStart(13, '0')}`,
+    population_sequence: 951 + index,
+    legal_name: `Company ${index + 1}`,
+    display_name: `Company ${index + 1}`,
+    scope: 'domestic', jurisdiction: 'KR', incorporation_country: 'KR', registered_head_office_country: 'KR',
+    selected_reporting_legal_entity: `Company ${index + 1}`, sector: 'non_financial',
+    category_outcomes: categories.map(task7Outcome),
+  }))
+  const chunk = { schema_version: 1, artifact_kind: 'company_listing_chunk', artifact_protocol: 'vNext', data_version: 'approved-v2-checkpoint-39', taxonomy_version: 'benefit-taxonomy-v1', chunk_index: 20, sequence_start: 951, sequence_end: 975, companies }
+  expect(approvedV2ListingChunkSchema.safeParse(chunk).success).toBe(true)
+  expect(listingChunkSchema.safeParse(chunk).success).toBe(false)
+})
 
 function vNextDetailWithReference() {
   const company_id = 'KR-CRN-0000000000001'

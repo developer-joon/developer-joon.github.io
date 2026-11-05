@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
-import { manifestSchema, listingChunkSchema, detailSchema, methodologySchema, sourcesDocumentSchema, categories, assertCompanyDetailEvidence, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
+import { manifestSchema, listingChunkSchema, approvedV2ListingChunkSchema, detailSchema, methodologySchema, sourcesDocumentSchema, categories, assertCompanyDetailEvidence, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
 
 const forbiddenText = [/fixture-v1/i, /"fixture"\s*:\s*true/i, /example-\d{3}/i, /example\.org/i, /rankings\.json/i, /rankings_url/i, /\/benefits\/rankings\//i, /가상 별빛|가상 검증기업|예시 데이터|모든 기업·정책·점수는 가상/]
 const forbiddenKey = /score|rank|percentile|coverage(?:_percent)?|fitScore|rankOrder/i
@@ -81,9 +81,14 @@ export async function verifyApprovedV2Projection(root, projection, baseById) {
   }
   await assertExactArtifactInventory(root, projection)
   const companies = []; const byId = new Map()
-  for (const descriptor of projection.listing_chunks) {
-    const chunk = listingChunkSchema.parse(await load(descriptor))
-    if (chunk.artifact_protocol !== 'vNext' || chunk.data_version !== projection.data_version || chunk.companies.length !== descriptor.record_count || chunk.chunk_index !== descriptor.chunk_index || chunk.sequence_start !== descriptor.first_sequence || chunk.sequence_end !== descriptor.last_sequence) throw Error(`approved projection listing metadata mismatch: ${descriptor.url}`)
+  const expectedChunkCount = Math.ceil(projection.projected_company_count / 50)
+  if (projection.listing_chunks.length !== expectedChunkCount) throw Error('approved projection listing chunk count mismatch')
+  for (const [index, descriptor] of projection.listing_chunks.entries()) {
+    const chunk = approvedV2ListingChunkSchema.parse(await load(descriptor))
+    const firstSequence = index * 50 + 1
+    const recordCount = Math.min(50, projection.projected_company_count - index * 50)
+    const lastSequence = firstSequence + recordCount - 1
+    if (chunk.artifact_protocol !== 'vNext' || chunk.data_version !== projection.data_version || descriptor.chunk_index !== index + 1 || descriptor.record_count !== recordCount || descriptor.first_sequence !== firstSequence || descriptor.last_sequence !== lastSequence || chunk.companies.length !== recordCount || chunk.chunk_index !== index + 1 || chunk.sequence_start !== firstSequence || chunk.sequence_end !== lastSequence || chunk.companies.some((company, row) => company.population_sequence !== firstSequence + row)) throw Error(`approved projection listing chunk metadata/sequence mismatch: ${descriptor.url}`)
     companies.push(...chunk.companies)
   }
   assertListingOutcomes(companies)
