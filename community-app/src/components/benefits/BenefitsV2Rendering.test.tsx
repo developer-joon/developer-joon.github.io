@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 import { BenefitsHeatmapTable } from './BenefitsHeatmapTable'
@@ -77,7 +77,7 @@ it('renders every source tier and state warning without combining official and c
 
 it('exposes structured heatmap state, counts, currentness, scope, date and conflict context', () => {
   render(<BenefitsHeatmapTable companies={[researchedCompany(1)]} selectedCategories={['health']} compare={[]} toggle={() => undefined} link={() => '#'} />)
-  const link = screen.getByRole('link', { name: 'Test 1 건강·보험 참고 정보' })
+  const link = screen.getByRole('link', { name: 'Test 1 건강·보험 구체 혜택 확인 필요' })
   expect(link).toHaveAttribute('aria-describedby')
   const description = document.getElementById(link.getAttribute('aria-describedby')!)
   expect(description).toHaveTextContent('출처 계층: 기타 공개자료')
@@ -124,7 +124,90 @@ it('marks projected companies with an accessible lineage badge and pending compa
   const pending = { ...company(2), lineage: { legacy: company(2) } } as BenefitCompanyView
   render(<BenefitsHeatmapTable companies={[projected, pending]} selectedCategories={['leave']} compare={[]} toggle={() => undefined} link={() => '#'} projectionActive />)
   expect(screen.getByLabelText('승인 v2 조사 적용')).toBeVisible()
-  expect(screen.getByText('v2 승인 조사 미적용')).toBeVisible()
+  expect(screen.getAllByText('v2 승인 조사 미적용').length).toBeGreaterThanOrEqual(1)
+})
+
+it('distinguishes specific content, evidence-only, no-public-info, and pending cells in visible and accessible heatmap labels', () => {
+  const withSpecific = researchedCompany(11)
+  withSpecific.category_outcomes[0] = researched('leave', 'official_verified', ['official_government'], { specific_benefit_count: 2 })
+  const evidenceOnly = researchedCompany(12)
+  evidenceOnly.category_outcomes[0] = researched('leave', 'official_verified', ['official_government'], { specific_benefit_count: 0 })
+  const noPublicInfo = researchedCompany(13)
+  noPublicInfo.category_outcomes[0] = researched('leave', 'no_public_info', [], { specific_benefit_count: 0 })
+  const pending = company(14)
+  const companies = [
+    { ...withSpecific, lineage: { legacy: company(11), approved_v2: withSpecific } },
+    { ...evidenceOnly, lineage: { legacy: company(12), approved_v2: evidenceOnly } },
+    { ...noPublicInfo, lineage: { legacy: company(13), approved_v2: noPublicInfo } },
+    { ...pending, lineage: { legacy: pending } },
+  ] as BenefitCompanyView[]
+
+  render(<BenefitsHeatmapTable companies={companies} selectedCategories={['leave']} compare={[]} toggle={() => undefined} link={() => '#'} projectionActive />)
+
+  expect(screen.getByText('혜택 내용 확인 2건')).toBeVisible()
+  expect(screen.getByText('구체 혜택 확인 필요')).toBeVisible()
+  expect(screen.getByText('공개 정보 없음')).toBeVisible()
+  expect(screen.getAllByText('v2 승인 조사 미적용').length).toBeGreaterThanOrEqual(2)
+  expect(screen.getByRole('link', { name: /Test 11 휴가·근무시간 혜택 내용 확인 2건/ })).toBeVisible()
+  expect(screen.getByRole('link', { name: /Test 12 휴가·근무시간 구체 혜택 확인 필요/ })).toBeVisible()
+  expect(screen.getByRole('link', { name: /Test 13 휴가·근무시간 공개 정보 없음/ })).toBeVisible()
+  expect(screen.getByRole('link', { name: /Test 14 휴가·근무시간 v2 승인 조사 미적용/ })).toBeVisible()
+})
+
+it('ranks projected concrete benefits ahead of evidence-only categories without changing pending legacy matching', () => {
+  const evidenceOnly = researchedCompany(21)
+  evidenceOnly.category_outcomes[0] = researched('leave', 'official_verified', ['official_government'], { specific_benefit_count: 0 })
+  const concrete = researchedCompany(22)
+  concrete.category_outcomes[0] = researched('leave', 'reference', ['other_public_web'], { specific_benefit_count: 1 })
+  const pending = company(23)
+  const { container } = render(<FitResultList
+    companies={[evidenceOnly, concrete, pending]}
+    state={parseQuery('?preset=custom&preferred_categories=leave&evidence=all')}
+    link={() => '#'}
+    projectionActive
+  />)
+
+  const cards = [...container.querySelectorAll('article[data-company-id]')]
+  expect(cards.map((card) => card.getAttribute('data-company-id'))).toEqual([concrete.company_id, pending.company_id, evidenceOnly.company_id])
+  expect(cards[0]).toHaveTextContent('혜택 내용 확인 1건')
+  expect(cards[1]).toHaveTextContent('v2 승인 조사 미적용')
+  expect(cards[2]).toHaveTextContent('구체 혜택 확인 필요')
+  expect(cards[2]).toHaveTextContent('근거 부족')
+})
+
+it('shows complete compare statements from projected details and one evidence-only warning', () => {
+  const fullStatement = `연간 20일 유급휴가와 가족돌봄휴가를 제공하며 승인 조건과 신청 절차를 사내 정책 원문 전체에 따라 안내합니다. ${'긴 설명 '.repeat(20).trim()}`
+  const concrete = researchedCompany(31)
+  concrete.category_outcomes[0] = researched('leave', 'reference', ['other_public_web'], { specific_benefit_count: 1 })
+  const officialOnly = researchedCompany(32)
+  officialOnly.category_outcomes[0] = researched('leave', 'official_verified', ['official_government'], { specific_benefit_count: 0 })
+  for (const [index, category] of categories.entries()) if (index > 0) {
+    concrete.category_outcomes[index] = researched(category, 'no_public_info', [], { specific_benefit_count: 0 })
+    officialOnly.category_outcomes[index] = researched(category, 'no_public_info', [], { specific_benefit_count: 0 })
+  }
+  const detail = {
+    company: { company_id: concrete.company_id },
+    references: [{ reference_id: 'reference::full', category_id: 'leave', source_id: 'source::full', statement: fullStatement, publication_eligibility: 'reference_only' }],
+    community_reports: [],
+    sources: [{ source_id: 'source::full', publication_eligibility: 'reference_only' }],
+  } as unknown as Detail
+  const officialDetail = { company: { company_id: officialOnly.company_id }, references: [], community_reports: [], sources: [] } as unknown as Detail
+
+  render(<CompanyCompareTray
+    companies={[concrete, officialOnly]}
+    details={[{ legacy: detail, approvedV2: detail }, { legacy: officialDetail, approvedV2: officialDetail }]}
+    error={false}
+    retry={() => undefined}
+    remove={() => undefined}
+    projectionActive
+  />)
+
+  const disclosure = screen.getByRole('group', { name: '혜택 내용 확인 1건' })
+  fireEvent.click(within(disclosure).getByText('혜택 내용 확인 1건'))
+  expect(disclosure).toBeVisible()
+  expect(screen.getByText(fullStatement)).toBeVisible()
+  expect(screen.getAllByText(fullStatement)).toHaveLength(1)
+  expect(screen.getAllByText('구체 혜택 확인 필요')).toHaveLength(1)
 })
 
 it('renders approved-v2 evidence in distinct official, reference and lower-tier community sections', () => {

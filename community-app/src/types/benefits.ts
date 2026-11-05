@@ -87,6 +87,19 @@ export function isResearchedOutcome(outcome: CategoryOutcome): outcome is Resear
 export function hasOutcomeScope(outcome: CategoryOutcome): outcome is CategoryOutcome & { scope: z.infer<typeof categoryScopeSchema> } { return 'scope' in outcome }
 export function researchStateFor(outcome: CategoryOutcome): ResearchState { return isResearchedOutcome(outcome) ? outcome.state : outcome.kind === 'evidenced' ? 'official_verified' : 'no_public_info' }
 export const researchStatePrecedence: Record<ResearchState, number> = { official_verified: 0, reference: 1, community_report: 2, no_public_info: 3 }
+export type SpecificContentStatus = 'specific_content' | 'evidence_only' | 'no_public_info' | 'projection_pending'
+export function specificContentStatus(outcome?: ResearchedCategoryOutcome): SpecificContentStatus {
+  if (!outcome) return 'projection_pending'
+  if (outcome.state === 'no_public_info') return 'no_public_info'
+  return outcome.specific_benefit_count > 0 ? 'specific_content' : 'evidence_only'
+}
+export function specificContentLabel(outcome?: ResearchedCategoryOutcome) {
+  const status = specificContentStatus(outcome)
+  if (status === 'specific_content') return `혜택 내용 확인 ${outcome!.specific_benefit_count}건`
+  if (status === 'evidence_only') return '구체 혜택 확인 필요'
+  if (status === 'no_public_info') return '공개 정보 없음'
+  return 'v2 승인 조사 미적용'
+}
 export const reliabilityLabels = { high: '신뢰도 높음', medium: '신뢰도 보통', low: '신뢰도 낮음', none: '신뢰도 없음' } as const
 export const currentnessLabels = { current: '현재 정보', historical: '과거 정보', unknown: '현재성 미확인' } as const
 export const scopeStatusLabels = { exact_entity: '선택 법인 확인', bounded_entity: '적용 범위 제한', group_only: '그룹 범위', unresolved: '적용 범위 미확인' } as const
