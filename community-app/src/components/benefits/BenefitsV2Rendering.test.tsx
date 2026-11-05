@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 import { BenefitsHeatmapTable } from './BenefitsHeatmapTable'
 import { BenefitClaimGroup } from './BenefitClaimGroup'
-import { BenefitV2EvidenceGroup } from './BenefitV2EvidenceGroup'
+import { BenefitV2EvidenceGroup, BenefitV2EvidenceSection } from './BenefitV2EvidenceGroup'
 import { CompanyCompareTray } from './CompanyCompareTray'
 import { FitResultList } from './FitResultList'
 import { categories, type BenefitCompanyView, type CategoryOutcome, type CompanyListing, type Detail } from '../../types/benefits'
@@ -130,20 +130,20 @@ it('marks projected companies with an accessible lineage badge and pending compa
 it('renders approved-v2 evidence in distinct official, reference and lower-tier community sections', () => {
   const detail = {
     official_claims: [{ claim_id: `official::${'a'.repeat(64)}`, category_id: 'leave', source_ids: ['source::official'], scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'] }, scope_status: 'exact_entity', source_tier: 'official_government', conflict_status: 'none' }],
-    references: [{ reference_id: 'reference::1', category_id: 'leave', source_id: 'source::reference', statement: '연차 휴가 제도를 안내합니다.', supporting_quote: '연차 휴가를 사용할 수 있습니다.' }],
-    community_reports: [{ community_report_id: 'community::1', category_id: 'leave', source_id: 'source::community', statement: '직원 커뮤니티의 휴가 사용 보고입니다.' }],
+    references: [{ reference_id: 'reference::1', category_id: 'leave', source_id: 'source::reference', statement: '연차 휴가 제도를 안내합니다.', supporting_quote: '연차 휴가를 사용할 수 있습니다.', publication_eligibility: 'reference_only' }],
+    community_reports: [{ community_report_id: 'community::1', category_id: 'leave', source_id: 'source::community', statement: '직원 커뮤니티의 휴가 사용 보고입니다.', publication_eligibility: 'eligible' }],
     sources: [
       { source_id: 'source::official', title: '고용노동부 공개 기록', url: 'https://official.example/record' },
-      { source_id: 'source::reference', title: '기업 채용 안내', url: 'https://company.example/benefits' },
-      { source_id: 'source::community', title: '직원 커뮤니티 스냅샷', url: 'https://community.example/report' },
+      { source_id: 'source::reference', title: '기업 채용 안내', url: 'https://company.example/benefits', publication_eligibility: 'reference_only' },
+      { source_id: 'source::community', title: '직원 커뮤니티 스냅샷', url: 'https://community.example/report', publication_eligibility: 'eligible' },
     ],
   } as unknown as Detail
   render(<><h2>승인 v2 조사 근거</h2><BenefitV2EvidenceGroup category="leave" detail={detail} /></>)
   expect(screen.getByRole('heading', { name: '승인 v2 조사 근거' })).toBeVisible()
-  expect(screen.getByText('공식 기록')).toBeVisible()
+  expect(screen.getByText('공식 검증 맥락')).toBeVisible()
   expect(screen.getByText('연차 휴가 제도를 안내합니다.')).toBeVisible()
   expect(screen.getByText('연차 휴가를 사용할 수 있습니다.')).toBeVisible()
-  expect(screen.getByText('커뮤니티 보고 · 하위 근거 계층')).toBeVisible()
+  expect(screen.getAllByText('커뮤니티 보고').length).toBeGreaterThan(0)
   expect(screen.getByText('직원 커뮤니티의 휴가 사용 보고입니다.')).toBeVisible()
   expect(screen.getAllByRole('link')).toHaveLength(3)
   for (const link of screen.getAllByRole('link')) { expect(link).toHaveAttribute('target', '_blank'); expect(link).toHaveAttribute('rel', 'noopener noreferrer') }
@@ -154,25 +154,25 @@ it('renders material reference and community evidence limitations with accessibl
     official_claims: [],
     references: [{
       reference_id: 'reference::limited', category_id: 'leave', source_id: 'source::reference', statement: '과거 그룹 단위 참고 자료입니다.', supporting_quote: '휴가 제도 운영',
-      reliability: 'low', currentness: 'historical', scope: { status: 'group_only', countries: ['KR'], legal_entities: ['Test Group'], roles: ['engineer'], employment_types: ['full-time'] }, conflict_status: 'contradictory',
+      reliability: 'low', currentness: 'historical', scope: { status: 'group_only', countries: ['KR'], legal_entities: ['Test Group'], roles: ['engineer'], employment_types: ['full-time'] }, conflict_status: 'contradictory', publication_eligibility: 'reference_only',
     }],
     community_reports: [{
       community_report_id: 'community::limited', category_id: 'leave', source_id: 'source::community', statement: '범위 미확인 커뮤니티 보고입니다.',
-      reliability: 'low', currentness: 'unknown', scope_status: 'unresolved', scope: { countries: ['KR'], legal_entities: [], roles: [], employment_types: [] }, conflict_status: 'disclosed',
+      reliability: 'low', currentness: 'unknown', scope_status: 'unresolved', scope: { countries: ['KR'], legal_entities: [], roles: [], employment_types: [] }, conflict_status: 'disclosed', publication_eligibility: 'eligible',
     }],
     sources: [
-      { source_id: 'source::reference', title: '과거 참고 자료', url: 'https://reference.example/benefits' },
-      { source_id: 'source::community', title: '커뮤니티 스냅샷', url: 'https://community.example/report' },
+      { source_id: 'source::reference', title: '과거 참고 자료', url: 'https://reference.example/benefits', publication_eligibility: 'reference_only' },
+      { source_id: 'source::community', title: '커뮤니티 스냅샷', url: 'https://community.example/report', publication_eligibility: 'eligible' },
     ],
   } as unknown as Detail
   render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
-  const reference = screen.getByRole('article', { name: '참고 자료 근거 제한' })
+  const reference = screen.getByRole('article', { name: '휴가·근무시간 참고 자료 구체 혜택' })
   expect(reference).toHaveTextContent('신뢰도: 낮음')
   expect(reference).toHaveTextContent('현재성: 과거 정보')
   expect(reference).toHaveTextContent('적용 범위 상태: 그룹 단위')
   expect(reference).toHaveTextContent('법인 Test Group')
   expect(reference).toHaveTextContent('상충 상태: 모순됨')
-  const community = screen.getByRole('article', { name: '커뮤니티 보고 근거 제한' })
+  const community = screen.getByRole('article', { name: '휴가·근무시간 커뮤니티 보고 구체 혜택' })
   expect(community).toHaveTextContent('신뢰도: 낮음')
   expect(community).toHaveTextContent('현재성: 확인되지 않음')
   expect(community).toHaveTextContent('적용 범위 상태: 미확인')
@@ -187,11 +187,69 @@ it.each([
 ])('does not render an unsafe approved-v2 source href: %s', (url) => {
   const detail = {
     official_claims: [],
-    references: [{ reference_id: 'reference::1', category_id: 'leave', source_id: 'source::reference', statement: '참고 자료입니다.', supporting_quote: '근거 인용문' }],
+    references: [{ reference_id: 'reference::1', category_id: 'leave', source_id: 'source::reference', statement: '참고 자료입니다.', supporting_quote: '근거 인용문', publication_eligibility: 'reference_only' }],
     community_reports: [],
-    sources: [{ source_id: 'source::reference', title: '안전하지 않은 출처', url }],
+    sources: [{ source_id: 'source::reference', title: '안전하지 않은 출처', url, publication_eligibility: 'reference_only' }],
   } as unknown as Detail
   render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
-  expect(screen.queryByRole('link', { name: '안전하지 않은 출처' })).not.toBeInTheDocument()
+  expect(screen.getByRole('article', { name: '휴가·근무시간 참고 자료 구체 혜택' })).toHaveTextContent('참고 자료입니다.')
+  expect(screen.queryByRole('link', { name: /안전하지 않은 출처/ })).not.toBeInTheDocument()
   expect(document.querySelectorAll('a')).toHaveLength(0)
+})
+
+it('renders one confirmed benefit card per publishable canonical reference or community record', () => {
+  const detail = {
+    official_claims: [],
+    references: [{
+      reference_id: 'reference::canonical-1', category_id: 'leave', source_id: 'source::reference',
+      statement: '매년 유급 휴가 20일을 지원합니다.', supporting_quote: '정규직은 연간 20일의 유급 휴가를 사용할 수 있습니다.',
+      reliability: 'medium', currentness: 'current', scope: { status: 'exact_entity', countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'] },
+      conflict_status: 'none', publication_eligibility: 'reference_only',
+    }],
+    community_reports: [{
+      community_report_id: 'community::canonical-1', category_id: 'leave', source_id: 'source::community',
+      statement: '직원들이 반차를 사용할 수 있다고 보고했습니다.', reliability: 'low', currentness: 'current', scope_status: 'exact_entity',
+      scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'] }, conflict_status: 'disclosed', publication_eligibility: 'eligible',
+    }],
+    sources: [
+      { source_id: 'source::reference', title: '채용 복지 안내', url: 'https://company.example/benefits', publication_eligibility: 'reference_only' },
+      { source_id: 'source::community', title: '직원 보고 스냅샷', url: 'https://community.example/report', publication_eligibility: 'eligible' },
+    ],
+  } as unknown as Detail
+
+  render(<BenefitV2EvidenceSection detail={detail} />)
+
+  expect(screen.getByRole('heading', { name: '확인된 복지 혜택 (2건)' })).toBeVisible()
+  const cards = screen.getAllByRole('article', { name: /구체 혜택/ })
+  expect(cards).toHaveLength(2)
+  expect(cards[0]).toHaveTextContent('매년 유급 휴가 20일을 지원합니다.')
+  expect(cards[0]).toHaveTextContent('휴가·근무시간')
+  expect(cards[0]).toHaveTextContent('참고 자료')
+  expect(cards[0]).toHaveTextContent('정규직은 연간 20일의 유급 휴가를 사용할 수 있습니다.')
+  expect(cards[0]).toHaveTextContent('신뢰도: 중간')
+  expect(cards[1]).toHaveTextContent('직원들이 반차를 사용할 수 있다고 보고했습니다.')
+  expect(cards[1]).toHaveTextContent('커뮤니티 보고')
+  expect(within(cards[1]).queryByText(/정규직은 연간/)).not.toBeInTheDocument()
+  for (const link of screen.getAllByRole('link')) {
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  }
+})
+
+it('keeps official-only evidence as verification context and excludes it from confirmed benefits', () => {
+  const detail = {
+    official_claims: [{
+      claim_id: `official::${'a'.repeat(64)}`, category_id: 'leave', source_ids: ['source::official'],
+      scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'] },
+    }],
+    references: [], community_reports: [],
+    sources: [{ source_id: 'source::official', title: '정부 공개 기록', url: 'https://official.example/record', publication_eligibility: 'eligible' }],
+  } as unknown as Detail
+
+  render(<BenefitV2EvidenceSection detail={detail} />)
+
+  expect(screen.getByRole('heading', { name: '확인된 복지 혜택 (0건)' })).toBeVisible()
+  expect(screen.queryByRole('article', { name: /구체 혜택/ })).not.toBeInTheDocument()
+  expect(screen.getByText('구체 혜택 확인 필요 — 공식 출처와 적용 범위는 확인됐지만, 공개 데이터에 혜택명과 지원 내용이 구조화되지 않았습니다.')).toBeVisible()
+  expect(screen.getByRole('article', { name: '휴가·근무시간 공식 검증 맥락' })).toHaveTextContent('정부 공개 기록')
 })

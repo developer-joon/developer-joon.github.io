@@ -367,6 +367,74 @@
   color: #c2cbd8;
   background: #252d39;
 }
+.benefits-specific-section {
+  margin-top: 28px;
+  border-top: 2px solid #7ee8ce;
+  padding-top: 18px;
+}
+.benefits-specific-section__intro {
+  max-width: 72ch;
+  color: #c2cbd8;
+}
+.benefits-v2-evidence {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+.benefits-v2-evidence > h3,
+.benefits-v2-evidence > .benefits-official-only-notice,
+.benefits-v2-evidence > .benefits-evidence,
+.benefits-v2-evidence > p:not(.benefits-specific-card__tier, .benefits-specific-card__source) {
+  grid-column: 1 / -1;
+}
+.benefits-v2-evidence > h3 { margin: 0; }
+.benefits-specific-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #41617f;
+  border-top: 3px solid #7ee8ce;
+  background: #111f32;
+}
+.benefits-specific-card--community { border-top-color: #e0ae5f; }
+.benefits-specific-card h4 {
+  margin: 8px 0 16px;
+  color: #f4f8fd;
+  font-size: 18px;
+  line-height: 1.45;
+}
+.benefits-specific-card__tier {
+  margin: 0;
+  color: #9fdccc;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.benefits-specific-card--community .benefits-specific-card__tier { color: #ffe1a8; }
+.benefits-specific-card__facts,
+.benefits-evidence__limitations {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 10px;
+}
+.benefits-specific-card dd,
+.benefits-evidence__limitations dd { margin: 0; }
+.benefits-specific-card blockquote {
+  margin: 14px 0;
+  border-left: 3px solid #6d93b8;
+  padding-left: 12px;
+  color: #dce9f8;
+}
+.benefits-specific-card a,
+.benefits-evidence a { overflow-wrap: anywhere; }
+.benefits-official-only-notice {
+  margin: 0;
+  border: 1px solid #8b7650;
+  padding: 14px;
+  color: #ffe1a8;
+  background: #30291e;
+}
+.benefits-evidence--official { border-left: 3px solid #7c8ba0; }
 .benefits-evidence--community {
   border-left: 3px solid #c99b51;
 }
