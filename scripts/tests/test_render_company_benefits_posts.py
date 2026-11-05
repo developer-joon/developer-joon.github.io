@@ -644,21 +644,26 @@ class ProductionPostRendererTests(unittest.TestCase):
         self.assertEqual([meaningful_id], curated[0]["company_ids"])
         self.assertEqual([meaningful_id, empty_id], entries[0]["company_ids"])
 
-    def test_hub_uses_only_emitted_links_and_actual_scope_and_total_counts(self):
+    def test_hub_uses_compact_emitted_links_and_actual_scope_counts(self):
         hub = next(row for row in self.render_map["entries"] if row["artifact_type"] == "hub")
         installments = [
-            {"scope": "domestic", "title": "D1", "filename": "_posts/d1.md"},
-            {"scope": "domestic", "title": "D2", "filename": "_posts/d2.md"},
-            {"scope": "international", "title": "I1", "filename": "_posts/i1.md"},
+            {"scope": "domestic", "title": "국내 기업 복지 공식자료 검증 D1: 25개 보고 법인 기록", "filename": "_posts/d1.md"},
+            {"scope": "domestic", "title": "국내 기업 복지 공식자료 검증 D2: 25개 보고 법인 기록", "filename": "_posts/d2.md"},
+            {"scope": "international", "title": "해외 기업 복지 공식자료 검증 I1: 미국 SEC 공시 법인 25곳", "filename": "_posts/i1.md"},
         ]
         source_map = {
             source_id: {"url": f"https://example.test/{source_id}"}
             for source_id in hub["citation_source_mapping"]["population_source_ids"]
         }
         text = self.renderer.render_hub(hub, installments, source_map)
-        self.assertIn("전체 3개 배치", text)
         self.assertIn("## 국내 2개 배치", text)
         self.assertIn("## 해외 1개 배치", text)
+        self.assertIn("배치 코드를 선택하면 포함된 법인 기록으로 이동합니다.", text)
+        self.assertIn("[D1]({% post_url d1 %}) · [D2]({% post_url d2 %})", text)
+        self.assertIn("[I1]({% post_url i1 %})", text)
+        self.assertNotIn("국내 기업 복지 공식자료 검증 D1", text)
+        self.assertNotIn("> 이 디렉터리는", text)
+        self.assertNotIn("전체 3개 배치가", text)
         self.assertEqual(3, text.count("{% post_url"))
 
     def test_publication_removes_only_known_generated_posts_omitted_from_inventory(self):

@@ -432,6 +432,16 @@ def render_installment(entry, company_map, claims_by_company, gaps_by_company, s
     return "".join(parts)
 
 
+def _compact_batch_link(item):
+    """Render a short stable batch label instead of repeating the post title."""
+    stem = Path(item["filename"]).stem
+    match = re.search(r"(?:^|-)([di])(\d{1,2})$", stem, re.IGNORECASE)
+    if match is None:
+        raise ValueError(f"cannot derive compact batch label: {stem}")
+    label = f"{match.group(1).upper()}{match.group(2)}"
+    return f"[{label}]({{% post_url {stem} %}})"
+
+
 def render_hub(entry, installment_entries, source_map):
     domestic = [row for row in installment_entries if row["scope"] == "domestic"]
     international = [row for row in installment_entries if row["scope"] == "international"]
@@ -442,14 +452,11 @@ def render_hub(entry, installment_entries, source_map):
         f"국내 {len(domestic)}개 배치와 해외 {len(international)}개 배치",
     )
     parts.append(intro + "\n\n")
-    parts.append("> 이 디렉터리는 기업의 종합 순위나 우열표가 아닙니다. 근거를 확인하지 못했다는 기록은 복지 부재 판정이 아닙니다.\n\n")
-    parts.append(f"전체 {len(installment_entries)}개 배치가 근거를 포함해 발행되었습니다.\n\n")
+    parts.append("배치 코드를 선택하면 포함된 법인 기록으로 이동합니다.\n\n")
     parts.append(f"## 국내 {len(domestic)}개 배치\n\n")
-    for item in domestic:
-        parts.append(f"- [{item['title']}]({{% post_url {Path(item['filename']).stem} %}})\n")
+    parts.append(" · ".join(_compact_batch_link(item) for item in domestic) + "\n")
     parts.append(f"\n## 해외 {len(international)}개 배치\n\n")
-    for item in international:
-        parts.append(f"- [{item['title']}]({{% post_url {Path(item['filename']).stem} %}})\n")
+    parts.append(" · ".join(_compact_batch_link(item) for item in international) + "\n")
     parts.append("\n## 읽는 법과 한계\n\n")
     parts.append(entry["summary_text"] + "\n\n")
     population_source_ids = entry["citation_source_mapping"]["population_source_ids"]
