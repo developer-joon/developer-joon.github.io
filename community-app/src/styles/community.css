@@ -351,6 +351,33 @@
 .admin-gate { min-height: 70vh; margin: 0; padding: clamp(70px, 12vw, 130px) 0; }
 .admin-gate h1 { max-width: 14ch; margin: 12px 0 22px; font-size: clamp(35px, 7vw, 60px); font-weight: var(--weight-bold); line-height: 1.2; }
 .admin-gate > p:not(.community-kicker) { max-width: 38rem; color: var(--muted); line-height: 1.7; }
+.admin-local-nav { display: flex; justify-content: flex-end; border-bottom: 1px solid var(--ink); }
+.admin-local-nav a { display: inline-flex; min-height: 56px; align-items: center; border-left: 1px solid var(--ink); padding: 10px 20px; color: var(--ink); font-weight: 900; text-decoration: none; }
+.admin-local-nav a[aria-current="page"] { background: var(--ink); color: var(--paper); }
+.admin-operation-error { margin: 0; border: 1px solid var(--error); border-top: 0; padding: 16px 24px; color: var(--error); font-weight: 900; overflow-wrap: anywhere; }
+.correction-company, .correction-proposal, .correction-scope { display: block; overflow-wrap: anywhere; }
+.correction-company { margin-top: 12px; color: var(--blue-dark); font-size: 12px; font-weight: 900; }
+.correction-proposal { margin-top: 7px; font-weight: 900; line-height: 1.55; }
+.correction-scope { margin-top: 7px; color: var(--muted); font-size: 13px; }
+.correction-detail dl { margin: 0; }
+.correction-detail dl > div { min-width: 0; border-bottom: 1px solid var(--line); padding: 16px 24px; }
+.correction-detail dt { color: var(--blue-dark); font-size: 11px; font-weight: 900; letter-spacing: .08em; }
+.correction-detail dd { min-width: 0; margin: 6px 0 0; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.correction-detail dd a { color: var(--blue-dark); font-weight: 900; }
+.evidence-url { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.correction-review-controls > label { display: block; padding: 20px 24px 8px; font-family: var(--serif); font-size: 18px; font-weight: 800; }
+.correction-review-controls textarea { display: block; width: calc(100% - 48px); min-width: 0; min-height: 8rem; margin: 0 24px 18px; resize: vertical; border: 1px solid var(--ink); border-radius: 0; background: var(--paper); padding: 12px; color: var(--ink); font: inherit; }
+.correction-audit { border-top: 4px solid var(--ink); }
+.audit-state { margin: 0; padding: 24px; color: var(--muted); }
+.audit-state.admin-error { color: var(--error); }
+.audit-state.admin-error p { margin: 0 0 12px; }
+.correction-audit-list { margin: 0; padding: 0; list-style: none; }
+.correction-audit-list li { border-bottom: 1px solid var(--line); padding: 18px 24px; }
+.correction-audit-list li > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+.correction-audit-list time, .correction-audit-list li > p { color: var(--muted); font-size: 12px; }
+.correction-audit-list blockquote { margin: 12px 0 0; border-left: 3px solid var(--blue); padding: 3px 0 3px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.correction-row, .correction-queue .report-filters button, .correction-review-controls button, .correction-queue .admin-load-more button, .correction-queue .admin-state button { min-height: 56px; }
+.correction-row:focus-visible, .correction-review-controls button:focus-visible, .correction-review-controls textarea:focus, .admin-local-nav a:focus-visible { outline: 3px solid var(--blue); outline-offset: -3px; }
 .report-trigger { border: 0; border-bottom: 1px solid currentColor; background: transparent; padding: 7px 2px; color: var(--blue-dark); font: inherit; font-weight: 800; cursor: pointer; }
 .report-dialog-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; overflow-y: auto; background: rgb(30 33 30 / 58%); padding: 20px; }
 .report-dialog { width: min(34rem, 100%); max-height: calc(100vh - 40px); overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--paper); box-shadow: 0 16px 48px rgb(42 47 54 / 18%); padding: clamp(20px, 5vw, 34px); }
@@ -373,6 +400,10 @@
   .moderation-message { margin-inline: 16px; }
   .moderation-action-group { padding-inline: 16px; }
   .moderation-action-group button { flex: 1 1 9rem; }
+  .admin-local-nav { justify-content: stretch; }
+  .admin-local-nav a { flex: 1 1 50%; justify-content: center; min-height: 56px; padding-inline: 10px; }
+  .correction-detail dl > div, .correction-review-controls > label { padding-inline: 16px; }
+  .correction-review-controls textarea { width: calc(100% - 32px); margin-inline: 16px; }
   .report-row-top { grid-template-columns: auto 1fr; }
   .report-row-top time { grid-column: 1 / -1; justify-self: start; }
   .report-dialog-backdrop { padding: 12px; }

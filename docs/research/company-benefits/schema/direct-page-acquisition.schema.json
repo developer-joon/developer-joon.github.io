@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "direct-page-acquisition.schema.json",
+  "title": "Company benefits direct public page acquisition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_type", "format_version", "acquisition_status", "company_id", "category_id", "cell_id", "route_id", "route_kind", "locator", "tool_name", "backend", "retrieved_at", "raw_tool_response_sha256", "capture_sha256", "capture_locator", "result", "review_status", "authoritative_receipts_created", "artifact_content_sha256"],
+  "properties": {
+    "artifact_type": {"const": "company-benefits-direct-page-acquisition"},
+    "format_version": {"const": 2},
+    "acquisition_status": {"const": "complete"},
+    "company_id": {"type": "string", "minLength": 1, "maxLength": 500},
+    "category_id": {"type": "string", "minLength": 1, "maxLength": 500},
+    "cell_id": {"type": "string", "pattern": "^cell::"},
+    "route_id": {"type": "string", "minLength": 1, "maxLength": 500},
+    "route_kind": {"type": "string", "minLength": 1, "maxLength": 500},
+    "locator": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "tool_name": {"type": "string", "minLength": 1, "maxLength": 500},
+    "backend": {"type": "string", "minLength": 1, "maxLength": 500},
+    "retrieved_at": {"type": "string", "format": "date-time"},
+    "raw_tool_response_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capture_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capture_locator": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "review_status", "url", "title", "content_sha256", "content_bytes"],
+      "properties": {
+        "kind": {"const": "direct_source"},
+        "review_status": {"const": "unreviewed_lead"},
+        "url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 500},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "content_bytes": {"type": "integer", "minimum": 1, "maximum": 2000000}
+      }
+    },
+    "review_status": {"const": "review_pending"},
+    "authoritative_receipts_created": {"const": false},
+    "artifact_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

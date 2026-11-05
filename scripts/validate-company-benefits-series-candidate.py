@@ -7,14 +7,27 @@ import hashlib
 import importlib.util
 import json
 import re
+import stat
+import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 CANDIDATE_FILES = ("sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl")
-ALLOWED_FILES = {"candidate.json", *CANDIDATE_FILES}
+V2_FILES = (
+    "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
+    "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl",
+)
+ALL_ARTIFACT_FILES = (*CANDIDATE_FILES, *V2_FILES)
+ALLOWED_FILES = {"candidate.json", *ALL_ARTIFACT_FILES}
 HASH = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_FIELDS = {"request_id", "target_type", "target_id", "researcher_id", "status"}
-GAP_FIELDS = {"audit_id", "company_id", "disposition", "reason", "searched_official_source_ids",
-              "searched_official_urls", "nonabsence_wording", "researcher_id"}
+LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:\\|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
+FILESYSTEM_ROOTS = {
+    "applications", "bin", "boot", "dev", "etc", "home", "lib", "lib64", "media", "mnt", "opt",
+    "private", "proc", "root", "run", "sbin", "srv", "sys", "system", "tmp", "users", "usr", "var",
+    "volumes",
+}
+MAX_PERCENT_DECODE_PASSES = 5
 
 
 def sha256(data):
@@ -50,6 +63,89 @@ def _unique(records, field, label):
     values = [record.get(field) for record in records]
     if any(not isinstance(value, str) or not value for value in values) or len(values) != len(set(values)):
         raise ValueError(f"{label} requires unique nonempty {field}; duplicate IDs are prohibited")
+
+
+def _decode_percent_bounded(value):
+    decoded = value
+    for _ in range(MAX_PERCENT_DECODE_PASSES):
+        try:
+            expanded = unquote(decoded, errors="strict")
+        except UnicodeDecodeError:
+            return None
+        if expanded == decoded:
+            return decoded
+        decoded = expanded
+    try:
+        return decoded if unquote(decoded, errors="strict") == decoded else None
+    except UnicodeDecodeError:
+        return None
+
+
+def _unsafe_url_component(value):
+    for candidate in re.split(r"[&;=]", value):
+        if not candidate:
+            continue
+        if LOCAL_ABSOLUTE_PATH.match(candidate) or candidate.startswith("//") or "\\" in candidate:
+            return True
+        segments = [segment for segment in re.split(r"[\\/]", candidate) if segment]
+        if (candidate.startswith("/") and not segments) or ".." in segments:
+            return True
+        if segments and segments[0].casefold() in FILESYSTEM_ROOTS:
+            return True
+    return False
+
+
+def _unsafe_root_relative_path(value):
+    stripped = value.lstrip()
+    token = re.split(r"[\s)\]]", stripped, maxsplit=1)[0]
+    decoded = _decode_percent_bounded(token)
+    if decoded is None:
+        return True
+    if LOCAL_ABSOLUTE_PATH.match(decoded):
+        return True
+    if not decoded.startswith("/"):
+        return False
+    if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in decoded):
+        return True
+    try:
+        parsed = urlsplit(decoded)
+    except ValueError:
+        return True
+    if parsed.scheme or parsed.netloc or "\\" in parsed.path or ":" in parsed.path:
+        return True
+    segments = parsed.path.split("/")[1:]
+    if ".." in segments or _unsafe_url_component(parsed.query) or _unsafe_url_component(parsed.fragment):
+        return True
+    normalized = [segment for segment in segments if segment not in ("", ".")]
+    return not normalized or normalized[0].casefold() in FILESYSTEM_ROOTS
+
+
+def _reject_local_absolute_paths(value, location="package"):
+    if isinstance(value, str) and (
+        LOCAL_ABSOLUTE_PATH.match(value) or _unsafe_root_relative_path(value)
+    ):
+        raise ValueError(f"{location}: local absolute path is prohibited")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _reject_local_absolute_paths(child, f"{location}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_local_absolute_paths(child, f"{location}[{index}]")
+
+
+def _validate_package_modes(candidate_dir):
+    if stat.S_IMODE(candidate_dir.stat().st_mode) != 0o755:
+        raise ValueError("candidate directory permissions must use canonical mode 0755")
+    for path in candidate_dir.iterdir():
+        if stat.S_IMODE(path.stat().st_mode) != 0o644:
+            raise ValueError(
+                f"candidate file permissions must use canonical mode 0644: {path.name}"
+            )
+
+
+def _has_symlink_component(path):
+    absolute = path.absolute()
+    return any(component.is_symlink() for component in (absolute, *absolute.parents))
 
 
 def _canonical_batch(root, batch_id):
@@ -105,36 +201,62 @@ def _candidate_claim_schema(verifier):
 
 def validate_candidate(candidate_dir, research_root):
     candidate_dir, research_root = Path(candidate_dir), Path(research_root)
-    if not candidate_dir.is_dir():
-        raise ValueError("candidate package directory is missing")
+    if _has_symlink_component(candidate_dir) or not candidate_dir.is_dir():
+        raise ValueError("candidate package directory is missing or symlink-aliased")
     actual = {path.name for path in candidate_dir.iterdir()}
-    if actual != ALLOWED_FILES or any(not path.is_file() for path in candidate_dir.iterdir()):
-        raise ValueError("candidate package must contain exactly candidate.json and four canonical JSONL files")
+    if actual != ALLOWED_FILES or any(
+        path.is_symlink() or not path.is_file() for path in candidate_dir.iterdir()
+    ):
+        raise ValueError(
+            "candidate package must contain exactly candidate.json and ten canonical regular files; symlinks are prohibited"
+        )
+    _validate_package_modes(candidate_dir)
     try:
-        manifest = json.loads((candidate_dir / "candidate.json").read_text(encoding="utf-8"))
+        manifest_raw = (candidate_dir / "candidate.json").read_bytes()
+        manifest = json.loads(manifest_raw)
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("invalid candidate manifest") from exc
     fields = {"schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256",
               "replacement_events_sha256", "status", "researcher_id", "artifacts"}
     if set(manifest) != fields or manifest.get("schema_version") != "1" or manifest.get("status") != "review_pending":
         raise ValueError("candidate manifest schema mismatch; status must be review_pending")
+    canonical_manifest = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"),
+                                    allow_nan=False).encode("utf-8")
+    if manifest_raw != canonical_manifest:
+        raise ValueError("candidate manifest must use canonical JSON bytes")
     if not isinstance(manifest.get("researcher_id"), str) or not manifest["researcher_id"].strip():
         raise ValueError("candidate researcher_id is required")
+    _reject_local_absolute_paths(manifest, "candidate.json")
     batch = _canonical_batch(research_root, manifest.get("batch_id"))
     for field in ("company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256"):
         if not HASH.fullmatch(str(manifest.get(field, ""))) or manifest.get(field) != batch.get(field):
             raise ValueError(f"candidate strict batch hash mismatch: {field}")
     artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, dict) or set(artifacts) != set(CANDIDATE_FILES):
-        raise ValueError("candidate manifest must hash the four exact artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != set(ALL_ARTIFACT_FILES):
+        raise ValueError("candidate manifest must hash the ten exact v1/v2 artifacts")
     records = {}
-    for name in CANDIDATE_FILES:
+    for name in ALL_ARTIFACT_FILES:
         raw = (candidate_dir / name).read_bytes()
         if artifacts.get(name) != sha256(raw):
             raise ValueError(f"candidate artifact hash mismatch: {name}")
         records[name] = read_jsonl(candidate_dir / name)
+        _reject_local_absolute_paths(records[name], name)
 
     verifier = _load_verifier()
+    contract = verifier.company_benefits_series
+    v2_records = {
+        ledger: records[filename]
+        for ledger, filename in verifier.company_benefits_series.V2_LEDGER_FILES.items()
+    }
+    verifier.company_benefits_series.validate_v2_package_records(
+        v2_records, batch, research_root, prepromotion=True
+    )
+    legacy_sources = verifier.company_benefits_series.frozen_source_records(research_root)
+    for raw in (candidate_dir / "sources.jsonl").read_bytes().splitlines(keepends=True):
+        if raw.strip():
+            source_id = json.loads(raw).get("source_id")
+            if source_id in legacy_sources and raw != legacy_sources[source_id]:
+                raise ValueError(f"{source_id}: frozen legacy source bytes differ")
     metadata_ids = _validate_sources(records["sources.jsonl"], verifier)
     sources = {item["source_id"]: item for item in records["sources.jsonl"]}
     claims, gaps, requests = records["claims.jsonl"], records["gaps.jsonl"], records["review-requests.jsonl"]
@@ -162,6 +284,20 @@ def validate_candidate(candidate_dir, research_root):
         if "prepublication_checked_at" in claim:
             raise ValueError(f"{claim_id}: candidate cannot assert post-review prepublication gate state")
         verifier.validate_structure(claim, claim_schema, claim_id, claim_errors)
+        evidence_source_ids = {
+            evidence.get("source_id")
+            for field in ("source_evidence", "conflict_evidence")
+            for evidence in claim.get(field, [])
+            if isinstance(evidence, dict) and isinstance(evidence.get("source_id"), str)
+        }
+        claim_source_ids = claim.get("source_ids", [])
+        if claim.get("status") != "unknown" and (
+            set(claim_source_ids) != evidence_source_ids
+            or len(claim_source_ids) != len(set(claim_source_ids))
+        ):
+            raise ValueError(
+                f"{claim_id}: source_ids must exactly match source_evidence source closure"
+            )
         for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
             if source_id not in sources:
                 raise ValueError(f"{claim_id}: claim source does not resolve in candidate package")
@@ -176,12 +312,17 @@ def validate_candidate(candidate_dir, research_root):
         raise ValueError("claim schema validation failed:\n" + "\n".join(claim_errors))
 
     gap_by_company = {}
+    gap_schema = verifier.load_schema("company-gap.schema.json")
+    gap_errors = []
+    candidate_gap_raw = contract.jsonl_raw_record_map(candidate_dir / "gaps.jsonl", "audit_id")
+    frozen_gap_raw = contract.jsonl_raw_record_map(research_root / "series-research-gaps.jsonl", "audit_id")
     for gap in gaps:
         company_id = gap.get("company_id")
-        if set(gap) != GAP_FIELDS:
-            raise ValueError(f"{gap.get('audit_id')}: gap schema mismatch")
-        if company_id not in position or gap.get("audit_id") != f"company-gap::{company_id}":
-            raise ValueError(f"{gap.get('audit_id')}: canonical gap ID must exactly bind company_id")
+        verifier.validate_structure(gap, gap_schema, gap.get("audit_id", "gap[missing-id]"), gap_errors)
+        contract.validate_v2_gap_id(
+            gap, batch, raw_record=candidate_gap_raw.get(gap.get("audit_id")),
+            frozen_legacy_records=frozen_gap_raw,
+        )
         wording = gap.get("nonabsence_wording", "")
         if gap.get("disposition") != "nonpublishable" or not any(
                 phrase in wording for phrase in ("복지가 없다는 뜻이 아닙니다", "복지가 없다는 뜻이 아니다")):
@@ -190,6 +331,8 @@ def validate_candidate(candidate_dir, research_root):
             raise ValueError(f"{gap.get('audit_id')}: gap researcher does not bind candidate researcher")
         verifier.company_benefits_series.validate_gap_source_routes(gap, sources)
         gap_by_company.setdefault(company_id, []).append(gap)
+    if gap_errors:
+        raise ValueError("gap schema validation failed:\n" + "\n".join(gap_errors))
 
     referenced_source_ids = {source_id for claim in claims
                              for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
@@ -210,6 +353,7 @@ def validate_candidate(candidate_dir, research_root):
     if requests != expected_requests or any(set(request) != REQUEST_FIELDS for request in requests):
         raise ValueError("review requests require exact one pending target per outcome in canonical order; duplicate or orphan targets are prohibited")
     return {"manifest": manifest, "batch": batch, "records": records, "targets": targets,
+            "legacy_sources": legacy_sources,
             "manifest_sha256": sha256((candidate_dir / "candidate.json").read_bytes())}
 
 
@@ -218,7 +362,11 @@ def main(argv=None):
     parser.add_argument("candidate_dir", type=Path)
     parser.add_argument("--research-root", type=Path, default=Path("docs/research/company-benefits"))
     args = parser.parse_args(argv)
-    package = validate_candidate(args.candidate_dir, args.research_root)
+    try:
+        package = validate_candidate(args.candidate_dir, args.research_root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"candidate validation failed: {exc}", file=sys.stderr)
+        return 1
     print(f"valid review-pending candidate {package['manifest']['batch_id']}: {len(package['targets'])} outcomes")
     return 0
 

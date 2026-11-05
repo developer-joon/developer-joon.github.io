@@ -60,3 +60,13 @@ it.each([
     expect(screen.getByText('?q=예시')).toBeVisible()
   },
 )
+
+it('keeps correction pages behind Community authentication initialization', () => {
+  render(
+    <AuthContext.Provider value={loadingAuth}>
+      <App pathname="/community/benefits/correction/" search="?company=KR-CRN-1101112948086" />
+    </AuthContext.Provider>,
+  )
+  expect(screen.getByRole('status')).toHaveTextContent('로그인 상태를 확인하고 있습니다.')
+  expect(screen.queryByText('복지 heatmap')).not.toBeInTheDocument()
+})

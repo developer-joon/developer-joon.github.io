@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { App, ConfigurationErrorScreen } from './App'
 import type { AuthClient } from './auth/AuthProvider'
 import type { CommunityRepository } from './data/communityRepository'
+import type { BenefitCorrectionRepository } from './data/benefitCorrectionRepository'
 import type { UploadRepository } from './data/uploadRepository'
 import { AuthContext, type AuthContextValue } from './auth/AuthProvider'
 
@@ -147,6 +148,23 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: '신고 운영 데스크' })).toBeInTheDocument()
     expect(repository.isAdmin).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(repository.listAdminReports).toHaveBeenCalledWith({ status: 'active', limit: 50 }))
+  })
+
+  it('routes the admin benefit correction shell with authorization and token-bound repositories', async () => {
+    const repository = { isAdmin: vi.fn().mockResolvedValue({ ok: true, data: true }) } as unknown as CommunityRepository
+    const correctionRepository = {
+      listAdminQueue: vi.fn().mockResolvedValue({ ok: true, data: { items: [], hasMore: false, nextCursor: null } }),
+    } as unknown as BenefitCorrectionRepository
+    const auth = {
+      loading: false, pending: false, session: {} as never, user: { id: '56000000-0000-4000-8000-000000000030' } as never,
+      error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => false),
+    } satisfies AuthContextValue
+
+    render(<AuthContext.Provider value={auth}><App pathname="/community/admin/benefit-corrections/" search="?status=active" hash="#queue" repository={repository} benefitCorrectionRepository={correctionRepository} /></AuthContext.Provider>)
+
+    expect(await screen.findByRole('heading', { name: '복지 정정 검토 데스크' })).toBeInTheDocument()
+    expect(repository.isAdmin).toHaveBeenCalledTimes(1)
+    expect(correctionRepository.listAdminQueue).toHaveBeenCalledWith({ status: 'active', limit: 50 }, expect.any(AbortSignal))
   })
 
   it('renders a friendly Korean configuration error', () => {

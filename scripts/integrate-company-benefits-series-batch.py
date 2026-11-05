@@ -17,7 +17,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import company_benefits_series as series
 
-FILES = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl")
+FILES = (
+    "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl",
+    *series.V2_LEDGER_FILES.values(),
+)
 ALLOWED_FILES = {"batch.json", *FILES}
 TARGETS = {
     "sources.jsonl": "source-registry.jsonl",
@@ -25,12 +28,16 @@ TARGETS = {
     "reviews.jsonl": "reviews.jsonl",
     "gaps.jsonl": "series-research-gaps.jsonl",
     "checks.jsonl": "series-prepublication-checks.jsonl",
+    **{filename: filename for filename in series.V2_LEDGER_FILES.values()},
 }
+V2_TARGETS = {filename: filename for filename in series.V2_LEDGER_FILES.values()}
 ID_FIELDS = {
     "sources.jsonl": "source_id", "claims.jsonl": "claim_id", "reviews.jsonl": "review_id",
     "gaps.jsonl": "audit_id", "checks.jsonl": "source_id",
+    **{filename: series.V2_ID_FIELDS[ledger] for ledger, filename in series.V2_LEDGER_FILES.items()},
 }
-LEDGER_TARGETS = tuple(TARGETS.values()) + ("series-progress.json", "series-batches.jsonl")
+LEDGER_TARGETS = tuple(V2_TARGETS.values()) + ("series-progress.json", "series-batches.jsonl")
+IMMUTABLE_LEGACY_FILES = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl")
 TRANSACTION_DIRNAME = ".company-benefits-series-batch-transaction"
 COMMITTED_TRANSACTION_DIRNAME = ".company-benefits-series-batch-committed"
 TRANSACTION_SCHEMA_VERSION = "1"
@@ -51,10 +58,43 @@ def parse_timestamp(value, label):
 
 
 def _unique_map(records, field, label):
+    if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+        raise ValueError(f"{label} records must be objects")
     values = [item.get(field) for item in records]
-    if any(value in (None, "") for value in values) or len(values) != len(set(values)):
+    if (any(not isinstance(value, str) or not value for value in values)
+            or len(values) != len(set(values))):
         raise ValueError(f"{label} requires unique nonempty {field} values")
     return dict(zip(values, records))
+
+
+def _raw_record_map(path, records, field, label):
+    """Index parsed records by ID while retaining their exact JSON line bytes."""
+    path = Path(path)
+    raw = path.read_bytes() if path.is_file() else b""
+    raw_records = [line for line in raw.splitlines() if line.strip()]
+    record_map = _unique_map(records, field, label)
+    if len(raw_records) != len(records):
+        raise ValueError(f"{label} raw record count mismatch")
+    return {record[field]: raw for record, raw in zip(records, raw_records)}, record_map
+
+
+def validate_record_collisions(name, incoming_path, existing_path, incoming_records, existing_records):
+    """Allow legacy duplicate IDs only when the complete raw records are byte-identical."""
+    field = ID_FIELDS[name]
+    incoming_raw, incoming_by_id = _raw_record_map(incoming_path, incoming_records, field, name)
+    existing_raw, existing_by_id = _raw_record_map(existing_path, existing_records, field, f"existing {name}")
+    overlaps = set(incoming_by_id) & set(existing_by_id)
+    if overlaps and name not in IMMUTABLE_LEGACY_FILES:
+        raise ValueError(f"cross-batch {field} collision")
+    if name == "gaps.jsonl" and any(
+        not incoming_by_id[item_id].get("company_id")
+        or item_id != f"{series.LEGACY_GAP_ID_PREFIX}{incoming_by_id[item_id].get('company_id')}"
+        or existing_by_id[item_id].get("company_id") != incoming_by_id[item_id].get("company_id")
+        for item_id in overlaps
+    ):
+        raise ValueError(f"cross-batch {field} collision")
+    if any(incoming_raw[item_id] != existing_raw[item_id] for item_id in overlaps):
+        raise ValueError(f"cross-batch {field} collision")
 
 
 def expected_check_source_ids(claims, gaps, source_map):
@@ -70,10 +110,55 @@ def expected_check_source_ids(claims, gaps, source_map):
     return source_ids
 
 
-def merge_checks(existing, incoming, latest_review_by_source_id, expected_source_ids=None):
-    """Upsert source checks only when the same source_id tuple is newer and unchanged."""
-    merged = _unique_map(existing, "source_id", "existing checks")
-    incoming_map = _unique_map(incoming, "source_id", "incoming checks")
+def merge_checks(existing, incoming, latest_review_by_source_id, expected_source_ids=None,
+                 *, source_map=None, legacy_sources=None):
+    """Select one effective check per source in this workflow.
+
+    A bound projection supersedes compatibility history, independent of ledger
+    order. Competing current observations within either input are ambiguous.
+    Across batches only a strictly newer, validated projection may change the
+    observation. Other workflows keep their own ledgers and are not URL aliases.
+    """
+    source_map, legacy_sources = source_map or {}, legacy_sources or {}
+
+    def projected(check):
+        if "compatibility_projection" not in check:
+            return False
+        source_id = check.get("source_id")
+        if source_id not in source_map or source_id not in legacy_sources:
+            raise ValueError(f"{source_id}: unbound compatibility projection")
+        series.validate_source_check(check, source_map[source_id], legacy_sources[source_id])
+        return True
+
+    def select(records, label, historical=False):
+        selected, observations = {}, {}
+        for check in records:
+            source_id = check.get("source_id")
+            if not isinstance(source_id, str) or not source_id:
+                raise ValueError(f"{label}: requires nonempty source_id")
+            is_projected = projected(check)
+            observation_key = (source_id, is_projected)
+            prior_observation = observations.get(observation_key)
+            if prior_observation is not None and series.json_bytes(prior_observation) != series.json_bytes(check):
+                raise ValueError(f"{source_id}: conflicting source check tuple")
+            observations[observation_key] = check
+            previous = selected.get(source_id)
+            if previous is not None and series.json_bytes(previous) != series.json_bytes(check):
+                was_projected = projected(previous)
+                if not historical or was_projected == is_projected:
+                    raise ValueError(f"{source_id}: conflicting source check tuple")
+                compatibility = previous if is_projected else check
+                series.validate_source_check(compatibility, source_map[source_id], legacy_sources[source_id])
+                current = check if is_projected else previous
+                if parse_timestamp(current.get("checked_at"), "check checked_at") <= parse_timestamp(
+                        compatibility.get("checked_at"), "historical check checked_at"):
+                    raise ValueError(f"{source_id}: source check must be strictly newer")
+                check = current
+            selected[source_id] = check
+        return selected
+
+    merged = select(existing, "existing checks", historical=True)
+    incoming_map = select(incoming, "incoming checks")
     expected_source_ids = set(latest_review_by_source_id) if expected_source_ids is None else set(expected_source_ids)
     if set(incoming_map) != expected_source_ids:
         raise ValueError("incoming checks do not match source bindings")
@@ -87,26 +172,118 @@ def merge_checks(existing, incoming, latest_review_by_source_id, expected_source
             current_tuple = {key: value for key, value in check.items() if key != "checked_at"}
             previous_tuple = {key: value for key, value in previous.items() if key != "checked_at"}
             if current_tuple != previous_tuple:
-                raise ValueError(f"{source_id}: conflicting source check tuple")
+                if not projected(check):
+                    raise ValueError(f"{source_id}: conflicting source check tuple")
+                series.validate_source_check(previous, source_map[source_id], legacy_sources[source_id])
             if checked <= parse_timestamp(previous.get("checked_at"), "existing check checked_at"):
                 raise ValueError(f"{source_id}: source check must be strictly newer")
         merged[source_id] = check
     return [merged[key] for key in sorted(merged)]
 
 
-def load_package(input_dir, research_root):
+def validate_review_audit(manifest, batch, records, research_root):
+    """Reconstruct and revalidate the exact candidate and independent-review contracts."""
+    audit = manifest.get("review_audit")
+    audit_fields = {"candidate_manifest_sha256", "candidate_manifest", "candidate_artifacts",
+                    "review_bundle_sha256", "review_bundle", "review_artifacts"}
+    if not isinstance(audit, dict) or set(audit) != audit_fields:
+        raise ValueError("v2 package requires an exact candidate/promotion review_audit")
+    candidate_manifest = audit.get("candidate_manifest")
+    review_bundle = audit.get("review_bundle")
+    if not isinstance(candidate_manifest, dict) or not isinstance(review_bundle, dict):
+        raise ValueError("review_audit must retain the candidate manifest and review bundle")
+    candidate_raw = series.json_bytes(candidate_manifest)
+    review_raw = series.json_bytes(review_bundle)
+    if (sha256(candidate_raw) != audit.get("candidate_manifest_sha256")
+            or candidate_manifest.get("artifacts") != audit.get("candidate_artifacts")
+            or sha256(review_raw) != audit.get("review_bundle_sha256")
+            or review_bundle.get("artifacts") != audit.get("review_artifacts")):
+        raise ValueError("review_audit manifest or bundle hash binding mismatch")
+    for field in ("batch_id", "company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256"):
+        if candidate_manifest.get(field) != manifest.get(field):
+            raise ValueError(f"review_audit candidate batch binding mismatch: {field}")
+    if (review_bundle.get("promotion_reviewer_id") != manifest.get("reviewer_id")
+            or review_bundle.get("approved_at") != manifest.get("approved_at")):
+        raise ValueError("review_audit promotion identity or approval timestamp mismatch")
+
+    candidate_claims = []
+    for claim in records["claims.jsonl"]:
+        candidate_claim = dict(claim)
+        candidate_claim.pop("prepublication_checked_at", None)
+        candidate_claims.append(candidate_claim)
+    claims_by_company = {}
+    for claim in candidate_claims:
+        claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
+    gaps_by_company = {}
+    for gap in records["gaps.jsonl"]:
+        gaps_by_company.setdefault(gap.get("company_id"), []).append(gap)
+    researcher = candidate_manifest.get("researcher_id")
+    requests = []
+    for company_id in batch["company_ids"]:
+        for claim in claims_by_company.get(company_id, []):
+            target = claim.get("claim_id")
+            author = claim.get("researcher_id", researcher)
+            requests.append({"request_id": f"review-request::claim::{target}", "target_type": "claim",
+                             "target_id": target, "researcher_id": author,
+                             "status": "pending_independent_review"})
+        for gap in gaps_by_company.get(company_id, []):
+            target = gap.get("audit_id")
+            requests.append({"request_id": f"review-request::gap::{target}", "target_type": "gap",
+                             "target_id": target, "researcher_id": gap.get("researcher_id", researcher),
+                             "status": "pending_independent_review"})
+
+    candidate_values = {
+        "sources.jsonl": records["sources.jsonl"], "claims.jsonl": candidate_claims,
+        "gaps.jsonl": records["gaps.jsonl"], "review-requests.jsonl": requests,
+        **{filename: records[filename] for filename in series.V2_LEDGER_FILES.values()},
+    }
+    with tempfile.TemporaryDirectory(prefix="benefits-review-audit-") as directory:
+        base = Path(directory)
+        candidate_dir, review_dir = base / "candidate", base / "review"
+        candidate_dir.mkdir()
+        review_dir.mkdir()
+        (candidate_dir / "candidate.json").write_bytes(candidate_raw)
+        for name, values in candidate_values.items():
+            (candidate_dir / name).write_bytes(series.jsonl_bytes(values))
+        (review_dir / "review-bundle.json").write_bytes(review_raw)
+        for name in ("reviews.jsonl", "checks.jsonl"):
+            (review_dir / name).write_bytes(series.jsonl_bytes(records[name]))
+        candidate_validator = _load_script(Path(__file__).with_name("validate-company-benefits-series-candidate.py"),
+                                           "integrated_candidate_audit_validator")
+        package = candidate_validator.validate_candidate(candidate_dir, research_root)
+        promoter = _load_script(Path(__file__).with_name("promote-company-benefits-series-candidate.py"),
+                                "integrated_review_audit_validator")
+        review = promoter.validate_external_review(package, review_dir, candidate_validator)
+    check_map = {check["source_id"]: check for check in review["checks"]}
+    expected_claims = []
+    for claim in candidate_claims:
+        promoted = dict(claim)
+        if claim.get("status") != "unknown":
+            bound = [check_map[source_id] for source_id in claim.get("source_ids", [])]
+            if not bound:
+                raise ValueError(f"{claim.get('claim_id')}: reviewed factual claim has no source check")
+            promoted["prepublication_checked_at"] = max(
+                bound, key=lambda check: parse_timestamp(check["checked_at"], "check checked_at")
+            )["checked_at"]
+        expected_claims.append(promoted)
+    if expected_claims != records["claims.jsonl"]:
+        raise ValueError("review_audit candidate claims do not produce the exact promoted claims")
+    return audit
+
+
+def load_package(input_dir, research_root, validate_immutable_legacy_collisions=True):
     input_dir, research_root = Path(input_dir), Path(research_root)
     actual = {path.name for path in input_dir.iterdir()}
     if actual != ALLOWED_FILES or any(not path.is_file() for path in input_dir.iterdir()):
-        raise ValueError("unexpected input or evidence file; package must contain only batch.json and five JSONL artifacts")
+        raise ValueError("unexpected input or evidence file; package must contain only batch.json and eleven JSONL artifacts")
     try:
         manifest = json.loads((input_dir / "batch.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid batch manifest: {exc}") from exc
     expected_manifest_fields = {"schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256",
                                 "replacement_events_sha256", "status", "approved_at", "reviewer_id", "artifacts"}
-    if set(manifest) not in (expected_manifest_fields, expected_manifest_fields | {"review_audit"}) or manifest.get("schema_version") != "1":
-        raise ValueError("batch manifest schema mismatch")
+    if set(manifest) != expected_manifest_fields | {"review_audit"} or manifest.get("schema_version") != "1":
+        raise ValueError("batch manifest schema mismatch; v2 packages require review_audit")
     if manifest.get("status") != "approved" or not manifest.get("reviewer_id"):
         raise ValueError("only explicitly approved batches with reviewer identity may be integrated")
     parse_timestamp(manifest.get("approved_at"), "approved_at")
@@ -118,34 +295,30 @@ def load_package(input_dir, research_root):
             or manifest.get("replacement_events_sha256") != batch.get("replacement_events_sha256")):
         raise ValueError("batch effective sequence or replacement-event binding is stale")
     progress = json.loads((research_root / "series-progress.json").read_text(encoding="utf-8"))
+    series.validate_persisted_v2_hashes(research_root, list(batches.values()), progress, v2_transition=True)
     current = next((item for item in progress["batches"] if item["batch_id"] == batch["batch_id"]), None)
-    if current is None or current.get("status") != "pending":
-        raise ValueError("batch is not pending")
+    if current is None or current.get("status") != "pending" or current.get("cell_count", 0) != 0:
+        raise ValueError("v2 batch is not pending or already contains v2 cells")
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != set(FILES):
-        raise ValueError("batch manifest must hash all five exact artifacts")
-    review_audit = manifest.get("review_audit")
-    if review_audit is not None:
-        audit_fields = {"candidate_manifest_sha256", "candidate_artifacts", "review_artifacts"}
-        candidate_files = {"sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl"}
-        review_files = {"reviews.jsonl", "checks.jsonl"}
-        if (not isinstance(review_audit, dict) or set(review_audit) != audit_fields
-                or not re.fullmatch(r"[0-9a-f]{64}", str(review_audit.get("candidate_manifest_sha256", "")))
-                or not isinstance(review_audit.get("candidate_artifacts"), dict)
-                or set(review_audit["candidate_artifacts"]) != candidate_files
-                or not isinstance(review_audit.get("review_artifacts"), dict)
-                or set(review_audit["review_artifacts"]) != review_files
-                or any(not re.fullmatch(r"[0-9a-f]{64}", str(value)) for value in review_audit["candidate_artifacts"].values())
-                or any(review_audit["review_artifacts"].get(name) != artifacts.get(name) for name in review_files)):
-            raise ValueError("batch review_audit candidate/review hash binding mismatch")
+        raise ValueError("batch manifest must hash all eleven exact artifacts")
+
     records = {}
     for name in FILES:
         raw = (input_dir / name).read_bytes()
         if artifacts.get(name) != sha256(raw):
             raise ValueError(f"artifact hash mismatch: {name}")
-        records[name] = series.read_jsonl(input_dir / name)
-        _unique_map(records[name], ID_FIELDS[name], name)
+        records[name] = (series.read_source_checks(input_dir / name) if name == "checks.jsonl"
+                         else series.read_jsonl(input_dir / name))
+
+    v2_records = {ledger: records[filename] for ledger, filename in series.V2_LEDGER_FILES.items()}
+    series.validate_v2_record_structure(v2_records, batch)
+    for name in FILES:
+        if name == "checks.jsonl":
+            series.source_check_map(records[name])
+        else:
+            _unique_map(records[name], ID_FIELDS[name], name)
         serialized = json.dumps(records[name], ensure_ascii=False)
         if "evidence_path" in serialized or "evidence_file" in serialized or any(item.get("hash_provenance") == "retained_file" for item in records[name]):
             raise ValueError("evidence files and retained-file provenance are prohibited")
@@ -155,14 +328,25 @@ def load_package(input_dir, research_root):
     verifier.validate_sources(records["sources.jsonl"], source_errors)
     if source_errors:
         raise ValueError("incoming source schema validation failed:\n" + "\n".join(source_errors))
+    series.validate_v2_package_records(v2_records, batch, research_root)
+    validate_review_audit(manifest, batch, records, research_root)
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
-    for name in ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl"):
-        field = ID_FIELDS[name]
-        incoming_ids = {item[field] for item in records[name]}
-        existing_ids = {item.get(field) for item in existing[name]}
-        if incoming_ids & existing_ids:
-            raise ValueError(f"cross-batch {field} collision")
+    existing["checks.jsonl"] = series.read_source_checks(research_root / TARGETS["checks.jsonl"])
+    incoming_gap_raw = series.jsonl_raw_record_map(input_dir / "gaps.jsonl", "audit_id")
+    frozen_gap_raw = series.jsonl_raw_record_map(research_root / TARGETS["gaps.jsonl"], "audit_id")
+    for gap in records["gaps.jsonl"]:
+        series.validate_v2_gap_id(
+            gap, batch, raw_record=incoming_gap_raw.get(gap.get("audit_id")),
+            frozen_legacy_records=frozen_gap_raw,
+        )
+    collision_files = list(series.V2_LEDGER_FILES.values())
+    if validate_immutable_legacy_collisions:
+        collision_files[:0] = IMMUTABLE_LEGACY_FILES
+    for name in collision_files:
+        validate_record_collisions(
+            name, input_dir / name, research_root / TARGETS[name], records[name], existing[name]
+        )
     company_ids = set(batch["company_ids"])
     claims = records["claims.jsonl"]
     gaps = records["gaps.jsonl"]
@@ -173,8 +357,10 @@ def load_package(input_dir, research_root):
         claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
     gaps_by_company = {}
     for gap in gaps:
-        if not str(gap.get("audit_id", "")).startswith("company-gap::"):
-            raise ValueError("external batch gaps must be explicit company-gap records")
+        series.validate_v2_gap_id(
+            gap, batch, raw_record=incoming_gap_raw.get(gap.get("audit_id")),
+            frozen_legacy_records=frozen_gap_raw,
+        )
         gaps_by_company.setdefault(gap.get("company_id"), []).append(gap)
     for company_id in company_ids:
         company_claims = claims_by_company.get(company_id, [])
@@ -184,7 +370,6 @@ def load_package(input_dir, research_root):
         if company_gaps and not any(phrase in company_gaps[0].get("nonabsence_wording", "") for phrase in series.NONABSENCE_PHRASES):
             raise ValueError("company gap lacks mandatory Korean non-absence wording")
 
-    existing_claim_ids = {item.get("claim_id") for item in existing["claims.jsonl"]}
     claim_map = _unique_map(claims, "claim_id", "claims")
     gap_map = _unique_map(gaps, "audit_id", "gaps")
     review_map, outcome_review_map = {}, {}
@@ -215,9 +400,6 @@ def load_package(input_dir, research_root):
         if review.get("decision") != "approved" or review.get("researcher_id") == review.get("reviewer_id"):
             raise ValueError(f"{record_id}: unapproved or self-approved outcome review")
         parse_timestamp(review.get("reviewed_at"), "outcome reviewed_at")
-    if set(claim_map) & existing_claim_ids:
-        raise ValueError("cross-batch claim_id collision")
-
     source_map = {item.get("source_id"): item for item in existing["sources.jsonl"] + records["sources.jsonl"]}
     used_ids = {source_id for claim in claims for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", [])}
     if None in source_map or used_ids - set(source_map):
@@ -234,11 +416,14 @@ def load_package(input_dir, research_root):
             if len(evidence_ids) != len(set(evidence_ids)) or set(evidence_ids) != set(claim.get("source_ids", [])):
                 raise ValueError(f"{claim.get('claim_id')}: missing one-to-one source evidence bindings")
     expected_source_ids = expected_check_source_ids(claims, gaps, source_map)
-    check_map = _unique_map(records["checks.jsonl"], "source_id", "checks")
+    check_map = series.source_check_map(records["checks.jsonl"])
     if set(check_map) != expected_source_ids:
         raise ValueError("checks must bind every used official source_id exactly once")
+    legacy_sources = verifier.company_benefits_series.frozen_source_records(research_root)
     for source_id, check in check_map.items():
-        verifier.company_benefits_series.validate_source_check(check, source_map[source_id])
+        verifier.company_benefits_series.validate_source_check(
+            check, source_map[source_id],
+            legacy_sources.get(source_id))
     latest_review_by_source_id = {}
     for claim in claims:
         reviewed = parse_timestamp(review_map[claim["claim_id"]].get("reviewed_at"), "reviewed_at")
@@ -262,7 +447,8 @@ def load_package(input_dir, research_root):
             current = latest_review_by_source_id.get(source_id)
             if current is None or parse_timestamp(reviewed_at, "outcome reviewed_at") > parse_timestamp(current, "latest review"):
                 latest_review_by_source_id[source_id] = reviewed_at
-    merge_checks(existing["checks.jsonl"], records["checks.jsonl"], latest_review_by_source_id, expected_source_ids)
+    merge_checks(existing["checks.jsonl"], records["checks.jsonl"], latest_review_by_source_id, expected_source_ids,
+                 source_map=source_map, legacy_sources=legacy_sources)
     return manifest, batch, records
 
 
@@ -541,32 +727,12 @@ def _integrate_batch_locked(input_dir, research_root, freeze_anchor_receipt, eff
     with tempfile.TemporaryDirectory(prefix="company-benefits-series-") as directory:
         staged = Path(directory) / "research"
         shutil.copytree(research_root, staged)
-        for name, target in TARGETS.items():
+        # The v1 projections are immutable refreeze audit inputs while v2 is in
+        # progress. They validate the package but are never merged or promoted.
+        for name, target in V2_TARGETS.items():
             current = series.read_jsonl(staged / target)
-            if name == "checks.jsonl":
-                claims = incoming["claims.jsonl"]
-                reviews = claim_review_map(incoming["reviews.jsonl"])
-                source_map = {item["source_id"]: item for item in series.read_jsonl(staged / "source-registry.jsonl")}
-                latest = {}
-                for claim in claims:
-                    for source_id in claim.get("source_ids", []) + claim.get("searched_source_ids", []):
-                        reviewed_at = reviews[claim["claim_id"]]["reviewed_at"]
-                        if source_id not in latest or parse_timestamp(reviewed_at, "reviewed_at") > parse_timestamp(latest[source_id], "reviewed_at"):
-                            latest[source_id] = reviewed_at
-                gap_map = {item["audit_id"]: item for item in incoming["gaps.jsonl"]}
-                for review in incoming["reviews.jsonl"]:
-                    record_id = review.get("record_id")
-                    if not record_id:
-                        continue
-                    for source_id in expected_check_source_ids([], [gap_map[record_id]], source_map):
-                        reviewed_at = review["reviewed_at"]
-                        if source_id not in latest or parse_timestamp(reviewed_at, "outcome reviewed_at") > parse_timestamp(latest[source_id], "reviewed_at"):
-                            latest[source_id] = reviewed_at
-                expected = expected_check_source_ids(claims, incoming["gaps.jsonl"], source_map)
-                values = merge_checks(current, incoming[name], latest, expected)
-            else:
-                field = ID_FIELDS[name]
-                values = sorted(current + incoming[name], key=lambda item: item[field])
+            field = ID_FIELDS[name]
+            values = sorted(current + incoming[name], key=lambda item: item[field])
             series.write_jsonl(staged / target, values)
         progress = json.loads((staged / "series-progress.json").read_text(encoding="utf-8"))
         approved_entries = {item["batch_id"]: item for item in progress["batches"] if item["status"] == "approved"}
@@ -615,7 +781,7 @@ def integrate_batch(input_dir, research_root, freeze_anchor_receipt, effective_s
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input_dir", type=Path, help="directory containing batch.json and five JSONL artifacts")
+    parser.add_argument("input_dir", type=Path, help="directory containing batch.json and eleven JSONL artifacts")
     parser.add_argument("--research-root", type=Path, default=Path("docs/research/company-benefits"))
     parser.add_argument("--freeze-anchor-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT"), required=False)
     parser.add_argument("--effective-selection-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_EFFECTIVE_SELECTION_RECEIPT"))
@@ -624,8 +790,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.freeze_anchor_receipt is None:
         parser.error("--freeze-anchor-receipt or COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT is required")
-    progress = integrate_batch(args.input_dir, args.research_root, args.freeze_anchor_receipt,
-                               args.effective_selection_receipt, args.as_of, args.dry_run)
+    try:
+        progress = integrate_batch(args.input_dir, args.research_root, args.freeze_anchor_receipt,
+                                   args.effective_selection_receipt, args.as_of, args.dry_run)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"batch integration failed: {exc}", file=sys.stderr)
+        return 1
     approved = sum(item["status"] == "approved" for item in progress["batches"])
     print(f"validated {approved}/80 approved batches" + (" (dry run)" if args.dry_run else ""))
     return 0

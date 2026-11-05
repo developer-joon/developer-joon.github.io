@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "search-tool-acquisition.schema.json",
+  "title": "Company benefits search tool acquisition",
+  "description": "Review-pending pointer to an immutable raw tool response and its safe-lead route receipt. It is not a source, cell decision, source_found result, or no_public_info result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_type", "format_version", "query_manifest_sha256", "query_id", "tool_name", "recorded_at", "raw_tool_response_sha256", "capture_sha256", "capture_locator", "validated_result_count", "review_status", "authoritative_receipts_created", "artifact_content_sha256"],
+  "properties": {
+    "artifact_type": {"const": "company-benefits-search-tool-acquisition"},
+    "format_version": {"enum": [1, 2]},
+    "query_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "query_id": {"type": "string", "pattern": "^search-query::"},
+    "tool_name": {"const": "web_search"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "raw_tool_response_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capture_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capture_locator": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "validated_result_count": {"type": "integer", "minimum": 0, "maximum": 20},
+    "acquisition_status": {"const": "complete_with_omissions"},
+    "total_result_count": {"type": "integer", "minimum": 0, "maximum": 20},
+    "retained_result_count": {"type": "integer", "minimum": 0, "maximum": 20},
+    "dropped_result_count": {"type": "integer", "minimum": 0, "maximum": 20},
+    "omission_reason_totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "credential_like_url": {"type": "integer", "minimum": 1, "maximum": 20},
+        "description_out_of_bounds": {"type": "integer", "minimum": 1, "maximum": 20},
+        "duplicate_position": {"type": "integer", "minimum": 1, "maximum": 20},
+        "invalid_position": {"type": "integer", "minimum": 1, "maximum": 20},
+        "malformed_result": {"type": "integer", "minimum": 1, "maximum": 20},
+        "malformed_url": {"type": "integer", "minimum": 1, "maximum": 20},
+        "non_https_url": {"type": "integer", "minimum": 1, "maximum": 20},
+        "private_url": {"type": "integer", "minimum": 1, "maximum": 20},
+        "title_out_of_bounds": {"type": "integer", "minimum": 1, "maximum": 20},
+        "url_out_of_bounds": {"type": "integer", "minimum": 1, "maximum": 20},
+        "url_resolution_failed": {"type": "integer", "minimum": 1, "maximum": 20}
+      }
+    },
+    "review_status": {"const": "review_pending"},
+    "authoritative_receipts_created": {"const": false},
+    "artifact_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [{
+    "if": {"properties": {"format_version": {"const": 2}}, "required": ["format_version"]},
+    "then": {"required": ["acquisition_status", "total_result_count", "retained_result_count", "dropped_result_count", "omission_reason_totals"]}
+  }]
+}

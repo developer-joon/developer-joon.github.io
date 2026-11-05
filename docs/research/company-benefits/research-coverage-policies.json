@@ -1,0 +1,41 @@
+{
+  "policy_id": "coverage-policy-v2",
+  "policy_version": 2,
+  "description": "Fail-closed minimum routes required before a category cell may be integrated as no_public_info.",
+  "allow_generator_synthesized_receipts": false,
+  "completion_rule": "all_required_routes_have_valid_receipts",
+  "receipt_schema": "schema/research-attempt.schema.json",
+  "cell_evidence_aggregation": {
+    "rule": "cell_equals_most_conservative_backing_value",
+    "scope_status_best_to_worst": ["exact_entity", "bounded_entity", "group_only", "unresolved"],
+    "currentness_best_to_worst": ["current", "historical", "unknown"]
+  },
+  "shared_bulk_source_policy": {
+    "default_allow_reuse": false,
+    "sources": {
+      "source::approved-shared-benefits-bulk": {
+        "require_per_entity_result_binding": true,
+        "allowed_route_ids": ["company-recruiting-media"]
+      }
+    }
+  },
+  "routes": {
+    "official-government": {"route_kind": "official_government", "required": true},
+    "company-recruiting-media": {"route_kind": "company_recruiting_major_media", "required": true},
+    "other-public-web": {"route_kind": "other_public_web", "required": true},
+    "community-review": {"route_kind": "community_employee_review", "required": false},
+    "user-submission": {"route_kind": "user_submission", "required": false}
+  },
+  "category_routes": {
+    "leave": ["official-government", "company-recruiting-media", "other-public-web"],
+    "family": ["official-government", "company-recruiting-media", "other-public-web"],
+    "health": ["official-government", "company-recruiting-media", "other-public-web"],
+    "growth": ["official-government", "company-recruiting-media", "other-public-web"],
+    "housing": ["official-government", "company-recruiting-media", "other-public-web"],
+    "commute": ["official-government", "company-recruiting-media", "other-public-web"],
+    "remote": ["official-government", "company-recruiting-media", "other-public-web"],
+    "retirement": ["official-government", "company-recruiting-media", "other-public-web"],
+    "meals": ["official-government", "company-recruiting-media", "other-public-web"],
+    "inclusion": ["official-government", "company-recruiting-media", "other-public-web"]
+  }
+}

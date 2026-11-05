@@ -2,9 +2,13 @@
 """Deterministic contracts for the 2,000-company benefits series."""
 
 import hashlib
+import importlib.util
 import json
 import re
+import shutil
+import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 MANIFEST_VERSION = "1"
 SCOPES = ("domestic", "international")
@@ -30,14 +34,333 @@ IDENTITY_ALGORITHM = "sec-submissions-identity"
 IDENTITY_VERSION = "1"
 IDENTITY_SOURCE_FIELDS = {"entity_identity", "legal_name", "registry_id", "tax_id"}
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+COMPANY_ID_PATTERN = re.compile(r"^(?!v2(?:::|$))[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 OFFICIAL_DISCOVERY_SOURCE_TYPES = {
     "government_register", "regulator_filing", "public_enterprise_disclosure",
     "exchange_filing", "official_company_report",
 }
+V2_CATEGORIES = (
+    "leave", "family", "health", "growth", "housing",
+    "commute", "remote", "retirement", "meals", "inclusion",
+)
+V2_LEDGER_FILES = {
+    "cells": "company-category-cells.jsonl",
+    "attempts": "research-attempts.jsonl",
+    "official_claims": "official-claims-v2.jsonl",
+    "references": "reference-records.jsonl",
+    "community_reports": "community-benefit-reports.jsonl",
+    "sources": "sources-v2.jsonl",
+}
+V2_ID_FIELDS = {
+    "cells": "cell_id", "attempts": "attempt_id", "official_claims": "claim_id",
+    "references": "reference_id", "community_reports": "community_report_id", "sources": "source_id",
+}
+V2_STRUCTURAL_ID_FIELDS = {
+    "cells": ("cell_id", "company_id", "category_id", "jurisdiction"),
+    "attempts": ("attempt_id", "cell_id", "company_id", "category_id", "jurisdiction", "route_id"),
+    "official_claims": ("claim_id", "cell_id", "company_id", "category_id", "jurisdiction"),
+    "references": ("reference_id", "cell_id", "company_id", "category_id", "source_id"),
+    "community_reports": ("community_report_id", "cell_id", "company_id", "category_id", "source_id"),
+    "sources": ("source_id",),
+}
+V2_STRUCTURAL_BINDING_FIELDS = {
+    "cells": ("attempt_ids", "official_claim_ids", "reference_ids", "community_report_ids"),
+    "attempts": ("source_ids",),
+    "official_claims": ("source_ids",),
+}
+V2_GAP_ID_PREFIX = "company-gap::v2::"
+LEGACY_GAP_ID_PREFIX = "company-gap::"
+
+
+def canonical_v2_gap_id(batch, company_id):
+    """Build a v2 gap ID from one authoritative batch membership."""
+    if not isinstance(batch, dict):
+        raise ValueError("canonical batch membership context is required for a v2 gap ID")
+    batch_id, company_ids = batch.get("batch_id"), batch.get("company_ids")
+    if (batch_id not in BATCH_IDS or not isinstance(company_ids, list)
+            or len(company_ids) != BATCH_SIZE
+            or any(not isinstance(item, str) or not COMPANY_ID_PATTERN.fullmatch(item)
+                   for item in company_ids)
+            or len(set(company_ids)) != BATCH_SIZE):
+        raise ValueError("canonical batch membership context is invalid for a v2 gap ID")
+    if not isinstance(company_id, str) or not company_id or company_id not in company_ids:
+        raise ValueError("v2 gap company_id is outside authoritative batch membership")
+    return f"{V2_GAP_ID_PREFIX}{batch_id}::{company_id}"
+
+
+def legacy_gap_id(company_id):
+    if not isinstance(company_id, str) or not COMPANY_ID_PATTERN.fullmatch(company_id):
+        raise ValueError("legacy gap company_id is outside the authoritative company ID language")
+    return f"{LEGACY_GAP_ID_PREFIX}{company_id}"
+
+
+def compiled_v2_gap_id(gap, batch):
+    """Normalize only the historical unqualified spelling at compilation time."""
+    if not isinstance(gap, dict):
+        raise ValueError("compiled v2 gap must be an object")
+    company_id, audit_id = gap.get("company_id"), gap.get("audit_id")
+    canonical = canonical_v2_gap_id(batch, company_id)
+    if audit_id not in {canonical, legacy_gap_id(company_id)}:
+        raise ValueError(f"{audit_id}: v2 gap ID has an arbitrary namespace, company, or batch binding")
+    return canonical
+
+
+def jsonl_raw_record_map(path, field):
+    """Return exact nonblank JSONL record bytes keyed by a unique string ID."""
+    result = {}
+    path = Path(path)
+    raw_records = path.read_bytes().splitlines() if path.is_file() else []
+    for raw in raw_records:
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path.name}: invalid JSON") from exc
+        record_id = record.get(field) if isinstance(record, dict) else None
+        if not isinstance(record_id, str) or not record_id or record_id in result:
+            raise ValueError(f"{path.name}: requires unique nonempty {field}")
+        result[record_id] = raw
+    return result
+
+
+def validate_v2_gap_id(gap, batch, *, raw_record=None, frozen_legacy_records=None):
+    """Accept canonical v2 IDs, or exact already-frozen legacy records only."""
+    if not isinstance(gap, dict):
+        raise ValueError("v2 gap must be an object")
+    company_id, audit_id = gap.get("company_id"), gap.get("audit_id")
+    canonical = canonical_v2_gap_id(batch, company_id)
+    if audit_id == canonical:
+        return canonical
+    legacy = legacy_gap_id(company_id)
+    if audit_id == legacy:
+        frozen = (frozen_legacy_records or {}).get(legacy)
+        if raw_record is not None and frozen is not None and raw_record == frozen:
+            return legacy
+        raise ValueError(f"{audit_id}: legacy gap ID is accepted only for an immutable byte-identical frozen record")
+    raise ValueError(f"{audit_id}: canonical v2 gap ID must exactly bind authoritative batch and company")
+
+
+def validate_v2_record_structure(records, batch):
+    """Reject malformed v2 identifiers before any value is indexed or hashed."""
+    if not isinstance(records, dict) or set(records) != set(V2_LEDGER_FILES):
+        raise ValueError("v2 records must contain the six exact canonical ledgers")
+    for ledger in V2_LEDGER_FILES:
+        rows = records[ledger]
+        if not isinstance(rows, list):
+            raise ValueError(f"invalid v2 record structure: {ledger} must be an array")
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise ValueError(f"invalid v2 record structure: {ledger}[{index}] must be an object")
+            for field in V2_STRUCTURAL_ID_FIELDS[ledger]:
+                value = row.get(field)
+                if not isinstance(value, str) or not value:
+                    raise ValueError(
+                        f"invalid v2 record structure: {ledger}[{index}].{field} must be a nonempty string"
+                    )
+            for field in V2_STRUCTURAL_BINDING_FIELDS.get(ledger, ()):
+                values = row.get(field)
+                if not isinstance(values, list):
+                    raise ValueError(
+                        f"invalid v2 record structure: {ledger}[{index}].{field} must be an array"
+                    )
+                for binding_index, value in enumerate(values):
+                    if not isinstance(value, str) or not value:
+                        raise ValueError(
+                            f"invalid v2 record structure: {ledger}[{index}].{field}"
+                            f"[{binding_index}] must be a nonempty string"
+                        )
+            if ledger == "attempts" and "shared_bulk_result_binding" in row:
+                shared = row["shared_bulk_result_binding"]
+                if not isinstance(shared, dict):
+                    raise ValueError(
+                        f"invalid v2 record structure: {ledger}[{index}].shared_bulk_result_binding must be an object"
+                    )
+                for field in ("source_id", "company_id", "category_id"):
+                    value = shared.get(field)
+                    if not isinstance(value, str) or not value:
+                        raise ValueError(
+                            f"invalid v2 record structure: {ledger}[{index}].shared_bulk_result_binding."
+                            f"{field} must be a nonempty string"
+                        )
+
+    company_ids = batch.get("company_ids") if isinstance(batch, dict) else None
+    if (not isinstance(company_ids, list) or len(company_ids) != BATCH_SIZE
+            or any(not isinstance(value, str) or not COMPANY_ID_PATTERN.fullmatch(value)
+                   for value in company_ids)):
+        raise ValueError(
+            "canonical batch company_ids must contain exactly 25 authoritative company IDs"
+        )
+    if len(set(company_ids)) != BATCH_SIZE:
+        raise ValueError("canonical batch must contain exactly 25 unique companies")
+    return records
+
+
+def validate_v2_batch_records(records, batch):
+    """Validate the batch-specific envelope before the authoritative v2 validator."""
+    validate_v2_record_structure(records, batch)
+    company_ids = batch["company_ids"]
+
+    errors = []
+    expected_keys = {(company_id, category_id) for company_id in company_ids for category_id in V2_CATEGORIES}
+    expected_order = [(company_id, category_id) for company_id in company_ids for category_id in V2_CATEGORIES]
+    cells = records["cells"]
+    cell_ids = [cell.get("cell_id") for cell in cells if isinstance(cell, dict)]
+    cell_keys = [(cell.get("company_id"), cell.get("category_id")) for cell in cells if isinstance(cell, dict)]
+    duplicate_ids = sorted({value for value in cell_ids if cell_ids.count(value) > 1}, key=str)
+    duplicate_keys = sorted({value for value in cell_keys if cell_keys.count(value) > 1}, key=str)
+    if duplicate_ids or duplicate_keys:
+        errors.append("duplicate v2 cell identities are prohibited")
+    actual_keys = set(cell_keys)
+    missing = sorted(expected_keys - actual_keys)
+    unexpected = sorted(actual_keys - expected_keys)
+    if missing:
+        errors.append(f"missing canonical v2 cells: {missing[0][0]}::{missing[0][1]}")
+    if unexpected:
+        errors.append(f"substituted or unexpected v2 cell: {unexpected[0][0]}::{unexpected[0][1]}")
+    if len(cells) != BATCH_SIZE * len(V2_CATEGORIES) or actual_keys != expected_keys:
+        errors.append("v2 cells must equal the exact canonical 25 companies x 10 categories set")
+    if cell_keys != expected_order:
+        errors.append("v2 cells are not in canonical company/category order")
+
+    id_fields = {
+        "attempts": "attempt_id", "official_claims": "claim_id", "references": "reference_id",
+        "community_reports": "community_report_id", "sources": "source_id",
+    }
+    indexes = {}
+    for ledger, field in id_fields.items():
+        values = [record.get(field) for record in records[ledger] if isinstance(record, dict)]
+        if len(values) != len(records[ledger]) or any(not isinstance(value, str) or not value for value in values):
+            errors.append(f"{ledger} require nonempty object IDs")
+        duplicates = sorted({value for value in values if values.count(value) > 1}, key=str)
+        if duplicates:
+            errors.append(f"duplicate {ledger} ID: {duplicates[0]}")
+        indexes[ledger] = {record.get(field): record for record in records[ledger] if isinstance(record, dict)}
+
+    cell_position = {key: index for index, key in enumerate(expected_order)}
+    expected_attempt_order = sorted(
+        records["attempts"],
+        key=lambda item: (cell_position.get((item.get("company_id"), item.get("category_id")), 10**9),
+                          item.get("route_id", "")),
+    )
+    if records["attempts"] != expected_attempt_order:
+        errors.append("v2 attempts are not in canonical cell/route order")
+    for ledger, field in (("official_claims", "claim_id"), ("references", "reference_id"),
+                          ("community_reports", "community_report_id"), ("sources", "source_id")):
+        if records[ledger] != sorted(records[ledger], key=lambda item: item.get(field, "")):
+            errors.append(f"v2 {ledger} are not in deterministic ID order")
+
+    use = {ledger: {} for ledger in ("attempts", "official_claims", "references", "community_reports")}
+    cells_by_id = {cell.get("cell_id"): cell for cell in cells if isinstance(cell, dict)}
+    bindings = (
+        ("attempts", "attempt_ids"), ("official_claims", "official_claim_ids"),
+        ("references", "reference_ids"), ("community_reports", "community_report_ids"),
+    )
+    for cell_id in sorted(cells_by_id, key=str):
+        cell = cells_by_id[cell_id]
+        for ledger, field in bindings:
+            for record_id in cell.get(field, []):
+                use[ledger][record_id] = use[ledger].get(record_id, 0) + 1
+                record = indexes[ledger].get(record_id)
+                label = ledger.replace("_", " ").rstrip("s")
+                if record is None:
+                    errors.append(f"{cell_id}: missing {label} {record_id}")
+                elif any(record.get(key) != cell.get(key) for key in ("cell_id", "company_id", "category_id")):
+                    errors.append(f"{record_id}: cross-cell {label} binding mismatch")
+
+    for ledger, field in id_fields.items():
+        if ledger == "sources":
+            continue
+        label = ledger.replace("_", " ").rstrip("s")
+        for record_id in sorted(indexes[ledger], key=str):
+            count = use[ledger].get(record_id, 0)
+            if count == 0:
+                errors.append(f"orphan {label}: {record_id}")
+            elif count > 1:
+                errors.append(f"{label} referenced by multiple cells: {record_id}")
+
+    for report_id, report in sorted(indexes["community_reports"].items(), key=lambda item: str(item[0])):
+        moderation = report.get("moderation")
+        if (report.get("publication_eligibility") != "eligible"
+                or not isinstance(moderation, dict) or moderation.get("status") != "approved"
+                or not isinstance(report.get("frozen_snapshot"), dict)):
+            errors.append(f"{report_id}: community report must be approved and frozen")
+
+    if errors:
+        raise ValueError("invalid v2 batch records:\n" + "\n".join(sorted(set(errors))))
+    return records
+
+
+def read_v2_batch_records(directory):
+    directory = Path(directory)
+    return {ledger: read_jsonl(directory / filename) for ledger, filename in V2_LEDGER_FILES.items()}
+
+
+def validate_v2_authoritative_records(records, research_root, prepromotion=False, validation_context=None):
+    """Run the authoritative cross-ledger validator over an arbitrary complete slice."""
+    validator_path = Path(__file__).with_name("validate-benefits-v2-package.py")
+    spec = importlib.util.spec_from_file_location("benefits_v2_batch_package_validator", validator_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {validator_path}")
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    research_root = Path(research_root)
+
+    repository_root = Path(__file__).resolve().parents[1]
+    canonical_root = repository_root / "docs" / "research" / "company-benefits"
+    if research_root.resolve() == canonical_root.resolve():
+        policy = json.loads((research_root / "research-coverage-policies.json").read_text(encoding="utf-8"))
+        errors = validator.validate_package(
+            {"coverage_policy": policy, **records}, repository_root,
+            prepromotion=prepromotion,
+            validation_context=validation_context,
+        )
+    else:
+        with tempfile.TemporaryDirectory(prefix="benefits-v2-authority-") as directory:
+            temporary_root = Path(directory)
+            target = temporary_root / "docs" / "research" / "company-benefits"
+            (target / "schema").mkdir(parents=True)
+            for filename in validator.SCHEMAS.values():
+                shutil.copyfile(canonical_root / "schema" / filename, target / "schema" / filename)
+            for filename in (
+                "companies.jsonl", "research-coverage-policies.json", "series-batches.jsonl"
+            ):
+                source = research_root / filename
+                if not source.is_file() and filename == "research-coverage-policies.json":
+                    source = canonical_root / filename
+                if not source.is_file():
+                    raise ValueError(f"v2 authoritative input is missing: {filename}")
+                shutil.copyfile(source, target / filename)
+            policy = json.loads((target / "research-coverage-policies.json").read_text(encoding="utf-8"))
+            errors = validator.validate_package(
+                {"coverage_policy": policy, **records}, temporary_root,
+                prepromotion=prepromotion,
+                validation_context=validation_context,
+            )
+    if errors:
+        raise ValueError("authoritative benefits-v2 validation failed:\n" + "\n".join(errors))
+    return records
+
+
+def validate_v2_package_records(records, batch, research_root, prepromotion=False):
+    """Run batch envelope checks and the authoritative v2 package validator."""
+    validate_v2_batch_records(records, batch)
+    return validate_v2_authoritative_records(
+        records, research_root, prepromotion=prepromotion,
+        validation_context={
+            "mode": "batch", "batch_id": batch.get("batch_id"),
+            "company_ids": batch["company_ids"],
+        },
+    )
 
 
 def json_bytes(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def canonical_json_bytes(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+                      allow_nan=False).encode("utf-8")
 
 
 def jsonl_bytes(values):
@@ -79,14 +402,87 @@ def validate_identity_source(source):
         raise ValueError("official identity projection is restricted to official entity identity fields")
 
 
-def validate_source_check(check, source):
-    """Validate one post-review check against one exact source_id tuple."""
+def frozen_source_records(root):
+    """Index exact JSONL record bytes, including their line terminator."""
+    path = Path(root) / "source-registry.jsonl"
+    records = {}
+    for raw in path.read_bytes().splitlines(keepends=True) if path.is_file() else []:
+        if not raw.strip():
+            continue
+        source_id = json.loads(raw)["source_id"]
+        if source_id in records:
+            raise ValueError(f"{source_id}: duplicate frozen legacy source")
+        records[source_id] = raw
+    return records
+
+
+def source_check_map(records):
+    """Collapse identical serialized checks; reject ambiguous source observations."""
+    result = {}
+    for check in records:
+        if not isinstance(check, dict):
+            raise ValueError("checks must be objects")
+        source_id = check.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            raise ValueError("checks require nonempty source_id")
+        if source_id in result and json_bytes(result[source_id]) != json_bytes(check):
+            raise ValueError(f"{source_id}: conflicting source check tuple")
+        result[source_id] = check
+    return result
+
+
+def read_source_checks(path):
+    """Retain audit records, requiring repeated observations to be byte-identical."""
+    path = Path(path)
+    records, seen = [], {}
+    for raw in path.read_bytes().splitlines(keepends=True) if path.is_file() else []:
+        if not raw.strip():
+            continue
+        check = json.loads(raw)
+        key = json_bytes(check)
+        if key in seen and seen[key] != raw:
+            raise ValueError("duplicate source checks must be byte-identical")
+        seen[key] = raw
+        records.append(check)
+    return records
+
+
+def validate_source_check(check, source, legacy_record=None):
+    """Validate a post-review observation without rewriting its source.
+
+    Metadata drift requires an explicit compatibility audit bound to trusted
+    frozen JSONL bytes. This grants no publication eligibility or claim evidence.
+    Callers retain responsibility for post-review timing and exact byte overlap.
+    """
     source_id = source.get("source_id")
     if check.get("source_id") != source_id or check.get("url") != source.get("url"):
         raise ValueError(f"{source_id}: post-review check source_id/URL binding mismatch")
     if source.get("record_type") == "nonpublishable_metadata":
         fields = {"source_id", "url", "status", "final_url", "access_wall", "checked_at"}
         actual = {field: check.get(field) for field in ("status", "final_url", "access_wall")}
+        projection = check.get("compatibility_projection")
+        if projection is not None:
+            expected = {"algorithm": "immutable-legacy-source-v1",
+                        "legacy_record_sha256": hashlib.sha256(legacy_record).hexdigest()
+                        if legacy_record is not None else None}
+            if (legacy_record is None or json.loads(legacy_record) != source
+                    or projection != expected or set(check) != fields | {"compatibility_projection"}):
+                raise ValueError(f"{source_id}: invalid immutable legacy compatibility projection")
+            status, final_url, wall = (check.get(key) for key in ("status", "final_url", "access_wall"))
+            walls = {"none", "api_key", "login", "fee", "contract", "bot_or_network_block"}
+            try:
+                final = urlsplit(final_url) if isinstance(final_url, str) else None
+                secure_final = final is not None and final.scheme == "https" and bool(final.hostname)
+            except ValueError:
+                secure_final = False
+            if (not isinstance(wall, str) or wall not in walls
+                    or (status is None and (final_url is not None or wall != "bot_or_network_block"))
+                    or (status is not None and (type(status) is not int or not 100 <= status <= 599
+                        or not secure_final))
+                    or (status == 200 and wall == "bot_or_network_block")
+                    or (status in {401, 403, 429} and wall == "none")):
+                raise ValueError(f"{source_id}: inconsistent current metadata observation")
+            return
         if set(check) != fields or actual != source.get("access_observation"):
             raise ValueError(f"{source_id}: metadata check must exactly match observed route failure/access semantics")
         return
@@ -157,6 +553,302 @@ def write_jsonl(path, values):
 
 def company_list_sha256(company_ids):
     return hashlib.sha256(json_bytes(company_ids)).hexdigest()
+
+
+def v2_cell_set_sha256(cells):
+    identities = sorted((cell.get("company_id"), cell.get("category_id")) for cell in cells)
+    return hashlib.sha256(json_bytes(identities)).hexdigest()
+
+
+def v2_batch_slice(records, batch):
+    """Return the complete authoritative package slice owned or used by one batch."""
+    company_ids = set(batch.get("company_ids", []))
+    sliced = {
+        ledger: [record for record in records[ledger] if record.get("company_id") in company_ids]
+        for ledger in V2_LEDGER_FILES if ledger != "sources"
+    }
+    source_ids = set()
+    for ledger in ("attempts", "official_claims"):
+        for record in sliced[ledger]:
+            values = record.get("source_ids", [])
+            if (not isinstance(values, list)
+                    or any(not isinstance(source_id, str) or not source_id for source_id in values)):
+                raise ValueError(
+                    f"{record.get(V2_ID_FIELDS[ledger])}: invalid v2 source binding; "
+                    "source_ids must contain strings"
+                )
+            source_ids.update(values)
+    for ledger in ("references", "community_reports"):
+        for record in sliced[ledger]:
+            source_id = record.get("source_id")
+            if not isinstance(source_id, str) or not source_id:
+                raise ValueError(
+                    f"{record.get(V2_ID_FIELDS[ledger])}: invalid v2 source binding; "
+                    "source_id must be a string"
+                )
+            source_ids.add(source_id)
+    sliced["sources"] = [record for record in records["sources"] if record.get("source_id") in source_ids]
+    company_position = {company_id: index for index, company_id in enumerate(batch.get("company_ids", []))}
+    category_position = {category_id: index for index, category_id in enumerate(V2_CATEGORIES)}
+    cell_key = lambda record: (company_position.get(record.get("company_id"), 10**9),
+                               category_position.get(record.get("category_id"), 10**9))
+    sliced["cells"].sort(key=cell_key)
+    sliced["attempts"].sort(key=lambda record: (*cell_key(record), record.get("route_id", "")))
+    for ledger in ("official_claims", "references", "community_reports", "sources"):
+        sliced[ledger].sort(key=lambda record, field=V2_ID_FIELDS[ledger]: record.get(field, ""))
+    return sliced
+
+
+def v2_ledger_sha256(records):
+    """Bind every full canonical record payload, independent of source file ordering."""
+    result = {}
+    for ledger, filename in V2_LEDGER_FILES.items():
+        field = V2_ID_FIELDS[ledger]
+        ordered = sorted(records[ledger], key=lambda record: record.get(field, ""))
+        result[filename] = hashlib.sha256(canonical_json_bytes(ordered)).hexdigest()
+    return result
+
+
+def progress_contract_version(progress):
+    """Parse the strict legacy/v2 progress union without inferring a v2 marker."""
+    if not isinstance(progress, dict) or not isinstance(progress.get("batches"), list):
+        raise ValueError("series progress must be an object with batch entries")
+    entries = progress["batches"]
+    legacy_top = {"manifest_version", "status", "company_list_sha256", "total_companies", "total_batches", "batches"}
+    legacy_entry = {"batch_id", "scope", "batch_number", "status", "company_list_sha256", "claim_count", "no_claim_count"}
+    approval_fields = {"approved_at", "reviewer_ids"}
+    v2_entry_fields = {"cell_count", "cell_set_sha256", "v2_ledger_sha256"}
+    version = progress.get("progress_version")
+    if version not in {None, "1", "2"}:
+        raise ValueError("series progress version must be 1 or 2")
+    if (version != "2" and ("total_cells" in progress
+            or any(isinstance(entry, dict) and set(entry) & v2_entry_fields for entry in entries))):
+        raise ValueError("v2 progress fields require explicit progress_version=2")
+    if version in {None, "1"}:
+        expected_top = legacy_top | ({"progress_version"} if version == "1" else set())
+        if (set(progress) != expected_top or progress.get("manifest_version") != MANIFEST_VERSION
+                or progress.get("status") not in {"in_progress", "complete"}
+                or progress.get("total_companies") != 2000 or progress.get("total_batches") != 80
+                or not HASH_PATTERN.fullmatch(str(progress.get("company_list_sha256", "")))
+                or len(entries) != 80):
+            raise ValueError("legacy v1 progress schema is invalid")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("legacy progress batch entries must be objects")
+            status = entry.get("status")
+            expected = legacy_entry | (approval_fields if status == "approved" else set())
+            reviewers = entry.get("reviewer_ids")
+            invalid_approval = status == "approved" and (
+                not isinstance(entry.get("approved_at"), str)
+                or not isinstance(reviewers, list) or not reviewers
+                or any(not isinstance(item, str) or not item for item in reviewers)
+                or len(reviewers) != len(set(reviewers))
+            )
+            if (set(entry) != expected or status not in {"pending", "approved"}
+                    or entry.get("scope") not in SCOPES
+                    or not isinstance(entry.get("batch_number"), int) or isinstance(entry.get("batch_number"), bool)
+                    or not 1 <= entry["batch_number"] <= 40
+                    or not HASH_PATTERN.fullmatch(str(entry.get("company_list_sha256", "")))
+                    or any(not isinstance(entry.get(field), int) or isinstance(entry.get(field), bool)
+                           or entry[field] < 0 for field in ("claim_count", "no_claim_count"))
+                    or invalid_approval):
+                raise ValueError("legacy progress batch entry schema is invalid")
+        return "1"
+    expected_top = legacy_top | {"progress_version", "total_cells"}
+    if (set(progress) != expected_top or progress.get("manifest_version") != MANIFEST_VERSION
+            or progress.get("status") not in {"in_progress", "complete"}
+            or progress.get("total_companies") != 2000 or progress.get("total_batches") != 80
+            or not HASH_PATTERN.fullmatch(str(progress.get("company_list_sha256", "")))):
+        raise ValueError("v2 progress schema is invalid")
+    if progress.get("total_cells") != 20000:
+        raise ValueError("v2 progress requires total_cells=20000")
+    if len(entries) != 80:
+        raise ValueError("v2 progress requires the complete 80-batch partition")
+
+    ledger_names = set(V2_LEDGER_FILES.values())
+    approved_count = 0
+    cell_count = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("v2 progress batch entries must be objects")
+        batch_id = entry.get("batch_id", "unknown-batch")
+        status = entry.get("status")
+        expected = legacy_entry | {"cell_count"} | (approval_fields | {"cell_set_sha256", "v2_ledger_sha256"}
+                                                    if status == "approved" else set())
+        if (set(entry) != expected or entry.get("scope") not in SCOPES
+                or not isinstance(entry.get("batch_number"), int) or isinstance(entry.get("batch_number"), bool)
+                or not 1 <= entry["batch_number"] <= 40
+                or not HASH_PATTERN.fullmatch(str(entry.get("company_list_sha256", "")))
+                or any(not isinstance(entry.get(field), int) or isinstance(entry.get(field), bool)
+                       or entry[field] < 0 for field in ("claim_count", "no_claim_count"))):
+            raise ValueError(f"{batch_id}: v2 progress batch entry schema is invalid")
+        if status == "approved":
+            approved_count += 1
+            count = entry.get("cell_count")
+            cell_count += count if isinstance(count, int) and not isinstance(count, bool) else 0
+            hashes = entry.get("v2_ledger_sha256")
+            if (count != 250 or isinstance(count, bool)
+                    or not HASH_PATTERN.fullmatch(str(entry.get("cell_set_sha256", "")))
+                    or not isinstance(hashes, dict) or set(hashes) != ledger_names
+                    or any(not HASH_PATTERN.fullmatch(str(value)) for value in hashes.values())
+                    or not isinstance(entry.get("approved_at"), str)
+                    or not isinstance(entry.get("reviewer_ids"), list) or not entry["reviewer_ids"]
+                    or any(not isinstance(item, str) or not item for item in entry["reviewer_ids"])
+                    or len(entry["reviewer_ids"]) != len(set(entry["reviewer_ids"]))):
+                raise ValueError(f"{batch_id}: v2 approved batch requires exactly 250 cells and all six ledger hashes; legacy approved entries cannot coexist")
+        elif status == "pending":
+            if (entry.get("cell_count") != 0 or "cell_set_sha256" in entry
+                    or "v2_ledger_sha256" in entry):
+                raise ValueError(f"{batch_id}: v2 pending batch requires zero cells and no v2 hashes")
+        else:
+            raise ValueError(f"{batch_id}: invalid v2 progress status")
+    if progress.get("status") == "complete" and (approved_count != 80 or cell_count != 20000):
+        raise ValueError("v2 completion requires exactly 80 approved batches and 20,000 cells")
+    return "2"
+
+
+def validate_complete_v2_progress(root, batches=None, progress=None, records=None):
+    """Require and verify an exact complete v2 record snapshot and its canonical partition."""
+    root = Path(root)
+    batches = batches if batches is not None else read_jsonl(root / "series-batches.jsonl")
+    if progress is None:
+        progress = json.loads((root / "series-progress.json").read_text(encoding="utf-8"))
+    if progress_contract_version(progress) != "2":
+        raise ValueError("v2 publication requires explicit progress_version=2")
+    if progress.get("status") != "complete":
+        raise ValueError("v2 publication requires complete progress")
+
+    canonical_ids = {f"{scope}-{number:02d}" for scope in SCOPES for number in range(1, BATCHES_PER_SCOPE + 1)}
+    if not isinstance(batches, list) or len(batches) != len(canonical_ids):
+        raise ValueError("authoritative series batch ledger must contain exactly 80 canonical batches")
+    batch_ids = [batch.get("batch_id") for batch in batches if isinstance(batch, dict)]
+    if len(batch_ids) != len(batches) or len(set(batch_ids)) != len(batch_ids) or set(batch_ids) != canonical_ids:
+        raise ValueError("authoritative series batch IDs must exactly equal the canonical 80-batch set")
+
+    batch_map = {}
+    company_owner = {}
+    expected_cell_keys = set()
+    for batch in batches:
+        batch_id = batch["batch_id"]
+        scope, raw_number = batch_id.rsplit("-", 1)
+        company_ids = batch.get("company_ids")
+        if (batch.get("scope") != scope or batch.get("batch_number") != int(raw_number)
+                or not isinstance(company_ids, list) or len(company_ids) != BATCH_SIZE
+                or len(set(company_ids)) != BATCH_SIZE
+                or batch.get("company_list_sha256") != company_list_sha256(company_ids)):
+            raise ValueError(f"{batch_id}: authoritative batch identity or company membership is invalid")
+        for company_id in company_ids:
+            if not isinstance(company_id, str) or not company_id or company_id in company_owner:
+                raise ValueError("authoritative series batches must partition 2,000 unique companies")
+            company_owner[company_id] = batch_id
+            expected_cell_keys.update((company_id, category_id) for category_id in V2_CATEGORIES)
+        batch_map[batch_id] = batch
+    if len(company_owner) != BATCH_SIZE * len(canonical_ids):
+        raise ValueError("authoritative series batches must partition exactly 2,000 unique companies")
+
+    entries = progress.get("batches", [])
+    progress_ids = [entry.get("batch_id") for entry in entries if isinstance(entry, dict)]
+    if (len(progress_ids) != len(entries) or len(set(progress_ids)) != len(progress_ids)
+            or set(progress_ids) != canonical_ids):
+        raise ValueError("v2 progress batch IDs must exactly equal the canonical 80-batch set")
+    entry_map = {entry["batch_id"]: entry for entry in entries}
+
+    records = read_v2_batch_records(root) if records is None else records
+    validate_v2_authoritative_records(records, root)
+    partitions = {
+        batch_id: {ledger: [] for ledger in V2_LEDGER_FILES}
+        for batch_id in canonical_ids
+    }
+    global_ids = {}
+    for ledger, id_field in V2_ID_FIELDS.items():
+        seen = set()
+        for record in records[ledger]:
+            if not isinstance(record, dict):
+                raise ValueError(f"v2 {ledger} ledger records must be objects")
+            record_id = record.get(id_field)
+            if not isinstance(record_id, str) or not record_id or record_id in seen:
+                raise ValueError(f"v2 {ledger} ledger requires globally unique nonempty {id_field}")
+            seen.add(record_id)
+        global_ids[ledger] = seen
+
+    cells = records["cells"]
+    cell_keys = [(record.get("company_id"), record.get("category_id")) for record in cells]
+    if (len(cells) != BATCH_SIZE * len(V2_CATEGORIES) * len(canonical_ids)
+            or len(set(cell_keys)) != len(cell_keys) or set(cell_keys) != expected_cell_keys):
+        raise ValueError("actual v2 cells must be exactly 20,000 unique canonical company/category records")
+
+    for ledger in V2_LEDGER_FILES:
+        if ledger == "sources":
+            continue
+        for record in records[ledger]:
+            company_id = record.get("company_id")
+            category_id = record.get("category_id")
+            batch_id = company_owner.get(company_id)
+            expected_cell_id = f"cell::{company_id}::{category_id}"
+            if (batch_id is None or category_id not in V2_CATEGORIES
+                    or record.get("cell_id") != expected_cell_id
+                    or (company_id, category_id) not in expected_cell_keys):
+                raise ValueError(f"{record.get(V2_ID_FIELDS[ledger])}: v2 record has no exact canonical batch/cell owner")
+            partitions[batch_id][ledger].append(record)
+
+    source_owners = {source_id: set() for source_id in global_ids["sources"]}
+    source_bindings = (("attempts", "source_ids"), ("official_claims", "source_ids"),
+                       ("references", "source_id"), ("community_reports", "source_id"))
+    for ledger, field in source_bindings:
+        for record in records[ledger]:
+            batch_id = company_owner[record["company_id"]]
+            values = record.get(field, []) if field.endswith("_ids") else [record.get(field)]
+            if not isinstance(values, list):
+                raise ValueError(f"{record.get(V2_ID_FIELDS[ledger])}: invalid v2 source binding")
+            for source_id in values:
+                if source_id not in source_owners:
+                    raise ValueError(f"{record.get(V2_ID_FIELDS[ledger])}: unknown v2 source binding {source_id}")
+                source_owners[source_id].add(batch_id)
+    source_map = {record["source_id"]: record for record in records["sources"]}
+    for source_id, owners in source_owners.items():
+        if len(owners) != 1:
+            raise ValueError(f"{source_id}: v2 source must belong to exactly one canonical batch")
+        partitions[next(iter(owners))]["sources"].append(source_map[source_id])
+
+    for batch_id in sorted(canonical_ids):
+        batch = batch_map[batch_id]
+        entry = entry_map[batch_id]
+        sliced = partitions[batch_id]
+        if (entry.get("scope") != batch.get("scope")
+                or entry.get("batch_number") != batch.get("batch_number")
+                or entry.get("company_list_sha256") != batch.get("company_list_sha256")):
+            raise ValueError(f"{batch_id}: progress identity does not match authoritative batch ledger")
+        if len(sliced["cells"]) != BATCH_SIZE * len(V2_CATEGORIES):
+            raise ValueError(f"{batch_id}: actual v2 partition must contain exactly 250 cells")
+        if entry.get("cell_count") != len(sliced["cells"]):
+            raise ValueError(f"{batch_id}: declared v2 cell count does not match actual partition")
+        if entry.get("cell_set_sha256") != v2_cell_set_sha256(sliced["cells"]):
+            raise ValueError(f"{batch_id}: persisted v2 cell-set hash mismatch")
+        if entry.get("v2_ledger_sha256") != v2_ledger_sha256(sliced):
+            raise ValueError(f"{batch_id}: persisted v2 ledger hash mismatch")
+        validate_v2_batch_records(sliced, batch)
+    return records, partitions
+
+
+def validate_persisted_v2_hashes(root, batches=None, progress=None, v2_transition=False):
+    """Reject approved-ledger drift before any operation can regenerate progress hashes."""
+    root = Path(root)
+    batches = batches if batches is not None else read_jsonl(root / "series-batches.jsonl")
+    if progress is None:
+        progress = json.loads((root / "series-progress.json").read_text(encoding="utf-8"))
+    if progress_contract_version(progress) == "1":
+        if v2_transition and any(entry.get("status") == "approved" for entry in progress.get("batches", [])
+                                 if isinstance(entry, dict)):
+            raise ValueError("v2 transition requires every approved batch to use the v2 cell/hash contract; approved legacy entries cannot coexist")
+        return
+    batch_map = {batch.get("batch_id"): batch for batch in batches}
+    records = read_v2_batch_records(root)
+    for entry in progress.get("batches", []):
+        if entry.get("status") != "approved":
+            continue
+        batch = batch_map.get(entry.get("batch_id"))
+        if batch is None or entry.get("v2_ledger_sha256") != v2_ledger_sha256(v2_batch_slice(records, batch)):
+            raise ValueError(f"{entry.get('batch_id')}: persisted v2 ledger hash mismatch")
 
 
 def file_sha256(path):
@@ -299,12 +991,23 @@ def build_progress(root, batches, approved_batch_ids, approved_at, reviewer_id, 
     for claim in claims:
         claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
     gaps_by_company = _company_gap_map(gaps)
+    v2_records = read_v2_batch_records(root)
+    v2_progress = any(v2_records.values())
+    v2_cells = v2_records["cells"]
+    v2_cells_by_company = {}
+    for cell in v2_cells:
+        v2_cells_by_company.setdefault(cell.get("company_id"), []).append(cell)
     entries = []
     for batch in batches:
         approved = batch["batch_id"] in approved_batch_ids
         company_ids = batch["company_ids"]
-        claim_count = sum(len(claims_by_company.get(company_id, [])) for company_id in company_ids) if approved else 0
-        no_claim_count = sum(bool(gaps_by_company.get(company_id)) for company_id in company_ids) if approved else 0
+        batch_cells = [cell for company_id in company_ids for cell in v2_cells_by_company.get(company_id, [])]
+        if approved and v2_progress:
+            claim_count = sum(bool(cell.get("official_claim_ids")) for cell in batch_cells)
+            no_claim_count = len(batch_cells) - claim_count
+        else:
+            claim_count = sum(len(claims_by_company.get(company_id, [])) for company_id in company_ids) if approved else 0
+            no_claim_count = sum(bool(gaps_by_company.get(company_id)) for company_id in company_ids) if approved else 0
         entry = {
             "batch_id": batch["batch_id"],
             "scope": batch["scope"],
@@ -314,22 +1017,33 @@ def build_progress(root, batches, approved_batch_ids, approved_at, reviewer_id, 
             "claim_count": claim_count,
             "no_claim_count": no_claim_count,
         }
+        if v2_progress:
+            entry["cell_count"] = sum(len(v2_cells_by_company.get(company_id, [])) for company_id in company_ids) if approved else 0
         if approved:
             timestamp = approved_at.get(batch["batch_id"]) if isinstance(approved_at, dict) else approved_at
             reviewers = reviewer_id.get(batch["batch_id"]) if isinstance(reviewer_id, dict) else reviewer_id
             if isinstance(reviewers, str):
                 reviewers = [reviewers]
+            if v2_progress and len(batch_cells) != BATCH_SIZE * len(V2_CATEGORIES):
+                raise ValueError(f"{batch['batch_id']}: v2 approved batch requires exactly 250 cells before progress publication")
             entry.update(approved_at=timestamp, reviewer_ids=sorted(reviewers or []))
+            if v2_progress:
+                entry["cell_set_sha256"] = v2_cell_set_sha256(batch_cells)
+                entry["v2_ledger_sha256"] = v2_ledger_sha256(v2_batch_slice(v2_records, batch))
         entries.append(entry)
     all_ids = [company_id for batch in batches for company_id in batch["company_ids"]]
-    return {
+    progress = {
         "manifest_version": MANIFEST_VERSION,
+        "progress_version": "2" if v2_progress else "1",
         "status": status,
         "company_list_sha256": company_list_sha256(all_ids),
         "total_companies": 2000,
         "total_batches": 80,
         "batches": entries,
     }
+    if v2_progress:
+        progress["total_cells"] = 20000
+    return progress
 
 
 def materialize_contract(root, approved_batch_ids, approved_at, reviewer_id, status="in_progress"):
@@ -445,8 +1159,21 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
     except (OSError, json.JSONDecodeError) as exc:
         errors.append(f"invalid series progress: {exc}")
         return
-    allowed_top = {"manifest_version", "status", "company_list_sha256", "total_companies", "total_batches", "batches"}
-    if set(progress) != allowed_top or progress.get("manifest_version") != MANIFEST_VERSION or progress.get("status") not in {"in_progress", "complete"}:
+    legacy_top = {"manifest_version", "status", "company_list_sha256", "total_companies", "total_batches", "batches"}
+    allowed_top = legacy_top | {"progress_version", "total_cells"}
+    try:
+        v2_progress = progress_contract_version(progress) == "2"
+    except ValueError as exc:
+        errors.append(str(exc))
+        v2_progress = "total_cells" in progress or progress.get("progress_version") == "2"
+    if v2_progress:
+        # Preserved v1 refreeze ledgers are nonpublishable audit evidence during
+        # migration. They cannot account for, approve, or block a v2 batch.
+        claims = []
+        reviews = []
+    valid_top_shapes = (legacy_top, legacy_top | {"progress_version"},
+                        legacy_top | {"total_cells"}, allowed_top)
+    if set(progress) not in valid_top_shapes or progress.get("manifest_version") != MANIFEST_VERSION or progress.get("status") not in {"in_progress", "complete"}:
         errors.append("series progress schema or status is invalid")
     entries = progress.get("batches", [])
     if not isinstance(entries, list) or len(entries) != 80:
@@ -456,7 +1183,9 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
     if len(entry_map) != 80 or set(entry_map) != {item.get("batch_id") for item in batches}:
         errors.append("series progress batch identities must match all 80 canonical batches")
     all_ids = [company_id for batch in batches for company_id in batch.get("company_ids", [])]
-    if progress.get("company_list_sha256") != company_list_sha256(all_ids) or progress.get("total_companies") != 2000 or progress.get("total_batches") != 80:
+    if (progress.get("company_list_sha256") != company_list_sha256(all_ids)
+            or progress.get("total_companies") != 2000 or progress.get("total_batches") != 80
+            or (v2_progress and progress.get("total_cells") != 20000)):
         errors.append("series progress company-list identity or totals mismatch")
 
     claims_by_company = {}
@@ -465,8 +1194,26 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
     review_by_claim = {}
     for review in reviews:
         review_by_claim.setdefault(review.get("claim_id"), []).append(review)
-    gaps = read_jsonl(root / "series-research-gaps.jsonl")
+    gaps = [] if v2_progress else read_jsonl(root / "series-research-gaps.jsonl")
     gap_map = _company_gap_map(gaps)
+    complete_v2 = v2_progress and progress.get("status") == "complete"
+    v2_partitions = None
+    if complete_v2:
+        try:
+            v2_records, v2_partitions = validate_complete_v2_progress(
+                root, batches, progress
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            errors.append(f"complete v2 publication validation failed: {exc}")
+            v2_records = {ledger: [] for ledger in V2_LEDGER_FILES}
+    else:
+        v2_records = read_v2_batch_records(root)
+        if any(v2_records.values()):
+            try:
+                validate_v2_authoritative_records(v2_records, root)
+            except (OSError, ValueError, RuntimeError) as exc:
+                errors.append(f"merged v2 ledgers failed authoritative validation: {exc}")
+    v2_cells = v2_records["cells"]
     gap_by_id = {item.get("audit_id"): item for item in gaps if str(item.get("audit_id", "")).startswith("company-gap::")}
     outcome_reviews = [item for item in reviews if item.get("record_id") and not item.get("claim_id")]
     outcome_targets = set()
@@ -495,9 +1242,13 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
     for batch in batches:
         entry = entry_map.get(batch.get("batch_id"), {})
         expected_fields = {"batch_id", "scope", "batch_number", "status", "company_list_sha256", "claim_count", "no_claim_count"}
+        if v2_progress:
+            expected_fields.add("cell_count")
         status = entry.get("status")
         if status == "approved":
             expected_fields |= {"approved_at", "reviewer_ids"}
+            if v2_progress and entry.get("cell_count", 0):
+                expected_fields |= {"cell_set_sha256", "v2_ledger_sha256"}
             approved_batches.append(batch)
             approved_companies.update(batch["company_ids"])
             if not entry.get("reviewer_ids") or len(entry["reviewer_ids"]) != len(set(entry["reviewer_ids"])):
@@ -511,11 +1262,43 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
             errors.append(f"{batch['batch_id']}: series progress binding mismatch")
         batch_claims = [claim for company_id in batch["company_ids"] for claim in claims_by_company.get(company_id, [])]
         batch_gaps = [gap for company_id in batch["company_ids"] for gap in gap_map.get(company_id, [])]
+        if v2_partitions is not None:
+            batch_v2_records = v2_partitions[batch["batch_id"]]
+            batch_cells = batch_v2_records["cells"]
+        else:
+            batch_cells = [cell for cell in v2_cells
+                           if cell.get("company_id") in set(batch["company_ids"])]
+            try:
+                batch_v2_records = v2_batch_slice(v2_records, batch)
+            except ValueError as exc:
+                errors.append(f"{batch['batch_id']}: merged v2 batch validation failed: {exc}")
+                batch_v2_records = {ledger: [] for ledger in V2_LEDGER_FILES}
         if status == "pending":
             if batch_claims or batch_gaps or any(review_by_claim.get(claim.get("claim_id")) for claim in batch_claims):
                 errors.append(f"{batch['batch_id']}: pending batch must have no published claims, reviews, or company gaps")
             if entry.get("claim_count") != 0 or entry.get("no_claim_count") != 0:
                 errors.append(f"{batch['batch_id']}: pending batch counts must be zero")
+            if v2_progress and (batch_cells or entry.get("cell_count") != 0):
+                errors.append(f"{batch['batch_id']}: pending batch must have no v2 cells")
+            continue
+        expected_cell_keys = {(company_id, category) for company_id in batch["company_ids"] for category in V2_CATEGORIES}
+        actual_cell_keys = [(cell.get("company_id"), cell.get("category_id")) for cell in batch_cells]
+        if (batch_cells or entry.get("cell_count", 0)) and not complete_v2:
+            if (len(batch_cells) != 250 or len(set(actual_cell_keys)) != 250 or set(actual_cell_keys) != expected_cell_keys
+                    or entry.get("cell_count") != 250
+                    or entry.get("cell_set_sha256") != v2_cell_set_sha256(batch_cells)
+                    or entry.get("v2_ledger_sha256") != v2_ledger_sha256(batch_v2_records)):
+                errors.append(f"{batch['batch_id']}: approved batch requires exact canonical 250-cell set and hash")
+            try:
+                validate_v2_batch_records(batch_v2_records, batch)
+            except (OSError, ValueError, RuntimeError) as exc:
+                errors.append(f"{batch['batch_id']}: merged v2 batch validation failed: {exc}")
+        if v2_progress:
+            expected_claim_count = sum(bool(cell.get("official_claim_ids")) for cell in batch_cells)
+            expected_no_claim_count = len(batch_cells) - expected_claim_count
+            if (entry.get("claim_count") != expected_claim_count
+                    or entry.get("no_claim_count") != expected_no_claim_count):
+                errors.append(f"{batch['batch_id']}: v2 claim/no-claim progress counts mismatch")
             continue
         accounted = 0
         for company_id in batch["company_ids"]:
@@ -561,7 +1344,7 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         if any(source_map.get(source_id, {}).get("hash_provenance") == IDENTITY_PROVENANCE
                for source_id in claim.get("source_ids", [])):
             errors.append(f"{claim.get('claim_id')}: official identity projections cannot support benefit claim prose")
-    checks = read_jsonl(root / "series-prepublication-checks.jsonl")
+    checks = [] if v2_progress else read_jsonl(root / "series-prepublication-checks.jsonl")
     check_map = {item.get("source_id"): item for item in checks}
     expected_source_ids = set(used_source_ids)
     for gap_id in outcome_targets:
@@ -572,13 +1355,14 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
             errors.append(str(exc))
     if len(check_map) != len(checks) or set(check_map) != expected_source_ids:
         errors.append("series prepublication checks must contain one record per used official source_id")
+    legacy_sources = frozen_source_records(root)
     for source_id, check in check_map.items():
         source = source_map.get(source_id)
         if source is None:
             errors.append(f"prepublication {source_id}: orphan source_id")
             continue
         try:
-            validate_source_check(check, source)
+            validate_source_check(check, source, legacy_sources.get(source_id))
         except ValueError as exc:
             errors.append(str(exc))
         checked = parse_timestamp(check.get("checked_at"), "checked_at", f"prepublication {source_id}", errors)
@@ -624,3 +1408,4 @@ def validate_series(root, projected, claims, reviews, source_map, as_of, errors,
         for path in (root / "series-batches.jsonl", root / "series-progress.json", root / "series-research-gaps.jsonl", root / "series-prepublication-checks.jsonl"):
             if path.is_file() and any(marker in path.read_text(encoding="utf-8").casefold() for marker in fixture_markers):
                 errors.append(f"complete series prohibits fixture data in {path.name}")
+    return None

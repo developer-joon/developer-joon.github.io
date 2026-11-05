@@ -20,6 +20,8 @@ Google is the only enabled community OAuth provider for this release. Kakao and 
 
 `scripts/release-gate.mjs` is a non-deploying gate. It never runs or invokes hosted mutation commands, `supabase db push`, Function deployment, GitHub Pages deployment, backup/restore, or a production canary. Every hosted mutation shown below is manual approval-gated and has a stop point. Read-only success does not grant write approval.
 
+Approved company-benefit corrections follow the separate [offline-review runbook](benefit-correction-offline-review.md): immutable candidate export, independent research, normal v2 validation, artifact generation/verification, and only then a separately approved applied transition bound to the verified manifest version. The exporter never mutates a correction, ledger, or artifact.
+
 ## Operator inputs and preflight
 
 Use the repository-pinned Supabase CLI. Values come from the environment; never put a password, access token, privileged key, OAuth secret, or connection string in a CLI literal.

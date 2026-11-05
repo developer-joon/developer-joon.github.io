@@ -32,6 +32,10 @@ const communityRoutes: Record<string, CommunityRouteState> = {
     statusTitle: '신고 관리 화면을 준비하고 있습니다',
     statusDescription: '커뮤니티 운영자가 신고를 공정하게 검토할 수 있는 화면을 만들고 있습니다.',
   },
+  '/community/admin/benefit-corrections': {
+    statusTitle: '복지 정정 검토 화면을 준비하고 있습니다',
+    statusDescription: '운영자가 제출된 복지 정정 근거와 상태를 안전하게 검토하는 화면입니다.',
+  },
   '/community/auth/callback': {
     statusTitle: '로그인 확인 화면을 준비하고 있습니다',
     statusDescription: '로그인 결과를 안전하게 확인하는 화면을 만들고 있습니다.',

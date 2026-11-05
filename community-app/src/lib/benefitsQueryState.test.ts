@@ -64,3 +64,26 @@ it('shows companies with verified public evidence by default and keeps all resea
   expect(filterBenefitsCompanies(companies, parseQuery('?categories=family'))).toHaveLength(0)
   expect(filterBenefitsCompanies(companies, parseQuery('?categories=family&evidence=all'))).toHaveLength(2)
 })
+
+it('keeps verified official evidence as the default and orders opt-in tiers by precedence', () => {
+  const base = (index: number, state: 'official_verified'|'reference'|'community_report'|'no_public_info'): CompanyListing => ({
+    company_id: `KR-CRN-${String(index).padStart(13, '0')}`,
+    population_sequence: index,
+    legal_name: `Tier ${index}`,
+    display_name: `Tier ${index}`,
+    scope: 'domestic', jurisdiction: 'KR', incorporation_country: 'KR', registered_head_office_country: 'KR', selected_reporting_legal_entity: `Tier ${index}`, sector: 'non_financial',
+    category_outcomes: categories.map((category) => ({
+      category_id: category, state,
+      source_tiers: state === 'official_verified' ? ['official_government'] : state === 'reference' ? ['other_public_web'] : state === 'community_report' ? ['user_submission'] : [],
+      official_claim_count: state === 'official_verified' ? 1 : 0,
+      reference_count: state === 'reference' ? 1 : 0,
+      community_report_count: state === 'community_report' ? 1 : 0,
+      reliability: state === 'official_verified' ? 'high' : state === 'reference' ? 'medium' : state === 'community_report' ? 'low' : 'none',
+      currentness: state === 'no_public_info' ? 'unknown' : 'current', scope_status: state === 'no_public_info' ? 'unresolved' : 'exact_entity', conflict_status: 'none',
+      scope: { countries: ['KR'], legal_entities: [`Tier ${index}`], roles: [], employment_types: [], tenure_conditions: [] }, last_checked_at: '2026-11-01T00:00:00Z',
+    } as unknown as CategoryOutcome)),
+  })
+  const companies = [base(1, 'community_report'), base(2, 'no_public_info'), base(3, 'reference'), base(4, 'official_verified')]
+  expect(filterBenefitsCompanies(companies, parseQuery('?categories=leave')).map((company) => company.population_sequence)).toEqual([4])
+  expect(filterBenefitsCompanies(companies, parseQuery('?categories=leave&evidence=all')).map((company) => company.population_sequence)).toEqual([4, 3, 1, 2])
+})

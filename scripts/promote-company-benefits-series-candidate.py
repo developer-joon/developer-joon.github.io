@@ -12,7 +12,11 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-FINAL_FILES = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl")
+FINAL_FILES = (
+    "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl",
+    "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
+    "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl",
+)
 REVIEW_FILES = {"review-bundle.json", "reviews.jsonl", "checks.jsonl"}
 HASH = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -62,20 +66,23 @@ def _review_source_ids(kind, target, claim_map, gap_map, source_map):
     return set(source_ids)
 
 
-def promote(candidate_dir, review_dir, output_dir, research_root):
-    validator = _load(Path(__file__).with_name("validate-company-benefits-series-candidate.py"), "candidate_contract")
-    package = validator.validate_candidate(candidate_dir, research_root)
+def validate_external_review(package, review_dir, validator):
+    """Validate the promotion review contract without writing or integrating output."""
     review_dir = _external_directory(review_dir)
     if {path.name for path in review_dir.iterdir()} != REVIEW_FILES or any(not path.is_file() for path in review_dir.iterdir()):
         raise ValueError("external review package must contain exactly review-bundle.json, reviews.jsonl, and checks.jsonl")
     try:
-        bundle = json.loads((review_dir / "review-bundle.json").read_text(encoding="utf-8"))
+        bundle_raw = (review_dir / "review-bundle.json").read_bytes()
+        bundle = json.loads(bundle_raw)
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("invalid external review bundle") from exc
     bundle_fields = {"schema_version", "candidate_manifest_sha256", "candidate_artifacts",
                      "promotion_reviewer_id", "approved_at", "artifacts"}
     if set(bundle) != bundle_fields or bundle.get("schema_version") != "1":
         raise ValueError("external review bundle schema mismatch")
+    canonical_bundle = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if bundle_raw != canonical_bundle:
+        raise ValueError("external review bundle must use canonical JSON bytes")
     if (bundle.get("candidate_manifest_sha256") != package["manifest_sha256"]
             or bundle.get("candidate_artifacts") != package["manifest"]["artifacts"]):
         raise ValueError("external review candidate hash binding mismatch; old approval transfer is prohibited")
@@ -91,8 +98,8 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
             raise ValueError(f"external review artifact hash mismatch: {name}")
 
     reviews = validator.read_jsonl(review_dir / "reviews.jsonl")
-    checks = validator.read_jsonl(review_dir / "checks.jsonl")
     verifier = validator._load_verifier()
+    checks = verifier.company_benefits_series.read_source_checks(review_dir / "checks.jsonl")
     claim_schema = verifier.load_schema("review.schema.json")
     outcome_schema = verifier.load_schema("outcome-review.schema.json")
     targets = [(kind, target) for kind, target, _ in package["targets"]]
@@ -138,18 +145,30 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
             expected_source_ids.add(source_id)
             latest_review[source_id] = max(latest_review.get(source_id, review_times[(kind, target)]),
                                            review_times[(kind, target)])
-    check_source_ids = [check.get("source_id") for check in checks]
-    if len(check_source_ids) != len(set(check_source_ids)) or set(check_source_ids) != expected_source_ids:
-        raise ValueError("post-review checks must exactly cover every candidate source_id once; missing, duplicate, and orphan checks are prohibited")
+    check_source_ids = verifier.company_benefits_series.source_check_map(checks)
+    if set(check_source_ids) != expected_source_ids:
+        raise ValueError("post-review checks must exactly cover every candidate source_id; missing and orphan checks are prohibited")
     check_contract = verifier.company_benefits_series
     for check in checks:
         source_id = check.get("source_id")
-        check_contract.validate_source_check(check, source_map[source_id])
+        check_contract.validate_source_check(check, source_map[source_id],
+                                             package["legacy_sources"].get(source_id))
         checked = _timestamp(check.get("checked_at"), "check checked_at")
         if checked <= latest_review[source_id]:
             raise ValueError(f"{source_id}: post-review check must follow every bound independent review")
         if checked >= approved_at:
             raise ValueError(f"{source_id}: post-review check must precede promotion approval")
+
+    return {"bundle": bundle, "reviews": reviews, "checks": checks, "verifier": verifier}
+
+
+def promote(candidate_dir, review_dir, output_dir, research_root):
+    validator = _load(Path(__file__).with_name("validate-company-benefits-series-candidate.py"), "candidate_contract")
+    package = validator.validate_candidate(candidate_dir, research_root)
+    review = validate_external_review(package, review_dir, validator)
+    bundle, reviews, checks, verifier = (review[key] for key in ("bundle", "reviews", "checks", "verifier"))
+    records = package["records"]
+    reviewer = bundle["promotion_reviewer_id"]
 
     output_dir = Path(output_dir)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -167,6 +186,8 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
         "sources.jsonl": records["sources.jsonl"], "claims.jsonl": promoted_claims,
         "reviews.jsonl": reviews, "gaps.jsonl": records["gaps.jsonl"], "checks.jsonl": checks,
     }
+    for name in validator.V2_FILES:
+        values[name] = records[name]
     with tempfile.TemporaryDirectory(prefix="benefits-promotion-", dir=output_dir.parent) as temporary:
         staged = Path(temporary) / "package"
         staged.mkdir()
@@ -183,7 +204,12 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
             "status": "approved", "approved_at": bundle["approved_at"], "reviewer_id": reviewer,
             "artifacts": final_hashes,
             "review_audit": {"candidate_manifest_sha256": package["manifest_sha256"],
+                             "candidate_manifest": package["manifest"],
                              "candidate_artifacts": package["manifest"]["artifacts"],
+                             "review_bundle_sha256": validator.sha256(json.dumps(
+                                 bundle, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                             ).encode("utf-8")),
+                             "review_bundle": bundle,
                              "review_artifacts": bundle["artifacts"]},
         }
         (staged / "batch.json").write_bytes(verifier.company_benefits_series.json_bytes(manifest))

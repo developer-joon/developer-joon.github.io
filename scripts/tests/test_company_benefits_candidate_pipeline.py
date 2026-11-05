@@ -2,11 +2,15 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from scripts.tests.benefits_test_fixture import audited_source
+from scripts.tests.benefits_v2_batch_fixture import no_public_info_records, write_records
 
 ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = ROOT / "scripts" / "validate-company-benefits-series-candidate.py"
@@ -53,17 +57,31 @@ class CandidatePipelineTests(unittest.TestCase):
         self.root.mkdir()
         self.candidate.mkdir()
         self.review.mkdir()
-        self.company_ids = [f"KR-CRN-{index:013d}" for index in range(25)]
-        self.batch = {
-            "manifest_version": "1", "batch_id": "domestic-02", "scope": "domestic", "batch_number": 2,
-            "company_list_sha256": digest(json_bytes(self.company_ids)), "effective_sequence_sha256": "a" * 64,
-            "replacement_events_sha256": "b" * 64, "company_ids": self.company_ids,
-        }
+        research = ROOT / "docs" / "research" / "company-benefits"
+        batches = [json.loads(line) for line in (research / "series-batches.jsonl").read_text().splitlines()]
+        self.batch = next(item for item in batches if item["batch_id"] == "domestic-02")
+        self.company_ids = self.batch["company_ids"]
+        companies = [json.loads(line) for line in (research / "companies.jsonl").read_text().splitlines()]
+        selected = [company for company in companies if company["company_id"] in set(self.company_ids)]
+        (self.root / "companies.jsonl").write_bytes(jsonl_bytes(selected))
+        self.v2_records = no_public_info_records(self.batch, selected)
         (self.root / "series-batches.jsonl").write_bytes(jsonl_bytes([self.batch]))
         for name in ("source-registry.jsonl", "benefit-claims.jsonl", "reviews.jsonl",
                      "series-research-gaps.jsonl", "series-prepublication-checks.jsonl"):
             (self.root / name).write_bytes(b"")
-        progress = {"batches": [{"batch_id": self.batch["batch_id"], "status": "pending"}]}
+        progress = {
+            "manifest_version": "1", "progress_version": "1", "status": "in_progress",
+            "company_list_sha256": self.verifier.company_benefits_series.company_list_sha256([
+                company_id for batch in batches for company_id in batch["company_ids"]
+            ]),
+            "total_companies": 2000, "total_batches": 80,
+            "batches": [{
+                "batch_id": batch["batch_id"], "scope": batch["scope"],
+                "batch_number": batch["batch_number"], "status": "pending",
+                "company_list_sha256": batch["company_list_sha256"],
+                "claim_count": 0, "no_claim_count": 0,
+            } for batch in batches],
+        }
         (self.root / "series-progress.json").write_bytes(json_bytes(progress))
         self.sources = [self.metadata_source()]
         self.claims = []
@@ -87,7 +105,8 @@ class CandidatePipelineTests(unittest.TestCase):
 
     def gap(self, company_id):
         return {
-            "audit_id": f"company-gap::{company_id}", "company_id": company_id, "disposition": "nonpublishable",
+            "audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}",
+            "company_id": company_id, "disposition": "nonpublishable",
             "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
             "searched_official_source_ids": ["kr-dart-exact-entity-route"], "searched_official_urls": [],
             "nonabsence_wording": "복지가 없다는 뜻이 아닙니다.", "researcher_id": "researcher-a",
@@ -107,6 +126,7 @@ class CandidatePipelineTests(unittest.TestCase):
             raw = jsonl_bytes(records[name])
             (self.candidate / name).write_bytes(raw)
             artifacts[name] = digest(raw)
+        artifacts.update(write_records(self.candidate, self.v2_records, jsonl_bytes))
         manifest = {
             "schema_version": "1", "batch_id": self.batch["batch_id"],
             "company_list_sha256": self.batch["company_list_sha256"],
@@ -228,6 +248,24 @@ class CandidatePipelineTests(unittest.TestCase):
         package = self.validator.validate_candidate(self.candidate, self.root)
         self.assertEqual("nonpublishable_metadata", package["records"]["sources.jsonl"][0]["record_type"])
 
+    def test_candidate_cli_fails_closed_on_unhashable_v2_binding_without_writes(self):
+        self.v2_records["cells"][0]["attempt_ids"] = [["unhashable"]]
+        self.write_candidate()
+        before = {path.relative_to(self.candidate): path.read_bytes()
+                  for path in self.candidate.iterdir() if path.is_file()}
+        result = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(self.candidate), "--research-root", str(self.root)],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        output = result.stdout + result.stderr
+        after = {path.relative_to(self.candidate): path.read_bytes()
+                 for path in self.candidate.iterdir() if path.is_file()}
+        self.assertEqual(1, result.returncode, output)
+        self.assertIn("invalid v2 record structure", output)
+        self.assertNotIn("Traceback", output)
+        self.assertEqual("", result.stdout)
+        self.assertEqual(before, after)
+
     def test_every_gap_requires_a_nonempty_official_source_id_route(self):
         self.gaps[0]["searched_official_source_ids"] = []
         self.write_candidate()
@@ -291,15 +329,157 @@ class CandidatePipelineTests(unittest.TestCase):
         self.gaps.reverse()
         self.gaps[0]["audit_id"] = "gap-0"
         self.write_candidate()
-        with self.assertRaisesRegex(ValueError, "canonical gap"):
+        with self.assertRaisesRegex(ValueError, "canonical.*gap"):
             self.validator.validate_candidate(self.candidate, self.root)
-        self.gaps[0]["audit_id"] = f"company-gap::{self.company_ids[0]}"
+        self.gaps[0]["audit_id"] = self.gap(self.company_ids[0])["audit_id"]
         self.write_candidate()
         manifest = json.loads((self.candidate / "candidate.json").read_bytes())
         manifest["artifacts"]["gaps.jsonl"] = "0" * 64
         (self.candidate / "candidate.json").write_bytes(json_bytes(manifest))
         with self.assertRaisesRegex(ValueError, "artifact hash"):
             self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_candidate_rejects_noncanonical_file_and_directory_modes(self):
+        os.chmod(self.candidate / "claims.jsonl", 0o755)
+        with self.assertRaisesRegex(ValueError, "mode|permissions"):
+            self.validator.validate_candidate(self.candidate, self.root)
+        os.chmod(self.candidate / "claims.jsonl", 0o644)
+        os.chmod(self.candidate, 0o775)
+        with self.assertRaisesRegex(ValueError, "mode|permissions"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_candidate_rejects_symlinked_artifact_even_with_matching_mode_and_bytes(self):
+        artifact = self.candidate / "claims.jsonl"
+        outside = Path(self.tmp.name) / "outside-claims.jsonl"
+        outside.write_bytes(artifact.read_bytes())
+        artifact.unlink()
+        artifact.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "symlink|regular file"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_candidate_rejects_symlinked_parent_directory(self):
+        alias = Path(self.tmp.name) / "candidate-parent-alias"
+        alias.symlink_to(self.candidate.parent, target_is_directory=True)
+        aliased_candidate = alias / self.candidate.name
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.validator.validate_candidate(aliased_candidate, self.root)
+
+    def test_candidate_allows_root_relative_web_asset_paths(self):
+        for path in (
+            "/btn_programInfo01.png",
+            "/images/foo.svg",
+            "/images/icons/v1.2/foo.svg",
+            "/btn_programInfo01.png)](/health/contents.do) [more](https://example.com)",
+        ):
+            with self.subTest(path=path):
+                self.validator._reject_local_absolute_paths(path)
+
+    def test_candidate_rejects_root_relative_filesystem_and_traversal_bypasses(self):
+        for path in (
+            "/bin",
+            "/sbin",
+            "/dev",
+            "/proc",
+            "/sys",
+            "/run",
+            "/srv",
+            "/mnt",
+            "/media",
+            "/boot",
+            "/lib",
+            "/lib64",
+            "/bin/sh",
+            "/dev/null",
+            "/proc/self/environ",
+            "/sys/kernel",
+            "/run/secrets/x",
+            "//server/share/x",
+            "/images/../../etc/passwd",
+            "/images/%2e%2e/etc/passwd",
+            "%2fetc/passwd",
+            "%252fetc/passwd",
+            "%25252fetc/passwd",
+            "/%65tc/passwd",
+            "/%2fserver/share",
+            "/images/logo.svg?next=/etc/passwd",
+            "/images/logo.svg?next=%252fetc/passwd",
+            "/images/logo.svg#../../etc/passwd",
+            "/Applications/private.app",
+            "/System/Library/private",
+            "/Volumes/private/capture",
+            r"/images\private.png",
+            "/images:private.png",
+            "/images/\x00private.png",
+        ):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                ValueError, "local absolute path"
+            ):
+                self.validator._reject_local_absolute_paths(path)
+
+    def test_candidate_fails_closed_when_percent_decoding_exceeds_bound(self):
+        path = "/etc/passwd"
+        for _ in range(self.validator.MAX_PERCENT_DECODE_PASSES + 1):
+            path = path.replace("%", "%25").replace("/", "%2f")
+        with self.assertRaisesRegex(ValueError, "local absolute path"):
+            self.validator._reject_local_absolute_paths(path)
+
+    def test_candidate_allows_benign_root_relative_query_and_fragment(self):
+        for path in (
+            "/images/logo.svg?v=1.2",
+            "/images/logo.svg#brand-mark",
+        ):
+            with self.subTest(path=path):
+                self.validator._reject_local_absolute_paths(path)
+
+    def test_candidate_rejects_local_absolute_paths_in_package_fields(self):
+        for path in (
+            "/",
+            "/home/bread",
+            "/etc/passwd",
+            "/tmp/private/capture.html",
+            "/var/tmp/capture.html",
+            "/usr/local/bin/tool",
+            "/opt/tool/capture.html",
+            "/root/private/capture.html",
+            "/Users/researcher/private/capture.html",
+            "/private/capture.html",
+            r"\private\capture.html",
+            r"\\server\share\capture.html",
+            r"C:\\Users\\researcher\\capture.html",
+            "file:///",
+            "file:///home/researcher/capture.html",
+            "FILE:///home/researcher/capture.html",
+        ):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                ValueError, "local absolute path"
+            ):
+                self.validator._reject_local_absolute_paths(path)
+
+        _, claim = self.use_factual_claim()
+        claim["source_locator"] = "/home/researcher/private/capture.html"
+        claim["source_evidence"][0]["source_locator"] = claim["source_locator"]
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "local absolute path"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_claim_source_ids_must_equal_source_evidence_closure(self):
+        _, claim = self.use_factual_claim()
+        claim["source_evidence"][0]["source_id"] = "different-source"
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "source_ids.*source_evidence|source closure"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_candidate_hashes_every_v2_ledger(self):
+        for filename in (
+            "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
+            "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl",
+        ):
+            with self.subTest(filename=filename):
+                original = (self.candidate / filename).read_bytes()
+                (self.candidate / filename).write_bytes(original + b"\n")
+                with self.assertRaisesRegex(ValueError, f"artifact hash mismatch: {filename}"):
+                    self.validator.validate_candidate(self.candidate, self.root)
+                (self.candidate / filename).write_bytes(original)
 
     def test_requires_claim_gap_exclusivity_and_exact_one_pending_target(self):
         self.gaps.pop()
@@ -321,7 +501,7 @@ class CandidatePipelineTests(unittest.TestCase):
         self.gaps = self.gaps[1:]
         self.requests = [self.request(claim["claim_id"], "claim")] + [self.request(g["audit_id"], "gap") for g in self.gaps]
         self.write_candidate()
-        with self.assertRaisesRegex(ValueError, "publishable|claim source|schema"):
+        with self.assertRaisesRegex(ValueError, "publishable|claim source|schema|source closure"):
             self.validator.validate_candidate(self.candidate, self.root)
 
     def test_candidate_claim_omits_gate_state_and_promotion_injects_exact_check_time_with_audit(self):
@@ -402,7 +582,7 @@ class CandidatePipelineTests(unittest.TestCase):
         self.assertEqual([first["source_id"], second["source_id"], "kr-dart-exact-entity-route"],
                          [item["source_id"] for item in promoted])
 
-    def test_source_id_check_coverage_rejects_missing_duplicate_orphan_and_cross_source_tuple(self):
+    def test_source_id_check_coverage_rejects_missing_competing_orphan_and_cross_source_tuple(self):
         first, claim = self.use_factual_claim(url="https://www.dol.gov/shared/archive.zip")
         second = copy.deepcopy(first)
         second.update(source_id="official-benefit-policy-part-b", locator="form-5500:plan-b",
@@ -416,7 +596,7 @@ class CandidatePipelineTests(unittest.TestCase):
         valid = [self.source_check(first), self.source_check(second)]
         cases = [
             (valid[:-1], "missing|cover"),
-            (valid + [copy.deepcopy(valid[-1])], "duplicate|cover"),
+            (valid + [dict(valid[-1], checked_at="2026-10-30T03:30:00Z")], "conflicting|tuple"),
             (valid + [dict(valid[-1], source_id="orphan")], "orphan|cover"),
             ([valid[0], dict(valid[1], marker=first["http_verification"]["expected_marker"])], "source|tuple|marker"),
         ]
@@ -465,6 +645,152 @@ class CandidatePipelineTests(unittest.TestCase):
         self.write_candidate()
         with self.assertRaisesRegex(ValueError, "identity|benefit|claim"):
             self.validator.validate_candidate(self.candidate, self.root)
+
+    def frozen_current_check(self):
+        self.sources[0]["access_observation"] = {"status": 403, "final_url": self.sources[0]["url"],
+                                                 "access_wall": "bot_or_network_block"}
+        raw = jsonl_bytes(self.sources)
+        (self.root / "source-registry.jsonl").write_bytes(raw)
+        self.write_candidate()
+        return {"source_id": self.sources[0]["source_id"], "url": self.sources[0]["url"],
+                "status": 200, "final_url": self.sources[0]["url"], "access_wall": "none",
+                "checked_at": "2026-10-30T03:00:00Z",
+                "compatibility_projection": {"algorithm": "immutable-legacy-source-v1",
+                                             "legacy_record_sha256": digest(raw)}}
+
+    def test_frozen_bot_block_accepts_fresh_check_with_explicit_audit(self):
+        check = self.frozen_current_check()
+        frozen = (self.root / "source-registry.jsonl").read_bytes()
+        self.write_review_bundle(checks=[check])
+        self.promoter.promote(self.candidate, self.review, self.output, self.root)
+        self.assertEqual(frozen, (self.output / "sources.jsonl").read_bytes())
+        self.assertEqual(frozen, (self.root / "source-registry.jsonl").read_bytes())
+
+    def test_existing_historical_check_accepts_projected_refresh_and_later_change(self):
+        check = self.frozen_current_check()
+        historical = {key: value for key, value in check.items() if key != "compatibility_projection"}
+        historical.update(self.sources[0]["access_observation"], checked_at="2026-10-29T03:00:00Z")
+        ledger = self.root / "series-prepublication-checks.jsonl"
+        frozen = (self.root / "source-registry.jsonl").read_bytes()
+        for previous, current in ((historical, check), (check, dict(check, status=403,
+                access_wall="bot_or_network_block", checked_at="2026-10-30T03:30:00Z"))):
+            with self.subTest(previous=previous):
+                ledger.write_bytes(jsonl_bytes([previous]))
+                self.write_review_bundle(checks=[current])
+                output = self.output if previous == historical else self.output.with_name("approved-later")
+                self.promoter.promote(self.candidate, self.review, output, self.root)
+                self.assertEqual(frozen, (output / "sources.jsonl").read_bytes())
+                self.assertEqual(frozen, (self.root / "source-registry.jsonl").read_bytes())
+
+    def test_effective_checks_are_bound_unambiguous_and_order_independent(self):
+        current = self.frozen_current_check()
+        historical = {key: value for key, value in current.items() if key != "compatibility_projection"}
+        historical.update(self.sources[0]["access_observation"], checked_at="2026-10-29T03:00:00Z")
+        integrator = load(ROOT / "scripts/integrate-company-benefits-series-batch.py", "selection_integrator")
+        source_id = current["source_id"]
+        bindings = dict(source_map={source_id: self.sources[0]},
+                        legacy_sources={source_id: (self.root / "source-registry.jsonl").read_bytes()})
+        later = dict(current, checked_at="2026-10-30T03:30:00Z")
+        for existing in ([historical, current], [current, historical], [current, copy.deepcopy(current)]):
+            self.assertEqual([later], integrator.merge_checks(existing, [later, copy.deepcopy(later)],
+                             {source_id: "2026-10-30T02:00:00Z"}, **bindings))
+        competing = dict(current, status=403, access_wall="bot_or_network_block")
+        for existing, incoming in (([historical], [current, competing]),
+                                   ([current, competing], [later]),
+                                   ([historical, current, dict(historical, checked_at="2026-10-28T03:00:00Z")], [later]),
+                                   ([dict(historical, checked_at=later["checked_at"]), current], [later]),
+                                   ([current], [dict(historical, checked_at=later["checked_at"])])):
+            with self.assertRaises(ValueError):
+                integrator.merge_checks(existing, incoming, {source_id: "2026-10-30T02:00:00Z"}, **bindings)
+        with self.assertRaisesRegex(ValueError, "unbound"):
+            integrator.merge_checks([historical], [current], {source_id: "2026-10-30T02:00:00Z"})
+        # A projection cannot bring another workflow's check fields into this ledger.
+        with self.assertRaises(ValueError):
+            integrator.merge_checks([], [dict(current, workflow="unrelated")],
+                                    {source_id: "2026-10-30T02:00:00Z"}, **bindings)
+        other_id = "other-source-same-url"
+        substituted = dict(current, source_id=other_id)
+        other_source = dict(self.sources[0], source_id=other_id)
+        with self.assertRaises(ValueError):
+            integrator.merge_checks([], [substituted], {other_id: "2026-10-30T02:00:00Z"},
+                source_map={other_id: other_source}, legacy_sources={other_id: bindings["legacy_sources"][source_id]})
+        unrelated = dict(historical, source_id=other_id)
+        result = integrator.merge_checks([unrelated, historical], [current],
+                         {source_id: "2026-10-30T02:00:00Z"}, **bindings)
+        self.assertEqual({source_id, other_id}, {item["source_id"] for item in result})
+
+    def test_duplicate_projected_artifact_is_identical_or_rejected(self):
+        check = self.frozen_current_check()
+        self.write_review_bundle(checks=[check, copy.deepcopy(check)])
+        self.promoter.promote(self.candidate, self.review, self.output, self.root)
+        ledger = self.root / "series-prepublication-checks.jsonl"
+        ledger.write_bytes(jsonl_bytes([check]) + json.dumps(check).encode() + b"\n")
+        integrator = load(ROOT / "scripts/integrate-company-benefits-series-batch.py", "duplicate_integrator")
+        with self.assertRaisesRegex(ValueError, "byte-identical"):
+            integrator.load_package(self.output, self.root)
+
+    def test_historical_success_can_be_followed_by_projected_failure(self):
+        check = self.frozen_current_check()
+        self.sources[0]["access_observation"] = {"status": 200, "final_url": check["url"], "access_wall": "none"}
+        frozen = jsonl_bytes(self.sources)
+        (self.root / "source-registry.jsonl").write_bytes(frozen)
+        self.write_candidate()
+        historical = {key: value for key, value in check.items() if key != "compatibility_projection"}
+        historical["checked_at"] = "2026-10-29T03:00:00Z"
+        (self.root / "series-prepublication-checks.jsonl").write_bytes(jsonl_bytes([historical]))
+        check.update(status=403, access_wall="bot_or_network_block")
+        check["compatibility_projection"]["legacy_record_sha256"] = digest(frozen)
+        self.write_review_bundle(checks=[check])
+        self.promoter.promote(self.candidate, self.review, self.output, self.root)
+        self.assertEqual(frozen, (self.output / "sources.jsonl").read_bytes())
+
+    def test_frozen_check_rejects_absent_or_forged_projection(self):
+        for mode in ("absent", "forged", "unanchored"):
+            check = self.frozen_current_check()
+            if mode == "absent":
+                del check["compatibility_projection"]
+            elif mode == "forged":
+                check["compatibility_projection"]["legacy_record_sha256"] = "0" * 64
+            else:
+                (self.root / "source-registry.jsonl").write_bytes(b"")
+            self.write_review_bundle(checks=[check])
+            with self.assertRaises(ValueError):
+                self.promoter.promote(self.candidate, self.review, self.output, self.root)
+
+    def test_frozen_source_rejects_nonvolatile_and_byte_changes(self):
+        self.frozen_current_check()
+        self.sources[0]["owner"] = "Changed owner"
+        self.write_candidate()
+        with self.assertRaisesRegex(ValueError, "legacy|frozen"):
+            self.validator.validate_candidate(self.candidate, self.root)
+        self.frozen_current_check()
+        path = self.root / "source-registry.jsonl"
+        path.write_text(json.dumps(self.sources[0]) + "\n")
+        with self.assertRaisesRegex(ValueError, "legacy|frozen"):
+            self.validator.validate_candidate(self.candidate, self.root)
+
+    def test_compiler_preserves_frozen_source_and_rejects_mutation(self):
+        self.frozen_current_check()
+        self.test_scratch_compiler_is_separate_and_deterministic()
+        frozen = (self.root / "source-registry.jsonl").read_bytes()
+        compiled = Path(self.tmp.name) / "compiled"
+        self.assertEqual(frozen, (compiled / "sources.jsonl").read_bytes())
+        scratch = Path(self.tmp.name) / "scratch"
+        mutated = dict(self.sources[0], owner="Changed owner")
+        (scratch / "sources.jsonl").write_bytes(jsonl_bytes([mutated]))
+        with self.assertRaisesRegex(ValueError, "legacy|frozen"):
+            self.compiler.compile_candidate(scratch, compiled, self.root)
+        self.assertEqual(frozen, (compiled / "sources.jsonl").read_bytes())
+
+    def test_frozen_current_check_rejects_inconsistent_metadata(self):
+        for updates in ({"access_wall": "bot_or_network_block"}, {"status": None},
+                        {"final_url": "http://insecure.example"}, {"status": True}, {"status": 999},
+                        {"access_wall": []}, {"final_url": "https://"}):
+            check = self.frozen_current_check()
+            check.update(updates)
+            self.write_review_bundle(checks=[check])
+            with self.assertRaises(ValueError):
+                self.promoter.promote(self.candidate, self.review, self.output, self.root)
 
     def test_metadata_gap_accepts_exact_failed_observation_but_not_mutation(self):
         self.sources[0]["access_observation"] = {"status": 403, "final_url": self.sources[0]["url"],
@@ -518,11 +844,64 @@ class CandidatePipelineTests(unittest.TestCase):
         (scratch / "sources.jsonl").write_bytes(jsonl_bytes(list(reversed(self.sources))))
         (scratch / "claims.jsonl").write_bytes(jsonl_bytes(self.claims))
         (scratch / "gaps.jsonl").write_bytes(jsonl_bytes(list(reversed(self.gaps))))
+        write_records(scratch, self.v2_records, jsonl_bytes)
         self.compiler.compile_candidate(scratch, compiled, self.root)
         first = {path.name: path.read_bytes() for path in compiled.iterdir()}
         self.compiler.compile_candidate(scratch, compiled, self.root)
         self.assertEqual(first, {path.name: path.read_bytes() for path in compiled.iterdir()})
         self.validator.validate_candidate(compiled, self.root)
+
+    def test_compiler_migrates_legacy_gap_ids_to_batch_qualified_ids(self):
+        scratch = Path(self.tmp.name) / "scratch-gap-id-migration"
+        compiled = Path(self.tmp.name) / "compiled-gap-id-migration"
+        scratch.mkdir()
+        draft = {key: self.batch[key] for key in (
+            "batch_id", "company_list_sha256", "effective_sequence_sha256", "replacement_events_sha256"
+        )}
+        draft.update(schema_version="1", researcher_id="researcher-a")
+        (scratch / "draft.json").write_bytes(json_bytes(draft))
+        (scratch / "sources.jsonl").write_bytes(jsonl_bytes(self.sources))
+        (scratch / "claims.jsonl").write_bytes(jsonl_bytes(self.claims))
+        legacy = [dict(gap, audit_id=f"company-gap::{gap['company_id']}") for gap in self.gaps]
+        (scratch / "gaps.jsonl").write_bytes(jsonl_bytes(legacy))
+        write_records(scratch, self.v2_records, jsonl_bytes)
+
+        self.compiler.compile_candidate(scratch, compiled, self.root)
+
+        gaps = self.validator.read_jsonl(compiled / "gaps.jsonl")
+        self.assertEqual(
+            [f"company-gap::v2::{self.batch['batch_id']}::{company_id}" for company_id in self.company_ids],
+            [gap["audit_id"] for gap in gaps],
+        )
+        requests = self.validator.read_jsonl(compiled / "review-requests.jsonl")
+        self.assertEqual([gap["audit_id"] for gap in gaps], [request["target_id"] for request in requests])
+
+    def test_candidate_rejects_wrong_batch_arbitrary_and_unfrozen_legacy_gap_ids(self):
+        original = self.gaps[0]["audit_id"]
+        for audit_id in (
+            f"company-gap::v2::domestic-35::{self.company_ids[0]}",
+            f"other-gap::v2::{self.batch['batch_id']}::{self.company_ids[0]}",
+            f"company-gap::{self.company_ids[0]}",
+        ):
+            with self.subTest(audit_id=audit_id):
+                self.gaps[0]["audit_id"] = audit_id
+                self.requests[0] = self.request(audit_id, "gap")
+                self.write_candidate()
+                with self.assertRaisesRegex(ValueError, "gap ID|canonical|legacy|batch"):
+                    self.validator.validate_candidate(self.candidate, self.root)
+        self.gaps[0]["audit_id"] = original
+        self.requests[0] = self.request(original, "gap")
+        self.write_candidate()
+
+    def test_promoter_rejects_mixed_gap_id_review_binding(self):
+        reviews = [{"review_id": f"review::{gap['audit_id']}", "record_id": gap["audit_id"],
+                    "researcher_id": "researcher-a", "reviewer_id": "reviewer-b", "decision": "approved",
+                    "reviewed_at": "2026-10-30T02:00:00Z", "issues": [], "resolution": "approved",
+                    "quote_entailment_confirmed": True} for gap in self.gaps]
+        reviews[0]["record_id"] = f"company-gap::{self.company_ids[0]}"
+        self.write_review_bundle(reviews=reviews)
+        with self.assertRaisesRegex(ValueError, "orphan|coverage|binding"):
+            self.promoter.promote(self.candidate, self.review, self.output, self.root)
 
     def test_promotion_rejects_missing_duplicate_orphan_and_cross_target_reviews(self):
         cases = []
@@ -553,7 +932,9 @@ class CandidatePipelineTests(unittest.TestCase):
     def test_promotion_emits_exact_existing_six_file_package_deterministically(self):
         self.write_review_bundle()
         self.promoter.promote(self.candidate, self.review, self.output, self.root)
-        expected = {"batch.json", "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl"}
+        expected = {"batch.json", "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl",
+                    "company-category-cells.jsonl", "research-attempts.jsonl", "official-claims-v2.jsonl",
+                    "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl"}
         self.assertEqual(expected, {p.name for p in self.output.iterdir()})
         first = {p.name: p.read_bytes() for p in self.output.iterdir()}
         self.promoter.promote(self.candidate, self.review, self.output, self.root)

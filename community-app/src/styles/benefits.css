@@ -156,6 +156,39 @@
   font-weight: 700;
   text-decoration: none;
 }
+.benefit-correction-workspace {
+  width: min(100% - 32px, 840px);
+  margin: 0 auto;
+  padding-block: 40px 72px;
+}
+.benefit-correction-panel,
+.benefit-correction-gate,
+.benefit-corrections-list {
+  padding: clamp(20px, 4vw, 36px);
+  border: 1px solid #30425c;
+  background: #111f32;
+}
+.benefit-correction-form { display: grid; gap: 20px; }
+.benefit-correction-form label { display: grid; gap: 8px; color: #d8e9fc; font-weight: 700; }
+.benefit-correction-form input,
+.benefit-correction-form select,
+.benefit-correction-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid #566d8b;
+  background: #091426;
+  color: #e4edf8;
+  padding: 12px 14px;
+}
+.benefit-correction-form textarea { min-height: 128px; resize: vertical; }
+.benefit-correction-form input[readonly] { color: #b9cbe0; }
+.benefit-correction-form button,
+.benefit-correction-gate button,
+.benefit-corrections-list button { min-height: 52px; padding: 12px 18px; }
+.benefit-corrections-list { display: grid; gap: 16px; }
+.benefit-correction-card { border: 1px solid #30425c; background: #091426; padding: 18px; overflow-wrap: anywhere; }
+.benefit-correction-card header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; color: #7ee8ce; }
 .benefits-table-scroll {
   max-width: 100%;
   overflow-x: auto;
@@ -204,6 +237,76 @@
   color: #b7c4d7 !important;
   background: #1d293a;
   border-left: 3px solid #7c8ba0;
+}
+.benefits-status.status-official_verified {
+  color: #88f0d3 !important;
+  background: #10362f;
+  border-color: #88f0d3;
+}
+.benefits-status.status-reference {
+  color: #b1d9ff !important;
+  background: #153051;
+  border-color: #89c3ff;
+}
+.benefits-status.status-community_report {
+  color: #ffe1a8 !important;
+  background: #3b3020;
+  border-color: #ffcf75;
+}
+.benefits-status.status-no_public_info {
+  color: #c2cbd8 !important;
+  background: #252d39;
+  border-color: #7c8ba0;
+}
+.benefits-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.benefits-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 24px;
+  box-sizing: border-box;
+  border: 1px solid currentColor;
+  padding: 2px 7px;
+  color: #dce9f8;
+  background: #15243a;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.benefits-badge.badge-official_verified { color: #88f0d3; background: #10362f; }
+.benefits-badge.badge-reference { color: #b1d9ff; background: #153051; }
+.benefits-badge.badge-community_report { color: #ffe1a8; background: #3b3020; }
+.benefits-badge.badge-no_public_info { color: #c2cbd8; background: #252d39; }
+.benefits-badge.badge-warning { color: #ffb6bf; background: #402534; }
+.benefits-evidence-counts {
+  display: grid;
+  gap: 2px;
+}
+.benefits-result-evidence {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.benefits-result-evidence section {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #30425c;
+}
+.benefits-result-evidence h4 { margin: 0 0 8px; }
+.benefits-evidence a,
+.benefits-evidence dd,
+.benefits-status,
+.benefits-result {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .benefits-status.status-0 {
   color: #88f0d3 !important;
@@ -300,6 +403,10 @@
   }
 }
 @media (max-width: 699px) {
+  .benefit-correction-workspace { width: min(100% - 24px, 840px); padding-block: 24px 48px; }
+  .benefit-correction-workspace button,
+  .benefit-correction-workspace a,
+  .benefits-correction-link { min-height: 56px; box-sizing: border-box; display: inline-flex; align-items: center; padding: 12px 16px; }
   .benefits-layout {
     display: flex;
     flex-direction: column;
@@ -323,7 +430,23 @@
     font-size: 12px;
   }
   .benefits-tabs a {
+    min-height: 56px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
     padding: 12px;
+  }
+  .benefits-status,
+  .benefits-heatmap th:first-child label,
+  .benefits-compare button,
+  .benefits-result h3 a {
+    min-height: 56px;
+    box-sizing: border-box;
+  }
+  .benefits-heatmap th:first-child label,
+  .benefits-result h3 a {
+    display: inline-flex;
+    align-items: center;
   }
   .benefits-workspace dl {
     grid-template-columns: 1fr;

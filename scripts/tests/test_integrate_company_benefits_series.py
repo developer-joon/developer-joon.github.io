@@ -48,6 +48,12 @@ class TransactionalSeriesIntegrationTests(unittest.TestCase):
                 "reviews.jsonl": [{"review_id": f"review-{index:02d}"}],
                 "gaps.jsonl": [{"audit_id": f"gap-{index:02d}"}],
                 "checks.jsonl": [{"source_id": f"check-{index:02d}"}],
+                "company-category-cells.jsonl": [{"cell_id": f"cell-{index:02d}"}],
+                "research-attempts.jsonl": [{"attempt_id": f"attempt-{index:02d}"}],
+                "official-claims-v2.jsonl": [{"claim_id": f"official-{index:02d}"}],
+                "reference-records.jsonl": [{"reference_id": f"reference-{index:02d}"}],
+                "community-benefit-reports.jsonl": [{"community_report_id": f"community-{index:02d}"}],
+                "sources-v2.jsonl": [{"source_id": f"source-v2-{index:02d}"}],
             }
             artifacts = {}
             for name, values in records.items():
@@ -152,7 +158,7 @@ class TransactionalSeriesIntegrationTests(unittest.TestCase):
 
         def finalize(staged, packages, **kwargs):
             return {"status": "complete", "batches": [
-                {"status": "approved", "claim_count": 0, "no_claim_count": 25} for _ in packages
+                {"status": "approved", "claim_count": 0, "no_claim_count": 25, "cell_count": 250} for _ in packages
             ]}
 
         with mock.patch.object(self.module, "canonical_batches", return_value=self.canonical), \
@@ -176,7 +182,7 @@ class TransactionalSeriesIntegrationTests(unittest.TestCase):
 
         def finalize(staged, packages, **kwargs):
             return {"status": "complete", "batches": [
-                {"status": "approved", "claim_count": 0, "no_claim_count": 25} for _ in packages
+                {"status": "approved", "claim_count": 0, "no_claim_count": 25, "cell_count": 250} for _ in packages
             ]}
 
         def write_receipt(path, value):
@@ -253,7 +259,7 @@ class TransactionalSeriesIntegrationTests(unittest.TestCase):
             (drafts / "hub.md").write_text("complete")
             progress = {"status": "complete", "total_batches": 80, "total_companies": 2000,
                         "batches": [{"batch_id": item["batch_id"], "status": "approved",
-                                     "claim_count": 0, "no_claim_count": 25} for item in self.canonical]}
+                                     "claim_count": 0, "no_claim_count": 25, "cell_count": 250} for item in self.canonical]}
             (staged / "series-progress.json").write_text(json.dumps(progress))
             return progress
 
@@ -282,7 +288,7 @@ class TransactionalSeriesIntegrationTests(unittest.TestCase):
 
         def finalize(staged, packages, **kwargs):
             progress = {"status": "complete", "total_batches": 80, "total_companies": 2000,
-                        "batches": [{"status": "approved", "claim_count": 0, "no_claim_count": 25} for _ in packages]}
+                        "batches": [{"status": "approved", "claim_count": 0, "no_claim_count": 25, "cell_count": 250} for _ in packages]}
             (staged / "series-progress.json").write_text(json.dumps(progress))
             return progress
 

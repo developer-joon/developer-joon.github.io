@@ -1,13 +1,18 @@
+import copy
 import hashlib
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
 from scripts.tests.benefits_test_fixture import FrozenFixture
+from scripts.tests.benefits_v2_batch_fixture import V2_FILES, no_public_info_records
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "scripts" / "integrate-company-benefits-series-batch.py"
@@ -31,8 +36,10 @@ class SeriesIntegrationTests(unittest.TestCase):
         self.input = Path(self.tmp.name) / "input"
         self.input.mkdir()
         self.fixture = FrozenFixture(self.root)
+        self.module.series.materialize_contract(self.root, set(), {}, {})
         batches = self.module.series.read_jsonl(self.root / "series-batches.jsonl")
         self.batch = next(item for item in batches if item["batch_id"] == "domestic-02")
+        self.v2_records = no_public_info_records(self.batch, self.fixture.companies)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -42,17 +49,68 @@ class SeriesIntegrationTests(unittest.TestCase):
         (self.input / name).write_bytes(payload)
         return hashlib.sha256(payload).hexdigest()
 
-    def package(self, claims=None, sources=None, reviews=None, gaps=None, checks=None, status="approved"):
+    def package(self, claims=None, sources=None, reviews=None, gaps=None, checks=None, status="approved",
+                include_review_audit=True):
+        normalized_gaps = [dict(gap, researcher_id=gap.get("researcher_id", "gap-researcher"))
+                           for gap in (gaps or [])]
         values = {"sources.jsonl": sources or [], "claims.jsonl": claims or [], "reviews.jsonl": reviews or [],
-                  "gaps.jsonl": gaps or [], "checks.jsonl": checks or []}
+                  "gaps.jsonl": normalized_gaps, "checks.jsonl": checks or []}
+        values.update({filename: self.v2_records[ledger] for ledger, filename in V2_FILES.items()})
         artifacts = {name: self.write_jsonl(name, records) for name, records in values.items()}
         manifest = {"schema_version": "1", "batch_id": self.batch["batch_id"],
                     "company_list_sha256": self.batch["company_list_sha256"], "status": status,
                     "effective_sequence_sha256": self.batch["effective_sequence_sha256"],
                     "replacement_events_sha256": self.batch["replacement_events_sha256"],
-                    "approved_at": "2026-10-21T00:00:00Z", "reviewer_id": "batch-reviewer",
+                    "approved_at": "2026-10-23T00:00:00Z", "reviewer_id": "batch-reviewer",
                     "artifacts": artifacts}
-        (self.input / "batch.json").write_text(json.dumps(manifest), encoding="utf-8")
+        if include_review_audit:
+            candidate_claims = [{key: value for key, value in claim.items() if key != "prepublication_checked_at"}
+                                for claim in values["claims.jsonl"]]
+            claims_by_company = {}
+            for claim in candidate_claims:
+                claims_by_company.setdefault(claim.get("company_id"), []).append(claim)
+            gaps_by_company = {}
+            for gap in normalized_gaps:
+                gaps_by_company.setdefault(gap.get("company_id"), []).append(gap)
+            requests = []
+            for company_id in self.batch["company_ids"]:
+                for claim in claims_by_company.get(company_id, []):
+                    target = claim.get("claim_id")
+                    requests.append({"request_id": f"review-request::claim::{target}", "target_type": "claim",
+                                     "target_id": target, "researcher_id": claim.get("researcher_id", "gap-researcher"),
+                                     "status": "pending_independent_review"})
+                for gap in gaps_by_company.get(company_id, []):
+                    target = gap.get("audit_id")
+                    requests.append({"request_id": f"review-request::gap::{target}", "target_type": "gap",
+                                     "target_id": target, "researcher_id": gap["researcher_id"],
+                                     "status": "pending_independent_review"})
+            candidate_values = {"sources.jsonl": values["sources.jsonl"], "claims.jsonl": candidate_claims,
+                                "gaps.jsonl": normalized_gaps, "review-requests.jsonl": requests,
+                                **{filename: values[filename] for filename in V2_FILES.values()}}
+            candidate_artifacts = {name: hashlib.sha256(self.module.series.jsonl_bytes(records)).hexdigest()
+                                   for name, records in candidate_values.items()}
+            candidate_manifest = {
+                "schema_version": "1", "batch_id": self.batch["batch_id"],
+                "company_list_sha256": self.batch["company_list_sha256"],
+                "effective_sequence_sha256": self.batch["effective_sequence_sha256"],
+                "replacement_events_sha256": self.batch["replacement_events_sha256"],
+                "status": "review_pending", "researcher_id": "gap-researcher", "artifacts": candidate_artifacts,
+            }
+            candidate_raw = self.module.series.json_bytes(candidate_manifest)
+            review_bundle = {
+                "schema_version": "1", "candidate_manifest_sha256": hashlib.sha256(candidate_raw).hexdigest(),
+                "candidate_artifacts": candidate_artifacts, "promotion_reviewer_id": "batch-reviewer",
+                "approved_at": manifest["approved_at"],
+                "artifacts": {name: artifacts[name] for name in ("reviews.jsonl", "checks.jsonl")},
+            }
+            review_raw = self.module.series.json_bytes(review_bundle)
+            manifest["review_audit"] = {
+                "candidate_manifest_sha256": hashlib.sha256(candidate_raw).hexdigest(),
+                "candidate_manifest": candidate_manifest, "candidate_artifacts": candidate_artifacts,
+                "review_bundle_sha256": hashlib.sha256(review_raw).hexdigest(),
+                "review_bundle": review_bundle, "review_artifacts": review_bundle["artifacts"],
+            }
+        (self.input / "batch.json").write_bytes(self.module.series.json_bytes(manifest))
 
     def outcome_reviews(self, gaps):
         return [{"review_id": f"review::{gap['audit_id']}", "record_id": gap["audit_id"],
@@ -76,9 +134,126 @@ class SeriesIntegrationTests(unittest.TestCase):
                  "checked_at": "2026-10-22T05:00:00Z"}
         return [source], [check]
 
+    def canonical_gap(self, company_id):
+        return {"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}",
+                "company_id": company_id, "disposition": "nonpublishable",
+                "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
+                "searched_official_source_ids": [], "searched_official_urls": [],
+                "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+
     def test_rejects_unapproved_package(self):
         self.package(status="review_pending")
         with self.assertRaisesRegex(ValueError, "approved"):
+            self.module.load_package(self.input, self.root)
+
+    def test_batch_cli_fails_closed_on_unhashable_v2_binding_without_writes(self):
+        self.v2_records["cells"][0]["attempt_ids"] = [{"unhashable": True}]
+        self.package()
+        before = {path.relative_to(self.root): path.read_bytes()
+                  for path in self.root.rglob("*") if path.is_file()}
+        result = subprocess.run(
+            [sys.executable, str(MODULE), str(self.input), "--research-root", str(self.root),
+             "--freeze-anchor-receipt", str(Path(self.tmp.name) / "unused-receipt.json")],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        output = result.stdout + result.stderr
+        after = {path.relative_to(self.root): path.read_bytes()
+                 for path in self.root.rglob("*") if path.is_file()}
+        self.assertEqual(1, result.returncode, output)
+        self.assertIn("invalid v2 record structure", output)
+        self.assertNotIn("Traceback", output)
+        self.assertEqual("", result.stdout)
+        self.assertEqual(before, after)
+
+    def test_rejects_v2_package_without_review_audit(self):
+        self.package(include_review_audit=False)
+        with self.assertRaisesRegex(ValueError, "review_audit|candidate|promotion"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_already_approved_legacy_entry_even_without_cell_count(self):
+        progress_path = self.root / "series-progress.json"
+        progress = json.loads(progress_path.read_text())
+        current = next(item for item in progress["batches"] if item["batch_id"] == self.batch["batch_id"])
+        current.update(status="approved", approved_at="2026-10-20T00:00:00Z", reviewer_ids=["legacy-reviewer"])
+        current.pop("cell_count", None)
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+        self.package()
+        with self.assertRaisesRegex(ValueError, "pending|v2 transition"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_v2_transition_when_another_approved_batch_is_legacy(self):
+        progress_path = self.root / "series-progress.json"
+        progress = json.loads(progress_path.read_text())
+        legacy = next(item for item in progress["batches"] if item["batch_id"] == "domestic-01")
+        legacy.update(status="approved", approved_at="2026-10-20T00:00:00Z", reviewer_ids=["legacy-reviewer"])
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+        self.package()
+
+        with self.assertRaisesRegex(ValueError, "legacy|v2 transition"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_prior_approved_v2_tampering_before_hash_regeneration(self):
+        first = next(item for item in self.module.series.read_jsonl(self.root / "series-batches.jsonl")
+                     if item["batch_id"] == "domestic-01")
+        existing = no_public_info_records(first, self.fixture.companies)
+        for ledger, filename in V2_FILES.items():
+            self.module.series.write_jsonl(self.root / filename, existing[ledger])
+        self.module.series.materialize_contract(
+            self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "legacy-reviewer"
+        )
+        attempts_path = self.root / V2_FILES["attempts"]
+        attempts = self.module.series.read_jsonl(attempts_path)
+        attempts[0]["query_or_locator"] += " tampered"
+        payload = {key: value for key, value in attempts[0].items() if key != "receipt_content_sha256"}
+        attempts[0]["receipt_content_sha256"] = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.module.series.write_jsonl(attempts_path, attempts)
+        self.package()
+        with self.assertRaisesRegex(ValueError, "persisted v2 ledger hash mismatch"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_forged_review_audit_not_bound_to_exact_candidate_payload(self):
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        manifest = json.loads((self.input / "batch.json").read_bytes())
+        audit = manifest["review_audit"]
+        audit["candidate_artifacts"]["company-category-cells.jsonl"] = "0" * 64
+        audit["candidate_manifest"]["artifacts"] = audit["candidate_artifacts"]
+        candidate_raw = self.module.series.json_bytes(audit["candidate_manifest"])
+        audit["candidate_manifest_sha256"] = hashlib.sha256(candidate_raw).hexdigest()
+        audit["review_bundle"]["candidate_manifest_sha256"] = audit["candidate_manifest_sha256"]
+        audit["review_bundle"]["candidate_artifacts"] = audit["candidate_artifacts"]
+        review_raw = self.module.series.json_bytes(audit["review_bundle"])
+        audit["review_bundle_sha256"] = hashlib.sha256(review_raw).hexdigest()
+        (self.input / "batch.json").write_bytes(self.module.series.json_bytes(manifest))
+        with self.assertRaisesRegex(ValueError, "artifact hash|candidate|binding"):
+            self.module.load_package(self.input, self.root)
+
+    def test_rejects_legacy_shaped_unbound_review_audit(self):
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        manifest = json.loads((self.input / "batch.json").read_bytes())
+        candidate_artifacts = dict(manifest["review_audit"]["candidate_artifacts"])
+        candidate_artifacts["company-category-cells.jsonl"] = "0" * 64
+        manifest["review_audit"] = {
+            "candidate_manifest_sha256": "0" * 64,
+            "candidate_artifacts": candidate_artifacts,
+            "review_artifacts": {name: manifest["artifacts"][name]
+                                 for name in ("reviews.jsonl", "checks.jsonl")},
+        }
+        (self.input / "batch.json").write_bytes(self.module.series.json_bytes(manifest))
+        with self.assertRaisesRegex(ValueError, "review_audit|candidate|binding"):
             self.module.load_package(self.input, self.root)
 
     def test_rejects_stale_effective_sequence_or_replacement_event_binding(self):
@@ -93,23 +268,30 @@ class SeriesIntegrationTests(unittest.TestCase):
         claim = dict(self.fixture.claims[0], claim_id="wrong-batch-claim")
         review = dict(self.fixture.reviews[0], review_id="wrong-review", claim_id="wrong-batch-claim")
         self.package(claims=[claim], reviews=[review])
-        with self.assertRaisesRegex(ValueError, "outside batch"):
+        with self.assertRaisesRegex(ValueError, "outside (canonical )?batch"):
             self.module.load_package(self.input, self.root)
 
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
                 for company_id in self.batch["company_ids"][:-1]]
-        self.package(gaps=gaps)
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
         with self.assertRaisesRegex(ValueError, "all 25"):
             self.module.load_package(self.input, self.root)
 
     def test_rejects_cross_batch_id_collision_and_evidence_files(self):
-        claim = dict(self.fixture.claims[0])
-        claim["company_id"] = self.batch["company_ids"][0]
-        review = dict(self.fixture.reviews[0])
-        self.package(claims=[claim], reviews=[review])
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        existing_attempts = self.module.series.read_jsonl(self.root / V2_FILES["attempts"])
+        existing_attempts.append(self.v2_records["attempts"][0])
+        self.module.series.write_jsonl(self.root / V2_FILES["attempts"], existing_attempts)
         with self.assertRaisesRegex(ValueError, "collision"):
             self.module.load_package(self.input, self.root)
         (self.input / "evidence.pdf").write_bytes(b"not allowed")
@@ -117,7 +299,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             self.module.load_package(self.input, self.root)
 
     def test_valid_gap_only_package_is_deterministic(self):
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -128,8 +310,228 @@ class SeriesIntegrationTests(unittest.TestCase):
         second = self.module.load_package(self.input, self.root)
         self.assertEqual(first, second)
 
-    def test_zero_claim_25_gap_reviews_are_exact_and_orphans_fail(self):
+    def test_rejects_semantically_equal_legacy_duplicates_with_different_raw_bytes(self):
+        cases = (
+            ("sources.jsonl", "source_id"),
+            ("claims.jsonl", "claim_id"),
+            ("reviews.jsonl", "review_id"),
+            ("gaps.jsonl", "audit_id"),
+        )
+        for name, field in cases:
+            existing_path = Path(self.tmp.name) / f"existing-{name}"
+            incoming_path = Path(self.tmp.name) / f"incoming-{name}"
+            existing_path.write_bytes(f'{{"{field}":"duplicate","value":1}}\n'.encode())
+            existing = self.module.series.read_jsonl(existing_path)
+            for variant in (
+                f'{{"value":1,"{field}":"duplicate"}}\n',
+                f'{{"{field}": "duplicate", "value": 1}}\n',
+            ):
+                with self.subTest(name=name, variant=variant):
+                    incoming_path.write_bytes(variant.encode())
+                    incoming = self.module.series.read_jsonl(incoming_path)
+                    self.assertEqual(existing, incoming)
+                    with self.assertRaisesRegex(ValueError, "collision"):
+                        self.module.validate_record_collisions(
+                            name, incoming_path, existing_path, incoming, existing
+                        )
+
+    def test_accepts_only_byte_identical_legacy_claim_duplicate(self):
+        raw = b'{"claim_id":"duplicate","value":1}\n'
+        existing_path = Path(self.tmp.name) / "existing-claims.jsonl"
+        incoming_path = Path(self.tmp.name) / "incoming-claims.jsonl"
+        existing_path.write_bytes(raw)
+        incoming_path.write_bytes(raw)
+        existing = self.module.series.read_jsonl(existing_path)
+        incoming = self.module.series.read_jsonl(incoming_path)
+
+        self.module.validate_record_collisions(
+            "claims.jsonl", incoming_path, existing_path, incoming, existing
+        )
+
+    def test_load_package_cannot_delegate_frozen_source_byte_validation(self):
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        existing = self.module.series.read_jsonl(self.root / "source-registry.jsonl")
+        self.module.series.write_jsonl(
+            self.root / "source-registry.jsonl", [*existing, dict(sources[0], title="not identical")]
+        )
+
+        # Delegation cannot bypass the unconditional frozen source byte guard.
+        for delegate in (True, False):
+            with self.assertRaisesRegex(ValueError, "frozen legacy source bytes differ"):
+                self.module.load_package(self.input, self.root,
+                    validate_immutable_legacy_collisions=delegate)
+
+    def test_load_package_accepts_byte_identical_claim_already_frozen_in_legacy_ledger(self):
+        company_id = self.batch["company_ids"][0]
+        company = next(item for item in self.fixture.companies if item["company_id"] == company_id)
+        source = copy.deepcopy(self.fixture.benefit_source)
+        source_id = f"benefit-source-{company_id}"
+        source.update(
+            source_id=source_id,
+            applicable_legal_entities=[company["selected_reporting_legal_entity"]],
+            policy_owner_legal_entity=company["benefit_policy_owner"],
+        )
+        claim = copy.deepcopy(self.fixture.claims[0])
+        claim_id = f"{company_id}-claim"
+        claim.update(
+            claim_id=claim_id,
+            company_id=company_id,
+            source_ids=[source_id],
+            prepublication_checked_at="2026-10-22T05:00:00Z",
+        )
+        claim["source_evidence"][0]["source_id"] = source_id
+        claim["application_scope"]["legal_entities"] = [company["selected_reporting_legal_entity"]]
+        review = copy.deepcopy(self.fixture.reviews[0])
+        review.update(review_id=f"review-{company_id}", claim_id=claim_id, researcher_id="gap-researcher")
+        review["source_entailment_reviews"][0]["source_id"] = source_id
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{item_id}", "company_id": item_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for item_id in self.batch["company_ids"][1:]]
+        gap_sources, gap_checks = self.bind_exact_gap_route(gaps)
+        claim_check = {
+            "source_id": source_id, "url": source["url"], "status": 200,
+            "final_url": source["url"], "marker": "Official", "marker_confirmed": True,
+            "content_sha256": source["content_sha256"], "checked_at": "2026-10-22T05:00:00Z",
+        }
+        self.package(
+            claims=[claim], sources=[source, *gap_sources],
+            reviews=[review, *self.outcome_reviews(gaps)], gaps=gaps,
+            checks=[claim_check, *gap_checks],
+        )
+        claims_path = self.root / "benefit-claims.jsonl"
+        claims_path.write_bytes(claims_path.read_bytes() + (self.input / "claims.jsonl").read_bytes())
+
+        _, _, records = self.module.load_package(self.input, self.root)
+
+        self.assertEqual([claim], records["claims.jsonl"])
+
+    def test_rejects_byte_identical_batch_qualified_gap_duplicate(self):
+        gap = self.canonical_gap(self.batch["company_ids"][0])
+        raw = self.module.series.jsonl_bytes([gap])
+        existing_path = Path(self.tmp.name) / "existing-gaps.jsonl"
+        incoming_path = Path(self.tmp.name) / "incoming-gaps.jsonl"
+        existing_path.write_bytes(raw)
+        incoming_path.write_bytes(raw)
+        records = [gap]
+        with self.assertRaisesRegex(ValueError, "collision"):
+            self.module.validate_record_collisions(
+                "gaps.jsonl", incoming_path, existing_path, records, records
+            )
+
+    def test_rejects_byte_identical_v2_duplicate_id(self):
+        name = V2_FILES["attempts"]
+        field = self.module.ID_FIELDS[name]
+        raw = f'{{"{field}":"duplicate"}}\n'.encode()
+        existing_path = Path(self.tmp.name) / f"existing-{name}"
+        incoming_path = Path(self.tmp.name) / f"incoming-{name}"
+        existing_path.write_bytes(raw)
+        incoming_path.write_bytes(raw)
+        existing = self.module.series.read_jsonl(existing_path)
+        incoming = self.module.series.read_jsonl(incoming_path)
+
+        with self.assertRaisesRegex(ValueError, "collision"):
+            self.module.validate_record_collisions(
+                name, incoming_path, existing_path, incoming, existing
+            )
+
+    def test_accepts_exact_legacy_audit_records_already_frozen_in_immutable_ledgers(self):
         gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        self.module.series.write_jsonl(
+            self.root / "source-registry.jsonl",
+            [*self.module.series.read_jsonl(self.root / "source-registry.jsonl"), *sources],
+        )
+        self.module.series.write_jsonl(
+            self.root / "series-research-gaps.jsonl",
+            [*self.module.series.read_jsonl(self.root / "series-research-gaps.jsonl"),
+             *self.module.series.read_jsonl(self.input / "gaps.jsonl")],
+        )
+
+        _, _, records = self.module.load_package(self.input, self.root)
+
+        self.assertEqual(self.module.series.read_jsonl(self.input / "gaps.jsonl"), records["gaps.jsonl"])
+        self.assertEqual(sources, records["sources.jsonl"])
+
+    def test_batch_qualified_gap_ids_do_not_collide_with_frozen_legacy_company_gap(self):
+        gaps = [self.canonical_gap(company_id) for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        legacy = [dict(gap, audit_id=f"company-gap::{gap['company_id']}",
+                       reason="different frozen legacy outcome") for gap in gaps]
+        self.module.series.write_jsonl(self.root / "series-research-gaps.jsonl", legacy)
+
+        _, _, records = self.module.load_package(self.input, self.root)
+
+        self.assertEqual([gap["audit_id"] for gap in gaps],
+                         [gap["audit_id"] for gap in records["gaps.jsonl"]])
+
+    def test_rejects_nonidentical_legacy_gap_collision(self):
+        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "new outcome",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        frozen = [dict(gap, reason="frozen outcome") for gap in gaps]
+        self.module.series.write_jsonl(self.root / "series-research-gaps.jsonl", frozen)
+        with self.assertRaisesRegex(ValueError, "legacy|collision|byte"):
+            self.module.load_package(self.input, self.root)
+
+    def test_real_v2_integration_preserves_legacy_audit_ledgers_byte_for_byte(self):
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
+                 "disposition": "nonpublishable", "reason": "공개 공식 자료에서 게시 가능한 근거를 확인하지 못했습니다.",
+                 "searched_official_source_ids": [], "searched_official_urls": [],
+                 "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
+                for company_id in self.batch["company_ids"]]
+        sources, checks = self.bind_exact_gap_route(gaps)
+        self.package(sources=sources, gaps=gaps, reviews=self.outcome_reviews(gaps), checks=checks)
+        legacy_paths = (
+            "benefit-claims.jsonl", "reviews.jsonl", "series-prepublication-checks.jsonl",
+            "series-research-gaps.jsonl", "source-registry.jsonl",
+        )
+        before = {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest() for name in legacy_paths}
+        freeze_receipt = Path(self.tmp.name) / "freeze-anchor-receipt.json"
+        freeze_receipt.write_bytes(self.module.series.json_bytes({
+            "schema_version": "1", "protocol_version": self.fixture.protocol["version"],
+            "freeze_manifest_sha256": next(iter(self.fixture.approved_freeze_anchors().values())),
+            "review_status": "approved", "issued_at": "2026-10-21T00:00:00Z",
+        }))
+
+        progress = self.module.integrate_batch(
+            self.input, self.root, freeze_receipt, as_of=date(2026, 10, 29)
+        )
+
+        after = {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest() for name in legacy_paths}
+        self.assertEqual(before, after)
+        approved_entry = next(item for item in progress["batches"] if item["status"] == "approved")
+        self.assertEqual((0, 250, 250), (
+            approved_entry["claim_count"], approved_entry["no_claim_count"], approved_entry["cell_count"]
+        ))
+        self.assertEqual(1, sum(item["status"] == "approved" for item in progress["batches"]))
+        self.assertEqual(79, sum(item["status"] == "pending" for item in progress["batches"]))
+        for ledger, filename in V2_FILES.items():
+            id_field = self.module.series.V2_ID_FIELDS[ledger]
+            self.assertEqual(
+                sorted(self.v2_records[ledger], key=lambda item: item[id_field]),
+                self.module.series.read_jsonl(self.root / filename),
+            )
+
+    def test_zero_claim_25_gap_reviews_are_exact_and_orphans_fail(self):
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}
@@ -178,7 +580,7 @@ class SeriesIntegrationTests(unittest.TestCase):
             "entity_binding_status": "exact_entity", "retention_mode": "metadata_only", "reuse_status": "discovery_only",
             "access_observation": {"status": 200, "final_url": "https://dart.fss.or.kr/dsab002/main.do", "access_wall": "none"},
         }
-        gaps = [{"audit_id": f"company-gap::{company_id}", "company_id": company_id,
+        gaps = [{"audit_id": f"company-gap::v2::{self.batch['batch_id']}::{company_id}", "company_id": company_id,
                  "disposition": "nonpublishable", "reason": "공개 공식 자료에서 확인하지 못했습니다.",
                  "searched_official_source_ids": [source["source_id"]], "searched_official_urls": [],
                  "nonabsence_wording": "복지가 없다는 뜻이 아닙니다."}

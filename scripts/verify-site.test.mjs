@@ -51,6 +51,8 @@ const shellTitles = new Map([
   ['community/edit/index.html', '<title>글 수정 · Ria &amp; Seoa PaPa</title>'],
   ['community/admin/reports/index.html', '<title>신고 관리 · Ria &amp; Seoa PaPa</title>'],
   ['community/auth/callback/index.html', '<title>로그인 처리 · Ria &amp; Seoa PaPa</title>'],
+  ['community/benefits/correction/index.html', '<title>복지 정보 수정 요청 · Ria &amp; Seoa PaPa</title>'],
+  ['community/benefits/my-corrections/index.html', '<title>내 복지 수정 요청 · Ria &amp; Seoa PaPa</title>'],
 ])
 
 async function put(root, relativePath, content = '') {

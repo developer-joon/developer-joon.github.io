@@ -1,14 +1,20 @@
 import copy
 import hashlib
 import importlib.util
+import inspect
 import io
 import json
+import shutil
 import tempfile
+import time
 import unittest
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+from scripts import company_benefits_series as series
+from scripts.tests.benefits_v2_batch_fixture import no_public_info_records
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "generate-company-benefits-artifacts.py"
@@ -22,7 +28,8 @@ def raises(error):
         yield
     except error:
         return
-    raise AssertionError(f"expected {error.__name__}")
+    expected = ", ".join(item.__name__ for item in error) if isinstance(error, tuple) else error.__name__
+    raise AssertionError(f"expected {expected}")
 
 
 def compact(value):
@@ -132,13 +139,14 @@ def assignment_validation_args(module, root, taxonomy):
     )
 
 
-def make_research_fixture(root):
+def make_research_fixture(root, v2=True):
     companies = []
     for index in range(2000):
         domestic = index < 1000
         companies.append({
             "company_id": f"KR-CRN-{index:013d}" if domestic else f"US-CIK{index:010d}",
             "legal_name": f"Verified Employer {index:04d}",
+            "selected_reporting_legal_entity": f"Verified Employer {index:04d}",
             "jurisdiction": "KR" if domestic else "US",
             "scope": "domestic" if domestic else "international",
         })
@@ -246,18 +254,37 @@ def make_research_fixture(root):
         })
     batches = []
     progress_entries = []
+    v2_records = {ledger: [] for ledger in series.V2_LEDGER_FILES}
     for index in range(80):
         ids = [company["company_id"] for company in companies[index * 25:(index + 1) * 25]]
         batch_id = ("domestic" if index < 40 else "international") + f"-{index % 40 + 1:02d}"
-        batches.append({"batch_id": batch_id, "company_ids": ids})
-        progress_entries.append({
+        scope = "domestic" if index < 40 else "international"
+        batch_hash = hashlib.sha256(compact(ids).encode()).hexdigest()
+        batches.append({"batch_id": batch_id, "scope": scope, "batch_number": index % 40 + 1,
+                        "company_list_sha256": batch_hash, "company_ids": ids})
+        entry = {
             "batch_id": batch_id,
+            "scope": scope,
+            "batch_number": index % 40 + 1,
             "status": "approved",
+            "company_list_sha256": batch_hash,
             "claim_count": 1 if index == 0 else 0,
             "no_claim_count": 24 if index == 0 else 25,
             "approved_at": "2026-10-30T03:00:00Z",
             "reviewer_ids": ["reviewer-b"],
-        })
+        }
+        if v2:
+            batch_records = no_public_info_records(batches[-1], companies[index * 25:(index + 1) * 25])
+            for ledger in v2_records:
+                v2_records[ledger].extend(batch_records[ledger])
+            batch_cells = batch_records["cells"]
+            identities = sorted((cell["company_id"], cell["category_id"]) for cell in batch_cells)
+            entry.update(
+                cell_count=250,
+                cell_set_sha256=hashlib.sha256(compact(identities).encode()).hexdigest(),
+                v2_ledger_sha256=series.v2_ledger_sha256(batch_records),
+            )
+        progress_entries.append(entry)
 
     write_jsonl(root / "companies.jsonl", companies)
     write_jsonl(root / "benefit-claims.jsonl", [claim])
@@ -277,13 +304,19 @@ def make_research_fixture(root):
         **gap_source["access_observation"], "checked_at": "2026-10-30T02:00:00Z",
     }])
     write_jsonl(root / "series-batches.jsonl", batches)
-    write_json(root / "series-progress.json", {
+    progress = {
         "manifest_version": "1",
         "status": "complete",
+        "company_list_sha256": hashlib.sha256(compact([company["company_id"] for company in companies]).encode()).hexdigest(),
         "total_companies": 2000,
         "total_batches": 80,
         "batches": progress_entries,
-    })
+    }
+    if v2:
+        progress.update(progress_version="2", total_cells=20000)
+        for ledger, filename in series.V2_LEDGER_FILES.items():
+            write_jsonl(root / filename, v2_records[ledger])
+    write_json(root / "series-progress.json", progress)
     request, assignment = write_taxonomy_approval(root)
     write_json(root / "population-protocol.json", {
         "protocol_id": "company-benefits-population-v4", "version": "4.0.0",
@@ -307,10 +340,111 @@ def run_generator(research, output):
         "--freeze-anchor-receipt", str(research.parent / "freeze.json"),
         "--effective-selection-receipt", str(research.parent / "effective.json"),
     ]
-    with mock.patch.object(module, "verify_active_ledgers", return_value=None), \
+    def verify_v2_gate(*_args, **_kwargs):
+        module.load_verifier().company_benefits_series.validate_complete_v2_progress(research)
+
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=verify_v2_gate), \
          redirect_stdout(stdout), redirect_stderr(stderr):
         returncode = module.main(argv)
     return SimpleNamespace(returncode=returncode, stdout=stdout.getvalue(), stderr=stderr.getvalue())
+
+
+def external_receipts(research, directory):
+    protocol = json.loads((research / "population-protocol.json").read_text())
+    population = research / "population"
+    freeze_hash = file_digest(population / "freeze-manifest.json")
+    freeze = directory / "freeze-receipt.json"
+    effective = directory / "effective-receipt.json"
+    write_json(freeze, {
+        "schema_version": "1", "protocol_version": protocol["version"],
+        "freeze_manifest_sha256": freeze_hash, "review_status": "approved",
+        "issued_at": "2026-10-31T00:00:00Z",
+    })
+    events = series.read_jsonl(population / "effective-selection-events.jsonl")
+    latest_scope = events[-1]["scope"] if events else "domestic"
+    write_json(effective, {
+        "schema_version": "1", "protocol_version": protocol["version"],
+        "freeze_manifest_sha256": freeze_hash,
+        "effective_manifest_sha256": file_digest(population / "effective-selection-manifest.json"),
+        "domestic_effective_sequence_sha256": file_digest(population / "domestic-effective-selected.jsonl"),
+        "international_effective_sequence_sha256": file_digest(population / "international-effective-selected.jsonl"),
+        "replacement_events_sha256": file_digest(population / "effective-selection-events.jsonl"),
+        "candidate_effective_sha256": file_digest(population / f"{latest_scope}-effective-selected.jsonl"),
+        "review_status": "approved", "issued_at": "2026-10-31T00:00:00Z",
+    })
+    return freeze, effective
+
+
+def run_real_generator(research, output, receipt_dir, authoritative_calls=None,
+                       batch_scans=None, ledger_reads=None):
+    spec = importlib.util.spec_from_file_location(f"artifact_real_cli_{output.name}", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    freeze, effective = external_receipts(research, receipt_dir)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    argv = [
+        "--research-root", str(research), "--output-root", str(output),
+        "--taxonomy", str(TAXONOMY), "--data-version", "2026-10-31-real-v2",
+        "--generated-at", "2026-10-31T04:00:00Z", "--as-of", "2026-10-31",
+        "--freeze-anchor-receipt", str(freeze),
+        "--effective-selection-receipt", str(effective),
+    ]
+    runtime_series = module.load_verifier().company_benefits_series
+    patcher = (
+        mock.patch.object(runtime_series, "validate_v2_authoritative_records",
+                          wraps=runtime_series.validate_v2_authoritative_records)
+        if authoritative_calls is not None else nullcontext()
+    )
+    scan_patcher = (
+        mock.patch.object(runtime_series, "v2_batch_slice",
+                          wraps=runtime_series.v2_batch_slice)
+        if batch_scans is not None else nullcontext()
+    )
+    read_patcher = (
+        mock.patch.object(runtime_series, "read_v2_batch_records",
+                          wraps=runtime_series.read_v2_batch_records)
+        if ledger_reads is not None else nullcontext()
+    )
+    with patcher as spy, scan_patcher as scan_spy, read_patcher as read_spy, \
+            redirect_stdout(stdout), redirect_stderr(stderr):
+        started = time.monotonic()
+        returncode = module.main(argv)
+        elapsed = time.monotonic() - started
+    if authoritative_calls is not None:
+        authoritative_calls.append(spy.call_count)
+    if batch_scans is not None:
+        batch_scans.append(getattr(scan_spy, "call_count", 0))
+    if ledger_reads is not None:
+        ledger_reads.append(getattr(read_spy, "call_count", 0))
+    return SimpleNamespace(returncode=returncode, stdout=stdout.getvalue(),
+                           stderr=stderr.getvalue(), elapsed=elapsed)
+
+
+def make_real_v2_research_fixture(destination):
+    source = REPO / "docs" / "research" / "company-benefits"
+    shutil.copytree(source, destination)
+    companies = {row["company_id"]: row for row in series.read_jsonl(destination / "companies.jsonl")}
+    batches = series.read_jsonl(destination / "series-batches.jsonl")
+    records = {ledger: [] for ledger in series.V2_LEDGER_FILES}
+    progress = json.loads((destination / "series-progress.json").read_text())
+    entries = {entry["batch_id"]: entry for entry in progress["batches"]}
+    for batch in batches:
+        batch_records = no_public_info_records(
+            batch, [companies[company_id] for company_id in batch["company_ids"]]
+        )
+        for ledger in records:
+            records[ledger].extend(batch_records[ledger])
+        entry = entries[batch["batch_id"]]
+        entry.update(
+            cell_count=250,
+            cell_set_sha256=series.v2_cell_set_sha256(batch_records["cells"]),
+            v2_ledger_sha256=series.v2_ledger_sha256(batch_records),
+        )
+    for ledger, filename in series.V2_LEDGER_FILES.items():
+        write_jsonl(destination / filename, records[ledger])
+    progress.update(progress_version="2", total_cells=20000)
+    write_json(destination / "series-progress.json", progress)
+    return destination
 
 
 def snapshot(root):
@@ -318,6 +452,19 @@ def snapshot(root):
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in sorted(root.rglob("*")) if path.is_file()
     }
+
+
+def refresh_v2_progress_hashes(root):
+    batches = [json.loads(line) for line in (root / "series-batches.jsonl").read_text().splitlines()]
+    records = series.read_v2_batch_records(root)
+    progress = json.loads((root / "series-progress.json").read_text())
+    entries = {entry["batch_id"]: entry for entry in progress["batches"]}
+    for batch in batches:
+        sliced = series.v2_batch_slice(records, batch)
+        entry = entries[batch["batch_id"]]
+        entry["cell_set_sha256"] = series.v2_cell_set_sha256(sliced["cells"])
+        entry["v2_ledger_sha256"] = series.v2_ledger_sha256(sliced)
+    write_json(root / "series-progress.json", progress)
 
 
 def forbidden_keys(value):
@@ -362,6 +509,116 @@ def test_taxonomy_has_reviewed_shape_and_conservative_dol_mappings():
     assert len({(item["field"], item["code"]) for item in taxonomy["dol_form_5500_mappings"]}) == 9
     assert all(item["forced_status"] == "bounded" for item in taxonomy["dol_form_5500_mappings"])
     assert all(item["evidence_semantics"] == "historical_named_plan_feature_only" for item in taxonomy["dol_form_5500_mappings"])
+
+
+def test_taxonomy_contract_rejects_malformed_collection_members_with_controlled_error():
+    module_spec = importlib.util.spec_from_file_location("artifact_bad_taxonomy", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    taxonomy["categories"][0] = None
+    with raises(ValueError):
+        module.taxonomy_contract(taxonomy)
+
+
+def test_taxonomy_contract_rejects_malformed_containers_strings_and_internal_fields():
+    module_spec = importlib.util.spec_from_file_location("artifact_strict_taxonomy", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    original = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    for field, value in (("categories", None), ("benefit_types", {}),
+                         ("dol_form_5500_mappings", [None])):
+        taxonomy = copy.deepcopy(original)
+        taxonomy[field] = value
+        with raises(ValueError):
+            module.taxonomy_contract(taxonomy)
+    for collection, field, value in (
+        ("categories", "id", None), ("categories", "label_ko", []),
+        ("benefit_types", "category_id", {}), ("benefit_types", "label_ko", None),
+        ("dol_form_5500_mappings", "field", []), ("dol_form_5500_mappings", "code", None),
+    ):
+        taxonomy = copy.deepcopy(original)
+        taxonomy[collection][0][field] = value
+        with raises(ValueError):
+            module.taxonomy_contract(taxonomy)
+    for collection, leaked in (("categories", "reviewer_id"), ("benefit_types", "internal_notes"),
+                               ("dol_form_5500_mappings", "reviewer_id")):
+        taxonomy = copy.deepcopy(original)
+        taxonomy[collection][0][leaked] = "secret"
+        with raises(ValueError):
+            module.taxonomy_contract(taxonomy)
+
+
+def test_build_company_preserves_v1_claims_and_projects_v2_evidence():
+    module_spec = importlib.util.spec_from_file_location("artifact_evidence_projection", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    company = {"company_id": "KR-CRN-0000000000001", "legal_name": "Evidence Co", "scope": "domestic", "jurisdiction": "KR"}
+    source = {"source_id": "legacy-source", "title": "Legacy official", "owner": "Evidence Co", "source_type": "official_company_report", "jurisdiction": "KR", "url": "https://evidence.example/legacy", "checked_at": "2026-11-01T10:00:00+09:00", "evidence_eligibility": "A"}
+    claim = {"claim_id": "legacy-claim", "company_id": company["company_id"], "benefit_name": "Paid leave", "detail": "Paid leave is offered.", "status": "confirmed", "current_validity": "current", "evidence_grade": "A", "source_evidence": [{"source_id": "legacy-source", "role": "primary_claim_evidence", "proposition": "Paid leave is offered.", "source_locator": "benefits", "supporting_quote": "Paid leave is offered.", "content_sha256": "a" * 64}], "application_scope": {"countries": ["KR"], "legal_entities": ["Evidence Co"], "roles": ["all"], "employment_types": ["full_time"], "tenure_condition": "none"}, "publication_date": "2026-01-01", "prepublication_checked_at": "2026-11-01T10:00:00+09:00"}
+    assignment = {"legacy-claim": {"assignment": {"state": "assigned", "benefit_type_ids": ["paid-leave"]}}}
+    official_id, reference_id, community_id = "official::" + "a" * 64, "reference::retained", "community::retained"
+    base_cell = {"state": "no_public_info", "reliability": "none", "currentness": "unknown", "scope_status": "unresolved", "conflict_status": "none", "publication_eligibility": "discovery_only", "assessed_at": "2026-11-01T10:02:03+09:00", "official_claim_ids": [], "reference_ids": [], "community_report_ids": [], "attempt_ids": ["attempt::one"]}
+    cells = {item["id"]: {**base_cell, "category_id": item["id"]} for item in taxonomy["categories"]}
+    cells["leave"].update(state="official_verified", reliability="high", currentness="current", scope_status="exact_entity", conflict_status="disclosed", publication_eligibility="official_claim", official_claim_ids=[official_id], reference_ids=[reference_id], community_report_ids=[community_id])
+    common_scope = {"countries": ["KR"], "legal_entities": ["Evidence Co"], "roles": ["all"], "employment_types": ["full_time"]}
+    sources = {}
+    for source_id, tier in (("source::official", "official_government"), ("source::reference", "other_public_web"), ("source::community", "community_employee_review")):
+        sources[source_id] = {"source_id": source_id, "source_tier": tier, "title": source_id, "url": f"https://{source_id.split('::')[1]}.example/source", "retrieved_at": "2026-11-01T10:00:00+09:00", "content_sha256": "d" * 64, "reliability": "high" if tier == "official_government" else "low", "currentness": "current", "scope_status": "exact_entity", "scope": common_scope, "conflict_status": "none", "publication_eligibility": "eligible"}
+    v2 = {
+        "official_claims": {official_id: {"claim_id": official_id, "cell_id": "cell::x", "company_id": company["company_id"], "category_id": "leave", "jurisdiction": "KR", "source_ids": ["source::official"], "source_tier": "official_government", "scope_status": "exact_entity", "scope": common_scope, "conflict_status": "none", "publication_eligibility": "eligible"}},
+        "references": {reference_id: {"reference_id": reference_id, "cell_id": "cell::x", "company_id": company["company_id"], "category_id": "leave", "source_id": "source::reference", "source_tier": "other_public_web", "statement": "Reference leave report", "supporting_quote": "Leave", "source_locator": "https://reference.example/leave", "reliability": "low", "currentness": "historical", "scope": {"status": "bounded_entity", **common_scope}, "conflict_status": "disclosed", "publication_eligibility": "eligible", "checked_at": "2026-11-01T10:00:00+09:00"}},
+        "community_reports": {community_id: {"community_report_id": community_id, "cell_id": "cell::x", "company_id": company["company_id"], "category_id": "leave", "source_id": "source::community", "source_tier": "community_employee_review", "statement": "Community leave report", "reliability": "low", "currentness": "unknown", "scope_status": "unresolved", "scope": common_scope, "conflict_status": "none", "moderation": {"status": "approved", "reviewer_id": "moderator::secret", "reviewed_at": "2026-11-01T10:00:00+09:00", "decision_sha256": "b" * 64}, "frozen_snapshot": {"locator": "https://snapshot.example/1", "content_sha256": "c" * 64, "frozen_at": "2026-11-01T10:00:00+09:00"}, "publication_eligibility": "eligible"}},
+        "sources": sources,
+        "attempts": {"attempt::one": {"attempt_id": "attempt::one", "source_ids": list(sources), "completed_at": "2026-11-01T10:01:00+09:00"}},
+    }
+    detail = module.build_company(company, 1, [claim], None, taxonomy, assignment, {"legacy-source": source}, cells, v2)
+    assert [item["claim_id"] for item in detail["claims"]] == ["legacy-claim"]
+    assert [item["claim_id"] for item in detail["official_claims"]] == [official_id]
+    assert [item["reference_id"] for item in detail["references"]] == [reference_id]
+    assert [item["community_report_id"] for item in detail["community_reports"]] == [community_id]
+    assert {item["source_id"] for item in detail["sources"]} == {"legacy-source", *sources}
+    assert "reviewer_id" not in json.dumps(detail["community_reports"])
+    leave = detail["category_outcomes"][0]
+    assert leave["reference_ids"] == [reference_id] and leave["community_report_ids"] == [community_id]
+    assert leave["claim_count"] == 3 and leave["last_checked_at"] == "2026-11-01T01:02:03Z"
+    assert "reason_code" not in leave
+
+
+def test_build_company_projects_all_searched_sources_and_exact_derived_metadata():
+    module_spec = importlib.util.spec_from_file_location("artifact_search_projection", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    company = {"company_id": "KR-CRN-0000000000001", "legal_name": "Search Co", "scope": "domestic", "jurisdiction": "KR"}
+    categories = [item["id"] for item in taxonomy["categories"]]
+    attempts, sources, cells = {}, {}, {}
+    for category in categories:
+        attempt_id, source_id = f"attempt::{category}", f"source::{category}"
+        attempts[attempt_id] = {"attempt_id": attempt_id, "company_id": company["company_id"], "category_id": category,
+                                "source_ids": [source_id], "completed_at": "2026-11-01T00:00:00Z"}
+        sources[source_id] = {"source_id": source_id, "source_tier": "other_public_web", "title": f"Search {category}",
+                              "url": f"https://search.example/{category}", "retrieved_at": "2026-11-01T00:00:00Z",
+                              "content_sha256": "a" * 64, "reliability": "unrated", "currentness": "unknown",
+                              "scope_status": "unresolved", "scope": {"countries": ["KR"], "legal_entities": [], "roles": [], "employment_types": []},
+                              "conflict_status": "none", "publication_eligibility": "discovery_only",
+                              "internal_notes": "must not leak", "reviewer_id": "secret"}
+        cells[category] = {"category_id": category, "state": "no_public_info", "reliability": "none", "currentness": "unknown",
+                           "scope_status": "unresolved", "conflict_status": "none", "publication_eligibility": "discovery_only",
+                           "assessed_at": "2026-11-01T00:00:00Z", "official_claim_ids": [], "reference_ids": [],
+                           "community_report_ids": [], "attempt_ids": [attempt_id]}
+    detail = module.build_company(company, 1, [], None, taxonomy, {}, {}, cells, {
+        "attempts": attempts, "official_claims": {}, "references": {}, "community_reports": {}, "sources": sources,
+    })
+    projected_ids = [source["source_id"] for source in detail["sources"]]
+    searched_ids = [source_id for outcome in detail["category_outcomes"] for source_id in outcome["searched_source_ids"]]
+    assert set(projected_ids) == set(sources) == set(searched_ids)
+    assert len(projected_ids) == len(set(projected_ids))
+    assert not internal_review_keys(detail["sources"])
+    assert all(set(outcome["limitation_codes"]) == {"scope_limit", "currentness_limit"}
+               and len(outcome["limitation_codes"]) == 2 for outcome in detail["category_outcomes"])
 
 
 def test_assignment_validator_requires_hash_bound_independent_approval(tmp_path):
@@ -440,7 +697,9 @@ def test_artifact_preflight_delegates_to_protocol4_verifier_with_both_external_r
     freeze = tmp_path / "freeze.json"
     effective = tmp_path / "effective.json"
     with mock.patch.object(module, "load_verifier", return_value=verifier):
-        module.verify_active_ledgers(tmp_path / "research", "2026-10-31", freeze, effective)
+        assert module.verify_active_ledgers(
+            tmp_path / "research", "2026-10-31", freeze, effective
+        ) is None
     verifier.verify_workspace.assert_called_once_with(
         tmp_path / "research", as_of="2026-10-31",
         freeze_anchor_receipt=freeze, effective_selection_receipt=effective,
@@ -457,6 +716,140 @@ def test_artifact_generation_rejects_gap_without_preserved_official_source_id_ro
     assert result.returncode != 0
     assert "official source-id route" in result.stderr.casefold()
     assert not (tmp_path / "output").exists()
+
+
+def test_artifact_publication_rejects_mixed_legacy_and_v2_approved_progress_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research, v2=False)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["progress_version"] = "2"
+    progress["total_cells"] = 20000
+    progress["batches"][1].update(
+        cell_count=250,
+        cell_set_sha256="a" * 64,
+        v2_ledger_sha256={name: "b" * 64 for name in (
+            "company-category-cells.jsonl", "research-attempts.jsonl",
+            "official-claims-v2.jsonl", "reference-records.jsonl",
+            "community-benefit-reports.jsonl", "sources-v2.jsonl",
+        )},
+    )
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "mixed-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert any(token in result.stderr.casefold() for token in ("legacy", "250", "v2 progress"))
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_wholly_legacy_complete_progress_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research, v2=False)
+    output = tmp_path / "legacy-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert "progress_version" in result.stderr or "v2" in result.stderr.casefold()
+    assert not output.exists()
+
+
+def test_artifact_publication_verifies_all_six_v2_ledger_hashes_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["batches"][0]["v2_ledger_sha256"]["sources-v2.jsonl"] = "0" * 64
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "hash-mismatch-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert "hash mismatch" in result.stderr.casefold()
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_80_replays_of_one_progress_batch_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["batches"] = [copy.deepcopy(progress["batches"][0]) for _ in range(80)]
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "duplicate-progress-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_missing_or_substituted_progress_batch_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["batches"][-1]["batch_id"] = "substituted-40"
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "substituted-progress-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_declared_inflated_cell_count_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    progress = json.loads((research / "series-progress.json").read_text())
+    progress["batches"][0]["cell_count"] = 251
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "inflated-count-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_empty_actual_ledgers_with_matching_hashes_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    empty_records = {ledger: [] for ledger in series.V2_LEDGER_FILES}
+    empty_hashes = series.v2_ledger_sha256(empty_records)
+    empty_cell_set = series.v2_cell_set_sha256([])
+    for filename in series.V2_LEDGER_FILES.values():
+        write_jsonl(research / filename, [])
+    progress = json.loads((research / "series-progress.json").read_text())
+    for entry in progress["batches"]:
+        entry["cell_set_sha256"] = empty_cell_set
+        entry["v2_ledger_sha256"] = empty_hashes
+    write_json(research / "series-progress.json", progress)
+    output = tmp_path / "empty-v2-ledgers-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_artifact_publication_rejects_cross_batch_record_replay_before_writes(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    attempts = series.read_jsonl(research / series.V2_LEDGER_FILES["attempts"])
+    batches = series.read_jsonl(research / "series-batches.jsonl")
+    first = attempts[0]
+    replay = next(record for record in attempts if record["company_id"] == batches[1]["company_ids"][0])
+    replay.update(cell_id=first["cell_id"], company_id=first["company_id"], category_id=first["category_id"],
+                  jurisdiction=first["jurisdiction"])
+    write_jsonl(research / series.V2_LEDGER_FILES["attempts"], attempts)
+    refresh_v2_progress_hashes(research)
+    output = tmp_path / "cross-batch-replay-output"
+
+    result = run_generator(research, output)
+
+    assert result.returncode != 0
+    assert not output.exists()
 
 
 def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
@@ -477,11 +870,21 @@ def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
     assert manifest["listing_chunk_size"] == 50
     assert manifest["listing_chunk_count"] == 40
     assert manifest["category_count"] == 10
+    assert manifest["cell_count"] == 20000
+    assert manifest["cell_state_counts"] == {
+        "official_verified": 0, "reference": 0,
+        "community_report": 0, "no_public_info": 20000,
+    }
+    assert manifest["ledger_sha256"] == {
+        filename: file_digest(tmp_path / "research" / filename)
+        for filename in series.V2_LEDGER_FILES.values()
+    }
     assert manifest["protocol"]["protocol_id"] == "company-benefits-population-v4"
     assert set(manifest) == {
-        "schema_version", "artifact_kind", "data_version", "fixture", "generated_at", "protocol",
+        "schema_version", "artifact_kind", "artifact_protocol", "data_version", "fixture", "generated_at", "protocol",
         "taxonomy_version", "company_count", "listing_chunk_size", "listing_chunk_count", "category_count",
-        "taxonomy", "sources", "methodology", "listing_chunks", "company_shards",
+        "cell_count", "cell_state_counts", "ledger_sha256", "taxonomy", "sources", "methodology",
+        "listing_chunks", "company_shards",
     }
     assert len(manifest["listing_chunks"]) == 40
     assert len(manifest["company_shards"]) == 2000
@@ -496,18 +899,31 @@ def test_generator_emits_deterministic_immutable_v2_layout(tmp_path):
         assert payload["company"]["company_id"] == company_id
     first_descriptor = manifest["company_shards"][fixture["companies"][0]["company_id"]]
     first_detail = json.loads((version / first_descriptor["url"].removeprefix(prefix)).read_text())
-    claim = first_detail["claims"][0]
-    assert set(claim) == {
-        "claim_id", "benefit_type_ids", "category_ids", "benefit_name", "detail",
-        "research_status", "current_validity", "evidence_grade", "application_scope",
-        "limitation_codes", "publication_date", "checked_at", "source_evidence",
-    }
+    assert [claim["claim_id"] for claim in first_detail["claims"]] == [fixture["claim"]["claim_id"]]
+    assert first_detail["sources"]
     outcomes = first_detail["category_outcomes"]
     assert {item["category_id"] for item in outcomes} == {item["id"] for item in json.loads(TAXONOMY.read_text())["categories"]}
-    assert any(item["kind"] == "evidenced" for item in outcomes)
-    assert all("zero" not in item and "status" not in item for item in outcomes if item["kind"] == "insufficient_evidence")
+    assert all(item["state"] == "no_public_info" for item in outcomes)
+    assert all(item["reliability"] == "none" and item["currentness"] == "unknown" for item in outcomes)
+    assert all(item["scope_status"] == "unresolved" and item["conflict_status"] == "none" for item in outcomes)
+    assert not any("not_researched" in json.dumps(item) for item in outcomes)
     assert not [key for raw in snapshot(first).values() if raw.endswith(b"\n") for key in forbidden_keys(json.loads(raw))]
     assert not [key for raw in snapshot(first).values() if raw.endswith(b"\n") for key in internal_review_keys(json.loads(raw))]
+
+
+def test_generator_refuses_to_overwrite_existing_version_tree(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    output = tmp_path / "immutable-output"
+    first = run_generator(research, output)
+    assert first.returncode == 0, first.stderr
+    before = snapshot(output)
+
+    second = run_generator(research, output)
+
+    assert second.returncode == 1
+    assert "already exists" in second.stderr.casefold()
+    assert snapshot(output) == before
 
 
 def test_generator_rejects_pending_historical_and_fixture_inputs(tmp_path):
@@ -518,7 +934,7 @@ def test_generator_rejects_pending_historical_and_fixture_inputs(tmp_path):
     write_json(research / "series-progress.json", progress)
     result = run_generator(research, tmp_path / "pending-output")
     assert result.returncode != 0
-    assert "approved" in result.stderr.casefold() or "complete" in result.stderr.casefold()
+    assert any(token in result.stderr.casefold() for token in ("approved", "complete", "v2 progress"))
 
     make_research_fixture(research)
     historical = {"record_type": "claim", "publishable": False, "record": fixture["claim"]}
@@ -533,7 +949,178 @@ def test_generator_rejects_pending_historical_and_fixture_inputs(tmp_path):
     write_jsonl(research / "companies.jsonl", companies)
     result = run_generator(research, tmp_path / "fixture-output")
     assert result.returncode != 0
-    assert "fixture" in result.stderr.casefold()
+    assert any(token in result.stderr.casefold() for token in ("fixture", "absent from canonical company ledger"))
+
+
+def test_validation_apis_expose_no_caller_controlled_authority_bypass(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    assert not hasattr(series, "ValidatedV2Context")
+    assert "create_context" not in inspect.signature(
+        series.validate_v2_authoritative_records
+    ).parameters
+    assert "validated_context" not in inspect.signature(
+        series.validate_complete_v2_progress
+    ).parameters
+
+
+def test_forged_validated_context_cannot_publish_schema_invalid_v2_records(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    attempts = series.read_jsonl(research / series.V2_LEDGER_FILES["attempts"])
+    attempts[0]["unsupported_attempt_field"] = "forged-context-bypass"
+    write_jsonl(research / series.V2_LEDGER_FILES["attempts"], attempts)
+    refresh_v2_progress_hashes(research)
+    forged = type("ValidatedV2Context", (), {
+        "research_root": research.resolve(),
+        "fingerprint": (("forged", "f" * 64),),
+        "records_fingerprint": (("attempts", "f" * 64),),
+    })()
+
+    with raises((TypeError, ValueError)):
+        series.validate_complete_v2_progress(
+            research, **{"validated_context": forged}
+        )
+    with raises(ValueError):
+        series.validate_complete_v2_progress(research)
+
+    module_spec = importlib.util.spec_from_file_location("artifact_forged_context", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    with raises((TypeError, ValueError)):
+        module.validate_inputs(research, taxonomy, file_digest(TAXONOMY), **{
+            "validated_v2_context": forged,
+        })
+    with raises(ValueError):
+        module.validate_inputs(research, taxonomy, file_digest(TAXONOMY))
+
+
+def test_fixture_receipt_identities_are_globally_unique_across_all_batches(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    attempts = series.read_jsonl(research / series.V2_LEDGER_FILES["attempts"])
+    batches = series.read_jsonl(research / "series-batches.jsonl")
+    owner = {
+        company_id: batch["batch_id"]
+        for batch in batches for company_id in batch["company_ids"]
+    }
+    locators = [item["capture_locator"] for item in attempts]
+    responses = [item["raw_response_sha256"] for item in attempts]
+    assert len(locators) == len(set(locators))
+    assert len(responses) == len(set(responses))
+    assert all(f"/{owner[item['company_id']]}/" in item["capture_locator"] for item in attempts)
+    assert all(item["company_id"] in item["capture_locator"] for item in attempts)
+    assert all(item["category_id"] in item["capture_locator"] for item in attempts)
+    assert all(item["route_id"] in item["capture_locator"] for item in attempts)
+
+
+def test_real_publication_preflight_validates_global_v2_package_and_exact_snapshot(tmp_path):
+    research = make_real_v2_research_fixture(tmp_path / "research")
+    calls, scans, reads = [], [], []
+    result = run_real_generator(
+        research, tmp_path / "real-output", tmp_path, calls, scans, reads
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls == [2]
+    assert scans == [0]
+    assert reads == [1]
+    assert (tmp_path / "real-output" / "manifest.json").is_file()
+
+
+def test_real_publication_preflight_rejection_writes_no_output(tmp_path):
+    research = make_real_v2_research_fixture(tmp_path / "research")
+    freeze, effective = external_receipts(research, tmp_path)
+    receipt = json.loads(freeze.read_text())
+    receipt["freeze_manifest_sha256"] = "0" * 64
+    write_json(freeze, receipt)
+    spec = importlib.util.spec_from_file_location("artifact_real_preflight_failure", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = tmp_path / "rejected-output"
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        code = module.main([
+            "--research-root", str(research), "--output-root", str(output),
+            "--taxonomy", str(TAXONOMY), "--data-version", "rejected-v2",
+            "--generated-at", "2026-10-31T04:00:00Z", "--as-of", "2026-10-31",
+            "--freeze-anchor-receipt", str(freeze),
+            "--effective-selection-receipt", str(effective),
+        ])
+    assert code == 1
+    assert "freeze" in stderr.getvalue().casefold()
+    assert "traceback" not in stderr.getvalue().casefold()
+    assert not output.exists()
+
+
+def test_generator_rejects_non_string_v2_source_binding_without_traceback_or_output(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    attempts = series.read_jsonl(research / series.V2_LEDGER_FILES["attempts"])
+    attempts[0]["source_ids"] = [{}]
+    write_jsonl(research / series.V2_LEDGER_FILES["attempts"], attempts)
+    output = tmp_path / "malformed-binding-output"
+    result = run_generator(research, output)
+    assert result.returncode == 1
+    assert "source" in result.stderr.casefold()
+    assert "traceback" not in result.stderr.casefold()
+    assert not output.exists()
+
+
+def test_publication_gate_rejects_v2_ledger_mutation_during_verification(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    spec = importlib.util.spec_from_file_location("artifact_ledger_race", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    target = research / series.V2_LEDGER_FILES["sources"]
+
+    def mutate(*_args, **_kwargs):
+        target.write_bytes(target.read_bytes() + b"\n")
+
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=mutate), raises(ValueError):
+        module.publication_gate(
+            research, TAXONOMY, "2026-10-31", tmp_path / "freeze.json", tmp_path / "effective.json"
+        )
+
+
+def test_publication_gate_validates_exact_snapshot_across_malformed_valid_malformed_swap(tmp_path):
+    research = tmp_path / "research"
+    make_research_fixture(research)
+    spec = importlib.util.spec_from_file_location("artifact_snapshot_authority", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    runtime_series = module.load_verifier().company_benefits_series
+    target = research / series.V2_LEDGER_FILES["attempts"]
+    valid = target.read_bytes()
+    malformed_rows = series.read_jsonl(target)
+    malformed_rows[0]["unsupported_attempt_field"] = "must-fail"
+    malformed = b"".join((compact(row) + "\n").encode() for row in malformed_rows)
+    target.write_bytes(malformed)
+    output = tmp_path / "snapshot-race-output"
+
+    def validate_reopened_paths(*_args, **_kwargs):
+        target.write_bytes(valid)
+        try:
+            runtime_series.validate_complete_v2_progress(research)
+        finally:
+            target.write_bytes(malformed)
+
+    stderr = io.StringIO()
+    with mock.patch.object(module, "verify_active_ledgers", side_effect=validate_reopened_paths), redirect_stderr(stderr):
+        code = module.main([
+            "--research-root", str(research), "--output-root", str(output),
+            "--taxonomy", str(TAXONOMY), "--data-version", "snapshot-race-v2",
+            "--generated-at", "2026-10-31T04:00:00Z", "--as-of", "2026-10-31",
+            "--freeze-anchor-receipt", str(tmp_path / "freeze.json"),
+            "--effective-selection-receipt", str(tmp_path / "effective.json"),
+        ])
+    assert code == 1
+    assert "authoritative" in stderr.getvalue().casefold() or "additional properties" in stderr.getvalue().casefold()
+    assert "traceback" not in stderr.getvalue().casefold()
+    assert not output.exists()
 
 
 def load_tests(loader, tests, pattern):

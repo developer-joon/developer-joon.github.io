@@ -126,6 +126,8 @@ test('keeps all six community entry titles aligned with the release verifier con
     ['community-app/edit/index.html', '<title>글 수정 · Ria &amp; Seoa PaPa</title>'],
     ['community-app/admin/reports/index.html', '<title>신고 관리 · Ria &amp; Seoa PaPa</title>'],
     ['community-app/auth/callback/index.html', '<title>로그인 처리 · Ria &amp; Seoa PaPa</title>'],
+    ['community-app/benefits/correction/index.html', '<title>복지 정보 수정 요청 · Ria &amp; Seoa PaPa</title>'],
+    ['community-app/benefits/my-corrections/index.html', '<title>내 복지 수정 요청 · Ria &amp; Seoa PaPa</title>'],
   ])
 
   for (const [relativePath, expectedTitle] of titles) {

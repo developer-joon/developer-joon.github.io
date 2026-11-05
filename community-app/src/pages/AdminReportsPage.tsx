@@ -244,6 +244,7 @@ export function AdminReportsPage({ repository, currentPath }: Props) {
 
   return <AdminShell>
     <header className="admin-title"><p className="community-kicker">EDITORIAL OPERATIONS · MODERATION</p><h1>신고 운영 데스크</h1><p>신고 판단, 콘텐츠 조치, 변경 이력을 한 자리에서 검토합니다.</p></header>
+    <nav className="admin-local-nav" aria-label="관리자 도구"><a href="/community/admin/reports/" aria-current="page">신고 관리</a><a href="/community/admin/benefit-corrections/">복지 정정</a></nav>
     <div className="admin-workspace">
       <ReportQueue items={reports} selectedId={selectedId} filter={filter} loading={queueLoading} loadingMore={queueMore} error={queueError} hasMore={hasMore} announcement={announcement} onSelect={setSelectedId} onFilterChange={setFilter} onRetry={reloadQueue} onLoadMore={loadMore} />
       <aside ref={inspectorRef} tabIndex={-1} className="admin-inspector" aria-label="선택한 신고 검토">

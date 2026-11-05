@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company-benefits-company-gap.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["audit_id", "company_id", "disposition", "reason", "searched_official_source_ids", "searched_official_urls", "nonabsence_wording", "researcher_id"],
+  "properties": {
+    "audit_id": {
+      "type": "string",
+      "pattern": "^company-gap::(?:v2::(?:domestic|international)-(?:0[1-9]|[1-3][0-9]|40)::[A-Za-z0-9][A-Za-z0-9._:-]{2,127}|(?!v2::)[A-Za-z0-9][A-Za-z0-9._:-]{2,127})$"
+    },
+    "company_id": {"type": "string", "minLength": 1},
+    "disposition": {"const": "nonpublishable"},
+    "reason": {"type": "string", "minLength": 1},
+    "searched_official_source_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "searched_official_urls": {"type": "array", "maxItems": 0},
+    "nonabsence_wording": {"type": "string", "minLength": 1},
+    "researcher_id": {"type": "string", "minLength": 1}
+  }
+}

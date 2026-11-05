@@ -8,6 +8,8 @@ from datetime import date
 from pathlib import Path
 
 from scripts.tests.benefits_test_fixture import FrozenFixture
+from scripts.tests.benefits_v2_batch_fixture import V2_FILES, no_public_info_records
+from scripts.tests.test_company_benefits_v2_contracts import base_reference
 
 ROOT = Path(__file__).resolve().parents[2]
 SERIES_MODULE = ROOT / "scripts" / "company_benefits_series.py"
@@ -31,6 +33,11 @@ class SeriesContractTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.fixture = FrozenFixture(self.root)
+        batch = next(item for item in self.series.read_jsonl(self.root / "series-batches.jsonl")
+                     if item["batch_id"] == "domestic-01")
+        v2_records = no_public_info_records(batch, self.fixture.companies)
+        for ledger, filename in V2_FILES.items():
+            self.series.write_jsonl(self.root / filename, v2_records[ledger])
         self.series.materialize_contract(self.root, approved_batch_ids={"domestic-01"},
                                          approved_at="2026-10-21T00:00:00Z", reviewer_id="bob")
 
@@ -42,7 +49,30 @@ class SeriesContractTests(unittest.TestCase):
             self.root, as_of=date(2026, 10, 29),
             approved_freeze_anchors=self.fixture.approved_freeze_anchors())
 
+    def test_v2_gap_id_requires_authoritative_batch_membership(self):
+        batch = next(item for item in self.series.read_jsonl(self.root / "series-batches.jsonl")
+                     if item["batch_id"] == "domestic-01")
+        company_id = batch["company_ids"][0]
+        expected = f"company-gap::v2::domestic-01::{company_id}"
+        self.assertEqual(expected, self.series.canonical_v2_gap_id(batch, company_id))
+        self.series.validate_v2_gap_id({"audit_id": expected, "company_id": company_id}, batch)
+        for invalid_batch in (None, {}, {"batch_id": "domestic-01", "company_ids": []}):
+            with self.subTest(batch=invalid_batch):
+                with self.assertRaisesRegex(ValueError, "batch|membership"):
+                    self.series.canonical_v2_gap_id(invalid_batch, company_id)
+        wrong = dict(batch, batch_id="domestic-35")
+        with self.assertRaisesRegex(ValueError, "gap ID|batch"):
+            self.series.validate_v2_gap_id({"audit_id": expected, "company_id": company_id}, wrong)
+
+    def use_legacy_contract(self):
+        for filename in V2_FILES.values():
+            self.series.write_jsonl(self.root / filename, [])
+        self.series.materialize_contract(
+            self.root, {"domestic-01"}, "2026-10-21T00:00:00Z", "bob"
+        )
+
     def configure_gap_only_batch(self, include_reviews=True):
+        self.use_legacy_contract()
         companies = self.fixture.current["domestic"][:25]
         routes = [{
             "record_type": "nonpublishable_metadata",
@@ -170,6 +200,7 @@ class SeriesContractTests(unittest.TestCase):
         self.assertEqual(before, (self.root / "series-batches.jsonl").read_bytes())
 
     def test_pending_batch_data_is_rejected(self):
+        self.use_legacy_contract()
         claim = copy.deepcopy(self.fixture.claims[0])
         pending_company = self.fixture.current["domestic"][25]
         claim["claim_id"] = "pending-claim"
@@ -178,7 +209,74 @@ class SeriesContractTests(unittest.TestCase):
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
         self.assertTrue(any("pending batch" in error for error in self.errors()), self.errors()[:20])
 
+    def test_merged_v2_ledgers_reject_copied_attempt_capture_and_receipt_payload(self):
+        attempts_path = self.root / V2_FILES["attempts"]
+        attempts = self.series.read_jsonl(attempts_path)
+        attempts[1]["capture_locator"] = attempts[0]["capture_locator"]
+        attempts[1]["raw_response_sha256"] = attempts[0]["raw_response_sha256"]
+        payload = {key: value for key, value in attempts[1].items() if key != "receipt_content_sha256"}
+        attempts[1]["receipt_content_sha256"] = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.series.write_jsonl(attempts_path, attempts)
+        errors = self.errors()
+        self.assertTrue(any("receipt reuse" in error for error in errors), errors[:20])
+
+    def test_merged_v2_ledgers_reject_orphan_reference_record(self):
+        cells = self.series.read_jsonl(self.root / V2_FILES["cells"])
+        orphan = base_reference()
+        orphan.update(
+            reference_id="reference::orphan",
+            cell_id=cells[0]["cell_id"],
+            company_id=cells[0]["company_id"],
+            category_id=cells[0]["category_id"],
+            source_id="source::orphan",
+        )
+        self.series.write_jsonl(self.root / V2_FILES["references"], [orphan])
+        errors = self.errors()
+        self.assertTrue(any("orphan reference" in error for error in errors), errors[:20])
+
+    def test_progress_hashes_all_six_full_v2_payloads_and_rejects_tampering(self):
+        progress = json.loads((self.root / "series-progress.json").read_text())
+        entry = next(item for item in progress["batches"] if item["batch_id"] == "domestic-01")
+        self.assertEqual(set(V2_FILES.values()), set(entry["v2_ledger_sha256"]))
+        attempts_path = self.root / V2_FILES["attempts"]
+        attempts = self.series.read_jsonl(attempts_path)
+        attempts[0]["query_or_locator"] += " tampered"
+        payload = {key: value for key, value in attempts[0].items() if key != "receipt_content_sha256"}
+        attempts[0]["receipt_content_sha256"] = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.series.write_jsonl(attempts_path, attempts)
+        errors = self.errors()
+        self.assertTrue(any("250-cell set and hash" in error for error in errors), errors[:20])
+
+    def test_persisted_v2_preflight_rejects_approved_legacy_batch_mixed_with_valid_v2_batch(self):
+        batches = self.series.read_jsonl(self.root / "series-batches.jsonl")
+        second = next(item for item in batches if item["batch_id"] == "domestic-02")
+        records = no_public_info_records(second, self.fixture.companies)
+        for ledger, filename in V2_FILES.items():
+            self.series.write_jsonl(self.root / filename, records[ledger])
+
+        progress = json.loads((self.root / "series-progress.json").read_text())
+        first_entry = next(item for item in progress["batches"] if item["batch_id"] == "domestic-01")
+        for field in ("cell_count", "cell_set_sha256", "v2_ledger_sha256"):
+            first_entry.pop(field, None)
+        second_entry = next(item for item in progress["batches"] if item["batch_id"] == "domestic-02")
+        second_entry.update(
+            status="approved",
+            approved_at="2026-10-22T00:00:00Z",
+            reviewer_ids=["carol"],
+            cell_count=250,
+            cell_set_sha256=self.series.v2_cell_set_sha256(records["cells"]),
+            v2_ledger_sha256=self.series.v2_ledger_sha256(records),
+        )
+
+        with self.assertRaisesRegex(ValueError, "mixed|legacy|v2"):
+            self.series.validate_persisted_v2_hashes(self.root, batches, progress)
+
     def test_partial_approved_batch_is_rejected(self):
+        self.use_legacy_contract()
         self.fixture.claims.pop()
         self.fixture.reviews.pop()
         self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
