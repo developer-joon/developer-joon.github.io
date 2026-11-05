@@ -327,6 +327,55 @@ test('allows doctype, comments, and whitespace before the explicit document head
   })
 })
 
+test('allows a BOM, ASCII whitespace, comments, and one doctype around the explicit document html', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      `\uFEFF \n<!-- before -->\n${html}\n<!-- after -->\t`,
+    )
+
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+for (const [label, mutate] of [
+  ['a start element before html', (html) => html.replace('<html>', '<div><html>')],
+  ['an end element before html', (html) => html.replace('<html>', '</div><html>')],
+  ['a script element before html', (html) => html.replace('<html>', '<script>const decoy = true</script><html>')],
+  ['a start element after html', (html) => html.replace('</html>', '</html><div>')],
+  ['an end element after html', (html) => html.replace('</html>', '</html></div>')],
+]) {
+  test(`rejects ${label}`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label}`)
+      assert.match(result.stderr, /index\.html.*explicit.*document html/)
+    })
+  })
+}
+
+for (const [label, mutate] of [
+  ['a second doctype before html', (html) => html.replace('<html>', '<!doctype html><html>')],
+  ['a doctype after html', (html) => html.replace('</html>', '</html><!doctype html>')],
+]) {
+  test(`rejects ${label}`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label}`)
+      assert.match(result.stderr, /index\.html.*explicit.*document html/)
+    })
+  })
+}
+
 test('rejects non-whitespace text before the explicit document html', async () => {
   await withArtifact(async (root) => {
     const artifactPath = path.join(root, 'index.html')

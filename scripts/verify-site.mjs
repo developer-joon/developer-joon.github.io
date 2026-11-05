@@ -230,6 +230,7 @@ function extractDocumentTitle(html) {
   let inHtml = false
   let inHead = false
   let bodyStarted = false
+  let doctypeSeen = false
   let error = null
 
   while (position < html.length) {
@@ -264,7 +265,14 @@ function extractDocumentTitle(html) {
     let source = html.slice(tagStart + 1, tagEnd)
     const closing = /^\s*\//.test(source)
     if (closing) source = source.replace(/^\s*\/\s*/, '')
+    if (/^\s*!\s*doctype\b/i.test(source)) {
+      if (inHtml || htmlStarts !== 0 || doctypeSeen) error ??= 'html'
+      doctypeSeen = true
+      position = tagEnd + 1
+      continue
+    }
     if (/^\s*[!?]/.test(source)) {
+      if (!inHtml) error ??= 'html'
       position = tagEnd + 1
       continue
     }
@@ -276,6 +284,7 @@ function extractDocumentTitle(html) {
         continue
       }
       const name = match[1].toLowerCase()
+      if (!inHtml) error ??= 'html'
       if (inertStack.length > 0) {
         if (inertStack.at(-1) === name) inertStack.pop()
       } else if (name === 'html') {
@@ -298,6 +307,8 @@ function extractDocumentTitle(html) {
       position = tagEnd + 1
       continue
     }
+
+    if (!inHtml && tag.name !== 'html') error ??= 'html'
 
     if (rawTextElements.has(tag.name) && tag.name !== 'title') {
       const afterRawText = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
