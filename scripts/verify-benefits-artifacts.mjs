@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
-import { manifestSchema, listingChunkSchema, approvedV2ListingChunkSchema, detailSchema, methodologySchema, sourcesDocumentSchema, categories, assertCompanyDetailEvidence, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
+import { manifestSchema, listingChunkSchema, approvedV2ListingChunkSchema, detailSchema, methodologySchema, sourcesDocumentSchema, categories, assertCompanyDetailEvidence, assertCompanyIdentityProjection, assertExplicitCellInventory, assertListingOutcomes } from '../community-app/src/types/benefits.ts'
 
 const forbiddenText = [/fixture-v1/i, /"fixture"\s*:\s*true/i, /example-\d{3}/i, /example\.org/i, /rankings\.json/i, /rankings_url/i, /\/benefits\/rankings\//i, /가상 별빛|가상 검증기업|예시 데이터|모든 기업·정책·점수는 가상/]
 const forbiddenKey = /score|rank|percentile|coverage(?:_percent)?|fitScore|rankOrder/i
@@ -69,7 +69,25 @@ export function assertProjectionCompanyJoin(companies, baseById) {
   if (!(baseById instanceof Map) || baseById.size === 0) throw Error('approved projection canonical base listing index unavailable')
   for (const company of companies) {
     const base = baseById.get(company.company_id)
-    if (!base || base.population_sequence !== company.population_sequence) throw Error('approved projection canonical company/population_sequence join mismatch')
+    if (!base) throw Error('approved projection canonical company identity mismatch')
+    assertCompanyIdentityProjection(base, company)
+  }
+}
+
+export function assertUniqueProjectionEvidenceIds(details) {
+  const seen = { claim_id: new Set(), reference_id: new Set(), community_report_id: new Set() }
+  for (const detail of details) {
+    const records = [
+      ...detail.claims.map((record) => ['claim_id', record]),
+      ...detail.official_claims.map((record) => ['claim_id', record]),
+      ...detail.references.map((record) => ['reference_id', record]),
+      ...detail.community_reports.map((record) => ['community_report_id', record]),
+    ]
+    for (const [idField, record] of records) {
+      const id = record[idField]
+      if (seen[idField].has(id)) throw Error(`approved projection duplicate ${idField}: ${id}`)
+      seen[idField].add(id)
+    }
   }
 }
 
@@ -101,17 +119,20 @@ export async function verifyApprovedV2Projection(root, projection, baseById) {
   if (byId.size !== companies.length) throw Error('approved projection duplicate company')
   const shardIds = Object.keys(projection.company_shards)
   if (shardIds.length !== byId.size || shardIds.some((id) => !byId.has(id))) throw Error('approved projection listing/shard company set mismatch')
-  const requiredSourceIds = new Set()
+  const requiredSourceIds = new Set(); const details = []
   for (const [id, descriptor] of Object.entries(projection.company_shards)) {
     const detail = detailSchema.parse(await load(descriptor))
     const listingCompany = byId.get(id)
     if (!listingCompany || detail.artifact_protocol !== 'vNext' || descriptor.company_id !== id || detail.company.company_id !== id || detail.company.population_sequence !== listingCompany.population_sequence || detail.data_version !== projection.data_version) throw Error(`approved projection company shard mismatch: ${id}`)
+    assertCompanyIdentityProjection(baseById.get(id), listingCompany, detail.company)
     assertCompanyDetailEvidence(listingCompany, detail)
+    details.push(detail)
     for (const sourceId of detail.category_outcomes.flatMap((outcome) => outcome.searched_source_ids)) requiredSourceIds.add(sourceId)
     for (const sourceId of detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id))) requiredSourceIds.add(sourceId)
     for (const sourceId of detail.official_claims.flatMap((claim) => claim.source_ids)) requiredSourceIds.add(sourceId)
     for (const record of [...detail.references, ...detail.community_reports]) requiredSourceIds.add(record.source_id)
   }
+  assertUniqueProjectionEvidenceIds(details)
   if (Object.keys(projection.company_shards).length !== projection.projected_company_count) throw Error('approved projection shard count mismatch')
   const methodology = methodologySchema.parse(await load(projection.methodology))
   if (methodology.data_version !== projection.data_version) throw Error('approved projection methodology version mismatch')

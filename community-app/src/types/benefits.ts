@@ -96,6 +96,21 @@ export const companyListingSchema = z.strictObject({
 export type CompanyListing = z.infer<typeof companyListingSchema>
 export type Company = CompanyListing
 
+export function companyListingIdentity(company: CompanyListing): Omit<CompanyListing, 'category_outcomes'> {
+  return Object.fromEntries(Object.entries(company).filter(([key]) => key !== 'category_outcomes')) as Omit<CompanyListing, 'category_outcomes'>
+}
+
+export function assertCompanyIdentityProjection(base: CompanyListing, listing: CompanyListing, detailCompany?: Detail['company']) {
+  const baseIdentity = companyListingIdentity(base)
+  const listingIdentity = companyListingIdentity(listing)
+  const identityKeys = Object.keys(baseIdentity) as (keyof typeof baseIdentity)[]
+  if (identityKeys.length !== Object.keys(listingIdentity).length || identityKeys.some((key) => JSON.stringify(baseIdentity[key]) !== JSON.stringify(listingIdentity[key]))) throw new Error('approved projection canonical company identity mismatch')
+  if (detailCompany) {
+    const sharedIdentityKeys = identityKeys.filter((key) => key in detailCompany)
+    if (sharedIdentityKeys.some((key) => JSON.stringify(listingIdentity[key]) !== JSON.stringify(detailCompany[key as keyof typeof detailCompany]))) throw new Error('approved projection detail company identity mismatch')
+  }
+}
+
 const listingChunkFields = { schema_version: z.literal(1), artifact_kind: z.literal('company_listing_chunk'), artifact_protocol: z.enum(['v1', 'vNext']).optional(), data_version: version, taxonomy_version: z.literal('benefit-taxonomy-v1'), chunk_index: z.number().int().min(1).max(40), sequence_start: z.number().int().min(1), sequence_end: z.number().int().max(2000) }
 const refineListingChunk = (chunk: { artifact_protocol?: 'v1' | 'vNext'; sequence_start: number; sequence_end: number; companies: CompanyListing[] }, ctx: z.RefinementCtx) => {
   if (chunk.companies.some((company) => company.category_outcomes.some((outcome) => chunk.artifact_protocol === 'vNext' ? !('state' in outcome) : 'state' in outcome))) ctx.addIssue({ code: 'custom', message: 'artifact protocol/outcome 불일치' })

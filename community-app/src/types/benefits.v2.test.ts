@@ -21,6 +21,15 @@ function validManifest() {
   }
 }
 
+function validV1Manifest() {
+  const manifest: Partial<ReturnType<typeof validManifest>> = validManifest()
+  manifest.artifact_protocol = 'v1'
+  delete manifest.cell_count
+  delete manifest.cell_state_counts
+  delete manifest.ledger_sha256
+  return manifest as Omit<ReturnType<typeof validManifest>, 'cell_count' | 'cell_state_counts' | 'ledger_sha256'> & { artifact_protocol: 'v1' }
+}
+
 it('accepts all four explicit cell states and rejects not_researched', () => {
   const base = { category_id: 'leave', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', assessed_at: '2026-11-01T00:00:00Z', source_tiers: [], official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0, kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [] }
   const outcomes = [
@@ -67,11 +76,7 @@ it('accepts schema v2 and rejects ranking semantics', () => {
 })
 
 it('accepts an additive approved-v2 checkpoint without relabeling the active v1 lineage', () => {
-  const manifest: any = validManifest()
-  manifest.artifact_protocol = 'v1'
-  delete manifest.cell_count
-  delete manifest.cell_state_counts
-  delete manifest.ledger_sha256
+  const manifest = validV1Manifest()
   const sparseBounds = [
     [1, 50], [51, 100], [101, 150], [151, 200], [201, 250], [251, 300], [301, 350], [351, 400], [401, 450], [451, 500],
     [501, 575], [576, 625], [626, 675], [676, 725], [726, 800], [801, 850], [851, 900], [901, 950], [951, 1000],
@@ -91,7 +96,7 @@ it('accepts an additive approved-v2 checkpoint without relabeling the active v1 
       const [first_sequence, last_sequence] = sparseBounds[i]
       return { ...manifest.taxonomy, url: `community/data/company-benefits/approved-v2-checkpoint-38/listings/companies-${String(i + 1).padStart(2, '0')}.json`, chunk_index: i + 1, first_sequence, last_sequence, record_count: 50 }
     }),
-    company_shards: Object.fromEntries(Object.entries(manifest.company_shards).slice(0, 950).map(([id, value]: [string, any]) => [id, { ...value, url: `community/data/company-benefits/approved-v2-checkpoint-38/companies/${id}.json` }])),
+    company_shards: Object.fromEntries(Object.entries(manifest.company_shards).slice(0, 950).map(([id, value]) => [id, { ...value, url: `community/data/company-benefits/approved-v2-checkpoint-38/companies/${id}.json` }])),
   }
   expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: projection }).success).toBe(true)
   expect(manifestSchema.safeParse({ ...manifest, artifact_protocol: 'vNext', approved_v2_projection: projection }).success).toBe(false)
@@ -108,11 +113,7 @@ it('accepts an additive approved-v2 checkpoint without relabeling the active v1 
 })
 
 it('accepts a 39-batch projection descriptor inventory with one final 25-company chunk', () => {
-  const manifest: any = validManifest()
-  manifest.artifact_protocol = 'v1'
-  delete manifest.cell_count
-  delete manifest.cell_state_counts
-  delete manifest.ledger_sha256
+  const manifest = validV1Manifest()
   const dataVersion = 'approved-v2-checkpoint-39'
   const projection = {
     projection_kind: 'approved_v2_additive', projection_status: 'in_progress',
@@ -131,7 +132,7 @@ it('accepts a 39-batch projection descriptor inventory with one final 25-company
       const last_sequence = index < 10 ? index * 50 + 50 : index === 10 ? 575 : index === 19 ? 1000 : index * 50 + 75
       return { ...manifest.taxonomy, url: `community/data/company-benefits/${dataVersion}/listings/companies-${String(index + 1).padStart(2, '0')}.json`, chunk_index: index + 1, first_sequence, last_sequence, record_count }
     }),
-    company_shards: Object.fromEntries(Object.entries(manifest.company_shards).slice(0, 975).map(([id, value]: [string, any]) => [id, { ...value, url: `community/data/company-benefits/${dataVersion}/companies/${id}.json` }])),
+    company_shards: Object.fromEntries(Object.entries(manifest.company_shards).slice(0, 975).map(([id, value]) => [id, { ...value, url: `community/data/company-benefits/${dataVersion}/companies/${id}.json` }])),
   }
   expect(manifestSchema.safeParse({ ...manifest, approved_v2_projection: projection }).success).toBe(true)
   for (const mutation of [

@@ -905,6 +905,43 @@ def scan_forbidden_keys(value, path="$"):
             scan_forbidden_keys(child, f"{path}[{index}]")
 
 
+def base_artifact_inventory(base_root, manifest):
+    prefix = f"community/data/company-benefits/{manifest.get('data_version')}/"
+    descriptors = [descriptor for descriptor in [
+        manifest.get("taxonomy"), manifest.get("sources"), manifest.get("methodology"),
+        *manifest.get("listing_chunks", []), *manifest.get("company_shards", {}).values(),
+    ] if descriptor is not None]
+    expected_files = {Path("manifest.json")}
+    expected_descriptors = {}
+    for descriptor in descriptors:
+        url = descriptor.get("url") if isinstance(descriptor, Mapping) else None
+        if not isinstance(url, str) or not url.startswith(prefix):
+            raise ValueError("base artifact manifest contains an invalid descriptor path")
+        relative = Path(manifest["data_version"]) / url.removeprefix(prefix)
+        if relative.is_absolute() or ".." in relative.parts or "." in relative.parts:
+            raise ValueError("base artifact manifest contains an unsafe descriptor path")
+        if relative in expected_descriptors:
+            raise ValueError("base artifact manifest contains duplicate descriptor paths")
+        expected_files.add(relative)
+        expected_descriptors[relative] = descriptor
+    expected_directories = {parent for relative in expected_files for parent in relative.parents if parent != Path(".")}
+    actual_files = set()
+    actual_directories = set()
+    for entry in base_root.rglob("*"):
+        relative = entry.relative_to(base_root)
+        metadata = entry.lstat()
+        if entry.is_symlink() or (not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode)):
+            raise ValueError(f"unsafe base artifact entry: {relative}")
+        (actual_directories if stat.S_ISDIR(metadata.st_mode) else actual_files).add(relative)
+    if actual_files != expected_files or actual_directories != expected_directories:
+        raise ValueError("base artifact inventory contains unmanifested or missing entries")
+    for relative, descriptor in expected_descriptors.items():
+        artifact = base_root / relative
+        if descriptor.get("byte_count") != artifact.stat().st_size or descriptor.get("sha256") != sha256(artifact.read_bytes()):
+            raise ValueError(f"base artifact descriptor integrity mismatch: {relative}")
+    return sorted(expected_files)
+
+
 def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
                    projection_metadata=None, base_artifact_root=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", data_version):
@@ -930,11 +967,10 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
                     or base_manifest.get("data_version") != projection_metadata["base_data_version"]
                     or sha256(base_manifest_path.read_bytes()) != projection_metadata["base_manifest_sha256"]):
                 raise ValueError("additive projection base manifest must exactly bind the unmodified active v1 lineage")
-            for path in base_artifact_root.rglob("*"):
-                metadata = path.lstat()
-                if path.is_symlink() or (not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode)):
-                    raise ValueError(f"unsafe base artifact entry: {path.relative_to(base_artifact_root)}")
-            shutil.copytree(base_artifact_root, staging, dirs_exist_ok=True)
+            for relative in base_artifact_inventory(base_artifact_root, base_manifest):
+                target = staging / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(base_artifact_root / relative, target)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
