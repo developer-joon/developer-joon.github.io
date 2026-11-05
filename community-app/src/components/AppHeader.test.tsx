@@ -84,7 +84,7 @@ describe('AppHeader global shell', () => {
     const { header, navigation } = globalShell()
     expect(within(header).getByRole('link', { name: 'Ria & Seoa PaPa' })).toHaveAttribute('href', '/')
     expect(within(navigation).getAllByRole('link').map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
-      ['0 → 1', '/lab/'],
+      ['수익실험실', '/lab/'],
       ['Blog', '/blog/'],
       ['Community', '/community/'],
       ['Benefit Atlas', '/community/benefits/'],

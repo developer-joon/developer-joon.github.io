@@ -1,6 +1,6 @@
 ---
 title: About
-subtitle: 0 → 1, 코드로 수익모델을 검증하는 실험
+subtitle: 수익실험실, 코드로 수익모델을 검증하는 실험
 description: "개발자와 AI 비서가 함께 수익모델을 검증하고, 진행·종료·보류의 전 과정을 기록합니다."
 featured_image: /images/demo/about.jpg
 ---

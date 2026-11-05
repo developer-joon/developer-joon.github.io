@@ -24,12 +24,13 @@
 	<meta name="twitter:card" content="summary_large_image">
 	<meta name="twitter:title" content="{% if page.url == "/" %}{{ site.data.settings.basic_settings.site_title }} – {{ page.title }}{% else %}{{ page.title }} – {{ site.data.settings.basic_settings.site_title }}{% endif %}">
 	<meta name="twitter:description" content="{{ page.description | strip_html | xml_escape }}">
-	<meta name="twitter:image:src" content="{{ page.featured_image | default: '/images/demo/about.jpg' | absolute_url }}">
+	{% assign social_image = page.social_image | default: page.featured_image | default: '/images/demo/about.jpg' %}
+	<meta name="twitter:image:src" content="{{ social_image | absolute_url }}">
 
 	<!-- Facebook OpenGraph -->
 	<meta property="og:title" content="{% if page.url == "/" %}{{ site.data.settings.basic_settings.site_title }} – {{ page.title }}{% else %}{{ page.title }} – {{ site.data.settings.basic_settings.site_title }}{% endif %}" />
 	<meta property="og:description" content="{{ page.description | strip_html | xml_escape }}" />
-	<meta property="og:image" content="{{ page.featured_image | default: '/images/demo/about.jpg' | absolute_url }}" />
+	<meta property="og:image" content="{{ social_image | absolute_url }}" />
 	<meta property="og:url" content="{{site.url}}{{page.url}}">
 	<link rel="canonical" href="{{ site.url }}{{ page.url }}">
 

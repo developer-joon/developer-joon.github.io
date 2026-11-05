@@ -64,14 +64,14 @@ async function put(root, relativePath, content = '') {
 async function makeValidArtifact() {
   const root = await mkdtemp(path.join(tmpdir(), 'verify-site-test-'))
   const routes = [
-    ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>', 'https://www.breadlab.ai/', '<a class="menu__list__item__link js-no-ajax" href="/community/">Community</a>'],
+    ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/', '<a class="menu__list__item__link js-no-ajax" href="/community/">Community</a>'],
     ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/', ''],
-    ['lab/index.html', '<title>0 → 1 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
+    ['lab/index.html', '<title>수익실험실 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
     ['blog/ceph-cluster-install-with-helm.html', '<title>[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm', ''],
     ['404.html', '<title>Page Not Found – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/404.html', ''],
   ]
   for (const [relativePath, title, canonical, body] of routes) {
-    await put(root, relativePath, `${title}<link rel="canonical" href="${canonical}">${body}`)
+    await put(root, relativePath, `<!doctype html><html><head>${title}<link rel="canonical" href="${canonical}"></head><body>${body}</body></html>`)
   }
   for (const [relativePath, title] of shellTitles) {
     await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img srcset="/community/assets/logo-Xy12Za34.png 1x, https://cdn.example/logo.png 2x, data:image/png;base64,AA== 3x"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
@@ -126,9 +126,487 @@ test('accepts a minimal valid generated artifact', async () => {
   })
 })
 
+for (const [relativePath, staleTitle] of [
+  ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>'],
+  ['lab/index.html', '<title>0 → 1 – Ria & Seoa PaPa</title>'],
+]) {
+  test(`rejects the stale 0 → 1 title for ${relativePath}`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, relativePath)
+      const html = await readFile(artifactPath, 'utf8')
+      await writeFile(artifactPath, html.replace(/<title>[^<]+<\/title>/, staleTitle))
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted the stale title for ${relativePath}`)
+      assert.match(result.stderr, new RegExp(`${relativePath.replaceAll('/', '\\/')} has unexpected document title`))
+    })
+  })
+}
+
+const routeTitleDecoys = [
+  ['index.html', 'Ria & Seoa PaPa – 수익실험실', 'Ria & Seoa PaPa – 0 → 1'],
+  ['lab/index.html', '수익실험실 – Ria & Seoa PaPa', '0 → 1 – Ria & Seoa PaPa'],
+]
+const titleDecoyMarkup = [
+  ['comment', (html, expectedTitle) => html.replace('</head>', `<!-- <title>${expectedTitle}</title> --></head>`)],
+  ...['frameset', 'select', 'template'].map((container) => [
+    container,
+    (html, expectedTitle) => html.replace('</head>', `<${container}><title>${expectedTitle}</title></${container}></head>`),
+  ]),
+  ...['iframe', 'noembed', 'noframes', 'noscript', 'script', 'style', 'textarea', 'xmp'].map((container) => [
+    container,
+    (html, expectedTitle) => html.replace('</head>', `<${container}><title>${expectedTitle}</title></${container}></head>`),
+  ]),
+]
+
+for (const [relativePath, expectedTitle, staleTitle] of routeTitleDecoys) {
+  for (const [location, addDecoy] of titleDecoyMarkup) {
+    test(`rejects the expected ${relativePath} title when it appears only in a ${location} decoy`, async () => {
+      await withArtifact(async (root) => {
+        const artifactPath = path.join(root, relativePath)
+        const html = await readFile(artifactPath, 'utf8')
+        const staleHtml = addDecoy(
+          html.replace(`<title>${expectedTitle}</title>`, `<title>${staleTitle}</title>`),
+          expectedTitle,
+        )
+        await writeFile(artifactPath, staleHtml)
+
+        const result = verify(root)
+        assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${location} title decoy for ${relativePath}`)
+        assert.match(result.stderr, new RegExp(`${relativePath.replaceAll('/', '\\/')} has unexpected document title`))
+      })
+    })
+  }
+}
+
+test('rejects duplicate effective document titles', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('</head>', '<title>Ria & Seoa PaPa – 수익실험실</title></head>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted duplicate document titles')
+    assert.match(result.stderr, /index\.html must contain exactly one document title/)
+  })
+})
+
+test('rejects a stale implied-head title before an explicit head containing the expected title', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('<head>', '<title>Ria & Seoa PaPa – 0 → 1</title><head>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly ignored a stale implied-head title')
+    assert.match(result.stderr, /index\.html document title tags must appear only inside the explicit document head/)
+  })
+})
+
+test('rejects a sole expected title before the explicit head', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('<head><title>Ria & Seoa PaPa – 수익실험실</title>', '<title>Ria & Seoa PaPa – 수익실험실</title><head>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a title outside the explicit head')
+    assert.match(result.stderr, /index\.html.*document head|index\.html.*title.*head/)
+  })
+})
+
+test('rejects a duplicate title after an explicit head end but before body starts', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('</head><body>', '</head><title>Ria & Seoa PaPa – 0 → 1</title><body>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a post-head pre-body duplicate title')
+    assert.match(result.stderr, /index\.html document title tags must appear only inside the explicit document head/)
+  })
+})
+
+test('rejects a sole expected title after the explicit head end but before body starts', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('<title>Ria & Seoa PaPa – 수익실험실</title>', '')
+        .replace('</head><body>', '</head><title>Ria & Seoa PaPa – 수익실험실</title><body>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a post-head title')
+    assert.match(result.stderr, /index\.html.*document head|index\.html.*title.*head/)
+  })
+})
+
+for (const [label, mutate] of [
+  ['before head', (html) => html.replace('<head>', '<title>Ria & Seoa PaPa – 0 → 1</title><head>')],
+  ['after head before body', (html) => html.replace('</head><body>', '</head><title>Ria & Seoa PaPa – 0 → 1</title><body>')],
+  ['inside body', (html) => html.replace('</body>', '<title>Ria & Seoa PaPa – 0 → 1</title></body>')],
+  ['after body', (html) => html.replace('</html>', '<title>Ria & Seoa PaPa – 0 → 1</title></html>')],
+]) {
+  test(`rejects a real title ${label} despite a correct explicit-head title`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted a title ${label}`)
+      assert.match(result.stderr, /index\.html.*title.*head|index\.html.*exactly one document title/)
+    })
+  })
+}
+
+for (const [label, mutate] of [
+  ['missing head', (html) => html.replace('<head>', '').replace('</head>', '')],
+  ['unclosed head', (html) => html.replace('</head>', '')],
+  ['duplicate head', (html) => html.replace('<head>', '<head><head>')],
+  ['duplicate head end', (html) => html.replace('</head>', '</head></head>')],
+  ['missing title', (html) => html.replace('<title>Ria & Seoa PaPa – 수익실험실</title>', '')],
+]) {
+  test(`rejects a generated route with ${label}`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label}`)
+      assert.match(result.stderr, /index\.html.*document head|index\.html.*document title/)
+    })
+  })
+}
+
+for (const [label, mutate] of [
+  ['missing html', (html) => html.replace('<html>', '').replace('</html>', '')],
+  ['unclosed html', (html) => html.replace('</html>', '')],
+  ['duplicate html', (html) => html.replace('<html>', '<html><html>').replace('</html>', '</html></html>')],
+  ['head before html', (html) => html.replace('<html><head>', '<head>').replace('</head><body>', '</head><html><body>')],
+  ['head after html', (html) => html.replace('<html><head>', '<html>').replace('</head><body>', '<body>').replace('</body></html>', '</body></html><head></head>')],
+  ['head inside body', (html) => html.replace('<head>', '').replace('</head><body>', '<body><head></head>')],
+  ['head after body', (html) => html.replace('<head>', '').replace('</head><body>', '<body>').replace('</body>', '</body><head></head>')],
+  ['body before head closes', (html) => html.replace('</head><body>', '<body></head>')],
+]) {
+  test(`rejects a generated route with ${label} document structure`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label} document structure`)
+      assert.match(result.stderr, /index\.html.*explicit.*document (?:html|head)/)
+    })
+  })
+}
+
+test('allows doctype, comments, and whitespace before the explicit document head', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('<html><head>', '<html>\n  <!-- generated metadata -->\n  <head>'),
+    )
+
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+for (const element of ['div', 'p', 'span', 'script']) {
+  test(`rejects a ${element} element before the explicit document head`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      const html = await readFile(artifactPath, 'utf8')
+      await writeFile(
+        artifactPath,
+        html.replace('<head>', `<${element}></${element}><head>`),
+      )
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${element} element before the document head`)
+      assert.match(result.stderr, /index\.html.*explicit.*document head/)
+    })
+  })
+}
+
+test('rejects an end element before the explicit document head', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('<head>', '</div><head>'))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an end element before the document head')
+    assert.match(result.stderr, /index\.html.*explicit.*document head/)
+  })
+})
+
+test('allows a BOM, ASCII whitespace, comments, and one doctype around the explicit document html', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      `\uFEFF \n<!-- before -->\n${html}\n<!-- after -->\t`,
+    )
+
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+for (const [label, mutate] of [
+  ['a start element before html', (html) => html.replace('<html>', '<div><html>')],
+  ['an end element before html', (html) => html.replace('<html>', '</div><html>')],
+  ['a script element before html', (html) => html.replace('<html>', '<script>const decoy = true</script><html>')],
+  ['a start element after html', (html) => html.replace('</html>', '</html><div>')],
+  ['an end element after html', (html) => html.replace('</html>', '</html></div>')],
+]) {
+  test(`rejects ${label}`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label}`)
+      assert.match(result.stderr, /index\.html.*explicit.*document html/)
+    })
+  })
+}
+
+for (const [tokenLabel, token] of [
+  ['whitespace-prefixed end tag', '< /div>'],
+  ['whitespace-prefixed start tag', '< div>'],
+  ['whitespace-only token', '< >'],
+  ['whitespace-after-slash end tag', '</ div>'],
+  ['invalid hash opener', '<#invalid>'],
+  ['lone angle bracket', '<'],
+]) {
+  for (const [location, mutate] of [
+    ['inside head', (html) => html.replace('<title>', `${token}<title>`)],
+    ['inside body', (html) => html.replace('</body>', `${token}</body>`)],
+    ['outside html', (html) => html.replace('</html>', `</html>${token}`)],
+  ]) {
+    test(`rejects a ${tokenLabel} ${location}`, async () => {
+      await withArtifact(async (root) => {
+        const artifactPath = path.join(root, 'index.html')
+        await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+        const result = verify(root)
+        assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${tokenLabel} ${location}`)
+        assert.match(result.stderr, /index\.html.*explicit.*document html/)
+      })
+    })
+  }
+}
+
+test('accepts escaped comparison operators in generated body text', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('</body>', '<p>1 &lt; 2 and 3 &gt; 2</p></body>'))
+
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+for (const [tokenLabel, token] of [
+  ['malformed start tag', '<div a=>'],
+  ['malformed end tag', '</div class=x>'],
+  ['malformed declaration', '<!not-doctype>'],
+]) {
+  for (const [location, mutate] of [
+    ['before html', (html) => html.replace('<html>', `${token}<html>`)],
+    ['after html', (html) => html.replace('</html>', `</html>${token}`)],
+  ]) {
+    test(`rejects a ${tokenLabel} ${location}`, async () => {
+      await withArtifact(async (root) => {
+        const artifactPath = path.join(root, 'index.html')
+        await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+        const result = verify(root)
+        assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${tokenLabel} ${location}`)
+        assert.match(result.stderr, /index\.html.*explicit.*document html/)
+      })
+    })
+  }
+}
+
+for (const [tokenLabel, token] of [
+  ['malformed start tag', '<div a=>'],
+  ['malformed end tag', '</div class=x>'],
+  ['malformed declaration', '<!not-doctype>'],
+]) {
+  for (const [location, mutate] of [
+    ['before head', (html) => html.replace('<head>', `${token}<head>`)],
+    ['before title', (html) => html.replace('<title>', `${token}<title>`)],
+    ['before body', (html) => html.replace('<body>', `${token}<body>`)],
+  ]) {
+    test(`rejects a ${tokenLabel} ${location} inside the document`, async () => {
+      await withArtifact(async (root) => {
+        const artifactPath = path.join(root, 'index.html')
+        await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+        const result = verify(root)
+        assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${tokenLabel} ${location}`)
+        assert.match(result.stderr, /index\.html.*explicit.*document (?:html|head)/)
+      })
+    })
+  }
+}
+
+for (const [label, mutate] of [
+  ['a second doctype before html', (html) => html.replace('<html>', '<!doctype html><html>')],
+  ['a doctype after html', (html) => html.replace('</html>', '</html><!doctype html>')],
+]) {
+  test(`rejects ${label}`, async () => {
+    await withArtifact(async (root) => {
+      const artifactPath = path.join(root, 'index.html')
+      await writeFile(artifactPath, mutate(await readFile(artifactPath, 'utf8')))
+
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${label}`)
+      assert.match(result.stderr, /index\.html.*explicit.*document html/)
+    })
+  })
+}
+
+test('rejects non-whitespace text before the explicit document html', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('<!doctype html><html>', '<!doctype html>body text<html>'))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted text before the document html')
+    assert.match(result.stderr, /index\.html.*explicit.*document html/)
+  })
+})
+
+test('rejects body-starting text before the explicit document head', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('<html><head>', '<html>body text<head>'))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a head after body-starting text')
+    assert.match(result.stderr, /index\.html.*explicit.*document head/)
+  })
+})
+
+test('rejects body-starting text after a closed head before a second head decoy', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace(
+        '</head><body>',
+        '</head>body text<head><title>Ria & Seoa PaPa – 수익실험실</title></head><body>',
+      ),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a second head after body-starting text')
+    assert.match(result.stderr, /index\.html.*explicit.*document head/)
+  })
+})
+
+test('rejects non-whitespace body-starting text followed by an expected title decoy', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('<title>Ria & Seoa PaPa – 수익실험실</title>', '')
+        .replace('</head><body>', '</head>body text<title>Ria & Seoa PaPa – 수익실험실</title><body>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a title after body-starting text')
+    assert.match(result.stderr, /index\.html.*title.*head|index\.html.*document title/)
+  })
+})
+
+test('allows semantic 0 → 1 body text with the correct explicit-head title', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('<body>', '<body><p>0 → 1</p>'))
+
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects a document title without a proper closing tag', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('</title>', ''))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unclosed document title')
+    assert.match(result.stderr, /index\.html document title must have a proper closing tag/)
+  })
+})
+
+test('rejects a malformed document title closing tag', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('</title>', '</title hidden>'))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a malformed document title closing tag')
+    assert.match(result.stderr, /index\.html document title must have a proper closing tag/)
+  })
+})
+
+test('rejects an unterminated tag-like token after the document html', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, `${html}<div`)
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unterminated tag-like token')
+    assert.match(result.stderr, /index\.html.*explicit.*document html/)
+  })
+})
+
+test('rejects an unterminated comment after the document html', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, `${html}<!-- malformed`)
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unterminated comment')
+    assert.match(result.stderr, /index\.html.*explicit.*document html/)
+  })
+})
+
 test('rejects a generated homepage Community link without the AJAX opt-out class', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link" href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link" href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a Community link handled by the Jekyll AJAX loader')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -137,7 +615,7 @@ test('rejects a generated homepage Community link without the AJAX opt-out class
 
 test('rejects a non-breaking space between Community navigation classes', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link\u00a0js-no-ajax" href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a class="menu__list__item__link\u00a0js-no-ajax" href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly treated non-ASCII whitespace as an HTML class separator')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -146,7 +624,7 @@ test('rejects a non-breaking space between Community navigation classes', async 
 
 test('rejects prefixed data attributes masquerading as href and class', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a data-href="/community/" data-class="js-no-ajax">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a data-href="/community/" data-class="js-no-ajax">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly treated data-href and data-class as navigation attributes')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -155,7 +633,7 @@ test('rejects prefixed data attributes masquerading as href and class', async ()
 
 test('rejects a Community AJAX opt-out that exists only in commented markup', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><!-- <a href="/community/" class="js-no-ajax">Community</a> --><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><!-- <a href="/community/" class="js-no-ajax">Community</a> --><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a commented-out AJAX opt-out')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -164,7 +642,7 @@ test('rejects a Community AJAX opt-out that exists only in commented markup', as
 
 test('rejects a Community AJAX opt-out that exists only in a plain-text script', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><script type="text/plain"><a href="/community/" class="js-no-ajax">Community</a></script><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><script type="text/plain"><a href="/community/" class="js-no-ajax">Community</a></script><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an AJAX opt-out inside a plain-text script')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -173,7 +651,7 @@ test('rejects a Community AJAX opt-out that exists only in a plain-text script',
 
 test('rejects a Community AJAX opt-out that exists only in a template', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><template><a href="/community/" class="js-no-ajax">Community</a></template><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><template><a href="/community/" class="js-no-ajax">Community</a></template><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an AJAX opt-out inside a template')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -182,7 +660,7 @@ test('rejects a Community AJAX opt-out that exists only in a template', async ()
 
 test('rejects a Community AJAX opt-out after a plaintext start tag', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><plaintext><a href="/community/" class="js-no-ajax">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><plaintext><a href="/community/" class="js-no-ajax">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly parsed markup after a plaintext start tag')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -191,7 +669,7 @@ test('rejects a Community AJAX opt-out after a plaintext start tag', async () =>
 
 test('rejects a Community AJAX opt-out inside select content', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><select><a href="/community/" class="js-no-ajax">Community</a></select><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><select><a href="/community/" class="js-no-ajax">Community</a></select><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an anchor from select content')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -200,7 +678,7 @@ test('rejects a Community AJAX opt-out inside select content', async () => {
 
 test('rejects a Community AJAX opt-out inside frameset noframes content', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><frameset><noframes><a href="/community/" class="js-no-ajax">Community</a></noframes></frameset><a href="/community/">Community</a>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><frameset><noframes><a href="/community/" class="js-no-ajax">Community</a></noframes></frameset><a href="/community/">Community</a>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an anchor from frameset noframes content')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -213,7 +691,7 @@ for (const [container, openingTag, closingTag] of [
 ]) {
   test(`treats a self-closing flag on a ${container} as ignored`, async () => {
     await withArtifact(async (root) => {
-      await put(root, 'index.html', `<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/">${openingTag}<a href="/community/" class="js-no-ajax">Community</a>${closingTag}<a href="/community/">Community</a>`)
+      await put(root, 'index.html', `<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/">${openingTag}<a href="/community/" class="js-no-ajax">Community</a>${closingTag}<a href="/community/">Community</a>`)
       const result = verify(root)
       assert.notEqual(result.status, 0, `verifier unexpectedly honored a self-closing flag on a ${container}`)
       assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -223,7 +701,7 @@ for (const [container, openingTag, closingTag] of [
 
 test('rejects an unmarked Community menu link despite a marked body-link decoy', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link">Community</a></nav><main><a href="/community/" class="js-no-ajax">Community</a></main>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link">Community</a></nav><main><a href="/community/" class="js-no-ajax">Community</a></main>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a marked body-link decoy for an unmarked menu link')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -232,7 +710,7 @@ test('rejects an unmarked Community menu link despite a marked body-link decoy',
 
 test('accepts a marked Community menu link without imposing the opt-out on a body link', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav><main><a href="/community/">Community</a></main>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav><main><a href="/community/">Community</a></main></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -240,7 +718,7 @@ test('accepts a marked Community menu link without imposing the opt-out on a bod
 
 test('rejects duplicate Community menu links when any lacks the AJAX opt-out', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a><a href="/community/" class="menu__list__item__link">Community</a></nav>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a><a href="/community/" class="menu__list__item__link">Community</a></nav>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unmarked duplicate menu link')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -249,7 +727,7 @@ test('rejects duplicate Community menu links when any lacks the AJAX opt-out', a
 
 test('rejects a marked Community body link when no actual menu link exists', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><main><a href="/community/" class="js-no-ajax">Community</a></main>')
+    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><main><a href="/community/" class="js-no-ajax">Community</a></main>')
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a body link in place of the Community menu link')
     assert.match(result.stderr, /Community navigation link.*js-no-ajax/)
@@ -258,7 +736,7 @@ test('rejects a marked Community body link when no actual menu link exists', asy
 
 test('accepts a marked Community link with a greater-than sign in a quoted attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -266,7 +744,7 @@ test('accepts a marked Community link with a greater-than sign in a quoted attri
 
 test('accepts visible Community text inside nested markup with a quoted greater-than attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 0 → 1</title><link rel="canonical" href="https://www.breadlab.ai/"><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })

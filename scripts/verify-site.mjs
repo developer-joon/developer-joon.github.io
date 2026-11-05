@@ -199,19 +199,188 @@ function parseStartTag(source) {
   return { attributes, name, selfClosing }
 }
 
-function skipRawTextElement(html, lowerHtml, position, name) {
+function findRawTextClosingTag(html, lowerHtml, position, name) {
   const closingPrefix = `</${name}`
   while (position < html.length) {
     const closingStart = lowerHtml.indexOf(closingPrefix, position)
-    if (closingStart === -1) return -1
+    if (closingStart === -1) return null
     const boundary = html[closingStart + closingPrefix.length]
     if (boundary === '>' || htmlWhitespace.test(boundary ?? '')) {
       const closingEnd = findTagEnd(html, closingStart + closingPrefix.length)
-      return closingEnd === -1 ? -1 : closingEnd + 1
+      if (closingEnd === -1) return null
+      const suffix = html.slice(closingStart + closingPrefix.length, closingEnd)
+      return { start: closingStart, end: closingEnd + 1, invalid: /[^\t\n\f\r ]/.test(suffix) }
     }
     position = closingStart + closingPrefix.length
   }
-  return -1
+  return null
+}
+
+function skipRawTextElement(html, lowerHtml, position, name) {
+  const closingTag = findRawTextClosingTag(html, lowerHtml, position, name)
+  return closingTag && !closingTag.invalid ? closingTag.end : -1
+}
+
+function extractDocumentTitle(html) {
+  const lowerHtml = html.toLowerCase()
+  const titles = []
+  let position = 0
+  const inertStack = []
+  let htmlStarts = 0
+  let htmlEnds = 0
+  let headStarts = 0
+  let headEnds = 0
+  let inHtml = false
+  let inHead = false
+  let bodyStarted = false
+  let doctypeSeen = false
+  let error = null
+
+  while (position < html.length) {
+    const tagStart = html.indexOf('<', position)
+    const textEnd = tagStart === -1 ? html.length : tagStart
+    const text = html.slice(position, textEnd)
+    const documentText = position === 0 && text.startsWith('\uFEFF') ? text.slice(1) : text
+    if (inertStack.length === 0 && /[^\t\n\f\r ]/.test(documentText)) {
+      if (!inHtml) {
+        error ??= 'html'
+      } else if (!inHead && !bodyStarted) {
+        bodyStarted = true
+      }
+    }
+    if (tagStart === -1) break
+
+    if (html.startsWith('<!--', tagStart)) {
+      const commentEnd = html.indexOf('-->', tagStart + 4)
+      if (commentEnd === -1) {
+        error ??= 'html'
+        break
+      }
+      position = commentEnd + 3
+      continue
+    }
+
+    const next = html[tagStart + 1]
+    if (!next || !/[A-Za-z!/?]/.test(next)) {
+      error ??= 'html'
+      break
+    }
+
+    const tagEnd = findTagEnd(html, tagStart + 1)
+    if (tagEnd === -1) {
+      error ??= 'html'
+      break
+    }
+    let source = html.slice(tagStart + 1, tagEnd)
+    const closing = source.startsWith('/')
+    if (closing) source = source.slice(1)
+    if (/^!doctype\b/i.test(source)) {
+      if (!/^!doctype[\t\n\f\r ]+html[\t\n\f\r ]*$/i.test(source)) error ??= 'html'
+      if (inHtml || htmlStarts !== 0 || doctypeSeen) error ??= 'html'
+      doctypeSeen = true
+      position = tagEnd + 1
+      continue
+    }
+    if (/^\s*[!?]/.test(source)) {
+      error ??= 'html'
+      position = tagEnd + 1
+      continue
+    }
+
+    if (closing) {
+      const match = /^([A-Za-z0-9:-]+)\s*$/.exec(source)
+      if (!match) {
+        error ??= 'html'
+        position = tagEnd + 1
+        continue
+      }
+      const name = match[1].toLowerCase()
+      if (!inHtml) error ??= 'html'
+      if (inHtml && headStarts === 0 && name !== 'title') error ??= 'head'
+      if (inertStack.length > 0) {
+        if (inertStack.at(-1) === name) inertStack.pop()
+      } else if (name === 'html') {
+        htmlEnds += 1
+        if (!inHtml || inHead || htmlEnds !== 1) error ??= 'html'
+        inHtml = false
+      } else if (name === 'head') {
+        headEnds += 1
+        if (!inHead || !inHtml || bodyStarted || headEnds !== 1) error ??= 'head'
+        inHead = false
+      } else if (name === 'title') {
+        error ??= 'title-outside-head'
+      }
+      position = tagEnd + 1
+      continue
+    }
+
+    const tag = parseStartTag(source)
+    if (!tag) {
+      error ??= 'html'
+      position = tagEnd + 1
+      continue
+    }
+
+    if (!inHtml && tag.name !== 'html') error ??= 'html'
+    if (inHtml && headStarts === 0 && !['head', 'title'].includes(tag.name)) error ??= 'head'
+
+    if (rawTextElements.has(tag.name) && tag.name !== 'title') {
+      const afterRawText = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
+      if (afterRawText === -1) break
+      position = afterRawText
+      continue
+    }
+    if (inertElements.has(tag.name)) {
+      inertStack.push(tag.name)
+      position = tagEnd + 1
+      continue
+    }
+    if (inertStack.length > 0) {
+      if (tag.name === 'title') {
+        const afterTitle = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
+        if (afterTitle === -1) break
+        position = afterTitle
+      } else {
+        position = tagEnd + 1
+      }
+      continue
+    }
+
+    if (tag.name === 'html') {
+      htmlStarts += 1
+      if (tag.selfClosing || inHtml || htmlStarts !== 1 || htmlEnds !== 0) error ??= 'html'
+      inHtml = true
+      position = tagEnd + 1
+      continue
+    }
+    if (tag.name === 'head') {
+      headStarts += 1
+      if (tag.selfClosing || !inHtml || inHead || bodyStarted || headStarts !== 1 || headEnds !== 0) error ??= 'head'
+      inHead = true
+      position = tagEnd + 1
+      continue
+    }
+    if (tag.name === 'body') {
+      if (!inHtml || inHead || headEnds !== 1) error ??= 'head'
+      bodyStarted = true
+      position = tagEnd + 1
+      continue
+    }
+    if (tag.name === 'title') {
+      const closingTag = findRawTextClosingTag(html, lowerHtml, tagEnd + 1, tag.name)
+      if (!closingTag || closingTag.invalid) return { error: 'unclosed-title', titles }
+      titles.push(html.slice(tagEnd + 1, closingTag.start).trim())
+      if (!inHead) error ??= 'title-outside-head'
+      position = closingTag.end
+      continue
+    }
+
+    position = tagEnd + 1
+  }
+
+  if (htmlStarts !== 1 || htmlEnds !== 1 || inHtml) error ??= 'html'
+  if (headStarts !== 1 || headEnds !== 1 || inHead) error ??= 'head'
+  return { error, titles }
 }
 
 function hasCommunityAjaxOptOut(html) {
@@ -448,19 +617,32 @@ async function main() {
   }
 
   const routeChecks = [
-    ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>', 'https://www.breadlab.ai/'],
-    ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/'],
-    ['lab/index.html', '<title>0 → 1 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/'],
+    ['index.html', 'Ria & Seoa PaPa – 수익실험실', 'https://www.breadlab.ai/'],
+    ['blog/index.html', 'Blog – Ria & Seoa PaPa', 'https://www.breadlab.ai/blog/'],
+    ['lab/index.html', '수익실험실 – Ria & Seoa PaPa', 'https://www.breadlab.ai/lab/'],
     [
       'blog/ceph-cluster-install-with-helm.html',
-      '<title>[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa</title>',
+      '[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa',
       'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm',
     ],
-    ['404.html', '<title>Page Not Found – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/404.html'],
+    ['404.html', 'Page Not Found – Ria & Seoa PaPa', 'https://www.breadlab.ai/404.html'],
   ]
   for (const [relativePath, expectedTitle, canonical] of routeChecks) {
     const html = await readText(relativePath)
-    assertIncludes(html, expectedTitle, relativePath, 'expected title')
+    const documentTitle = extractDocumentTitle(html)
+    if (documentTitle.error === 'unclosed-title') {
+      fail(`${relativePath} document title must have a proper closing tag`)
+    } else if (documentTitle.error === 'html') {
+      fail(`${relativePath} must contain exactly one explicit, properly closed document html element`)
+    } else if (documentTitle.error === 'head') {
+      fail(`${relativePath} must contain exactly one explicit, properly closed document head`)
+    } else if (documentTitle.error === 'title-outside-head') {
+      fail(`${relativePath} document title tags must appear only inside the explicit document head`)
+    } else if (documentTitle.titles.length !== 1) {
+      fail(`${relativePath} must contain exactly one document title in head (found ${documentTitle.titles.length})`)
+    } else if (documentTitle.titles[0] !== expectedTitle) {
+      fail(`${relativePath} has unexpected document title: ${JSON.stringify(documentTitle.titles[0])} (expected ${JSON.stringify(expectedTitle)})`)
+    }
     assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'canonical URL')
   }
   const home = await readText('index.html')
