@@ -71,7 +71,7 @@ async function makeValidArtifact() {
     ['404.html', '<title>Page Not Found – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/404.html', ''],
   ]
   for (const [relativePath, title, canonical, body] of routes) {
-    await put(root, relativePath, `${title}<link rel="canonical" href="${canonical}">${body}`)
+    await put(root, relativePath, `<!doctype html><html><head>${title}<link rel="canonical" href="${canonical}"></head><body>${body}</body></html>`)
   }
   for (const [relativePath, title] of shellTitles) {
     await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img srcset="/community/assets/logo-Xy12Za34.png 1x, https://cdn.example/logo.png 2x, data:image/png;base64,AA== 3x"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
@@ -137,10 +137,67 @@ for (const [relativePath, staleTitle] of [
       await writeFile(artifactPath, html.replace(/<title>[^<]+<\/title>/, staleTitle))
       const result = verify(root)
       assert.notEqual(result.status, 0, `verifier unexpectedly accepted the stale title for ${relativePath}`)
-      assert.match(result.stderr, new RegExp(`${relativePath.replaceAll('/', '\\/')} is missing expected title`))
+      assert.match(result.stderr, new RegExp(`${relativePath.replaceAll('/', '\\/')} has unexpected document title`))
     })
   })
 }
+
+const routeTitleDecoys = [
+  ['index.html', 'Ria & Seoa PaPa – 수익실험실', 'Ria & Seoa PaPa – 0 → 1'],
+  ['lab/index.html', '수익실험실 – Ria & Seoa PaPa', '0 → 1 – Ria & Seoa PaPa'],
+]
+const titleDecoyMarkup = [
+  ['comment', (html, expectedTitle) => html.replace('</head>', `<!-- <title>${expectedTitle}</title> --></head>`)],
+  ['body', (html, expectedTitle) => html.replace('</body>', `<div><title>${expectedTitle}</title></div></body>`)],
+  ['script', (html, expectedTitle) => html.replace('</head>', `<script>const decoy = '<title>${expectedTitle}</title>'</script></head>`)],
+]
+
+for (const [relativePath, expectedTitle, staleTitle] of routeTitleDecoys) {
+  for (const [location, addDecoy] of titleDecoyMarkup) {
+    test(`rejects the expected ${relativePath} title when it appears only in a ${location} decoy`, async () => {
+      await withArtifact(async (root) => {
+        const artifactPath = path.join(root, relativePath)
+        const html = await readFile(artifactPath, 'utf8')
+        const staleHtml = addDecoy(
+          html.replace(`<title>${expectedTitle}</title>`, `<title>${staleTitle}</title>`),
+          expectedTitle,
+        )
+        await writeFile(artifactPath, staleHtml)
+
+        const result = verify(root)
+        assert.notEqual(result.status, 0, `verifier unexpectedly accepted a ${location} title decoy for ${relativePath}`)
+        assert.match(result.stderr, new RegExp(`${relativePath.replaceAll('/', '\\/')} has unexpected document title`))
+      })
+    })
+  }
+}
+
+test('rejects duplicate effective document titles', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(
+      artifactPath,
+      html.replace('</head>', '<title>Ria & Seoa PaPa – 수익실험실</title></head>'),
+    )
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted duplicate document titles')
+    assert.match(result.stderr, /index\.html must contain exactly one document title/)
+  })
+})
+
+test('rejects a document title without a proper closing tag', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('</title>', ''))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unclosed document title')
+    assert.match(result.stderr, /index\.html document title must have a proper closing tag/)
+  })
+})
 
 test('rejects a generated homepage Community link without the AJAX opt-out class', async () => {
   await withArtifact(async (root) => {
@@ -248,7 +305,7 @@ test('rejects an unmarked Community menu link despite a marked body-link decoy',
 
 test('accepts a marked Community menu link without imposing the opt-out on a body link', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav><main><a href="/community/">Community</a></main>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav><main><a href="/community/">Community</a></main></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -274,7 +331,7 @@ test('rejects a marked Community body link when no actual menu link exists', asy
 
 test('accepts a marked Community link with a greater-than sign in a quoted attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -282,7 +339,7 @@ test('accepts a marked Community link with a greater-than sign in a quoted attri
 
 test('accepts visible Community text inside nested markup with a quoted greater-than attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })

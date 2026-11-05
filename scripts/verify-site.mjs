@@ -199,19 +199,104 @@ function parseStartTag(source) {
   return { attributes, name, selfClosing }
 }
 
-function skipRawTextElement(html, lowerHtml, position, name) {
+function findRawTextClosingTag(html, lowerHtml, position, name) {
   const closingPrefix = `</${name}`
   while (position < html.length) {
     const closingStart = lowerHtml.indexOf(closingPrefix, position)
-    if (closingStart === -1) return -1
+    if (closingStart === -1) return null
     const boundary = html[closingStart + closingPrefix.length]
     if (boundary === '>' || htmlWhitespace.test(boundary ?? '')) {
       const closingEnd = findTagEnd(html, closingStart + closingPrefix.length)
-      return closingEnd === -1 ? -1 : closingEnd + 1
+      return closingEnd === -1 ? null : { start: closingStart, end: closingEnd + 1 }
     }
     position = closingStart + closingPrefix.length
   }
-  return -1
+  return null
+}
+
+function skipRawTextElement(html, lowerHtml, position, name) {
+  return findRawTextClosingTag(html, lowerHtml, position, name)?.end ?? -1
+}
+
+function extractDocumentTitle(html) {
+  const lowerHtml = html.toLowerCase()
+  const titles = []
+  const inertStack = []
+  let inHead = false
+  let sawHead = false
+  let position = 0
+
+  while (position < html.length) {
+    const tagStart = html.indexOf('<', position)
+    if (tagStart === -1) break
+
+    if (html.startsWith('<!--', tagStart)) {
+      const commentEnd = html.indexOf('-->', tagStart + 4)
+      if (commentEnd === -1) break
+      position = commentEnd + 3
+      continue
+    }
+
+    const next = html[tagStart + 1]
+    if (!next || !/[A-Za-z!/]/.test(next)) {
+      position = tagStart + 1
+      continue
+    }
+
+    const tagEnd = findTagEnd(html, tagStart + 1)
+    if (tagEnd === -1) break
+    let source = html.slice(tagStart + 1, tagEnd)
+    const closing = /^\s*\//.test(source)
+    if (closing) source = source.replace(/^\s*\/\s*/, '')
+    if (/^\s*[!?]/.test(source)) {
+      position = tagEnd + 1
+      continue
+    }
+
+    if (closing) {
+      const match = /^([A-Za-z0-9:-]+)\s*$/.exec(source)
+      if (!match) {
+        position = tagEnd + 1
+        continue
+      }
+      const name = match[1].toLowerCase()
+      if (name === 'head' && inertStack.length === 0) inHead = false
+      if (inertElements.has(name) && inertStack.at(-1) === name) inertStack.pop()
+      position = tagEnd + 1
+      continue
+    }
+
+    const tag = parseStartTag(source)
+    if (!tag) {
+      position = tagEnd + 1
+      continue
+    }
+    if (tag.name === 'body' && inertStack.length === 0) break
+    if (tag.name === 'head' && inertStack.length === 0) {
+      if (!sawHead) {
+        sawHead = true
+        inHead = true
+      }
+      position = tagEnd + 1
+      continue
+    }
+    if (tag.name === 'plaintext') break
+
+    if (rawTextElements.has(tag.name)) {
+      const closingTag = findRawTextClosingTag(html, lowerHtml, tagEnd + 1, tag.name)
+      if (tag.name === 'title' && inHead && inertStack.length === 0) {
+        if (!closingTag) return { error: 'unclosed', titles }
+        titles.push(html.slice(tagEnd + 1, closingTag.start).trim())
+      }
+      if (!closingTag) break
+      position = closingTag.end
+      continue
+    }
+    if (inertElements.has(tag.name)) inertStack.push(tag.name)
+    position = tagEnd + 1
+  }
+
+  return { titles }
 }
 
 function hasCommunityAjaxOptOut(html) {
@@ -448,19 +533,26 @@ async function main() {
   }
 
   const routeChecks = [
-    ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/'],
-    ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/'],
-    ['lab/index.html', '<title>수익실험실 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/'],
+    ['index.html', 'Ria & Seoa PaPa – 수익실험실', 'https://www.breadlab.ai/'],
+    ['blog/index.html', 'Blog – Ria & Seoa PaPa', 'https://www.breadlab.ai/blog/'],
+    ['lab/index.html', '수익실험실 – Ria & Seoa PaPa', 'https://www.breadlab.ai/lab/'],
     [
       'blog/ceph-cluster-install-with-helm.html',
-      '<title>[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa</title>',
+      '[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa',
       'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm',
     ],
-    ['404.html', '<title>Page Not Found – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/404.html'],
+    ['404.html', 'Page Not Found – Ria & Seoa PaPa', 'https://www.breadlab.ai/404.html'],
   ]
   for (const [relativePath, expectedTitle, canonical] of routeChecks) {
     const html = await readText(relativePath)
-    assertIncludes(html, expectedTitle, relativePath, 'expected title')
+    const documentTitle = extractDocumentTitle(html)
+    if (documentTitle.error === 'unclosed') {
+      fail(`${relativePath} document title must have a proper closing tag`)
+    } else if (documentTitle.titles.length !== 1) {
+      fail(`${relativePath} must contain exactly one document title in head (found ${documentTitle.titles.length})`)
+    } else if (documentTitle.titles[0] !== expectedTitle) {
+      fail(`${relativePath} has unexpected document title: ${JSON.stringify(documentTitle.titles[0])} (expected ${JSON.stringify(expectedTitle)})`)
+    }
     assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'canonical URL')
   }
   const home = await readText('index.html')
