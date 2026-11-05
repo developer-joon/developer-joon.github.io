@@ -23,8 +23,8 @@
 - `index.html`, `_pages/lab.md`, `_pages/about.md`, `_data/settings.yml`, React 헤더가 `수익실험실`을 포함해야 한다.
 - 위 공개 브랜드 표면에는 `0 → 1`이 없어야 한다.
 - `/lab/` permalink는 유지해야 한다.
-- 홈과 `/lab/`는 같은 `/images/revenue-lab/cover.png`를 참조해야 한다.
-- PNG IHDR은 1600×900이어야 한다.
+- 홈과 `/lab/`는 hero용 `/images/revenue-lab/hero.png`와 소셜 카드용 `/images/revenue-lab/cover.png`를 각각 공유해야 한다.
+- 두 PNG의 IHDR은 1600×900이어야 한다.
 - React 메뉴 기대값을 `수익실험실`로 변경한다.
 
 **Step 2: Verify RED**
@@ -61,7 +61,7 @@ git commit -m "test: define 수익실험실 brand contract"
 - `/lab/` title을 `수익실험실`로 바꾸고 permalink는 유지한다.
 - About subtitle을 `수익실험실, 코드로 수익모델을 검증하는 실험`으로 바꾼다.
 - Jekyll/React 메뉴 라벨을 `수익실험실`로 바꾼다.
-- 홈과 `/lab/` 대표 이미지를 `/images/revenue-lab/cover.png`로 맞춘다.
+- 홈과 `/lab/`의 `featured_image`를 `/images/revenue-lab/hero.png`, `social_image`를 `/images/revenue-lab/cover.png`로 맞춘다.
 
 **Step 2: Run focused text tests**
 
@@ -81,33 +81,34 @@ git commit -m "feat: rename revenue section to 수익실험실"
 
 ### Task 3: 수익실험실 배너 제작
 
-**Objective:** 소셜 공유와 페이지 hero에 쓸 1600×900 로컬 PNG를 만든다.
+**Objective:** 텍스트 없는 페이지 hero와 텍스트가 있는 소셜 공유 카드를 별도 1600×900 로컬 PNG로 만든다.
 
 **Files:**
+- Create: `images/revenue-lab/hero.png`
 - Create: `images/revenue-lab/cover.png`
 
 **Step 1: Render the banner**
 
-- 짙은 남색 배경, 노란 포인트, 실험·측정 루프를 나타내는 독창적 추상 그래픽을 사용한다.
-- `수익실험실`과 `코드와 자동화로 수익모델을 검증합니다`를 명확히 렌더링한다.
-- 한글 폰트를 브라우저 렌더링 단계에서만 불러오고 최종 PNG에는 외부 참조를 남기지 않는다.
+- 두 이미지 모두 짙은 남색 배경, 노란 포인트, 실험·측정 루프를 나타내는 독창적 추상 그래픽을 사용한다.
+- hero는 중앙 크롭에 안전하도록 텍스트를 넣지 않고, 소셜 카드에는 `수익실험실`과 `코드와 자동화로 수익모델을 검증합니다`를 명확히 렌더링한다.
+- 한글 폰트는 로컬 렌더링 단계에서만 사용하고 최종 PNG에는 외부 참조를 남기지 않는다.
 
 **Step 2: Verify GREEN and inspect pixels**
 
 Run:
 ```bash
 node --test scripts/revenue-lab-branding.test.mjs
-file images/revenue-lab/cover.png
+file images/revenue-lab/hero.png images/revenue-lab/cover.png
 ```
 
-Expected: test PASS, PNG 1600×900.
+Expected: test PASS, 두 PNG 모두 1600×900.
 
 Use `vision_analyze` to confirm the Korean title/subtitle, contrast, safe margins, and absence of corrupted glyphs.
 
 **Step 3: Commit**
 
 ```bash
-git add images/revenue-lab/cover.png
+git add images/revenue-lab/hero.png images/revenue-lab/cover.png
 git commit -m "feat: add 수익실험실 social banner"
 ```
 
@@ -176,7 +177,7 @@ Export or inspect the final artifact and assert:
 
 - `/index.html` title and H1 contain `수익실험실`.
 - `/lab/index.html` title, H1, canonical, OG/Twitter metadata are correct.
-- `/images/revenue-lab/cover.png` exists and matches the source hash.
+- `/images/revenue-lab/hero.png`와 `/images/revenue-lab/cover.png`가 존재하고 각각 source hash와 일치한다.
 - Jekyll and React navigation contain `수익실험실` and not the old brand label.
 - `/lab/` remains the canonical path.
 
