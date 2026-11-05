@@ -459,6 +459,46 @@ it('rejects v2 evidence bound to another company or a noncanonical cell', () => 
   expect(detailSchema.safeParse({ ...valid, references: [{ ...valid.references[0], cell_id: 'cell::KR-CRN-0000000000002::leave' }] }).success).toBe(false)
 })
 
+it('rejects reference IDs reused across category inventories', () => {
+  const detail = vNextDetailWithReference()
+  detail.references.push({
+    ...detail.references[0],
+    category_id: 'family',
+    cell_id: `cell::${detail.company.company_id}::family`,
+  })
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('rejects community report IDs reused across category inventories', () => {
+  const detail = vNextDetailWithSpecificRecords()
+  detail.community_reports.push({
+    ...detail.community_reports[0],
+    category_id: 'family',
+    cell_id: `cell::${detail.company.company_id}::family`,
+  })
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('rejects official claim IDs reused across category inventories', () => {
+  const detail = vNextDetailWithOfficial(
+    { reliability: 'high', currentness: 'current' },
+    { reliability: 'high', currentness: 'current' },
+  )
+  const officialClaims = detail.official_claims as unknown as Array<Record<string, unknown> & { category_id: string; cell_id: string }>
+  officialClaims.push({
+    ...officialClaims[0],
+    category_id: 'family',
+    cell_id: `cell::${detail.company.company_id}::family`,
+  })
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('rejects canonical evidence IDs reused across inventory kinds', () => {
+  const detail = vNextDetailWithSpecificRecords()
+  detail.community_reports[0].community_report_id = detail.references[0].reference_id
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
 it('fails closed when projected evidence or its bound source is not publication eligible', () => {
   const valid = vNextDetailWithReference()
   expect(detailSchema.safeParse(valid).success).toBe(true)
