@@ -235,14 +235,14 @@ function extractDocumentTitle(html) {
   while (position < html.length) {
     const tagStart = html.indexOf('<', position)
     const textEnd = tagStart === -1 ? html.length : tagStart
-    if (
-      inHtml
-      && !inHead
-      && inertStack.length === 0
-      && !bodyStarted
-      && /[^\t\n\f\r ]/.test(html.slice(position, textEnd))
-    ) {
-      bodyStarted = true
+    const text = html.slice(position, textEnd)
+    const documentText = position === 0 && text.startsWith('\uFEFF') ? text.slice(1) : text
+    if (inertStack.length === 0 && /[^\t\n\f\r ]/.test(documentText)) {
+      if (!inHtml) {
+        error ??= 'html'
+      } else if (!inHead && !bodyStarted) {
+        bodyStarted = true
+      }
     }
     if (tagStart === -1) break
 

@@ -327,6 +327,18 @@ test('allows doctype, comments, and whitespace before the explicit document head
   })
 })
 
+test('rejects non-whitespace text before the explicit document html', async () => {
+  await withArtifact(async (root) => {
+    const artifactPath = path.join(root, 'index.html')
+    const html = await readFile(artifactPath, 'utf8')
+    await writeFile(artifactPath, html.replace('<!doctype html><html>', '<!doctype html>body text<html>'))
+
+    const result = verify(root)
+    assert.notEqual(result.status, 0, 'verifier unexpectedly accepted text before the document html')
+    assert.match(result.stderr, /index\.html.*explicit.*document html/)
+  })
+})
+
 test('rejects body-starting text before the explicit document head', async () => {
   await withArtifact(async (root) => {
     const artifactPath = path.join(root, 'index.html')
