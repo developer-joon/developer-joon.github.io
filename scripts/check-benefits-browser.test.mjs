@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+function fakeProfileRemovalChild(onSpawn, { error, code = 0, signal = null } = {}) {
+  onSpawn?.()
+  const child = new EventEmitter()
+  child.kill = () => true
+  child.unref = () => {}
+  queueMicrotask(() => {
+    if (error) child.emit('error', error)
+    else child.emit('close', code, signal)
+  })
+  return child
+}
 
 test('browser cleanup waits for Chromium exit before removing its profile', async () => {
   const { cleanupBrowserSmoke } = await import('./browser-smoke-cleanup.mjs')
@@ -35,10 +48,10 @@ test('browser cleanup waits for Chromium exit before removing its profile', asyn
     browser,
     server,
     profile: '/ephemeral/profile',
-    removeProfile: async () => {
+    spawnProfileRemoval: () => fakeProfileRemovalChild(() => {
       assert.notEqual(browser.signalCode, null)
       profileRemoved = true
-    },
+    }),
   })
 
   assert.equal(socketClosed, true)
@@ -65,7 +78,7 @@ test('browser cleanup bounds TERM and KILL and removes listeners before profile 
       browser,
       server: { close: (callback) => callback() },
       profile: '/ephemeral/profile',
-      removeProfile: async () => { profileRemoved = true },
+      spawnProfileRemoval: () => fakeProfileRemovalChild(() => { profileRemoved = true }),
       browserTermTimeoutMs: 5,
       browserKillTimeoutMs: 5,
     }),
@@ -101,7 +114,7 @@ test('cleanup attempts browser and profile after server close fails', async () =
       browser,
       server: { close: (callback) => callback(Error('server exploded')) },
       profile: '/ephemeral/profile',
-      removeProfile: async () => { profileRemoved = true },
+      spawnProfileRemoval: () => fakeProfileRemovalChild(() => { profileRemoved = true }),
       serverCloseTimeoutMs: 5,
     }),
     (error) => {
@@ -128,7 +141,7 @@ test('cleanup aggregates stage failures in socket-server-browser-profile order',
       browser: new Browser(),
       server: { close: (callback) => callback(Error('server exploded')) },
       profile: '/ephemeral/profile',
-      removeProfile: async () => { throw Error('profile exploded') },
+      spawnProfileRemoval: () => fakeProfileRemovalChild(null, { error: Error('profile exploded') }),
     }),
     (error) => {
       assert.deepEqual(error.errors.map((item) => item.message), [
@@ -142,21 +155,28 @@ test('cleanup aggregates stage failures in socket-server-browser-profile order',
 })
 
 test('profile removal is bounded even when the filesystem operation never settles', async () => {
-  const { cleanupBrowserSmoke } = await import('./browser-smoke-cleanup.mjs')
-  const started = Date.now()
-  await assert.rejects(
-    cleanupBrowserSmoke({
-      profile: '/ephemeral/profile',
-      removeProfile: async () => new Promise(() => {}),
-      profileRemoveTimeoutMs: 5,
-    }),
-    (error) => {
-      assert.equal(error.name, 'AggregateError')
-      assert.match(error.errors[0].message, /profile: remove timed out after 5ms/)
-      return true
-    },
-  )
-  assert.ok(Date.now() - started < 100)
+  const moduleUrl = new URL('./browser-smoke-cleanup.mjs', import.meta.url).href
+  const script = `
+    import { spawn } from 'node:child_process'
+    import { cleanupBrowserSmoke } from ${JSON.stringify(moduleUrl)}
+    try {
+      await cleanupBrowserSmoke({
+        profile: '/ephemeral/profile',
+        profileRemoveTimeoutMs: 10,
+        spawnProfileRemoval: () => spawn(process.execPath, ['--eval', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }),
+      })
+      throw Error('expected profile timeout')
+    } catch (error) {
+      if (!/profile: remove timed out after 10ms/.test(error?.errors?.[0]?.message ?? '')) throw error
+    }
+  `
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: 'ignore' })
+  const result = await Promise.race([
+    new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal }))),
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),
+  ])
+  if (result === 'timeout') child.kill('SIGKILL')
+  assert.deepEqual(result, { code: 0, signal: null })
 })
 
 test('CDP client rejects pending commands on disconnect and clears lifecycle state', async () => {

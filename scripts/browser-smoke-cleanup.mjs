@@ -1,4 +1,9 @@
-import { rm } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+
+const PROFILE_REMOVER_SOURCE = `
+  import { rm } from 'node:fs/promises'
+  await rm(process.argv[1], { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+`
 
 function stageError(stage, error) {
   const cause = error instanceof Error ? error : Error(String(error))
@@ -64,16 +69,41 @@ async function stopBrowser(browser, termTimeoutMs, killTimeoutMs) {
   }
 }
 
-async function withTimeout(action, timeoutMs, message) {
-  let timer
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(Error(message)), timeoutMs)
+function spawnProfileRemover(profile) {
+  return spawn(process.execPath, ['--input-type=module', '--eval', PROFILE_REMOVER_SOURCE, profile], { stdio: 'ignore' })
+}
+
+async function removeProfileInChild(profile, timeoutMs, spawnProfileRemoval) {
+  const child = spawnProfileRemoval(profile)
+  await new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.removeListener?.('error', onError)
+      child.removeListener?.('close', onClose)
+      if (error) reject(error)
+      else resolve()
+    }
+    const onError = (error) => finish(error)
+    const onClose = (code, signal) => {
+      if (code === 0) finish()
+      else finish(Error(`remover exited with code ${code ?? 'null'} signal ${signal ?? 'null'}`))
+    }
+    child.once('error', onError)
+    child.once('close', onClose)
+    const timer = setTimeout(() => {
+      child.removeListener?.('error', onError)
+      child.removeListener?.('close', onClose)
+      try {
+        child.kill('SIGKILL')
+      } finally {
+        child.unref?.()
+      }
+      finish(Error(`remove timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
   })
-  try {
-    return await Promise.race([Promise.resolve().then(action), timeout])
-  } finally {
-    clearTimeout(timer)
-  }
 }
 
 export async function cleanupBrowserSmoke({
@@ -81,7 +111,7 @@ export async function cleanupBrowserSmoke({
   browser,
   server,
   profile,
-  removeProfile = (target) => rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
+  spawnProfileRemoval = spawnProfileRemover,
   serverCloseTimeoutMs = 5_000,
   browserExitTimeoutMs,
   browserTermTimeoutMs = browserExitTimeoutMs ?? 5_000,
@@ -101,11 +131,7 @@ export async function cleanupBrowserSmoke({
   await attempt('server', async () => closeServer(server, serverCloseTimeoutMs))
   await attempt('browser', async () => stopBrowser(browser, browserTermTimeoutMs, browserKillTimeoutMs))
   await attempt('profile', async () => {
-    if (profile) await withTimeout(
-      () => removeProfile(profile),
-      profileRemoveTimeoutMs,
-      `remove timed out after ${profileRemoveTimeoutMs}ms`,
-    )
+    if (profile) await removeProfileInChild(profile, profileRemoveTimeoutMs, spawnProfileRemoval)
   })
 
   if (errors.length > 0) {
