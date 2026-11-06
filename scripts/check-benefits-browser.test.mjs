@@ -1,16 +1,391 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-test('browser smoke covers supported routes and the absent-manifest fail-closed state', async () => {
+
+function fakeProfileRemovalChild(onSpawn, { error, code = 0, signal = null } = {}) {
+  onSpawn?.()
+  const child = new EventEmitter()
+  child.kill = () => true
+  child.unref = () => {}
+  queueMicrotask(() => {
+    if (error) child.emit('error', error)
+    else child.emit('close', code, signal)
+  })
+  return child
+}
+
+test('browser cleanup waits for Chromium exit before removing its profile', async () => {
+  const { cleanupBrowserSmoke } = await import('./browser-smoke-cleanup.mjs')
+  class Browser extends EventEmitter {
+    exitCode = null
+    signalCode = null
+    kill(signal) {
+      setTimeout(() => {
+        this.signalCode = signal
+        this.emit('close', null, signal)
+      }, 10)
+      return true
+    }
+  }
+  const browser = new Browser()
+  let serverClosed = false
+  let socketClosed = false
+  let profileRemoved = false
+  const server = {
+    close(callback) {
+      serverClosed = true
+      callback()
+    },
+  }
+
+  await cleanupBrowserSmoke({
+    socket: { close: () => { socketClosed = true } },
+    browser,
+    server,
+    profile: '/ephemeral/profile',
+    spawnProfileRemoval: () => fakeProfileRemovalChild(() => {
+      assert.notEqual(browser.signalCode, null)
+      profileRemoved = true
+    }),
+  })
+
+  assert.equal(socketClosed, true)
+  assert.equal(serverClosed, true)
+  assert.equal(profileRemoved, true)
+})
+
+test('browser cleanup bounds TERM and KILL and removes listeners before profile cleanup', async () => {
+  const { cleanupBrowserSmoke } = await import('./browser-smoke-cleanup.mjs')
+  class Browser extends EventEmitter {
+    exitCode = null
+    signalCode = null
+    signals = []
+    kill(signal) {
+      this.signals.push(signal)
+      return true
+    }
+  }
+  const browser = new Browser()
+  let profileRemoved = false
+
+  await assert.rejects(
+    cleanupBrowserSmoke({
+      browser,
+      server: { close: (callback) => callback() },
+      profile: '/ephemeral/profile',
+      spawnProfileRemoval: () => fakeProfileRemovalChild(() => { profileRemoved = true }),
+      browserTermTimeoutMs: 5,
+      browserKillTimeoutMs: 5,
+    }),
+    (error) => {
+      assert.equal(error.name, 'AggregateError')
+      assert.match(error.message, /browser KILL/i)
+      return true
+    },
+  )
+
+  assert.deepEqual(browser.signals, ['SIGTERM', 'SIGKILL'])
+  assert.equal(profileRemoved, true)
+  assert.equal(browser.listenerCount('close'), 0)
+  assert.equal(browser.listenerCount('error'), 0)
+})
+
+test('cleanup attempts browser and profile after server close fails', async () => {
+  const { cleanupBrowserSmoke } = await import('./browser-smoke-cleanup.mjs')
+  class Browser extends EventEmitter {
+    exitCode = null
+    signalCode = null
+    kill(signal) {
+      this.signalCode = signal
+      queueMicrotask(() => this.emit('close', null, signal))
+      return true
+    }
+  }
+  const browser = new Browser()
+  let profileRemoved = false
+
+  await assert.rejects(
+    cleanupBrowserSmoke({
+      browser,
+      server: { close: (callback) => callback(Error('server exploded')) },
+      profile: '/ephemeral/profile',
+      spawnProfileRemoval: () => fakeProfileRemovalChild(() => { profileRemoved = true }),
+      serverCloseTimeoutMs: 5,
+    }),
+    (error) => {
+      assert.equal(error.name, 'AggregateError')
+      assert.match(error.errors[0].message, /server: server exploded/)
+      return true
+    },
+  )
+
+  assert.equal(browser.signalCode, 'SIGTERM')
+  assert.equal(profileRemoved, true)
+})
+
+test('cleanup aggregates stage failures in socket-server-browser-profile order', async () => {
+  const { cleanupBrowserSmoke } = await import('./browser-smoke-cleanup.mjs')
+  class Browser extends EventEmitter {
+    exitCode = 0
+    signalCode = null
+  }
+
+  await assert.rejects(
+    cleanupBrowserSmoke({
+      socket: { close: () => { throw Error('socket exploded') } },
+      browser: new Browser(),
+      server: { close: (callback) => callback(Error('server exploded')) },
+      profile: '/ephemeral/profile',
+      spawnProfileRemoval: () => fakeProfileRemovalChild(null, { error: Error('profile exploded') }),
+    }),
+    (error) => {
+      assert.deepEqual(error.errors.map((item) => item.message), [
+        'socket: socket exploded',
+        'server: server exploded',
+        'profile: profile exploded',
+      ])
+      return true
+    },
+  )
+})
+
+test('profile removal is bounded even when the filesystem operation never settles', async () => {
+  const moduleUrl = new URL('./browser-smoke-cleanup.mjs', import.meta.url).href
+  const script = `
+    import { spawn } from 'node:child_process'
+    import { cleanupBrowserSmoke } from ${JSON.stringify(moduleUrl)}
+    try {
+      await cleanupBrowserSmoke({
+        profile: '/ephemeral/profile',
+        profileRemoveTimeoutMs: 10,
+        spawnProfileRemoval: () => spawn(process.execPath, ['--eval', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }),
+      })
+      throw Error('expected profile timeout')
+    } catch (error) {
+      if (!/profile: remove timed out after 10ms/.test(error?.errors?.[0]?.message ?? '')) throw error
+    }
+  `
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: 'ignore' })
+  const result = await Promise.race([
+    new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal }))),
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),
+  ])
+  if (result === 'timeout') child.kill('SIGKILL')
+  assert.deepEqual(result, { code: 0, signal: null })
+})
+
+test('profile-remover kill failures cannot crash the release process', async () => {
+  const moduleUrl = new URL('./browser-smoke-cleanup.mjs', import.meta.url).href
+  const script = `
+    import { EventEmitter } from 'node:events'
+    import { cleanupBrowserSmoke } from ${JSON.stringify(moduleUrl)}
+    const remover = new EventEmitter()
+    remover.unref = () => {}
+    remover.kill = () => {
+      queueMicrotask(() => remover.emit('error', Error('late kill error')))
+      return false
+    }
+    try {
+      await cleanupBrowserSmoke({
+        profile: '/ephemeral/profile',
+        profileRemoveTimeoutMs: 10,
+        spawnProfileRemoval: () => remover,
+      })
+      throw Error('expected profile cleanup failure')
+    } catch (error) {
+      if (!/profile:/.test(error?.errors?.[0]?.message ?? '')) throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const throwingRemover = new EventEmitter()
+    throwingRemover.unref = () => {}
+    throwingRemover.kill = () => { throw Error('kill threw') }
+    try {
+      await cleanupBrowserSmoke({
+        profile: '/ephemeral/profile',
+        profileRemoveTimeoutMs: 10,
+        spawnProfileRemoval: () => throwingRemover,
+      })
+      throw Error('expected throwing kill failure')
+    } catch (error) {
+      if (!/profile: failed to kill profile remover: kill threw/.test(error?.errors?.[0]?.message ?? '')) throw error
+    }
+  `
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: 'ignore' })
+  const result = await Promise.race([
+    new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal }))),
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),
+  ])
+  if (result === 'timeout') child.kill('SIGKILL')
+  assert.deepEqual(result, { code: 0, signal: null })
+})
+
+test('CDP client rejects pending commands on disconnect and clears lifecycle state', async () => {
+  const { createCdpClient } = await import('./browser-smoke-cdp.mjs')
+  const socket = new EventEmitter()
+  socket.send = () => {}
+  const client = createCdpClient(socket, { commandTimeoutMs: 50 })
+  const pending = [client.send('Page.enable'), client.send('Runtime.enable')]
+  socket.emit('close')
+  const results = await Promise.allSettled(pending)
+  assert.equal(results.every((result) => result.status === 'rejected' && /CDP socket closed/.test(result.reason.message)), true)
+  await assert.rejects(client.send('Runtime.enable'), /CDP socket closed/)
+  client.dispose()
+  assert.equal(socket.listenerCount('message'), 0)
+  assert.equal(socket.listenerCount('close'), 0)
+  assert.equal(socket.listenerCount('error'), 0)
+})
+
+test('CDP client rejects commands when a connected socket errors', async () => {
+  const { createCdpClient } = await import('./browser-smoke-cdp.mjs')
+  const socket = new EventEmitter()
+  socket.send = () => {}
+  const client = createCdpClient(socket, { commandTimeoutMs: 50 })
+  const pending = client.send('Page.enable')
+  socket.emit('error', Error('connection reset'))
+  await assert.rejects(pending, /connection reset/)
+  client.dispose()
+})
+
+test('CDP client accepts WebSocket message data exposed by a prototype getter', async () => {
+  const { createCdpClient } = await import('./browser-smoke-cdp.mjs')
+  const socket = new EventEmitter()
+  let sent
+  socket.send = (payload) => { sent = JSON.parse(payload) }
+  const client = createCdpClient(socket, { commandTimeoutMs: 50 })
+  const pending = client.send('Page.enable')
+  const event = Object.create({ data: JSON.stringify({ id: sent.id, result: { enabled: true } }) })
+  socket.emit('message', event)
+  assert.deepEqual(await pending, { enabled: true })
+  client.dispose()
+})
+
+test('CDP client converts malformed and orphan responses into orderly failures', async () => {
+  const { createCdpClient } = await import('./browser-smoke-cdp.mjs')
+  for (const payload of ['not json', JSON.stringify({ id: 999, result: {} })]) {
+    const socket = new EventEmitter()
+    socket.send = () => {}
+    const client = createCdpClient(socket, { commandTimeoutMs: 50 })
+    const pending = client.send('Page.enable')
+    socket.emit('message', { data: payload })
+    await assert.rejects(pending, /malformed CDP message|no pending callback/)
+    assert.throws(() => client.assertHealthy(), /malformed CDP message|no pending callback/)
+    client.dispose()
+  }
+})
+
+test('CDP client times out commands and ignores their late responses', async () => {
+  const { createCdpClient } = await import('./browser-smoke-cdp.mjs')
+  const socket = new EventEmitter()
+  let sent
+  socket.send = (payload) => { sent = JSON.parse(payload) }
+  const client = createCdpClient(socket, { commandTimeoutMs: 5 })
+  await assert.rejects(client.send('Page.enable'), /timed out.*Page\.enable/i)
+  socket.emit('message', { data: JSON.stringify({ id: sent.id, result: {} }) })
+  assert.doesNotThrow(() => client.assertHealthy())
+  client.dispose()
+})
+
+test('source safety rejects empty and unsafe anchor collections', async () => {
+  const { sourceAnchorsAreSafe } = await import('./browser-smoke-cdp.mjs')
+  const safe = {
+    protocol: 'https:',
+    username: '',
+    password: '',
+    target: '_blank',
+    rel: 'noreferrer noopener',
+  }
+  assert.equal(sourceAnchorsAreSafe([]), false)
+  assert.equal(sourceAnchorsAreSafe([safe]), true)
+  for (const unsafe of [
+    { ...safe, protocol: 'http:' },
+    { ...safe, username: 'user' },
+    { ...safe, target: '_self' },
+    { ...safe, rel: 'noopener' },
+    { ...safe, rel: 'noreferrer' },
+  ]) {
+    assert.equal(sourceAnchorsAreSafe([unsafe]), false)
+  }
+})
+
+test('company IDs follow the exact registry contract', async () => {
+  const { isCanonicalCompanyId } = await import('./browser-smoke-cdp.mjs')
+  for (const value of ['KR-CRN-1234567890123', 'US-CIK0000320193']) {
+    assert.equal(isCanonicalCompanyId(value), true, value)
+  }
+  for (const value of [
+    'KR-CRN-not-a-registry-id',
+    'KR-CRN-123456789012',
+    'KR-CRN-12345678901234',
+    'US-CIK-0000320193',
+    'US-CIK000320193',
+    'US-CIK00000320193',
+  ]) {
+    assert.equal(isCanonicalCompanyId(value), false, value)
+  }
+})
+
+test('Chromium debugger discovery fetch is bounded through headers and JSON body', async () => {
+  const { fetchJsonWithTimeout } = await import('./browser-smoke-cdp.mjs')
+  await assert.rejects(
+    fetchJsonWithTimeout('http://127.0.0.1:1/json/version', {
+      timeoutMs: 5,
+      fetchImpl: async () => new Promise(() => {}),
+    }),
+    /timed out.*json\/version/i,
+  )
+  await assert.rejects(
+    fetchJsonWithTimeout('http://127.0.0.1:1/json/version', {
+      timeoutMs: 5,
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => new Promise(() => {}) }),
+    }),
+    /timed out.*json\/version/i,
+  )
+})
+
+test('primary smoke failure remains primary when cleanup also fails', async () => {
+  const { runWithBrowserCleanup } = await import('./browser-smoke-cleanup.mjs')
+  const primary = Error('smoke exploded')
+  const cleanup = Error('cleanup exploded')
+  await assert.rejects(
+    runWithBrowserCleanup(async () => { throw primary }, async () => { throw cleanup }),
+    (error) => {
+      assert.equal(error, primary)
+      assert.equal(error.cleanupError, cleanup)
+      return true
+    },
+  )
+})
+
+test('cleanup failure is thrown when smoke itself succeeds', async () => {
+  const { runWithBrowserCleanup } = await import('./browser-smoke-cleanup.mjs')
+  const cleanup = Error('cleanup exploded')
+  await assert.rejects(
+    runWithBrowserCleanup(async () => 'ok', async () => { throw cleanup }),
+    (error) => error === cleanup,
+  )
+})
+
+test('browser smoke verifies the published Atlas and concrete benefit states', async () => {
   const source = await readFile(path.join(root, 'scripts/check-benefits-browser.mjs'), 'utf8')
-  assert.match(source, /\['', 'fit\/', 'company\/', 'methodology\/'\]/)
   assert.match(source, /manifest\.json/)
-  assert.match(source, /querySelectorAll\('\[data-company-id\]'\)\.length/)
+  assert.match(source, /querySelectorAll\('tr\[data-company-id\]'\)\.length > 0/)
+  assert.match(source, /혜택 내용 확인/)
+  assert.match(source, /구체 혜택 확인 필요/)
+  assert.match(source, /benefits-specific-card/)
+  assert.match(source, /benefits-evidence h2/)
   assert.match(source, /benefits\/rankings\/index\.html/)
-  assert.doesNotMatch(source, /fixture-v1|rankings_url|fitScore|rankOrder/)
+  assert.match(source, /primaryError/)
+  assert.match(source, /row\.innerText\.includes\('혜택 내용 확인'\)/)
+  assert.match(source, /isCanonicalCompanyId\(companyId\)/)
+  assert.doesNotMatch(source, /US-EIN/)
+  assert.match(source, /sourceAnchorsAreSafe\.toString\(\)/)
+  assert.doesNotMatch(source, /absent manifest|zero company rows|fixture-v1|rankings_url|fitScore|rankOrder/)
 })
 
 test('built Atlas source contract consumes approved-v2 lineage and tiered evidence', async () => {
@@ -24,10 +399,11 @@ test('built Atlas source contract consumes approved-v2 lineage and tiered eviden
   assert.match(client, /assertCompanyDetailEvidence/)
   assert.match(client, /loadAtlasCompanyDetails/)
   assert.match(explorer, /승인 v2 조사 · 전체/)
-  assert.match(company, /승인 v2 조사 근거/)
+  assert.match(company, /BenefitV2EvidenceSection/)
   assert.match(company, /기존 공개 기록/)
+  assert.match(detail, /확인된 복지 혜택/)
   assert.match(detail, /record\.statement/)
   assert.match(detail, /record\.supporting_quote/)
-  assert.match(detail, /커뮤니티 보고 · 하위 근거 계층/)
+  assert.match(detail, /커뮤니티 보고/)
   assert.match(detail, /target="_blank" rel="noopener noreferrer"/)
 })

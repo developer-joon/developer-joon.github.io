@@ -183,6 +183,9 @@ function rejectForbiddenKeys(value, location) {
   }
 }
 const manifestDescriptors = (manifest) => [manifest.taxonomy, manifest.sources, manifest.methodology, ...manifest.listing_chunks, ...Object.values(manifest.company_shards)]
+const canonicalJson = (value) => JSON.stringify(value, (_key, child) => child && typeof child === 'object' && !Array.isArray(child)
+  ? Object.fromEntries(Object.entries(child).sort(([left], [right]) => left.localeCompare(right)))
+  : child)
 
 function descriptorByteLimit(url) {
   if (url.includes('/companies/')) return descriptorByteLimits.company
@@ -284,8 +287,32 @@ export function assertProjectionCompanyJoin(companies, baseById) {
 }
 
 export function assertUniqueProjectionEvidenceIds(details) {
-  const seen = { claim_id: new Set(), reference_id: new Set(), community_report_id: new Set() }
+  const seen = new Set()
   for (const detail of details) recordProjectionEvidenceIds(detail, seen)
+}
+
+export function assertSpecificBenefitInventory(listingCompany, detail) {
+  const sourceEligibility = new Map(detail.sources.map((source) => [source.source_id, source.publication_eligibility]))
+  const counts = new Map()
+  const record = (categoryId, canonicalId) => {
+    if (!counts.has(categoryId)) counts.set(categoryId, new Set())
+    counts.get(categoryId).add(canonicalId)
+  }
+  for (const reference of detail.references) {
+    if (['eligible', 'reference_only'].includes(reference.publication_eligibility)
+      && ['eligible', 'reference_only'].includes(sourceEligibility.get(reference.source_id))) {
+      record(reference.category_id, reference.reference_id)
+    }
+  }
+  for (const report of detail.community_reports) {
+    if (report.publication_eligibility === 'eligible' && sourceEligibility.get(report.source_id) === 'eligible') {
+      record(report.category_id, report.community_report_id)
+    }
+  }
+  for (const outcome of listingCompany.category_outcomes) {
+    const actual = counts.get(outcome.category_id)?.size ?? 0
+    if (actual !== outcome.specific_benefit_count) throw Error(`approved projection specific benefit inventory mismatch: ${listingCompany.company_id}:${outcome.category_id}`)
+  }
 }
 
 function recordProjectionEvidenceIds(detail, seen) {
@@ -297,8 +324,8 @@ function recordProjectionEvidenceIds(detail, seen) {
   ]
   for (const [idField, record] of records) {
     const id = record[idField]
-    if (seen[idField].has(id)) throw Error(`approved projection duplicate ${idField}: ${id}`)
-    seen[idField].add(id)
+    if (seen.has(id)) throw Error(`approved projection duplicate canonical evidence ID: ${id}`)
+    seen.add(id)
   }
 }
 
@@ -328,8 +355,13 @@ async function verifyApprovedV2ProjectionBound(releaseRoot, projection, baseById
   if (byId.size !== companies.length) throw Error('approved projection duplicate company')
   const shardIds = Object.keys(projection.company_shards)
   if (shardIds.length !== byId.size || shardIds.some((id) => !byId.has(id))) throw Error('approved projection listing/shard company set mismatch')
+  const methodology = methodologySchema.parse(await load(projection.methodology))
+  if (methodology.data_version !== projection.data_version) throw Error('approved projection methodology version mismatch')
+  await load(projection.taxonomy)
+  const sourceDocument = sourcesDocumentSchema.parse(await load(projection.sources))
+  const canonicalSources = new Map(sourceDocument.sources.map((source) => [source.source_id, canonicalJson(source)]))
   const requiredSourceIds = new Set()
-  const evidenceIds = { claim_id: new Set(), reference_id: new Set(), community_report_id: new Set() }
+  const evidenceIds = new Set()
   for (const [id, descriptor] of Object.entries(projection.company_shards)) {
     const detail = detailSchema.parse(await load(descriptor))
     const listingCompany = byId.get(id)
@@ -339,6 +371,8 @@ async function verifyApprovedV2ProjectionBound(releaseRoot, projection, baseById
     if (!baseDetailCompany) throw Error(`approved projection canonical base detail identity unavailable: ${id}`)
     assertCompanyDetailIdentityProjection(baseDetailCompany, detail.company)
     assertCompanyDetailEvidence(listingCompany, detail)
+    assertSpecificBenefitInventory(listingCompany, detail)
+    for (const source of detail.sources) if (canonicalSources.get(source.source_id) !== canonicalJson(source)) throw Error(`approved projection company source canonical mismatch: ${id}:${source.source_id}`)
     recordProjectionEvidenceIds(detail, evidenceIds)
     for (const sourceId of detail.category_outcomes.flatMap((outcome) => outcome.searched_source_ids)) requiredSourceIds.add(sourceId)
     for (const sourceId of detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id))) requiredSourceIds.add(sourceId)
@@ -346,10 +380,6 @@ async function verifyApprovedV2ProjectionBound(releaseRoot, projection, baseById
     for (const record of [...detail.references, ...detail.community_reports]) requiredSourceIds.add(record.source_id)
   }
   if (Object.keys(projection.company_shards).length !== projection.projected_company_count) throw Error('approved projection shard count mismatch')
-  const methodology = methodologySchema.parse(await load(projection.methodology))
-  if (methodology.data_version !== projection.data_version) throw Error('approved projection methodology version mismatch')
-  await load(projection.taxonomy)
-  const sourceDocument = sourcesDocumentSchema.parse(await load(projection.sources))
   const sourceIds = sourceDocument.sources.map((source) => source.source_id)
   if (sourceDocument.data_version !== projection.data_version || sourceIds.length !== projection.sources.record_count || sourceIds.length !== requiredSourceIds.size || sourceIds.some((sourceId) => !requiredSourceIds.has(sourceId))) throw Error('approved projection source inventory mismatch')
   await assertNoBenefitsFixtureLeaksBound(releaseRoot, manifestDescriptors(projection), projection.data_version, options)

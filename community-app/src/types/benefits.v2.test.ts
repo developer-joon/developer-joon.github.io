@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, categories, claimSchema, detailSchema, listingChunkSchema, manifestSchema, sourcesDocumentSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema, type CompanyListing, type Detail } from './benefits'
+import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, categories, claimSchema, compatibleCategoryOutcomeSchema, detailSchema, listingChunkSchema, manifestSchema, sourcesDocumentSchema, specificBenefitRecords, vNextCategoryOutcomeSchema as categoryOutcomeSchema, type CompanyListing, type Detail } from './benefits'
 
 function validManifest() {
   const descriptor = { url: 'community/data/company-benefits/v2/taxonomy.json', sha256: 'a'.repeat(64), record_count: 10, byte_count: 100 }
@@ -31,12 +31,12 @@ function validV1Manifest() {
 }
 
 it('accepts all four explicit cell states and rejects not_researched', () => {
-  const base = { category_id: 'leave', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', assessed_at: '2026-11-01T00:00:00Z', source_tiers: [], official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0, kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [] }
+  const base = { category_id: 'leave', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', assessed_at: '2026-11-01T00:00:00Z', source_tiers: [], official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0, kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, specific_benefit_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [] }
   const outcomes = [
     { ...base, state: 'official_verified', source_tiers: ['official_government', 'other_public_web', 'user_submission'], reliability: 'high', publication_eligibility: 'official_claim', official_claim_ids: ['official::' + 'a'.repeat(64)], reference_ids: ['reference::retained'], community_report_ids: ['community::retained'], official_claim_count: 1, reference_count: 1, community_report_count: 1, claim_count: 3 },
     { ...base, state: 'reference', source_tiers: ['other_public_web'], reliability: 'medium', publication_eligibility: 'reference_only', reference_ids: ['reference::record-1'], reference_count: 1, limitation_codes: ['lower_tier_evidence'] },
     { ...base, state: 'community_report', source_tiers: ['user_submission'], reliability: 'low', publication_eligibility: 'community_only', community_report_ids: ['community::report-1'], community_report_count: 1, status: 'bounded', limitation_codes: ['lower_tier_evidence'] },
-    { ...base, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only', kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0, limitation_codes: ['scope_limit', 'currentness_limit'], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_source_ids: [], searched_at: '2026-11-01T00:00:00Z' },
+    { ...base, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only', kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0, specific_benefit_count: 0, limitation_codes: ['scope_limit', 'currentness_limit'], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_source_ids: [], searched_at: '2026-11-01T00:00:00Z' },
   ]
   outcomes.forEach((outcome) => expect(categoryOutcomeSchema.safeParse(outcome).success).toBe(true))
   expect(categoryOutcomeSchema.safeParse({ ...base, state: 'not_researched' }).success).toBe(false)
@@ -50,7 +50,7 @@ it('requires an explicit protocol and rejects contradictory derived outcome proj
     delete invalid[field]
     expect(manifestSchema.safeParse(invalid).success).toBe(false)
   }
-  const official = { category_id: 'leave', state: 'official_verified', source_tiers: ['official_government'], reliability: 'high', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', publication_eligibility: 'official_claim', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: ['official::' + 'a'.repeat(64)], reference_ids: [], community_report_ids: [], official_claim_count: 1, reference_count: 0, community_report_count: 0, kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [] }
+  const official = { category_id: 'leave', state: 'official_verified', source_tiers: ['official_government'], reliability: 'high', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none', publication_eligibility: 'official_claim', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: ['official::' + 'a'.repeat(64)], reference_ids: [], community_report_ids: [], official_claim_count: 1, reference_count: 0, community_report_count: 0, kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 0, specific_benefit_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: [], last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [] }
   expect(categoryOutcomeSchema.safeParse({ ...official, claim_count: 0 }).success).toBe(false)
   expect(categoryOutcomeSchema.safeParse({ ...official, kind: 'insufficient_evidence', reason_code: 'searched_not_found', searched_source_ids: [], searched_at: official.assessed_at }).success).toBe(false)
   expect(categoryOutcomeSchema.safeParse({ ...official, official_claim_ids: [official.official_claim_ids[0], official.official_claim_ids[0]], claim_count: 2 }).success).toBe(false)
@@ -59,7 +59,7 @@ it('requires an explicit protocol and rejects contradictory derived outcome proj
 })
 
 it('requires exact searched-source closure in company details', () => {
-  const insufficient = { category_id: 'leave', state: 'no_public_info', source_tiers: [], reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', conflict_status: 'none', publication_eligibility: 'discovery_only', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0, kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: ['scope_limit', 'currentness_limit'], last_checked_at: '2026-11-01T00:00:00Z', nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_source_ids: ['source::searched'], searched_at: '2026-11-01T00:00:00Z' } as const
+  const insufficient = { category_id: 'leave', state: 'no_public_info', source_tiers: [], reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', conflict_status: 'none', publication_eligibility: 'discovery_only', assessed_at: '2026-11-01T00:00:00Z', official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0, kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0, specific_benefit_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, limitation_codes: ['scope_limit', 'currentness_limit'], last_checked_at: '2026-11-01T00:00:00Z', nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_source_ids: ['source::searched'], searched_at: '2026-11-01T00:00:00Z' } as const
   const detail = {
     schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'vNext', data_version: 'v2', taxonomy_version: 'benefit-taxonomy-v1',
     company: { company_id: 'KR-CRN-0000000000001', population_sequence: 1, legal_name: 'Search Co', scope: 'domestic', jurisdiction: 'KR', registry_id: '1', selected_reporting_legal_entity: 'Search Co', incorporation_country: 'KR', registered_head_office_country: 'KR', financial_consolidation_parent: { kind: 'unknown', reason: 'unknown' }, ultimate_parent: { kind: 'unknown', reason: 'unknown' }, benefit_policy_owner: { kind: 'unknown', reason: 'unknown' }, sector: 'non_financial', employment_evidence_scope: '', employment_boundary_note: '' },
@@ -204,7 +204,7 @@ const task7Official = {
   official_claim_count: 1, reference_count: 0, community_report_count: 0,
   reliability: 'high', currentness: 'current', scope_status: 'exact_entity', conflict_status: 'none',
   publication_eligibility: 'official_claim', scope: task7Scope, assessed_at: '2026-11-01T00:00:00Z', last_checked_at: '2026-11-01T00:00:00Z',
-  kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 1, limitation_codes: [], searched_source_ids: [],
+  kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 1, specific_benefit_count: 0, limitation_codes: [], searched_source_ids: [],
 } as const
 
 it('retains lower-tier records while enforcing state precedence and exact counts', () => {
@@ -230,7 +230,7 @@ it.each(['exact_entity', 'bounded_entity', 'group_only', 'unresolved'] as const)
     const outcome = {
       ...task7Official, state: 'no_public_info', source_tiers: [], official_claim_ids: [], official_claim_count: 0,
       reliability: 'none', currentness: 'unknown', scope_status, publication_eligibility: 'discovery_only',
-      kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0,
+      kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0, specific_benefit_count: 0,
       limitation_codes: scope_status === 'exact_entity' ? ['currentness_limit'] : ['scope_limit', 'currentness_limit'],
       nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.',
       reason_code: 'searched_not_found', searched_at: '2026-11-01T00:00:00Z',
@@ -253,7 +253,7 @@ function task7Outcome(category_id: (typeof categories)[number]) {
   return {
     ...task7Official, category_id, state: 'no_public_info', source_tiers: [], official_claim_ids: [], official_claim_count: 0,
     reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only',
-    kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0,
+    kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0, specific_benefit_count: 0,
     limitation_codes: ['scope_limit', 'currentness_limit'], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.',
     reason_code: 'searched_not_found', searched_at: '2026-11-01T00:00:00Z',
   }
@@ -279,7 +279,7 @@ function vNextDetailWithReference() {
   const category_outcomes = categories.map((category_id) => category_id === 'leave' ? {
     ...task7Official, category_id, state: 'reference', source_tiers: ['other_public_web'],
     official_claim_ids: [], official_claim_count: 0, reference_ids: ['reference::record-1'], reference_count: 1,
-    reliability: 'medium', publication_eligibility: 'reference_only', limitation_codes: ['lower_tier_evidence'],
+    reliability: 'medium', publication_eligibility: 'reference_only', specific_benefit_count: 1, limitation_codes: ['lower_tier_evidence'],
   } : task7Outcome(category_id))
   return {
     schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'vNext', data_version: 'v2', taxonomy_version: 'benefit-taxonomy-v1',
@@ -290,6 +290,115 @@ function vNextDetailWithReference() {
     sources: [{ source_id: 'source::reference', source_tier: 'other_public_web', title: 'Reference', url: 'https://reference.example/leave', retrieved_at: '2026-11-01T00:00:00Z', content_sha256: 'a'.repeat(64), reliability: 'medium', currentness: 'current', scope_status: 'exact_entity', scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [] }, conflict_status: 'none', publication_eligibility: 'reference_only' }],
   }
 }
+
+function vNextDetailWithSpecificRecords() {
+  const base = vNextDetailWithReference()
+  const statement = base.references[0].statement
+  const communityReport = {
+    community_report_id: 'community::record-1',
+    cell_id: `cell::${base.company.company_id}::leave`,
+    company_id: base.company.company_id,
+    category_id: 'leave',
+    source_id: 'source::community',
+    source_tier: 'user_submission',
+    statement,
+    reliability: 'low',
+    currentness: 'current',
+    scope_status: 'exact_entity',
+    scope: structuredClone(base.sources[0].scope),
+    conflict_status: 'none',
+    frozen_snapshot: { locator: 'https://community.example/snapshot', content_sha256: 'b'.repeat(64), frozen_at: '2026-11-01T00:00:00Z' },
+    publication_eligibility: 'eligible',
+  }
+  const communitySource = {
+    ...base.sources[0],
+    source_id: 'source::community',
+    source_tier: 'user_submission',
+    title: 'Community report',
+    url: 'https://community.example/report',
+    reliability: 'low',
+    publication_eligibility: 'eligible',
+  }
+  return {
+    ...base,
+    category_outcomes: base.category_outcomes.map((outcome, index) => index === 0 ? {
+      ...outcome,
+      source_tiers: ['other_public_web', 'user_submission'],
+      community_report_ids: ['community::record-1'],
+      community_report_count: 1,
+      claim_count: 2,
+      specific_benefit_count: 2,
+    } : outcome),
+    community_reports: [communityReport],
+    sources: [...base.sources, communitySource],
+  }
+}
+
+it('requires specific benefit metadata only on every vNext outcome variant', () => {
+  expect(categoryOutcomeSchema.safeParse(task7Official).success).toBe(true)
+  const missing = Object.fromEntries(Object.entries(task7Official).filter(([key]) => key !== 'specific_benefit_count'))
+  expect(categoryOutcomeSchema.safeParse(missing).success).toBe(false)
+  expect(categoryOutcomeSchema.safeParse({ ...task7Official, specific_benefit_count: -1 }).success).toBe(false)
+  expect(categoryOutcomeSchema.safeParse({ ...task7Official, specific_benefit_count: 0.5 }).success).toBe(false)
+
+  const noPublicInfo = task7Outcome('family')
+  expect(categoryOutcomeSchema.safeParse(noPublicInfo).success).toBe(true)
+  expect(categoryOutcomeSchema.safeParse({ ...noPublicInfo, specific_benefit_count: 1 }).success).toBe(false)
+
+  const legacy = {
+    kind: 'insufficient_evidence', category_id: 'leave', reason_code: 'not_researched',
+    nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.',
+    searched_source_ids: [], searched_at: null,
+  }
+  expect(compatibleCategoryOutcomeSchema.safeParse(legacy).success).toBe(true)
+  expect(compatibleCategoryOutcomeSchema.safeParse({ ...legacy, specific_benefit_count: 0 }).success).toBe(false)
+})
+
+it('selects publishable reference and community records by category and canonical record ID', () => {
+  const detail = detailSchema.parse(vNextDetailWithSpecificRecords())
+  const records = specificBenefitRecords(detail, 'leave')
+  expect(records.map((record) => 'reference_id' in record ? record.reference_id : record.community_report_id)).toEqual([
+    'reference::record-1',
+    'community::record-1',
+  ])
+  expect(records.map((record) => record.statement)).toEqual(['Paid leave is reported.', 'Paid leave is reported.'])
+  expect(specificBenefitRecords(detail, 'health')).toEqual([])
+
+  const official = detailSchema.parse(vNextDetailWithOfficial(
+    { reliability: 'high', currentness: 'current' },
+    { reliability: 'high', currentness: 'current' },
+  ))
+  expect(specificBenefitRecords(official, 'leave')).toEqual([])
+})
+
+it('rejects blank specific benefit statements instead of silently dropping them', () => {
+  const blankReference = vNextDetailWithSpecificRecords()
+  blankReference.references[0].statement = '   '
+  expect(detailSchema.safeParse(blankReference).success).toBe(false)
+
+  const blankCommunity = vNextDetailWithSpecificRecords()
+  blankCommunity.community_reports[0].statement = '\t'
+  expect(detailSchema.safeParse(blankCommunity).success).toBe(false)
+})
+
+it('binds listing specific benefit counts exactly to validated detail records', () => {
+  const detail = detailSchema.parse(vNextDetailWithSpecificRecords())
+  const listing = { company_id: detail.company.company_id, category_outcomes: structuredClone(detail.category_outcomes) } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(listing, detail)).not.toThrow()
+
+  const mismatchedDetail = structuredClone(detail)
+  if ('specific_benefit_count' in mismatchedDetail.category_outcomes[0]) mismatchedDetail.category_outcomes[0].specific_benefit_count = 1
+  const mismatchedListing = { company_id: detail.company.company_id, category_outcomes: structuredClone(mismatchedDetail.category_outcomes) } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(mismatchedListing, mismatchedDetail)).toThrow(/specific benefit count/)
+
+  const officialDetail = detailSchema.parse(vNextDetailWithOfficial(
+    { reliability: 'high', currentness: 'current' },
+    { reliability: 'high', currentness: 'current' },
+  ))
+  if ('specific_benefit_count' in officialDetail.category_outcomes[0]) officialDetail.category_outcomes[0].specific_benefit_count = 1
+  const officialListing = { company_id: officialDetail.company.company_id, category_outcomes: structuredClone(officialDetail.category_outcomes) } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(officialListing, officialDetail)).toThrow(/specific benefit count/)
+})
 
 function vNextDetailWithOfficial(
   outcome: { reliability: 'high' | 'medium'; currentness: 'current' | 'historical' | 'unknown' },
@@ -350,6 +459,46 @@ it('rejects v2 evidence bound to another company or a noncanonical cell', () => 
   expect(detailSchema.safeParse({ ...valid, references: [{ ...valid.references[0], cell_id: 'cell::KR-CRN-0000000000002::leave' }] }).success).toBe(false)
 })
 
+it('rejects reference IDs reused across category inventories', () => {
+  const detail = vNextDetailWithReference()
+  detail.references.push({
+    ...detail.references[0],
+    category_id: 'family',
+    cell_id: `cell::${detail.company.company_id}::family`,
+  })
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('rejects community report IDs reused across category inventories', () => {
+  const detail = vNextDetailWithSpecificRecords()
+  detail.community_reports.push({
+    ...detail.community_reports[0],
+    category_id: 'family',
+    cell_id: `cell::${detail.company.company_id}::family`,
+  })
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('rejects official claim IDs reused across category inventories', () => {
+  const detail = vNextDetailWithOfficial(
+    { reliability: 'high', currentness: 'current' },
+    { reliability: 'high', currentness: 'current' },
+  )
+  const officialClaims = detail.official_claims as unknown as Array<Record<string, unknown> & { category_id: string; cell_id: string }>
+  officialClaims.push({
+    ...officialClaims[0],
+    category_id: 'family',
+    cell_id: `cell::${detail.company.company_id}::family`,
+  })
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('rejects canonical evidence IDs reused across inventory kinds', () => {
+  const detail = vNextDetailWithSpecificRecords()
+  detail.community_reports[0].community_report_id = detail.references[0].reference_id
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
 it('fails closed when projected evidence or its bound source is not publication eligible', () => {
   const valid = vNextDetailWithReference()
   expect(detailSchema.safeParse(valid).success).toBe(true)
@@ -381,7 +530,7 @@ it('fails closed when projected evidence or its bound source is not publication 
   expect(detailSchema.safeParse(official).success).toBe(false)
 
   const community = structuredClone(valid) as unknown as MutableVNextDetail
-  community.category_outcomes[0] = { ...task7Official, state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] }
+  community.category_outcomes[0] = { ...task7Official, state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, specific_benefit_count: 1, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] }
   community.references = []
   community.community_reports = [{ community_report_id: 'community::record-1', cell_id: `cell::${community.company.company_id}::leave`, company_id: community.company.company_id, category_id: 'leave', source_id: 'source::reference', source_tier: 'user_submission', statement: 'Employee report.', reliability: 'low', currentness: 'current', scope_status: 'exact_entity', scope: community.sources[0].scope, conflict_status: 'none', frozen_snapshot: { locator: 'https://reference.example/snapshot', content_sha256: 'b'.repeat(64), frozen_at: '2026-11-01T00:00:00Z' }, publication_eligibility: 'eligible' }]
   community.sources[0] = { ...community.sources[0], source_tier: 'user_submission', reliability: 'low', publication_eligibility: 'eligible' }
@@ -430,13 +579,38 @@ it('binds official and community limitation metadata to every source', () => {
 
   const community = vNextDetailWithReference()
   community.references = []
-  Object.assign(community.category_outcomes[0], task7Official, { state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] })
+  Object.assign(community.category_outcomes[0], task7Official, { state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, specific_benefit_count: 1, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] })
   Object.assign(community, { community_reports: [{ community_report_id: 'community::record-1', cell_id: `cell::${community.company.company_id}::leave`, company_id: community.company.company_id, category_id: 'leave', source_id: 'source::reference', source_tier: 'user_submission', statement: 'Employee report.', reliability: 'low', currentness: 'current', scope_status: 'exact_entity', scope: structuredClone(community.sources[0].scope), conflict_status: 'none', frozen_snapshot: { locator: 'https://reference.example/snapshot', content_sha256: 'b'.repeat(64), frozen_at: '2026-11-01T00:00:00Z' }, publication_eligibility: 'eligible' }] })
   community.sources[0] = { ...community.sources[0], source_tier: 'user_submission', reliability: 'low', publication_eligibility: 'eligible' }
   const communityListing = { company_id: community.company.company_id, category_outcomes: community.category_outcomes } as unknown as CompanyListing
   expect(() => assertCompanyDetailEvidence(communityListing, community as unknown as Detail)).not.toThrow()
   Object.assign(community.sources[0].scope, { roles: ['executives'] })
   expect(() => assertCompanyDetailEvidence(communityListing, community as unknown as Detail)).toThrow(/limitation metadata/)
+})
+
+it.each([
+  ['official claim', () => {
+    const detail = vNextDetailWithOfficial(
+      { reliability: 'high', currentness: 'current' },
+      { reliability: 'high', currentness: 'current' },
+    )
+    detail.sources[0].source_tier = 'community_employee_review'
+    return detail
+  }],
+  ['reference', () => {
+    const detail = vNextDetailWithReference()
+    detail.sources[0].source_tier = 'company_recruiting_major_media'
+    return detail
+  }],
+  ['community report', () => {
+    const detail = vNextDetailWithSpecificRecords()
+    detail.sources[1].source_tier = 'community_employee_review'
+    return detail
+  }],
+] as const)('rejects %s rebound to a different bound source tier', (_name, makeDetail) => {
+  const detail = makeDetail()
+  const listing = { company_id: detail.company.company_id, category_outcomes: detail.category_outcomes } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(listing, detail as unknown as Detail)).toThrow(/evidence\/source tier 불일치/)
 })
 
 it.each([

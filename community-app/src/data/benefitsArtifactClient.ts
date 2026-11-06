@@ -196,20 +196,20 @@ export class BenefitsArtifactClient {
     let bytes = 0
     const account = (amount: number) => { if (amount > BATCH_LIMIT - bytes) throw new Error('상세 데이터 배치 크기 초과'); bytes += amount }
     const sourceById = new Map(atlas.approvedV2Sources?.sources.map((source) => [source.source_id, source]))
-    return Promise.all(ids.map(async (id) => {
+    return runBounded(ids.map((id) => async (workerSignal) => {
       const company = byId.get(id)!
       const legacy = legacyById.get(id)!
       if (!company.lineage.approved_v2) return { legacy }
       const descriptor = projection.company_shards[id]
       if (!descriptor) throw new Error('approved projection 상세 descriptor 누락')
-      const approvedV2 = await this.payload(projection, descriptor, detailSchema, () => 1, signal, { maxBytes: SHARD_LIMIT, account })
+      const approvedV2 = await this.payload(projection, descriptor, detailSchema, () => 1, workerSignal, { maxBytes: SHARD_LIMIT, account })
       if (approvedV2.artifact_protocol !== 'vNext' || approvedV2.data_version !== projection.data_version || approvedV2.taxonomy_version !== atlas.manifest.taxonomy_version || approvedV2.company.company_id !== id) throw new Error('approved projection 상세 shard 메타데이터 불일치')
       assertCompanyIdentityProjection(company.lineage.legacy, company.lineage.approved_v2, approvedV2.company)
       assertCompanyDetailIdentityProjection(legacy.company, approvedV2.company)
       assertCompanyDetailEvidence(company.lineage.approved_v2, approvedV2)
       for (const source of approvedV2.sources ?? []) if (JSON.stringify(sourceById.get(source.source_id)) !== JSON.stringify(source)) throw new Error('approved projection source inventory 불일치')
       return { legacy, approvedV2 }
-    }))
+    }), signal)
   }
 
   async loadCompanyDetails(manifest: Manifest, listings: CompanyListing[], requestedIds: string[], signal?: AbortSignal) {

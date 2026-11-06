@@ -45,7 +45,7 @@ const explicitCellBase = {
   scope_status: z.enum(['exact_entity', 'bounded_entity', 'group_only', 'unresolved'] as const), conflict_status: z.enum(['none', 'disclosed', 'contradictory'] as const),
   assessed_at: z.iso.datetime(), ...cellEvidenceIds, benefit_type_count: z.number().int().nonnegative(), scope: categoryScopeSchema,
   limitation_codes: z.array(z.string()), last_checked_at: z.iso.datetime(), searched_source_ids: uniqueStringArray, source_tiers: uniqueSourceTiers,
-  official_claim_count: z.number().int().nonnegative(), reference_count: z.number().int().nonnegative(), community_report_count: z.number().int().nonnegative(),
+  official_claim_count: z.number().int().nonnegative(), reference_count: z.number().int().nonnegative(), community_report_count: z.number().int().nonnegative(), specific_benefit_count: z.number().int().nonnegative(),
 }
 const evidenceProjection = {
   ...explicitCellBase, kind: z.literal('evidenced'), status: z.enum(['confirmed', 'bounded'] as const), claim_count: z.number().int().positive(),
@@ -70,7 +70,7 @@ const communityOutcomeSchema = z.strictObject({ ...evidenceProjection, state: z.
 const noPublicInfoOutcomeSchema = z.strictObject({
   ...explicitCellBase, state: z.literal('no_public_info'), reliability: z.literal('none'), currentness: z.literal('unknown'), publication_eligibility: z.literal('discovery_only'),
   official_claim_ids: z.array(z.string()).length(0), reference_ids: z.array(z.string()).length(0), community_report_ids: z.array(z.string()).length(0),
-  source_tiers: uniqueSourceTiers.length(0), official_claim_count: z.literal(0), reference_count: z.literal(0), community_report_count: z.literal(0),
+  source_tiers: uniqueSourceTiers.length(0), official_claim_count: z.literal(0), reference_count: z.literal(0), community_report_count: z.literal(0), specific_benefit_count: z.literal(0),
   kind: z.literal('insufficient_evidence'), status: z.literal('insufficient_evidence'), claim_count: z.literal(0), benefit_type_count: z.literal(0), nonabsence_notice: insufficientNotice,
   reason_code: z.enum(['searched_not_found', 'entity_binding_missing']), searched_source_ids: uniqueStringArray, searched_at: z.iso.datetime(),
 }).superRefine((value, ctx) => {
@@ -87,6 +87,19 @@ export function isResearchedOutcome(outcome: CategoryOutcome): outcome is Resear
 export function hasOutcomeScope(outcome: CategoryOutcome): outcome is CategoryOutcome & { scope: z.infer<typeof categoryScopeSchema> } { return 'scope' in outcome }
 export function researchStateFor(outcome: CategoryOutcome): ResearchState { return isResearchedOutcome(outcome) ? outcome.state : outcome.kind === 'evidenced' ? 'official_verified' : 'no_public_info' }
 export const researchStatePrecedence: Record<ResearchState, number> = { official_verified: 0, reference: 1, community_report: 2, no_public_info: 3 }
+export type SpecificContentStatus = 'specific_content' | 'evidence_only' | 'no_public_info' | 'projection_pending'
+export function specificContentStatus(outcome?: ResearchedCategoryOutcome): SpecificContentStatus {
+  if (!outcome) return 'projection_pending'
+  if (outcome.state === 'no_public_info') return 'no_public_info'
+  return outcome.specific_benefit_count > 0 ? 'specific_content' : 'evidence_only'
+}
+export function specificContentLabel(outcome?: ResearchedCategoryOutcome) {
+  const status = specificContentStatus(outcome)
+  if (status === 'specific_content') return `혜택 내용 확인 ${outcome!.specific_benefit_count}건`
+  if (status === 'evidence_only') return '구체 혜택 확인 필요'
+  if (status === 'no_public_info') return '공개 정보 없음'
+  return 'v2 승인 조사 미적용'
+}
 export const reliabilityLabels = { high: '신뢰도 높음', medium: '신뢰도 보통', low: '신뢰도 낮음', none: '신뢰도 없음' } as const
 export const currentnessLabels = { current: '현재 정보', historical: '과거 정보', unknown: '현재성 미확인' } as const
 export const scopeStatusLabels = { exact_entity: '선택 법인 확인', bounded_entity: '적용 범위 제한', group_only: '그룹 범위', unresolved: '적용 범위 미확인' } as const
@@ -144,15 +157,16 @@ export const claimSchema = z.strictObject({ claim_id: z.string().min(1), benefit
 export type Claim = z.infer<typeof claimSchema>
 const evidenceScopeSchema = z.strictObject({ countries: z.array(z.string()), legal_entities: z.array(z.string()), roles: z.array(z.string()), employment_types: z.array(z.string()) })
 const officialClaimV2Schema = z.strictObject({ claim_id: z.string().regex(/^official::[a-f0-9]{64}$/), cell_id: z.string(), company_id: companyId, category_id: z.enum(categories), jurisdiction: z.string().length(2), source_ids: uniqueStringArray.min(1), source_tier: z.literal('official_government'), scope_status: z.literal('exact_entity'), scope: evidenceScopeSchema, conflict_status: z.enum(['none', 'disclosed', 'contradictory']), publication_eligibility: z.literal('eligible') })
-const referenceV2Schema = z.strictObject({ reference_id: z.string().min(1), cell_id: z.string(), company_id: companyId, category_id: z.enum(categories), source_id: z.string().min(1), source_tier: z.enum(['official_government', 'company_recruiting_major_media', 'other_public_web']), statement: z.string().min(1), supporting_quote: z.string().min(1), source_locator: z.string().url(), reliability: z.enum(['medium', 'low']), currentness: z.enum(['current', 'historical', 'unknown']), scope: evidenceScopeSchema.extend({ status: z.enum(['exact_entity', 'bounded_entity', 'group_only', 'unresolved']) }), conflict_status: z.enum(['none', 'disclosed', 'contradictory']), publication_eligibility: z.enum(['eligible', 'reference_only', 'ineligible']), checked_at: z.iso.datetime() })
-const communityV2Schema = z.strictObject({ community_report_id: z.string().min(1), cell_id: z.string(), company_id: companyId, category_id: z.enum(categories), source_id: z.string().min(1), source_tier: z.enum(['community_employee_review', 'user_submission']), statement: z.string().min(1), reliability: z.literal('low'), currentness: z.enum(['current', 'historical', 'unknown']), scope_status: z.enum(['exact_entity', 'group_only', 'unresolved']), scope: evidenceScopeSchema, conflict_status: z.enum(['none', 'disclosed', 'contradictory']), frozen_snapshot: z.strictObject({ locator: z.string().url(), content_sha256: hash, frozen_at: z.iso.datetime() }), publication_eligibility: z.literal('eligible') })
+const nonblankStatement = z.string().refine((value) => value.trim().length > 0, '구체 혜택 문장 누락')
+const referenceV2Schema = z.strictObject({ reference_id: z.string().min(1), cell_id: z.string(), company_id: companyId, category_id: z.enum(categories), source_id: z.string().min(1), source_tier: z.enum(['official_government', 'company_recruiting_major_media', 'other_public_web']), statement: nonblankStatement, supporting_quote: z.string().min(1), source_locator: z.string().url(), reliability: z.enum(['medium', 'low']), currentness: z.enum(['current', 'historical', 'unknown']), scope: evidenceScopeSchema.extend({ status: z.enum(['exact_entity', 'bounded_entity', 'group_only', 'unresolved']) }), conflict_status: z.enum(['none', 'disclosed', 'contradictory']), publication_eligibility: z.enum(['eligible', 'reference_only', 'ineligible']), checked_at: z.iso.datetime() })
+const communityV2Schema = z.strictObject({ community_report_id: z.string().min(1), cell_id: z.string(), company_id: companyId, category_id: z.enum(categories), source_id: z.string().min(1), source_tier: z.enum(['community_employee_review', 'user_submission']), statement: nonblankStatement, reliability: z.literal('low'), currentness: z.enum(['current', 'historical', 'unknown']), scope_status: z.enum(['exact_entity', 'group_only', 'unresolved']), scope: evidenceScopeSchema, conflict_status: z.enum(['none', 'disclosed', 'contradictory']), frozen_snapshot: z.strictObject({ locator: z.string().url(), content_sha256: hash, frozen_at: z.iso.datetime() }), publication_eligibility: z.literal('eligible') })
 const legacyPublicSourceSchema = z.strictObject({ source_id: z.string().min(1), title: z.string().min(1), owner: z.string().min(1), source_type: z.string().min(1), jurisdiction: z.string().min(1), url: safePublicSourceUrlSchema, locator: z.string().optional(), publication_date: z.iso.date().nullable().optional(), checked_at: z.iso.datetime(), evidence_eligibility: z.enum(['A', 'B']) })
 const v2PublicSourceSchema = z.strictObject({ source_id: z.string().min(1), source_tier: z.enum(['official_government', 'company_recruiting_major_media', 'other_public_web', 'community_employee_review', 'user_submission']), title: z.string().min(1), url: safePublicSourceUrlSchema, retrieved_at: z.iso.datetime(), content_sha256: hash, reliability: z.enum(['high', 'medium', 'low', 'unrated']), currentness: z.enum(['current', 'historical', 'unknown']), scope_status: z.enum(['exact_entity', 'bounded_entity', 'group_only', 'unresolved']), scope: evidenceScopeSchema, conflict_status: z.enum(['none', 'disclosed', 'contradictory']), publication_eligibility: z.enum(['eligible', 'reference_only', 'discovery_only', 'ineligible']) })
 export const sourcesDocumentSchema = z.strictObject({ schema_version: z.literal(1), artifact_kind: z.literal('company_benefits_sources'), data_version: version, sources: z.array(z.union([legacyPublicSourceSchema, v2PublicSourceSchema])) }).superRefine((document, ctx) => { const ids = document.sources.map((source) => source.source_id); if (ids.length !== new Set(ids).size) ctx.addIssue({ code: 'custom', message: 'source inventory ID 중복' }) })
 export type SourcesDocument = z.infer<typeof sourcesDocumentSchema>
 const unknownValueSchema = z.union([z.string().min(1), z.strictObject({ kind: z.literal('unknown'), reason: z.string().min(1) })])
 export const detailCompanySchema = z.strictObject({ company_id: companyId, population_sequence: z.number().int().min(1).max(2000), legal_name: z.string().min(1), scope: z.enum(['domestic','international']), jurisdiction: z.enum(['KR','US']), registry_id: z.string().min(1), selected_reporting_legal_entity: z.string().min(1), incorporation_country: z.string().length(2), registered_head_office_country: z.string().length(2), financial_consolidation_parent: unknownValueSchema, ultimate_parent: unknownValueSchema, benefit_policy_owner: unknownValueSchema, sector: z.enum(['financial','non_financial']), employment_evidence_scope: z.string(), employment_boundary_note: z.string() })
-export const detailSchema = z.strictObject({ schema_version: z.literal(1), artifact_kind: z.literal('company_detail'), artifact_protocol: z.enum(['v1', 'vNext']).optional(), data_version: version, taxonomy_version: z.literal('benefit-taxonomy-v1'), company: detailCompanySchema, category_outcomes: z.array(compatibleCategoryOutcomeSchema).length(10), claims: z.array(claimSchema), official_claims: z.array(officialClaimV2Schema).optional(), references: z.array(referenceV2Schema).optional(), community_reports: z.array(communityV2Schema).optional(), sources: z.array(z.union([legacyPublicSourceSchema, v2PublicSourceSchema])).optional() }).superRefine((detail, ctx) => { const vNextFields = [detail.official_claims, detail.references, detail.community_reports, detail.sources]; if (detail.artifact_protocol === 'vNext' && (vNextFields.some((value) => value === undefined) || detail.category_outcomes.some((outcome) => !('state' in outcome)))) ctx.addIssue({ code: 'custom', message: 'vNext 상세 evidence inventory 불완전' }); if (detail.artifact_protocol !== 'vNext' && (vNextFields.some((value) => value !== undefined) || detail.category_outcomes.some((outcome) => 'state' in outcome))) ctx.addIssue({ code: 'custom', message: 'v1 상세에 vNext projection 포함' }); if (detail.artifact_protocol === 'vNext') { const evidenceRecords = [...(detail.official_claims ?? []), ...(detail.references ?? []), ...(detail.community_reports ?? [])]; if (evidenceRecords.some((record) => record.company_id !== detail.company.company_id || record.cell_id !== canonicalCellId(detail.company.company_id, record.category_id))) ctx.addIssue({ code: 'custom', message: '상세 evidence company/cell binding 불일치' }); const sourceIds = (detail.sources ?? []).map((source) => source.source_id); const required = detail.category_outcomes.flatMap((outcome) => 'searched_source_ids' in outcome ? outcome.searched_source_ids : []).concat(detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id)), (detail.official_claims ?? []).flatMap((claim) => claim.source_ids), (detail.references ?? []).map((record) => record.source_id), (detail.community_reports ?? []).map((record) => record.source_id)); const requiredSet = new Set(required); if (sourceIds.length !== new Set(sourceIds).size || sourceIds.length !== requiredSet.size || sourceIds.some((sourceId) => !requiredSet.has(sourceId))) ctx.addIssue({ code: 'custom', message: '상세 source inventory closure 불일치' }) } }).superRefine((detail, ctx) => {
+export const detailSchema = z.strictObject({ schema_version: z.literal(1), artifact_kind: z.literal('company_detail'), artifact_protocol: z.enum(['v1', 'vNext']).optional(), data_version: version, taxonomy_version: z.literal('benefit-taxonomy-v1'), company: detailCompanySchema, category_outcomes: z.array(compatibleCategoryOutcomeSchema).length(10), claims: z.array(claimSchema), official_claims: z.array(officialClaimV2Schema).optional(), references: z.array(referenceV2Schema).optional(), community_reports: z.array(communityV2Schema).optional(), sources: z.array(z.union([legacyPublicSourceSchema, v2PublicSourceSchema])).optional() }).superRefine((detail, ctx) => { const vNextFields = [detail.official_claims, detail.references, detail.community_reports, detail.sources]; if (detail.artifact_protocol === 'vNext' && (vNextFields.some((value) => value === undefined) || detail.category_outcomes.some((outcome) => !('state' in outcome)))) ctx.addIssue({ code: 'custom', message: 'vNext 상세 evidence inventory 불완전' }); if (detail.artifact_protocol !== 'vNext' && (vNextFields.some((value) => value !== undefined) || detail.category_outcomes.some((outcome) => 'state' in outcome))) ctx.addIssue({ code: 'custom', message: 'v1 상세에 vNext projection 포함' }); if (detail.artifact_protocol === 'vNext') { const evidenceRecords = [...(detail.official_claims ?? []), ...(detail.references ?? []), ...(detail.community_reports ?? [])]; const evidenceIds = evidenceRecords.map((record) => 'claim_id' in record ? record.claim_id : 'reference_id' in record ? record.reference_id : record.community_report_id); if (evidenceIds.length !== new Set(evidenceIds).size) ctx.addIssue({ code: 'custom', message: '상세 evidence inventory ID 중복' }); if (evidenceRecords.some((record) => record.company_id !== detail.company.company_id || record.cell_id !== canonicalCellId(detail.company.company_id, record.category_id))) ctx.addIssue({ code: 'custom', message: '상세 evidence company/cell binding 불일치' }); const sourceIds = (detail.sources ?? []).map((source) => source.source_id); const required = detail.category_outcomes.flatMap((outcome) => 'searched_source_ids' in outcome ? outcome.searched_source_ids : []).concat(detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id)), (detail.official_claims ?? []).flatMap((claim) => claim.source_ids), (detail.references ?? []).map((record) => record.source_id), (detail.community_reports ?? []).map((record) => record.source_id)); const requiredSet = new Set(required); if (sourceIds.length !== new Set(sourceIds).size || sourceIds.length !== requiredSet.size || sourceIds.some((sourceId) => !requiredSet.has(sourceId))) ctx.addIssue({ code: 'custom', message: '상세 source inventory closure 불일치' }) } }).superRefine((detail, ctx) => {
   if (detail.artifact_protocol !== 'vNext') return
   const sources = new Map((detail.sources ?? []).map((source) => [source.source_id, source]))
   const eligibility = (sourceId: string) => { const source = sources.get(sourceId); return source && 'publication_eligibility' in source ? source.publication_eligibility : undefined }
@@ -161,6 +175,19 @@ export const detailSchema = z.strictObject({ schema_version: z.literal(1), artif
   for (const report of detail.community_reports ?? []) if (report.publication_eligibility !== 'eligible' || eligibility(report.source_id) !== 'eligible') ctx.addIssue({ code: 'custom', message: `커뮤니티 근거 publication eligibility 불일치: ${report.community_report_id}` })
 })
 export type Detail = z.infer<typeof detailSchema>
+
+export function specificBenefitRecords(detail: Detail, category: Category) {
+  const sourceEligibility = new Map((detail.sources ?? []).flatMap((source) => 'publication_eligibility' in source ? [[source.source_id, source.publication_eligibility] as const] : []))
+  const references = (detail.references ?? []).filter((record) => record.category_id === category && ['eligible', 'reference_only'].includes(record.publication_eligibility) && ['eligible', 'reference_only'].includes(sourceEligibility.get(record.source_id) ?? ''))
+  const community = (detail.community_reports ?? []).filter((record) => record.category_id === category && record.publication_eligibility === 'eligible' && sourceEligibility.get(record.source_id) === 'eligible')
+  const seen = new Set<string>()
+  return [...references, ...community].filter((record) => {
+    const id = 'reference_id' in record ? record.reference_id : record.community_report_id
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+}
 
 export function assertCompanyDetailIdentityProjection(base: Detail['company'], projected: Detail['company']) {
   const baseIdentity = detailCompanySchema.parse(base)
@@ -241,9 +268,10 @@ export function assertCompanyDetailEvidence(listing: CompanyListing, detail: Det
     if (record.company_id !== detail.company.company_id || record.cell_id !== canonicalCellId(detail.company.company_id, record.category_id)) throw new Error('상세 evidence company/cell binding 불일치')
   }
   const sources = new Map((detail.sources ?? []).flatMap((source) => 'scope_status' in source ? [[source.source_id, source] as const] : []))
-  const assertLimitationBinding = (recordId: string, sourceId: string, limitation: { reliability?: string; currentness?: string; scope_status: string; scope: { countries: string[]; legal_entities: string[]; roles: string[]; employment_types: string[] }; conflict_status: string }) => {
+  const assertLimitationBinding = (recordId: string, sourceId: string, limitation: { source_tier: string; reliability?: string; currentness?: string; scope_status: string; scope: { countries: string[]; legal_entities: string[]; roles: string[]; employment_types: string[] }; conflict_status: string }) => {
     const source = sources.get(sourceId)
     if (!source) throw new Error(`evidence bound source 누락: ${recordId}`)
+    if (limitation.source_tier !== source.source_tier) throw new Error(`evidence/source tier 불일치: ${recordId}`)
     const expected = { ...(limitation.reliability === undefined ? {} : { reliability: limitation.reliability }), ...(limitation.currentness === undefined ? {} : { currentness: limitation.currentness }), scope_status: limitation.scope_status, scope: limitation.scope, conflict_status: limitation.conflict_status }
     const actual = { ...(limitation.reliability === undefined ? {} : { reliability: source.reliability }), ...(limitation.currentness === undefined ? {} : { currentness: source.currentness }), scope_status: source.scope_status, scope: source.scope, conflict_status: source.conflict_status }
     if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error(`evidence/source limitation metadata 불일치: ${recordId}`)
@@ -261,7 +289,7 @@ export function assertCompanyDetailEvidence(listing: CompanyListing, detail: Det
   }
   for (const record of detail.references ?? []) {
     const { status: scope_status, ...scope } = record.scope
-    assertLimitationBinding(record.reference_id, record.source_id, { reliability: record.reliability, currentness: record.currentness, scope_status, scope, conflict_status: record.conflict_status })
+    assertLimitationBinding(record.reference_id, record.source_id, { source_tier: record.source_tier, reliability: record.reliability, currentness: record.currentness, scope_status, scope, conflict_status: record.conflict_status })
   }
   for (const report of detail.community_reports ?? []) assertLimitationBinding(report.community_report_id, report.source_id, report)
   for (const category of categories) {
@@ -273,6 +301,7 @@ export function assertCompanyDetailEvidence(listing: CompanyListing, detail: Det
       if (claims.length !== listed.claim_count) throw new Error('결과와 claim 개수 불일치')
     }
     if (isResearchedOutcome(listed)) {
+      if (specificBenefitRecords(detail, category).length !== listed.specific_benefit_count) throw new Error('listing/detail specific benefit count mismatch')
       if (listed.official_claim_count !== listed.official_claim_ids.length || listed.reference_count !== listed.reference_ids.length || listed.community_report_count !== listed.community_report_ids.length) throw new Error('결과와 근거 ID 개수 불일치')
       const official = detail.official_claims?.filter((claim) => claim.category_id === category).map((claim) => claim.claim_id) ?? []
       const references = detail.references?.filter((record) => record.category_id === category).map((record) => record.reference_id) ?? []

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rename, rm, symlink, truncate, writeFile } fr
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertExactReleaseRootInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin, assertUniqueProjectionEvidenceIds, verifyApprovedV2Projection, verifyBenefitsArtifacts } from './verify-benefits-artifacts.mjs'
+import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertExactReleaseRootInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin, assertSpecificBenefitInventory, assertUniqueProjectionEvidenceIds, verifyApprovedV2Projection, verifyBenefitsArtifacts } from './verify-benefits-artifacts.mjs'
 import { assertExplicitCellInventory, categories } from '../community-app/src/types/benefits.ts'
 
 const descriptor = (url) => ({ url })
@@ -215,14 +215,15 @@ async function writeProjectionArtifact(root, version, relative, value, record_co
 }
 
 function projectedOutcome(category_id) {
-  const base = { category_id, source_tiers: [], official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0, benefit_type_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, assessed_at: '2026-11-01T00:00:00Z', last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [], conflict_status: 'none' }
-  if (category_id === 'leave') return { ...base, state: 'reference', reliability: 'medium', currentness: 'current', scope_status: 'exact_entity', publication_eligibility: 'reference_only', kind: 'evidenced', status: 'confirmed', claim_count: 1, reference_ids: ['reference::record-1'], reference_count: 1, source_tiers: ['other_public_web'], limitation_codes: ['lower_tier_evidence'] }
+  const base = { category_id, source_tiers: [], official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0, benefit_type_count: 0, specific_benefit_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, assessed_at: '2026-11-01T00:00:00Z', last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [], conflict_status: 'none' }
+  if (category_id === 'leave') return { ...base, state: 'reference', reliability: 'medium', currentness: 'current', scope_status: 'exact_entity', publication_eligibility: 'reference_only', kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 1, specific_benefit_count: 1, reference_ids: ['reference::record-1'], reference_count: 1, source_tiers: ['other_public_web'], limitation_codes: ['lower_tier_evidence'] }
   return { ...base, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only', kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, limitation_codes: ['scope_limit', 'currentness_limit'], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_at: '2026-11-01T00:00:00Z' }
 }
 
 function officialProjectionDetail(detail, outcome, source) {
   const official = structuredClone(detail)
   const claim_id = `official::${'a'.repeat(64)}`
+  const source_id = `source::official-${official.company.company_id}`
   official.references = []
   Object.assign(official.category_outcomes[0], {
     state: 'official_verified',
@@ -233,6 +234,7 @@ function officialProjectionDetail(detail, outcome, source) {
     official_claim_count: 1,
     reference_ids: [],
     reference_count: 0,
+    specific_benefit_count: 0,
     source_tiers: ['official_government'],
     limitation_codes: outcome.currentness === 'current' ? [] : ['currentness_limit'],
   })
@@ -242,7 +244,7 @@ function officialProjectionDetail(detail, outcome, source) {
     company_id: official.company.company_id,
     category_id: 'leave',
     jurisdiction: 'KR',
-    source_ids: [official.sources[0].source_id],
+    source_ids: [source_id],
     source_tier: 'official_government',
     scope_status: 'exact_entity',
     scope: official.sources[0].scope,
@@ -250,6 +252,7 @@ function officialProjectionDetail(detail, outcome, source) {
     publication_eligibility: 'eligible',
   }]
   Object.assign(official.sources[0], source, {
+    source_id,
     source_tier: 'official_government',
     publication_eligibility: 'eligible',
   })
@@ -415,6 +418,43 @@ for (const [name, mutate] of [
   }))
 }
 
+async function rebindProjectionDetailAndListing(root, projection, company_id, detail, version) {
+  projection.company_shards[company_id] = {
+    company_id,
+    ...await writeProjectionArtifact(root, version, `companies/${company_id}.json`, detail, 1),
+  }
+  const listingIndex = projection.listing_chunks.findIndex((descriptor) =>
+    descriptor.first_sequence <= detail.company.population_sequence && descriptor.last_sequence >= detail.company.population_sequence)
+  const listingDescriptor = projection.listing_chunks[listingIndex]
+  const listing = JSON.parse(await readFile(path.join(root, listingDescriptor.url), 'utf8'))
+  listing.companies.find((company) => company.company_id === company_id).category_outcomes = detail.category_outcomes
+  projection.listing_chunks[listingIndex] = {
+    ...listingDescriptor,
+    ...await writeProjectionArtifact(root, version, `listings/companies-${String(listingIndex + 1).padStart(2, '0')}.json`, listing, listing.companies.length),
+  }
+}
+
+for (const [name, mutate, expectedError] of [
+  ['inflated specific benefit count', (detail) => { detail.category_outcomes[0].specific_benefit_count = 2 }, /listing\/detail specific benefit count mismatch/],
+  ['removed reference record with listing count unchanged', (detail) => { detail.references = []; detail.sources = [] }, /listing\/detail specific benefit count mismatch/],
+  ['cross-category reference record move', (detail) => {
+    const movedOutcome = { ...detail.category_outcomes[0], category_id: 'health', specific_benefit_count: 0 }
+    const vacatedOutcome = { ...detail.category_outcomes[2], category_id: 'leave' }
+    detail.references[0].category_id = 'health'
+    detail.references[0].cell_id = `cell::${detail.company.company_id}::health`
+    detail.category_outcomes[0] = vacatedOutcome
+    detail.category_outcomes[2] = movedOutcome
+  }, /listing\/detail specific benefit count mismatch/],
+  ['missing or rebound reference source', (detail) => { detail.sources[0].source_id = 'source::rebound' }, /상세 source inventory closure 불일치/],
+]) {
+  test(`projection verifier rejects ${name} after descriptors are rebound`, () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
+    const rebound = structuredClone(detail)
+    mutate(rebound)
+    await rebindProjectionDetailAndListing(root, projection, company_id, rebound, version)
+    await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), expectedError)
+  }))
+}
+
 async function rebindProjectionCompany(root, projection, company_id, detail, version) {
   projection.company_shards[company_id] = {
     company_id,
@@ -429,6 +469,11 @@ async function rebindProjectionCompany(root, projection, company_id, detail, ver
     ...listingDescriptor,
     ...await writeProjectionArtifact(root, version, `listings/companies-${String(listingIndex + 1).padStart(2, '0')}.json`, listing, listing.companies.length),
   }
+  const sourceDocument = JSON.parse(await readFile(path.join(root, projection.sources.url), 'utf8'))
+  const sources = new Map(sourceDocument.sources.map((source) => [source.source_id, source]))
+  for (const source of detail.sources) sources.set(source.source_id, source)
+  sourceDocument.sources = [...sources.values()]
+  projection.sources = await writeProjectionArtifact(root, version, 'sources.json', sourceDocument, sourceDocument.sources.length)
   projection.cell_state_counts.reference--
   projection.cell_state_counts.official_verified++
 }
@@ -444,6 +489,17 @@ for (const [name, outcome, source] of [
   }))
 }
 
+test('projection verifier rejects an official-only nonzero specific benefit count after descriptors are rebound', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
+  const reboundDetail = officialProjectionDetail(
+    detail,
+    { reliability: 'high', currentness: 'current' },
+    { reliability: 'high', currentness: 'current' },
+  )
+  reboundDetail.category_outcomes[0].specific_benefit_count = 1
+  await rebindProjectionCompany(root, projection, company_id, reboundDetail, version)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /specific benefit/i)
+}))
+
 test('projection verifier accepts official source limitations matching the canonical cell outcome', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
   const canonicalDetail = officialProjectionDetail(
     detail,
@@ -452,6 +508,39 @@ test('projection verifier accepts official source limitations matching the canon
   )
   await rebindProjectionCompany(root, projection, company_id, canonicalDetail, version)
   await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById, baseDetailById))
+}))
+
+test('projection verifier rejects an official claim rebound to a community tier after all descriptors are rebound', () => projectionFixture(async ({ root, projection, company_id, detail, source, version, baseById, baseDetailById }) => {
+  const reboundDetail = officialProjectionDetail(
+    detail,
+    { reliability: 'high', currentness: 'current' },
+    { reliability: 'high', currentness: 'current' },
+  )
+  reboundDetail.sources[0].source_tier = 'community_employee_review'
+  await rebindProjectionCompany(root, projection, company_id, reboundDetail, version)
+  projection.sources = await writeProjectionArtifact(root, version, 'sources.json', {
+    schema_version: 1,
+    artifact_kind: 'company_benefits_sources',
+    data_version: version,
+    sources: [{ ...source, source_tier: 'community_employee_review', reliability: 'high', publication_eligibility: 'eligible' }],
+  }, 1)
+  await assert.rejects(
+    verifyApprovedV2Projection(root, projection, baseById, baseDetailById),
+    /evidence\/source tier 불일치/,
+  )
+}))
+
+test('projection verifier rejects global source structural drift after its descriptor is rebound', () => projectionFixture(async ({ root, projection, source, version, baseById, baseDetailById }) => {
+  projection.sources = await writeProjectionArtifact(root, version, 'sources.json', {
+    schema_version: 1,
+    artifact_kind: 'company_benefits_sources',
+    data_version: version,
+    sources: [{ ...source, title: 'Rebound global title' }],
+  }, 1)
+  await assert.rejects(
+    verifyApprovedV2Projection(root, projection, baseById, baseDetailById),
+    /approved projection company source canonical mismatch: KR-CRN-0000000000001:source::reference/,
+  )
 }))
 
 test('projection verifier rejects listing and full base-detail identity drift after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
@@ -479,7 +568,55 @@ test('projection evidence IDs are globally unique across company shards', () => 
   for (const [collection, idField] of [['claims', 'claim_id'], ['references', 'reference_id'], ['community_reports', 'community_report_id']]) {
     const replayed = structuredClone(second)
     replayed[collection][0][idField] = first[collection][0][idField]
-    assert.throws(() => assertUniqueProjectionEvidenceIds([first, replayed]), new RegExp(`duplicate ${idField}`))
+    assert.throws(() => assertUniqueProjectionEvidenceIds([first, replayed]), /duplicate canonical evidence ID/)
+  }
+  const crossKindReplay = structuredClone(second)
+  crossKindReplay.community_reports[0].community_report_id = first.references[0].reference_id
+  assert.throws(() => assertUniqueProjectionEvidenceIds([first, crossKindReplay]), /duplicate canonical evidence ID/)
+})
+
+test('Node verifier independently derives specific benefit counts from eligible bound records', () => {
+  const reference = {
+    reference_id: 'reference::record-1', category_id: 'leave', source_id: 'source::reference',
+    publication_eligibility: 'reference_only',
+  }
+  const community = {
+    community_report_id: 'community::record-1', category_id: 'health', source_id: 'source::community',
+    publication_eligibility: 'eligible',
+  }
+  const listing = {
+    company_id: 'KR-CRN-0000000000001',
+    category_outcomes: [
+      { category_id: 'leave', state: 'reference', specific_benefit_count: 1 },
+      { category_id: 'health', state: 'community_report', specific_benefit_count: 1 },
+      { category_id: 'family', state: 'official_verified', specific_benefit_count: 0 },
+      { category_id: 'growth', state: 'no_public_info', specific_benefit_count: 0 },
+    ],
+  }
+  const detail = {
+    references: [reference, structuredClone(reference)],
+    community_reports: [community],
+    sources: [
+      { source_id: 'source::reference', publication_eligibility: 'reference_only' },
+      { source_id: 'source::community', publication_eligibility: 'eligible' },
+    ],
+  }
+  assert.doesNotThrow(() => assertSpecificBenefitInventory(listing, detail))
+
+  const mutations = [
+    ['inflated count', (nextListing) => { nextListing.category_outcomes[0].specific_benefit_count = 2 }],
+    ['official-only count', (nextListing) => { nextListing.category_outcomes[2].specific_benefit_count = 1 }],
+    ['removed record', (_nextListing, nextDetail) => { nextDetail.references = [] }],
+    ['cross-category record replay', (_nextListing, nextDetail) => { nextDetail.references[0].category_id = 'health'; nextDetail.references[1].category_id = 'health' }],
+    ['ineligible record', (_nextListing, nextDetail) => { nextDetail.references[0].publication_eligibility = 'ineligible'; nextDetail.references[1].publication_eligibility = 'ineligible' }],
+    ['ineligible bound source', (_nextListing, nextDetail) => { nextDetail.sources[0].publication_eligibility = 'ineligible' }],
+    ['missing or rebound source', (_nextListing, nextDetail) => { nextDetail.sources[0].source_id = 'source::rebound' }],
+  ]
+  for (const [name, mutate] of mutations) {
+    const nextListing = structuredClone(listing)
+    const nextDetail = structuredClone(detail)
+    mutate(nextListing, nextDetail)
+    assert.throws(() => assertSpecificBenefitInventory(nextListing, nextDetail), /specific benefit inventory/, name)
   }
 })
 
@@ -498,7 +635,57 @@ test('projection verifier rejects a cross-company reference ID replay after desc
   listing.companies.find((company) => company.company_id === secondId).category_outcomes = second.category_outcomes
   const reboundListing = await writeProjectionArtifact(root, version, 'listings/companies-01.json', listing, listing.companies.length)
   projection.listing_chunks[0] = { ...listingDescriptor, ...reboundListing }
-  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /duplicate reference_id/i)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /duplicate canonical evidence ID/i)
+}))
+
+test('projection verifier rejects a reference ID replayed as community evidence in another shard', () => projectionFixture(async ({ root, projection, source, version, baseById, baseDetailById }) => {
+  const [firstId, secondId] = Object.keys(projection.company_shards).slice(0, 2)
+  const first = JSON.parse(await readFile(path.join(root, projection.company_shards[firstId].url), 'utf8'))
+  const second = JSON.parse(await readFile(path.join(root, projection.company_shards[secondId].url), 'utf8'))
+  const communitySource = {
+    ...source,
+    source_id: 'source::community',
+    source_tier: 'community_employee_review',
+    title: 'Community snapshot',
+    url: 'https://community.example/leave',
+    reliability: 'low',
+    publication_eligibility: 'eligible',
+  }
+  second.references = []
+  second.community_reports = [{
+    community_report_id: first.references[0].reference_id,
+    cell_id: `cell::${secondId}::leave`,
+    company_id: secondId,
+    category_id: 'leave',
+    source_id: communitySource.source_id,
+    source_tier: communitySource.source_tier,
+    statement: 'Paid leave is reported by an employee.',
+    reliability: 'low',
+    currentness: 'current',
+    scope_status: 'exact_entity',
+    scope: communitySource.scope,
+    conflict_status: 'none',
+    frozen_snapshot: { locator: communitySource.url, content_sha256: 'b'.repeat(64), frozen_at: '2026-11-01T00:00:00Z' },
+    publication_eligibility: 'eligible',
+  }]
+  second.sources = [communitySource]
+  Object.assign(second.category_outcomes[0], {
+    state: 'community_report',
+    reliability: 'low',
+    publication_eligibility: 'community_only',
+    status: 'bounded',
+    reference_ids: [],
+    reference_count: 0,
+    community_report_ids: [first.references[0].reference_id],
+    community_report_count: 1,
+    source_tiers: ['community_employee_review'],
+  })
+  await rebindProjectionDetailAndListing(root, projection, secondId, second, version)
+  projection.cell_state_counts.reference--
+  projection.cell_state_counts.community_report++
+  projection.sources = await writeProjectionArtifact(root, version, 'sources.json', { schema_version: 1, artifact_kind: 'company_benefits_sources', data_version: version, sources: [source, communitySource] }, 2)
+
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /duplicate canonical evidence ID/i)
 }))
 
 test('projection verifier requires exact unique global source closure', () => projectionFixture(async ({ root, projection, source, version, baseById, baseDetailById }) => {
