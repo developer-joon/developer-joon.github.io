@@ -12,6 +12,31 @@ export function sourceAnchorsAreSafe(anchors) {
   })
 }
 
+export function isCanonicalCompanyId(value) {
+  return typeof value === 'string' && /^(?:KR-CRN-\d{13}|US-CIK\d{10})$/.test(value)
+}
+
+export async function fetchJsonWithTimeout(url, {
+  timeoutMs = 5_000,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const controller = new AbortController()
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort()
+      reject(Error(`fetch timed out after ${timeoutMs}ms: ${url}`))
+    }, timeoutMs)
+  })
+  try {
+    const response = await Promise.race([fetchImpl(url, { signal: controller.signal }), timeout])
+    if (!response.ok) throw Error(`fetch failed with HTTP ${response.status}: ${url}`)
+    return await Promise.race([response.json(), timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function listen(target, type, handler) {
   if (typeof target.addEventListener === 'function') {
     target.addEventListener(type, handler)

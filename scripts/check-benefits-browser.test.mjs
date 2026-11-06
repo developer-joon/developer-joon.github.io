@@ -141,6 +141,24 @@ test('cleanup aggregates stage failures in socket-server-browser-profile order',
   )
 })
 
+test('profile removal is bounded even when the filesystem operation never settles', async () => {
+  const { cleanupBrowserSmoke } = await import('./browser-smoke-cleanup.mjs')
+  const started = Date.now()
+  await assert.rejects(
+    cleanupBrowserSmoke({
+      profile: '/ephemeral/profile',
+      removeProfile: async () => new Promise(() => {}),
+      profileRemoveTimeoutMs: 5,
+    }),
+    (error) => {
+      assert.equal(error.name, 'AggregateError')
+      assert.match(error.errors[0].message, /profile: remove timed out after 5ms/)
+      return true
+    },
+  )
+  assert.ok(Date.now() - started < 100)
+})
+
 test('CDP client rejects pending commands on disconnect and clears lifecycle state', async () => {
   const { createCdpClient } = await import('./browser-smoke-cdp.mjs')
   const socket = new EventEmitter()
@@ -229,6 +247,41 @@ test('source safety rejects empty and unsafe anchor collections', async () => {
   }
 })
 
+test('company IDs follow the exact registry contract', async () => {
+  const { isCanonicalCompanyId } = await import('./browser-smoke-cdp.mjs')
+  for (const value of ['KR-CRN-1234567890123', 'US-CIK0000320193']) {
+    assert.equal(isCanonicalCompanyId(value), true, value)
+  }
+  for (const value of [
+    'KR-CRN-not-a-registry-id',
+    'KR-CRN-123456789012',
+    'KR-CRN-12345678901234',
+    'US-CIK-0000320193',
+    'US-CIK000320193',
+    'US-CIK00000320193',
+  ]) {
+    assert.equal(isCanonicalCompanyId(value), false, value)
+  }
+})
+
+test('Chromium debugger discovery fetch is bounded through headers and JSON body', async () => {
+  const { fetchJsonWithTimeout } = await import('./browser-smoke-cdp.mjs')
+  await assert.rejects(
+    fetchJsonWithTimeout('http://127.0.0.1:1/json/version', {
+      timeoutMs: 5,
+      fetchImpl: async () => new Promise(() => {}),
+    }),
+    /timed out.*json\/version/i,
+  )
+  await assert.rejects(
+    fetchJsonWithTimeout('http://127.0.0.1:1/json/version', {
+      timeoutMs: 5,
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => new Promise(() => {}) }),
+    }),
+    /timed out.*json\/version/i,
+  )
+})
+
 test('primary smoke failure remains primary when cleanup also fails', async () => {
   const { runWithBrowserCleanup } = await import('./browser-smoke-cleanup.mjs')
   const primary = Error('smoke exploded')
@@ -263,7 +316,7 @@ test('browser smoke verifies the published Atlas and concrete benefit states', a
   assert.match(source, /benefits\/rankings\/index\.html/)
   assert.match(source, /primaryError/)
   assert.match(source, /row\.innerText\.includes\('혜택 내용 확인'\)/)
-  assert.match(source, /\^\(KR-CRN\|US-CIK\)-/)
+  assert.match(source, /isCanonicalCompanyId\(companyId\)/)
   assert.doesNotMatch(source, /US-EIN/)
   assert.match(source, /sourceAnchorsAreSafe\.toString\(\)/)
   assert.doesNotMatch(source, /absent manifest|zero company rows|fixture-v1|rankings_url|fitScore|rankOrder/)

@@ -7,7 +7,7 @@ import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { createCdpClient, sourceAnchorsAreSafe, waitForWebSocketOpen } from './browser-smoke-cdp.mjs'
+import { createCdpClient, fetchJsonWithTimeout, isCanonicalCompanyId, sourceAnchorsAreSafe, waitForWebSocketOpen } from './browser-smoke-cdp.mjs'
 import { cleanupBrowserSmoke } from './browser-smoke-cleanup.mjs'
 
 const root = path.resolve(process.argv[2] ?? 'community-app/dist')
@@ -53,7 +53,7 @@ try {
   }
   if (!port) throw Error('Chromium did not start')
 
-  const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()
+  const { webSocketDebuggerUrl } = await fetchJsonWithTimeout(`http://127.0.0.1:${port}/json/version`)
   socket = new WebSocketClient(webSocketDebuggerUrl)
   await waitForWebSocketOpen(socket)
 
@@ -94,7 +94,7 @@ try {
   assert.match(explorerText, /구체 혜택 확인 필요/)
   assert.ok(requests.some((url) => url.endsWith('/community/data/company-benefits/manifest.json')))
   const companyId = await evaluate(`Array.from(document.querySelectorAll('tr[data-company-id]')).find((row) => row.innerText.includes('혜택 내용 확인'))?.dataset.companyId`)
-  assert.match(companyId, /^(KR-CRN|US-CIK)-/)
+  assert.equal(isCanonicalCompanyId(companyId), true)
 
   await call('Page.navigate', { url: `${origin}/community/benefits/fit/?preset=custom&preferred_categories=leave&evidence=all` })
   await wait(`document.querySelectorAll('article[data-company-id]').length > 0`)

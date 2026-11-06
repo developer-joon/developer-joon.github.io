@@ -64,6 +64,18 @@ async function stopBrowser(browser, termTimeoutMs, killTimeoutMs) {
   }
 }
 
+async function withTimeout(action, timeoutMs, message) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Error(message)), timeoutMs)
+  })
+  try {
+    return await Promise.race([Promise.resolve().then(action), timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function cleanupBrowserSmoke({
   socket,
   browser,
@@ -74,6 +86,7 @@ export async function cleanupBrowserSmoke({
   browserExitTimeoutMs,
   browserTermTimeoutMs = browserExitTimeoutMs ?? 5_000,
   browserKillTimeoutMs = 5_000,
+  profileRemoveTimeoutMs = 5_000,
 }) {
   const errors = []
   const attempt = async (stage, action) => {
@@ -88,7 +101,11 @@ export async function cleanupBrowserSmoke({
   await attempt('server', async () => closeServer(server, serverCloseTimeoutMs))
   await attempt('browser', async () => stopBrowser(browser, browserTermTimeoutMs, browserKillTimeoutMs))
   await attempt('profile', async () => {
-    if (profile) await removeProfile(profile)
+    if (profile) await withTimeout(
+      () => removeProfile(profile),
+      profileRemoveTimeoutMs,
+      `remove timed out after ${profileRemoveTimeoutMs}ms`,
+    )
   })
 
   if (errors.length > 0) {
