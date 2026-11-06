@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Ephemeral browser proof for the current fail-closed prepublication build.
+// Ephemeral browser proof for the current published Benefit Atlas artifact.
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { cleanupBrowserSmoke } from './browser-smoke-cleanup.mjs'
 
 const root = path.resolve(process.argv[2] ?? 'community-app/dist')
 const chrome = process.env.BENEFITS_CHROMIUM
@@ -41,16 +42,38 @@ try {
   await call('Page.enable'); await call('Runtime.enable'); await call('Network.enable')
   const evaluate = async (expression) => (await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })).result.value
   const wait = async (expression) => { for (let attempt = 0; attempt < 100; attempt++) { if (await evaluate(`Boolean(${expression})`).catch(() => false)) return; await sleep(100) } throw Error(`Timed out: ${expression}; body=${await evaluate('document.body.innerText')}; errors=${errors}`) }
-  for (const route of ['', 'fit/', 'company/', 'methodology/']) {
-    requests.length = 0; await call('Page.navigate', { url: `${origin}/community/benefits/${route}` }); await wait(`document.querySelector('[role="alert"]')`)
-    const text = await evaluate(`document.querySelector('[role="alert"]').innerText`)
-    assert.match(text, /사용할 수 없습니다|확인할 수 없습니다/)
-    assert.ok(requests.some((url) => url.endsWith('/community/data/company-benefits/manifest.json')))
-    assert.equal(await evaluate(`document.querySelectorAll('[data-company-id]').length`), 0)
-  }
+  const bodyText = () => evaluate('document.body.innerText')
+  const assertNoAlert = async () => assert.equal(await evaluate(`document.querySelector('[role="alert"]') === null`), true)
+
+  await call('Page.navigate', { url: `${origin}/community/benefits/` })
+  await wait(`document.querySelectorAll('tr[data-company-id]').length > 0`)
+  await assertNoAlert()
+  const explorerText = await bodyText()
+  assert.match(explorerText, /혜택 내용 확인/)
+  assert.match(explorerText, /구체 혜택 확인 필요/)
+  assert.ok(requests.some((url) => url.endsWith('/community/data/company-benefits/manifest.json')))
+  const companyId = await evaluate(`document.querySelector('tr[data-company-id]').dataset.companyId`)
+  assert.match(companyId, /^(KR-CRN|US-EIN)-/)
+
+  await call('Page.navigate', { url: `${origin}/community/benefits/fit/?preset=custom&preferred_categories=leave&evidence=all` })
+  await wait(`document.querySelectorAll('article[data-company-id]').length > 0`)
+  await assertNoAlert()
+  assert.match(await bodyText(), /조건 탐색/)
+
+  await call('Page.navigate', { url: `${origin}/community/benefits/company/?id=${encodeURIComponent(companyId)}` })
+  await wait(`document.querySelectorAll('.benefits-specific-card').length > 0`)
+  await assertNoAlert()
+  const companyText = await bodyText()
+  assert.match(companyText, /확인된 복지 혜택/)
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('.benefits-specific-card a[href]')).every((link) => link.protocol === 'https:' && !link.username && !link.password)`), true)
+
+  await call('Page.navigate', { url: `${origin}/community/benefits/methodology/` })
+  await wait(`document.querySelector('.benefits-evidence h2')`)
+  await assertNoAlert()
+  assert.match(await evaluate(`document.querySelector('.benefits-evidence h2').innerText`), /조사|방법|기준/)
+
   assert.equal(errors.length, 0)
-  console.log('Benefits browser fail-closed smoke passed: four supported routes, absent manifest, zero company rows, no ranking shell.')
+  console.log('Benefits browser smoke passed: published explorer, fit, concrete company benefits, methodology, and safe sources.')
 } finally {
-  try { socket?.close() } catch {}
-  browser.kill('SIGTERM'); server.close(); await rm(profile, { recursive: true, force: true })
+  await cleanupBrowserSmoke({ socket, browser, server, profile })
 }
