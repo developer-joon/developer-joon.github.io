@@ -223,6 +223,7 @@ function projectedOutcome(category_id) {
 function officialProjectionDetail(detail, outcome, source) {
   const official = structuredClone(detail)
   const claim_id = `official::${'a'.repeat(64)}`
+  const source_id = `source::official-${official.company.company_id}`
   official.references = []
   Object.assign(official.category_outcomes[0], {
     state: 'official_verified',
@@ -243,7 +244,7 @@ function officialProjectionDetail(detail, outcome, source) {
     company_id: official.company.company_id,
     category_id: 'leave',
     jurisdiction: 'KR',
-    source_ids: [official.sources[0].source_id],
+    source_ids: [source_id],
     source_tier: 'official_government',
     scope_status: 'exact_entity',
     scope: official.sources[0].scope,
@@ -251,6 +252,7 @@ function officialProjectionDetail(detail, outcome, source) {
     publication_eligibility: 'eligible',
   }]
   Object.assign(official.sources[0], source, {
+    source_id,
     source_tier: 'official_government',
     publication_eligibility: 'eligible',
   })
@@ -467,6 +469,11 @@ async function rebindProjectionCompany(root, projection, company_id, detail, ver
     ...listingDescriptor,
     ...await writeProjectionArtifact(root, version, `listings/companies-${String(listingIndex + 1).padStart(2, '0')}.json`, listing, listing.companies.length),
   }
+  const sourceDocument = JSON.parse(await readFile(path.join(root, projection.sources.url), 'utf8'))
+  const sources = new Map(sourceDocument.sources.map((source) => [source.source_id, source]))
+  for (const source of detail.sources) sources.set(source.source_id, source)
+  sourceDocument.sources = [...sources.values()]
+  projection.sources = await writeProjectionArtifact(root, version, 'sources.json', sourceDocument, sourceDocument.sources.length)
   projection.cell_state_counts.reference--
   projection.cell_state_counts.official_verified++
 }
@@ -501,6 +508,39 @@ test('projection verifier accepts official source limitations matching the canon
   )
   await rebindProjectionCompany(root, projection, company_id, canonicalDetail, version)
   await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById, baseDetailById))
+}))
+
+test('projection verifier rejects an official claim rebound to a community tier after all descriptors are rebound', () => projectionFixture(async ({ root, projection, company_id, detail, source, version, baseById, baseDetailById }) => {
+  const reboundDetail = officialProjectionDetail(
+    detail,
+    { reliability: 'high', currentness: 'current' },
+    { reliability: 'high', currentness: 'current' },
+  )
+  reboundDetail.sources[0].source_tier = 'community_employee_review'
+  await rebindProjectionCompany(root, projection, company_id, reboundDetail, version)
+  projection.sources = await writeProjectionArtifact(root, version, 'sources.json', {
+    schema_version: 1,
+    artifact_kind: 'company_benefits_sources',
+    data_version: version,
+    sources: [{ ...source, source_tier: 'community_employee_review', reliability: 'high', publication_eligibility: 'eligible' }],
+  }, 1)
+  await assert.rejects(
+    verifyApprovedV2Projection(root, projection, baseById, baseDetailById),
+    /evidence\/source tier 불일치/,
+  )
+}))
+
+test('projection verifier rejects global source structural drift after its descriptor is rebound', () => projectionFixture(async ({ root, projection, source, version, baseById, baseDetailById }) => {
+  projection.sources = await writeProjectionArtifact(root, version, 'sources.json', {
+    schema_version: 1,
+    artifact_kind: 'company_benefits_sources',
+    data_version: version,
+    sources: [{ ...source, title: 'Rebound global title' }],
+  }, 1)
+  await assert.rejects(
+    verifyApprovedV2Projection(root, projection, baseById, baseDetailById),
+    /approved projection company source canonical mismatch: KR-CRN-0000000000001:source::reference/,
+  )
 }))
 
 test('projection verifier rejects listing and full base-detail identity drift after descriptor rebinding', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {

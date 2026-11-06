@@ -589,6 +589,31 @@ it('binds official and community limitation metadata to every source', () => {
 })
 
 it.each([
+  ['official claim', () => {
+    const detail = vNextDetailWithOfficial(
+      { reliability: 'high', currentness: 'current' },
+      { reliability: 'high', currentness: 'current' },
+    )
+    detail.sources[0].source_tier = 'community_employee_review'
+    return detail
+  }],
+  ['reference', () => {
+    const detail = vNextDetailWithReference()
+    detail.sources[0].source_tier = 'company_recruiting_major_media'
+    return detail
+  }],
+  ['community report', () => {
+    const detail = vNextDetailWithSpecificRecords()
+    detail.sources[1].source_tier = 'community_employee_review'
+    return detail
+  }],
+] as const)('rejects %s rebound to a different bound source tier', (_name, makeDetail) => {
+  const detail = makeDetail()
+  const listing = { company_id: detail.company.company_id, category_outcomes: detail.category_outcomes } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(listing, detail as unknown as Detail)).toThrow(/evidence\/source tier 불일치/)
+})
+
+it.each([
   ['favorable official outcome rebound to a low historical source', { reliability: 'high', currentness: 'current' }, { reliability: 'low', currentness: 'historical' }],
   ['bounded official outcome rebound to a favorable source', { reliability: 'medium', currentness: 'historical' }, { reliability: 'high', currentness: 'current' }],
 ] as const)('rejects %s', (_name, outcome, source) => {
