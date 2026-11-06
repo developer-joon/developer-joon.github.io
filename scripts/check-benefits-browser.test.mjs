@@ -179,6 +179,52 @@ test('profile removal is bounded even when the filesystem operation never settle
   assert.deepEqual(result, { code: 0, signal: null })
 })
 
+test('profile-remover kill failures cannot crash the release process', async () => {
+  const moduleUrl = new URL('./browser-smoke-cleanup.mjs', import.meta.url).href
+  const script = `
+    import { EventEmitter } from 'node:events'
+    import { cleanupBrowserSmoke } from ${JSON.stringify(moduleUrl)}
+    const remover = new EventEmitter()
+    remover.unref = () => {}
+    remover.kill = () => {
+      queueMicrotask(() => remover.emit('error', Error('late kill error')))
+      return false
+    }
+    try {
+      await cleanupBrowserSmoke({
+        profile: '/ephemeral/profile',
+        profileRemoveTimeoutMs: 10,
+        spawnProfileRemoval: () => remover,
+      })
+      throw Error('expected profile cleanup failure')
+    } catch (error) {
+      if (!/profile:/.test(error?.errors?.[0]?.message ?? '')) throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const throwingRemover = new EventEmitter()
+    throwingRemover.unref = () => {}
+    throwingRemover.kill = () => { throw Error('kill threw') }
+    try {
+      await cleanupBrowserSmoke({
+        profile: '/ephemeral/profile',
+        profileRemoveTimeoutMs: 10,
+        spawnProfileRemoval: () => throwingRemover,
+      })
+      throw Error('expected throwing kill failure')
+    } catch (error) {
+      if (!/profile: failed to kill profile remover: kill threw/.test(error?.errors?.[0]?.message ?? '')) throw error
+    }
+  `
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: 'ignore' })
+  const result = await Promise.race([
+    new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal }))),
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),
+  ])
+  if (result === 'timeout') child.kill('SIGKILL')
+  assert.deepEqual(result, { code: 0, signal: null })
+})
+
 test('CDP client rejects pending commands on disconnect and clears lifecycle state', async () => {
   const { createCdpClient } = await import('./browser-smoke-cdp.mjs')
   const socket = new EventEmitter()

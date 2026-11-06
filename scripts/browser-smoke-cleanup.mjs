@@ -94,14 +94,18 @@ async function removeProfileInChild(profile, timeoutMs, spawnProfileRemoval) {
     child.once('error', onError)
     child.once('close', onClose)
     const timer = setTimeout(() => {
-      child.removeListener?.('error', onError)
-      child.removeListener?.('close', onClose)
+      const swallowLateError = () => {}
+      child.on?.('error', swallowLateError)
+      child.once?.('close', () => child.removeListener?.('error', swallowLateError))
+      let failure = Error(`remove timed out after ${timeoutMs}ms`)
       try {
-        child.kill('SIGKILL')
+        if (!child.kill('SIGKILL')) failure = Error('failed to send SIGKILL to profile remover', { cause: failure })
+      } catch (error) {
+        failure = Error(`failed to kill profile remover: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
       } finally {
         child.unref?.()
+        finish(failure)
       }
-      finish(Error(`remove timed out after ${timeoutMs}ms`))
     }, timeoutMs)
   })
 }
