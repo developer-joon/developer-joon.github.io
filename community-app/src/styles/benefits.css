@@ -511,6 +511,12 @@
   border-top: 2px solid #7ee8ce;
   padding-top: 16px;
 }
+.benefits-compare-specific ul,
+.benefits-compare-specific li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .benefits-evidence,
 .benefits-result {
   padding: 16px;

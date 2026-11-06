@@ -327,6 +327,24 @@ it('shows complete compare statements from projected details and one evidence-on
   expect(screen.getAllByText('구체 혜택 확인 필요')).toHaveLength(1)
 })
 
+it('keeps an unbroken comparison statement intact and applies semantic wrapping to its list content', () => {
+  const longToken = `benefit-${'x'.repeat(240)}`
+  const item = researchedCompany(33)
+  item.category_outcomes[0] = researched('leave', 'reference', ['other_public_web'], { specific_benefit_count: 1 })
+  const detail = {
+    company: { company_id: item.company_id },
+    references: [{ reference_id: 'reference::long-compare', category_id: 'leave', source_id: 'source::long-compare', statement: longToken, publication_eligibility: 'reference_only' }],
+    community_reports: [],
+    sources: [{ source_id: 'source::long-compare', publication_eligibility: 'reference_only' }],
+  } as unknown as Detail
+
+  render(<CompanyCompareTray companies={[item]} details={[{ legacy: detail, approvedV2: detail }]} error={false} retry={() => undefined} remove={() => undefined} projectionActive />)
+
+  expect(screen.getByText(longToken)).toBeInTheDocument()
+  const css = readFileSync('src/styles/benefits.css', 'utf8')
+  expect(css).toMatch(/\.benefits-compare-specific\s+(?:ul|li)[^{]*\{[^}]*overflow-wrap:\s*anywhere/)
+})
+
 it('renders approved-v2 evidence in distinct official, reference and lower-tier community sections', () => {
   const detail = {
     official_claims: [{ claim_id: `official::${'a'.repeat(64)}`, category_id: 'leave', source_ids: ['source::official'], scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: ['engineer'], employment_types: ['full-time'] }, scope_status: 'exact_entity', source_tier: 'official_government', conflict_status: 'none' }],

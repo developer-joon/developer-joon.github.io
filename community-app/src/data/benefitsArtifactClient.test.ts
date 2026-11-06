@@ -57,17 +57,20 @@ function withProjection(corrupt: 'none'|'hash'|'join' = 'none', projectedCount =
   fixture.bodies.set(manifestUrl, json(manifest)); return fixture
 }
 
-function withProjectionDetail() {
+function withProjectionDetail(detailCount = 1) {
   const fixture = withProjection(); const manifestUrl = '/community/data/company-benefits/manifest.json'; const manifest = JSON.parse(fixture.bodies.get(manifestUrl)!)
-  const baseListing = JSON.parse(fixture.bodies.get(`/${manifest.listing_chunks[0].url}`)!).companies[0]
-  const company = { ...Object.fromEntries(Object.entries(baseListing).filter(([key]) => !['display_name', 'category_outcomes'].includes(key))), registry_id: 'registry-1', financial_consolidation_parent: { kind: 'unknown', reason: 'unknown' }, ultimate_parent: { kind: 'unknown', reason: 'unknown' }, benefit_policy_owner: { kind: 'unknown', reason: 'unknown' }, employment_evidence_scope: '', employment_boundary_note: '' }
-  const baseDetail = json({ schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'v1', data_version: manifest.data_version, taxonomy_version: manifest.taxonomy_version, company, category_outcomes: baseListing.category_outcomes, claims: [] })
-  fixture.bodies.set(`/${manifest.company_shards[baseListing.company_id].url}`, baseDetail)
-  manifest.company_shards[baseListing.company_id] = { ...descriptor(manifest.company_shards[baseListing.company_id].url, baseDetail, 1), company_id: baseListing.company_id }
-  const projectedListing = JSON.parse(fixture.bodies.get(`/${manifest.approved_v2_projection.listing_chunks[0].url}`)!).companies[0]
-  const projectedDetail = json({ schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'vNext', data_version: manifest.approved_v2_projection.data_version, taxonomy_version: manifest.taxonomy_version, company, category_outcomes: projectedListing.category_outcomes, claims: [], official_claims: [], references: [], community_reports: [], sources: [] })
-  fixture.bodies.set(`/${manifest.approved_v2_projection.company_shards[baseListing.company_id].url}`, projectedDetail)
-  manifest.approved_v2_projection.company_shards[baseListing.company_id] = { ...descriptor(manifest.approved_v2_projection.company_shards[baseListing.company_id].url, projectedDetail, 1), company_id: baseListing.company_id }
+  const baseListings = JSON.parse(fixture.bodies.get(`/${manifest.listing_chunks[0].url}`)!).companies.slice(0, detailCount)
+  const projectedListings = JSON.parse(fixture.bodies.get(`/${manifest.approved_v2_projection.listing_chunks[0].url}`)!).companies.slice(0, detailCount)
+  for (const [index, baseListing] of baseListings.entries()) {
+    const company = { ...Object.fromEntries(Object.entries(baseListing).filter(([key]) => !['display_name', 'category_outcomes'].includes(key))), registry_id: `registry-${index + 1}`, financial_consolidation_parent: { kind: 'unknown', reason: 'unknown' }, ultimate_parent: { kind: 'unknown', reason: 'unknown' }, benefit_policy_owner: { kind: 'unknown', reason: 'unknown' }, employment_evidence_scope: '', employment_boundary_note: '' }
+    const baseDetail = json({ schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'v1', data_version: manifest.data_version, taxonomy_version: manifest.taxonomy_version, company, category_outcomes: baseListing.category_outcomes, claims: [] })
+    fixture.bodies.set(`/${manifest.company_shards[baseListing.company_id].url}`, baseDetail)
+    manifest.company_shards[baseListing.company_id] = { ...descriptor(manifest.company_shards[baseListing.company_id].url, baseDetail, 1), company_id: baseListing.company_id }
+    const projectedListing = projectedListings[index]
+    const projectedDetail = json({ schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'vNext', data_version: manifest.approved_v2_projection.data_version, taxonomy_version: manifest.taxonomy_version, company, category_outcomes: projectedListing.category_outcomes, claims: [], official_claims: [], references: [], community_reports: [], sources: [] })
+    fixture.bodies.set(`/${manifest.approved_v2_projection.company_shards[baseListing.company_id].url}`, projectedDetail)
+    manifest.approved_v2_projection.company_shards[baseListing.company_id] = { ...descriptor(manifest.approved_v2_projection.company_shards[baseListing.company_id].url, projectedDetail, 1), company_id: baseListing.company_id }
+  }
   const projection = manifest.approved_v2_projection; delete manifest.approved_v2_projection
   projection.base_manifest_sha256 = createHash('sha256').update(`${JSON.stringify(manifest)}\n`).digest('hex')
   manifest.approved_v2_projection = projection; fixture.bodies.set(manifestUrl, json(manifest)); return fixture
@@ -131,4 +134,46 @@ describe('artifact v2 listing client', () => {
   it('rejects a projected listing that does not exact-join its canonical base company sequence', async () => { const { bodies } = withProjection('join'); const client = new BenefitsArtifactClient(async (url) => new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 }), webcrypto.subtle as SubtleCrypto); await expect(client.loadAtlas()).rejects.toThrow(/canonical company|identity/) })
   it('keeps legacy-only manifests compatible while exposing explicit lineage', async () => { const { bodies } = artifacts(); const client = new BenefitsArtifactClient(async (url) => new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 }), webcrypto.subtle as SubtleCrypto); const atlas = await client.loadAtlas(); expect(atlas.companies).toHaveLength(2000); expect(atlas.companies[0].lineage.approved_v2).toBeUndefined(); expect(atlas.companies[0].lineage.legacy.category_outcomes[0].kind).toBe('insufficient_evidence') })
   it('loads and exact-joins both legacy and projected company details', async () => { const { bodies } = withProjectionDetail(); const client = new BenefitsArtifactClient(async (url) => new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 }), webcrypto.subtle as SubtleCrypto); const atlas = await client.loadAtlas(); const detail = await client.loadAtlasCompanyDetail(atlas, atlas.companies[0].company_id); expect(detail.legacy.artifact_protocol).toBe('v1'); expect(detail.approvedV2?.artifact_protocol).toBe('vNext'); expect(detail.approvedV2?.company.population_sequence).toBe(detail.legacy.company.population_sequence) })
+  it('bounds projected company detail fetches to the existing concurrency ceiling', async () => {
+    const { bodies } = withProjectionDetail(4); let active = 0; let peak = 0
+    const client = new BenefitsArtifactClient(async (url) => {
+      if (url.includes('/approved-v2-projection/companies/')) { active++; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 2)); active-- }
+      return new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 })
+    }, webcrypto.subtle as SubtleCrypto)
+    const atlas = await client.loadAtlas()
+    await expect(client.loadAtlasCompanyDetails(atlas, atlas.companies.slice(0, 4).map((company) => company.company_id))).resolves.toHaveLength(4)
+    expect(peak).toBeGreaterThan(1)
+    expect(peak).toBeLessThanOrEqual(4)
+  })
+  it('aborts projected detail siblings, preserves the first failure, and suppresses queued work', async () => {
+    const { bodies } = withProjectionDetail(4); const started: string[] = []; const aborted: string[] = []
+    const client = new BenefitsArtifactClient(async (url, signal) => {
+      if (!url.includes('/approved-v2-projection/companies/')) return new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 })
+      started.push(url)
+      if (started.length === 1) return new Response(`${bodies.get(url)} `)
+      await new Promise<void>((resolve) => signal?.addEventListener('abort', () => { aborted.push(url); resolve() }, { once: true }))
+      signal?.throwIfAborted()
+      return new Response(bodies.get(url))
+    }, webcrypto.subtle as SubtleCrypto)
+    const atlas = await client.loadAtlas()
+    await expect(client.loadAtlasCompanyDetails(atlas, atlas.companies.slice(0, 4).map((company) => company.company_id))).rejects.toThrow('byte count 불일치')
+    expect(started.length).toBeLessThanOrEqual(4)
+    expect(aborted.length).toBeGreaterThan(0)
+  })
+  it('propagates caller abort while projected company details are in flight', async () => {
+    const { bodies } = withProjectionDetail(4); const controller = new AbortController(); const aborted: string[] = []
+    let projectedStarted!: () => void; const started = new Promise<void>((resolve) => { projectedStarted = resolve })
+    const client = new BenefitsArtifactClient(async (url, signal) => {
+      if (!url.includes('/approved-v2-projection/companies/')) return new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 })
+      projectedStarted()
+      await new Promise<void>((resolve) => signal?.addEventListener('abort', () => { aborted.push(url); resolve() }, { once: true }))
+      signal?.throwIfAborted()
+      return new Response(bodies.get(url))
+    }, webcrypto.subtle as SubtleCrypto)
+    const atlas = await client.loadAtlas()
+    const loading = client.loadAtlasCompanyDetails(atlas, atlas.companies.slice(0, 4).map((company) => company.company_id), controller.signal)
+    await started; controller.abort(new Error('detail caller cancelled'))
+    await expect(loading).rejects.toThrow('detail caller cancelled')
+    expect(aborted.length).toBeGreaterThan(0)
+  })
 })
