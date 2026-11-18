@@ -1,0 +1,15 @@
+{
+  "schema_version": "three-country-pilot-sources-v1",
+  "purpose": "research_only",
+  "pinned_inputs": [
+    {"path": "companies.jsonl", "sha256": "e5888e3081d8ead3cc67c18d8e8e8007066c1c0de1c68103c59e390be77894ed", "count": 2000, "custody": "public"},
+    {"path": "series-batches.jsonl", "sha256": "51e1ae04cc02584199de65be73e0723b808216ccc93ecea5dfdb0f3a85f95423", "count": 80, "custody": "public"},
+    {"path": "acquisition/expansion/candidates.v1.jsonl", "sha256": "38ff846d0603b7b2d0ac07fb4ba0aa047a0e82eb139d8c88c2ee0a6607dea48e", "count": 36, "custody": "private"},
+    {"path": "acquisition/expansion/candidates.v2.jsonl", "sha256": "34ab09582e86575954d59346ca16d1b95fb6f68287a3326be57dcae16dc98f16", "count": 35, "custody": "private"}
+  ],
+  "sources": [
+    {"jurisdiction": "KR", "authority": "DART", "url": "https://dart.fss.or.kr/", "status": "not_acquired"},
+    {"jurisdiction": "US", "authority": "SEC", "url": "https://www.sec.gov/edgar/search/", "status": "not_acquired"},
+    {"jurisdiction": "JP", "authority": "NTA", "url": "https://www.houjin-bangou.nta.go.jp/", "status": "not_acquired"}
+  ]
+}

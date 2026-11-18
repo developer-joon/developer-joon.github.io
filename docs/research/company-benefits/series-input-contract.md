@@ -2,7 +2,7 @@
 
 The full series is partitioned by `series-batches.jsonl`. It is the only authority for batch IDs, canonical company order, company IDs, legal-entity boundaries, and each 25-company list SHA-256. Agents must not reconstruct a batch from names or select substitutes.
 
-## Authoritative candidate layout
+## Authoritative protocol-2 candidate layout
 
 Research producers submit exactly one review-pending candidate directory:
 
@@ -18,10 +18,12 @@ Research producers submit exactly one review-pending candidate directory:
 ├── official-claims-v2.jsonl
 ├── reference-records.jsonl
 ├── community-benefit-reports.jsonl
-└── sources-v2.jsonl
+├── sources-v2.jsonl
+├── verified-benefit-candidates.jsonl
+└── company-category-outcomes.jsonl
 ```
 
-`candidate.json` has `schema_version`, the canonical `batch_id`, all three canonical batch hashes (`company_list_sha256`, `effective_sequence_sha256`, and `replacement_events_sha256`), `status: review_pending`, `researcher_id`, and exact byte hashes for all ten JSONL artifacts. The v2 cell ledger must equal—not merely count to—the canonical Cartesian product of the batch's 25 selected company IDs and the ten categories `leave,family,health,growth,housing,commute,remote,retirement,meals,inclusion`. Missing, duplicate, or substituted cells fail before review. The ledgers are in canonical company/category order. Each company also has legacy claims or one batch-qualified `company-gap::v2::<batch-id>::<company-id>`, never both, and every legacy outcome has one canonical `pending_independent_review` request. Pending requests are routing records, not reviews, and can never be copied into the production review ledger.
+`candidate.json` has `schema_version: "2"`, the canonical `batch_id`, all three canonical batch hashes (`company_list_sha256`, `effective_sequence_sha256`, and `replacement_events_sha256`), `status: review_pending`, `researcher_id`, and exact byte hashes for all twelve JSONL artifacts listed above. The v2 cell ledger must equal—not merely count to—the canonical Cartesian product of the batch's 25 selected company IDs and the ten categories `leave,family,health,growth,housing,commute,remote,retirement,meals,inclusion`. Missing, duplicate, or substituted cells fail before review. The ledgers are in canonical company/category order. Each company also has legacy claims or one batch-qualified `company-gap::v2::<batch-id>::<company-id>`, never both, and every legacy outcome has one canonical `pending_independent_review` request. Pending requests are routing records, not reviews, and can never be copied into the production review ledger. `verified-benefit-candidates.jsonl` contains the proposition candidates submitted for independent review; `company-category-outcomes.jsonl` is deterministically derived from the cells, attempts, and those candidates.
 
 Every explicit cell binds its real attempt receipts and any v2 official claims, references, or community reports. The production `validate-benefits-v2-package.py` contract is applied unchanged after the batch set gate: IDs, content hashes, source discovery, same-cell bindings, coverage-policy routes, and orphan detection all fail closed. Candidate files must be regular mode-`0644` files in a mode-`0755` directory; symlinks and local absolute paths are rejected. Company/category/route ledgers and evidence/source ID bindings use canonical order, and source-tier/known-host incompatibilities or cross-cell raw/capture hash reuse fail validation. Community evidence is accepted only after moderation and a frozen snapshot. The compiler sorts and hashes supplied records but never generates attempts, evidence, or `no_public_info` cells.
 
@@ -38,14 +40,55 @@ python scripts/validate-company-benefits-series-candidate.py <candidate-dir> \
   --research-root docs/research/company-benefits
 ```
 
-For heterogeneous scratch output, use the separate deterministic compiler. It accepts `draft.json`, the three legacy input ledgers, and all six v2 ledgers; canonicalizes order; generates only legacy pending review requests; hashes the result; and invokes the production candidate validator. It does not synthesize v2 records:
+For heterogeneous scratch output, use the separate deterministic compiler. The current input set is exactly `draft.json`, `sources.jsonl`, `claims.jsonl`, `gaps.jsonl`, the six v2 ledgers shown above, and `verified-benefit-candidates.jsonl`. It canonicalizes order, generates only legacy pending review requests, derives `company-category-outcomes.jsonl`, hashes the result, and invokes the production candidate validator. It does not synthesize v2 evidence records:
 
 ```bash
 python scripts/compile-company-benefits-series-candidate.py <scratch-dir> <candidate-dir> \
   --research-root docs/research/company-benefits
 ```
 
+The complete parent directory chain of `<candidate-dir>` must already exist and
+must contain only real directories (no symlinks). The compiler creates only its
+private staging leaf and the final candidate leaf beneath that pinned parent.
+The final output parent must be owned by the effective UID and must not be
+group- or world-writable. The compiler and promoter acquire the same exclusive
+advisory lock on the no-follow regular file
+`.company-benefits-publication.lock` in that parent before creating staging and
+hold it through publication and cleanup.
+
+The filesystem trust boundary is a non-privileged, trusted repository user.
+Arbitrary code already running as that same UID can rewrite the repository and
+canonical ledgers and is out of scope; POSIX provides no atomic
+mkdir-and-return-directory-fd operation that could prove safety against such
+same-UID syscall interposition. The lock serializes supported cooperating
+compiler/promoter invocations. Existing no-follow opens, inode binding, and
+identity rechecks remain defense against accidental aliasing and unsupported
+filesystem substitutions. Sticky temporary ancestors are acceptable only
+above the pinned existing final output parent; the final parent itself must
+satisfy the ownership and permission checks.
+
 ## Independent review and promotion
+
+The canonical ledgers deliberately split authority. `series-batches.jsonl`
+remains the immutable population ledger for batch membership, company order,
+effective-sequence lineage, and replacement-event lineage; package or review
+identity fields are prohibited by its strict schema. The separate
+`series-batch-approvals.jsonl`, validated per row by
+`schema/series-batch-approval.schema.json`, is the canonical vNext trust root
+for an approved `batch.json` SHA-256, reviewed-candidate SHA-256, and reviewer
+receipt SHA-256. It is currently an empty zero-byte JSONL ledger because no
+vNext package has completed Task 6 promotion. Task 6 promotion may append a
+row only after verifying the external candidate and reviewer-receipt bytes;
+the checkpoint verifier authenticates those recorded identities but does not
+reopen repository-external receipt files. A selected checkpoint batch with no
+unique approved row in this ledger fails closed.
+
+`package_sha256` and `reviewer_receipt_sha256` are globally unique replay
+identities. `reviewed_candidate_sha256` is instead the digest of the exact
+reviewed candidate bytes and may repeat when those bytes genuinely repeat
+(notably the canonical empty candidate set). Every row must still bind that
+digest to its package's actual candidate bytes and retained receipt; equality
+never bypasses byte verification or authorizes approval transfer.
 
 Independent review artifacts must be outside the repository and must contain exactly:
 
@@ -53,10 +96,34 @@ Independent review artifacts must be outside the repository and must contain exa
 <external-review-dir>/
 ├── review-bundle.json
 ├── reviews.jsonl
-└── checks.jsonl
+├── checks.jsonl
+├── reviewed-candidate.json
+└── reviewer-receipt.json
 ```
 
-The bundle binds the exact candidate manifest hash and all candidate artifact hashes, preventing approval transfer after any candidate change. Reviews must cover every claim/gap exactly once in canonical order, be approved by someone other than the bound researcher, and precede both the exact source checks and promotion approval. Every check names one `source_id`, and the check set covers every bound candidate source ID exactly once. Distinct records may share an official ZIP/PDF URL while retaining different locators, markers, and hashes. Publishable claim/unknown-claim source checks require status 200 plus the exact source ID, source URL, final URL, content hash, and expected marker. An identity-projection check additionally carries the fixed algorithm/version, the actual response's `cik`/`name`/`ein`, and the projection digest; promotion and integration recompute the canonical projection and reject any mismatch. Metadata-only gap routes instead record exactly the candidate's `status` (including `null`, 403, or 404), `final_url`, and `access_wall`; they carry no marker or content hash and never become claim evidence. Missing, duplicate, orphan, cross-source, replayed, mutated, self-approved, stale, repository-local, or symlink-aliased review material fails closed.
+The protocol-2 bundle binds the exact candidate manifest hash and all candidate artifact hashes, plus the exact bytes of `reviewed-candidate.json` and `reviewer-receipt.json`, preventing approval transfer after any candidate change. Reviews must cover every claim/gap exactly once in canonical order, be approved by someone other than the bound researcher, and precede both the exact source checks and promotion approval. Every check names one `source_id`, and the check set covers every bound candidate source ID exactly once. Distinct records may share an official ZIP/PDF URL while retaining different locators, markers, and hashes. Publishable claim/unknown-claim source checks require status 200 plus the exact source ID, source URL, final URL, content hash, and expected marker. An identity-projection check additionally carries the fixed algorithm/version, the actual response's `cik`/`name`/`ein`, and the projection digest; promotion and integration recompute the canonical projection and reject any mismatch. Metadata-only gap routes instead record exactly the candidate's `status` (including `null`, 403, or 404), `final_url`, and `access_wall`; they carry no marker or content hash and never become claim evidence. Missing, duplicate, orphan, cross-source, replayed, mutated, self-approved, stale, repository-local, or symlink-aliased review material fails closed.
+
+The deterministic compiler accepts one immutable protocol-2 candidate plus an exact
+three-file input directory: canonical `decision.json`, explicit
+`dispositions.jsonl`, and explicit post-review `checks.jsonl`. `decision.json`
+must name the independent reviewer, bind the exact candidate-manifest digest,
+state `approved`, `rework`, or `rejected`, and provide the latest review and
+approval-boundary timestamps. Retrieval success never supplies or changes a
+review disposition. Run it outside the repository under a pre-existing private
+parent:
+
+```bash
+python scripts/compile-company-benefits-independent-review.py \
+  <candidate-dir> <review-input-dir> <external-review-dir> \
+  --research-root docs/research/company-benefits
+```
+
+Use `--lint-only` to run the candidate and authoritative promoter review
+validators without publishing the five-file directory. Publication is
+cooperatively locked, atomic, and no-overwrite. Rework and rejection receipts
+are retained in the same five-file canonical layout, but the promoter accepts
+only an approved receipt whose every disposition and entailment gate is
+explicitly approved.
 
 Promotion emits the existing integration package and nothing else:
 
@@ -65,6 +132,11 @@ python scripts/promote-company-benefits-series-candidate.py \
   <candidate-dir> <external-review-dir> <approved-package-dir> \
   --research-root docs/research/company-benefits
 ```
+
+The complete parent directory chain of `<approved-package-dir>` must already
+exist and must contain only real directories (no symlinks). The promoter does
+not provision parents; it creates only its private staging leaf and the final
+package leaf beneath the pinned output parent.
 
 ## Approved integration package layout
 
@@ -81,12 +153,27 @@ python scripts/promote-company-benefits-series-candidate.py \
 ├── official-claims-v2.jsonl
 ├── reference-records.jsonl
 ├── community-benefit-reports.jsonl
-└── sources-v2.jsonl
+├── sources-v2.jsonl
+├── verified-benefits.jsonl
+├── company-category-outcomes.jsonl
+├── series-batch-approval.jsonl
+└── SHA256SUMS
 ```
 
 No package may include PDFs, screenshots, archives, raw responses, `evidence_path`, `evidence_file`, or `retained_file` provenance. A `nonpublishable_metadata` source follows `schema/nonpublishable-source.schema.json`: it explicitly records route quality, publication ineligibility, the nonpublication reason, entity-binding status, metadata-only retention, and reuse status. It cannot retain or assert a body, quote, content hash, expected marker, locator, or legal-entity applicability. Such a source may document a gap search route only; claim and unknown-claim source rules remain unchanged.
 
-`batch.json` follows `schema/series-input.schema.json`. It binds the three canonical hashes and the exact bytes of all eleven final JSONL artifacts. Its required `review_audit` preserves the full canonical candidate manifest and external review bundle as well as their hashes and artifact maps. Integration reconstructs the candidate claims and review requests, reruns the authoritative candidate and promotion-review contracts, and proves that the reviewed candidate plus exact checks produce the final promoted claims. The final `claims.jsonl` hash separately binds promotion's deterministic gate-field injection, so the audit does not imply that reviewers approved a field which did not yet exist. It is created only by promotion with `status: approved`, `reviewer_id`, and `approved_at`; empty JSONL artifacts are zero-byte files and use the SHA-256 of zero bytes.
+`batch.json` follows `schema/series-input.schema.json`. It binds the three canonical hashes and the exact bytes of the thirteen manifest artifacts: the five legacy-shaped production ledgers (`sources.jsonl`, `claims.jsonl`, `reviews.jsonl`, `gaps.jsonl`, `checks.jsonl`), the six v2 evidence ledgers, `verified-benefits.jsonl`, and `company-category-outcomes.jsonl`. `series-batch-approval.jsonl` is the separate one-row canonical approval binding, and `SHA256SUMS` covers every other package member, including `batch.json` and that approval row. The required `review_audit` preserves the full canonical candidate manifest and external review bundle as well as their hashes and artifact maps. Integration reconstructs the candidate claims and review requests, reruns the authoritative candidate and promotion-review contracts, and proves that the reviewed candidate plus exact checks produce the final promoted claims. The final `claims.jsonl` hash separately binds promotion's deterministic gate-field injection, so the audit does not imply that reviewers approved a field which did not yet exist. It is created only by promotion with `status: approved`, `reviewer_id`, and `approved_at`; empty JSONL artifacts are zero-byte files and use the SHA-256 of zero bytes.
+
+### Legacy compatibility layouts
+
+Schema-version-1 remains available only as legacy compile and promotion compatibility;
+it does not satisfy the current protocol-2 release contract. A legacy candidate
+omits `verified-benefit-candidates.jsonl` and
+`company-category-outcomes.jsonl`; its review directory contains only
+`review-bundle.json`, `reviews.jsonl`, and `checks.jsonl`; and its approved
+package ends at `sources-v2.jsonl` without `verified-benefits.jsonl`, current
+outcomes, the approval row, or `SHA256SUMS`. Those legacy sets must not be mixed
+with protocol-2 members, and they do not describe the current Task 6 output.
 
 The legacy and v2 ledgers use their existing source, claim, review, and evidence contracts plus these batch rules:
 
@@ -105,11 +192,51 @@ The legacy and v2 ledgers use their existing source, claim, review, and evidence
 - `series-progress.json` uses an explicit `progress_version`. A wholly legacy ledger is version `1` (the marker may be absent only for current-master read compatibility) and contains no cell totals, per-batch cell counts, or v2 hashes. Only an explicit `progress_version: "2"` activates the v2 contract for the whole 80-batch partition; markerless v2 fields fail closed as mixed/invalid, and legacy and v2 approved entries may never coexist. Legacy progress remains readable by ledger tooling but can never authorize v2 artifact or post publication.
 - In v2 progress, each approved entry records `cell_count: 250`, a deterministic `cell_set_sha256`, and `v2_ledger_sha256` hashes over the full canonical payloads of all six batch slices. Pending entries record `cell_count: 0` and cannot retain v2 hashes or cells. V2 completion requires exactly 80 approved batches and 20,000 explicit cells. Verification reruns the authoritative v2 validator on every approved batch slice and on the complete merged ledgers, so orphan/cross-batch records, ID collisions, copied receipts, and payload tampering fail closed.
 
+## Retained-package full-series preflight
+
+The read-only protocol-2 selector discovers packages only beneath explicitly
+named immutable retained roots. Each retained root must already exist, be owned
+by the effective user, have no group/world permission bits, and contain exactly
+one current 16-file approved package for every canonical batch. Selection never
+uses a filename date, directory name, modification time, or a “latest” rule.
+`series-batches.jsonl` supplies the sole output order, and
+`series-batch-approvals.jsonl` supplies the exact package and reviewer-receipt
+identities.
+
+Run the full 80-package preflight before invoking the whole-series integrator:
+
+```bash
+python scripts/select-company-benefits-series-packages.py \
+  /absolute/private/retained-root-a [/absolute/private/retained-root-b ...] \
+  --research-root docs/research/company-benefits \
+  --output /absolute/private/preflight-parent/verified-series
+```
+
+The output parent must pre-exist, be owner-private, and contain no symlink in
+its resolved path. The output leaf must not exist. After all 80 production
+`load_package` calls and the 2,000-company/20,000-cell global collision gates
+succeed, the command atomically publishes a new directory containing:
+
+- `package-paths.json`, the existing schema-version-1 manifest accepted by
+  `integrate-company-benefits-series.py`; and
+- `preflight-report.json`, a stable inventory of every selected package member,
+  byte count, SHA-256, canonical-ledger hashes, manifest hash, aggregate byte
+  count, and proven totals.
+
+Discovery and inventory reads are bounded, no-follow regular-file reads.
+Duplicate paths/inodes, ambiguous or missing batch packages, stale candidate or
+review trees, noncanonical members, special files, copied package/receipt
+identities, and cross-package record/proposition/outcome collisions fail before
+output publication. The command never writes the canonical research tree and
+refuses to replace an existing output leaf. Use
+`python scripts/select-company-benefits-series-packages.py --help` for all CLI
+arguments.
+
 ## Validation and integration
 
 ```bash
 python scripts/integrate-company-benefits-series-batch.py \
-  /home/bread/.hermes/profiles/conan/cache/scratch/company-benefits-series/domestic-02 \
+  ${HERMES_HOME}/cache/scratch/company-benefits-series/domestic-02 \
   --research-root docs/research/company-benefits \
   --freeze-anchor-receipt /absolute/path/to/approved/freeze-anchor-receipt.json \
   --effective-selection-receipt /absolute/path/to/approved/effective-selection-receipt.json \

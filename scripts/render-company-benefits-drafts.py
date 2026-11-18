@@ -63,8 +63,29 @@ def load_verifier():
     return module
 
 
+
 def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_anchor_receipt=None,
                  effective_selection_receipt=None):
+    root = Path(root)
+    if scope not in {"domestic", "international"}:
+        raise ValueError("scope must be domestic or international")
+    if batch_number < 1:
+        raise ValueError("batch number must be positive")
+    as_of = as_of or datetime.now(timezone.utc).date()
+    verifier = load_verifier()
+    errors = verifier.verify_workspace(root, as_of=as_of, freeze_anchor_receipt=freeze_anchor_receipt,
+                                       effective_selection_receipt=effective_selection_receipt)
+    if errors:
+        raise ValueError("workspace verification failed:\n" + "\n".join(errors))
+    # Workspace verification alone does not authenticate retained reviewer
+    # receipt bytes. Only the package integrators can authorize v2 publication.
+    if read_jsonl(root / "verified-benefits.jsonl"):
+        raise ValueError("verified benefits require validated package integration")
+    return _render_verified_batch(root, output_dir, scope, batch_number, as_of=as_of)
+
+
+def _render_verified_batch(root, output_dir, scope, batch_number, as_of=None):
+    """Internal only: enclosing integration has validated the merged series."""
     root = Path(root)
     output_dir = Path(output_dir)
     if scope not in {"domestic", "international"}:
@@ -72,19 +93,11 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     if batch_number < 1:
         raise ValueError("batch number must be positive")
 
-    verifier = load_verifier()
     protocol_path = root / "population-protocol.json"
     protocol = read_json(protocol_path) if protocol_path.is_file() else {}
     as_of = as_of or datetime.now(timezone.utc).date()
-    errors = verifier.verify_workspace(root, as_of=as_of, freeze_anchor_receipt=freeze_anchor_receipt,
-                                       effective_selection_receipt=effective_selection_receipt)
-    if errors:
-        raise ValueError("workspace verification failed:\n" + "\n".join(errors))
-
     companies = read_jsonl(root / "companies.jsonl")
-    claims = read_jsonl(root / "benefit-claims.jsonl")
-    sources = read_jsonl(root / "source-registry.jsonl")
-    reviews = read_jsonl(root / "reviews.jsonl")
+    benefits = read_jsonl(root / "verified-benefits.jsonl")
     company_map = {company["company_id"]: company for company in companies}
     batch_id = f"{scope}-{batch_number:02d}"
     manifests = {item["batch_id"]: item for item in read_jsonl(root / "series-batches.jsonl")}
@@ -104,33 +117,14 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
     if None in company_ids or len(set(company_ids)) != 25:
         raise ValueError("batch requires 25 distinct company IDs")
 
-    claims_by_company = {company_id: [] for company_id in company_ids}
-    approved_claim_ids = {
-        review["claim_id"] for review in reviews
-        if review.get("claim_id")
-        and not review.get("record_id")
-        and review.get("decision") == "approved"
-        and review.get("researcher_id") != review.get("reviewer_id")
-    }
-    for claim in claims:
-        if claim.get("company_id") in claims_by_company and claim.get("claim_id") in approved_claim_ids:
-            claims_by_company[claim["company_id"]].append(claim)
-    source_map = {source.get("source_id"): source for source in sources}
-    used_source_ids = {
-        source_id
-        for values in claims_by_company.values()
-        for claim in values
-        for source_id in claim.get("source_ids", [])
-    }
-    missing_sources = sorted(source_id for source_id in used_source_ids if source_id not in source_map)
-    if missing_sources:
-        raise ValueError(f"missing source records for: {', '.join(missing_sources)}")
+    benefits_by_company = {company_id: [] for company_id in company_ids}
+    for benefit in benefits:
+        if benefit.get("company_id") in benefits_by_company:
+            if benefit.get("review", {}).get("status") != "independently_reviewed":
+                raise ValueError("draft benefit requires independently reviewed proposition")
+            benefits_by_company[benefit["company_id"]].append(benefit)
 
     parts = [HEADER.format(batch_id=batch_id, scope=scope, protocol_id=protocol.get("protocol_id", ""))]
-    status_labels = {
-        "confirmed": "확인됨", "limited": "범위 제한 확인", "past": "과거 확인",
-        "name_only": "명칭만 확인", "unknown": "확인 불가", "conflict": "상충",
-    }
     for company in batch:
         parts.append(f"## {company['legal_name']}\n\n")
         parts.append(f"- 법인 ID: `{company['company_id']}`\n")
@@ -140,18 +134,16 @@ def render_batch(root, output_dir, scope, batch_number, as_of=None, freeze_ancho
         owner = company.get("benefit_policy_owner")
         owner_label = owner if isinstance(owner, str) else "공개 모집단 자료에서 미확정"
         parts.append(f"- 법인·정책 경계: 선정 법인 `{company.get('selected_reporting_legal_entity', company['legal_name'])}` / 복지 정책 주체 {owner_label}\n")
-        values = sorted(claims_by_company[company["company_id"]], key=lambda c: c.get("claim_id", ""))
+        values = sorted(benefits_by_company[company["company_id"]], key=lambda b: b["benefit_id"])
         if not values:
             parts.append("- 이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.\n")
-        for claim in values:
-            status = status_labels.get(claim.get("status"), claim.get("status", "미정"))
-            parts.append(f"- **{claim.get('benefit_name', '복지 항목')}** — {status}: {claim.get('detail', '')}\n")
-            scope_value = claim.get("application_scope", {})
+        for benefit in values:
+            parts.append(f"- **{benefit['title']}** — {benefit['description']}\n")
+            scope_value = benefit["scope"]
             parts.append(f"  - 적용 범위: 국가 {', '.join(scope_value.get('countries', []))}; 법인 {', '.join(scope_value.get('legal_entities', []))}; 고용형태 {', '.join(scope_value.get('employment_types', []))}\n")
-            parts.append(f"  - 최종 확인: {claim.get('prepublication_checked_at', claim.get('checked_at', '미상'))}\n")
-            for source_id in sorted(claim.get("source_ids", [])):
-                source = source_map[source_id]
-                parts.append(f"  - 출처: [{source.get('title', source_id)}]({source.get('url', '')})\n")
+            parts.append(f"  - 최종 확인: {benefit['currentness_checked_at']}\n")
+            for evidence_id in sorted(benefit["evidence_ids"]):
+                parts.append(f"  - 검증 근거 ID: `{evidence_id}`\n")
         parts.append("\n")
     parts.append(FOOTER)
     rendered = "".join(parts)

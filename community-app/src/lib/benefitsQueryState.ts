@@ -94,10 +94,12 @@ export function filterBenefitsCompanies<T extends CompanyListing>(companies: T[]
 }
 
 export type ConditionGroup = 'matches_visible_scope'|'scope_mismatch'|'scope_unknown'|'insufficient_evidence'
-export function conditionGroup(company: CompanyListing, state: QueryState): { group: ConditionGroup; reasons: string[] } {
+export function conditionGroup(company: CompanyListing, state: QueryState, projectionActive = false): { group: ConditionGroup; reasons: string[] } {
   const wanted = state.preferred_categories.length ? state.preferred_categories : presetCategories(state.preset)
   const outcomes = wanted.map((category) => outcomeFor(company, category))
-  const concrete = outcomes.filter((outcome) => isResearchedOutcome(outcome) ? outcome.state !== 'no_public_info' && outcome.specific_benefit_count > 0 : outcome.kind === 'evidenced')
+  // A legacy-only record is research context, never a fit match while the
+  // additive projection is active and its concrete benefits remain unreviewed.
+  const concrete = outcomes.filter((outcome) => isResearchedOutcome(outcome) ? outcome.state !== 'no_public_info' && outcome.specific_benefit_count > 0 : !projectionActive && outcome.kind === 'evidenced')
   if (!concrete.length) return { group: 'insufficient_evidence', reasons: wanted.map((category, index) => isResearchedOutcome(outcomes[index]) && outcomes[index].state !== 'no_public_info' ? `${category}: 구체 혜택 확인 필요` : `${category}: 게시 가능한 근거 부족`) }
   const evidenced = concrete.filter(hasOutcomeScope)
   const mismatch = evidenced.some((outcome) => (state.country && outcome.scope.countries.length > 0 && !outcome.scope.countries.includes(state.country)) || (state.role && outcome.scope.roles.length > 0 && !outcome.scope.roles.includes(state.role)) || (state.employment_type && outcome.scope.employment_types.length > 0 && !outcome.scope.employment_types.includes(state.employment_type)))

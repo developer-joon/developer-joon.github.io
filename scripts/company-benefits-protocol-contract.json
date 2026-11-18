@@ -1,4 +1,63 @@
 {
+  "verified_benefit_contract": {
+    "required_fields": [
+      "benefit_id",
+      "proposition_sha256",
+      "company_id",
+      "primary_category_id",
+      "title",
+      "description",
+      "scope",
+      "currentness",
+      "currentness_checked_at",
+      "conflict_status",
+      "evidence_ids",
+      "review"
+    ],
+    "benefit_id_pattern": "^benefit::[0-9a-f]{64}$",
+    "proposition_sha256_pattern": "^[0-9a-f]{64}$",
+    "benefit_id_rule": "benefit_id MUST equal 'benefit::' + proposition_sha256.",
+    "primary_category_ids": [
+      "leave", "family", "health", "growth", "housing",
+      "commute", "remote", "retirement", "meals", "inclusion"
+    ],
+    "scope_fields": [
+      "countries", "legal_entities", "roles", "employment_types",
+      "family_members", "conditions"
+    ],
+    "currentness": ["current", "historical", "unknown"],
+    "currentness_checked_at": "Canonical UTC ISO datetime ending in Z.",
+    "conflict_status": ["none", "disclosed", "contradictory"],
+    "canonicalization": {
+      "serialization": "Reject unpaired surrogate code points, then encode UTF-8 JSON with sorted keys, ensure_ascii=false, and separators=(',', ':').",
+      "normalization": "Preserve every valid Unicode scalar value without NFC/NFKC folding or non-ASCII case mapping. Trim and collapse only U+0009 TAB, U+000A LF, U+000B VT, U+000C FF, U+000D CR, and U+0020 SPACE to one U+0020 SPACE; lowercase only ASCII A-Z by adding 32 to each code point.",
+      "unicode_tradeoff": "Canonically equivalent Unicode spellings and non-ASCII case variants intentionally remain distinct. This sacrifices Unicode-equivalence folding to guarantee runtime-independent Python/Node canonical bytes and hashes before any production verified proposition exists.",
+      "canonical_scope": "Normalize every scope string and sort each scope array by normalized UTF-8 bytes; retain the six named scope keys.",
+      "proposition_payload_fields": [
+        "company_id", "title", "description", "scope", "currentness",
+        "currentness_checked_at", "conflict_status"
+      ],
+      "proposition_hash_authority": "Python producer validation and the Node artifact verifier independently recompute proposition_sha256 with the same canonical algorithm.",
+      "logical_duplicate_key": "Python producer validation and the Node artifact verifier reject duplicate company_id + normalized title + normalized description + canonical scope, excluding primary_category_id; repeated proposition_sha256 values are rejected independent of primary_category_id."
+    },
+    "review": {
+      "status": "independently_reviewed",
+      "required_fields": [
+        "status", "reviewer_receipt_sha256", "reviewed_candidate_sha256", "reviewed_at"
+      ]
+    },
+    "detail_review_binding": {
+      "field": "verified_benefit_review_binding",
+      "presence_rule": "Required when verified_benefits is nonempty and forbidden when verified_benefits is empty or absent.",
+      "required_fields": [
+        "reviewed_candidate_sha256", "reviewer_receipt_sha256", "reviewed_at"
+      ],
+      "benefit_match_rule": "Every benefit review field other than status MUST exactly equal the detail binding.",
+      "candidate_payload": "Canonical JSON array of verified benefits ordered by benefit_id with each review field omitted.",
+      "candidate_hash_authority": "Python producer validation and the Node artifact verifier independently recompute reviewed_candidate_sha256.",
+      "receipt_boundary": "reviewer_receipt_sha256 is a claimed digest structurally propagated at Task 2. External receipt bytes are neither loaded nor hashed until promotion Task 6."
+    }
+  },
   "cutoff_at": "2026-10-29T23:59:59+09:00",
   "scopes": {
     "domestic": {

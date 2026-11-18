@@ -320,10 +320,8 @@ def _stage_replacement(batch_id, package_dir, approval, approval_raw, research_r
         raise ValueError("full-series staged validation failed:\n" + "\n".join(errors))
     renderer = _load_script(Path(__file__).with_name("render-company-benefits-drafts.py"),
                             "approved_batch_replacement_renderer")
-    renderer.render_batch(
+    renderer._render_verified_batch(
         staged, staged / "drafts", batch["scope"], batch["batch_number"], as_of=as_of,
-        freeze_anchor_receipt=freeze_anchor_receipt,
-        effective_selection_receipt=effective_selection_receipt,
     )
     errors = verifier.verify_workspace(
         staged, as_of=as_of, freeze_anchor_receipt=freeze_anchor_receipt,

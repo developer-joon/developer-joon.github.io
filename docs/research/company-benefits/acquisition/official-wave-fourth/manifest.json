@@ -1,0 +1,88 @@
+{
+  "approved_benefits": 0,
+  "authority": "local_audit_only_not_promotion_or_publication_input",
+  "canonical_input_sha256": {
+    "companies.jsonl": "e5888e3081d8ead3cc67c18d8e8e8007066c1c0de1c68103c59e390be77894ed",
+    "series-batches.jsonl": "51e1ae04cc02584199de65be73e0723b808216ccc93ecea5dfdb0f3a85f95423"
+  },
+  "companies_with_leads": 67,
+  "coverage_sha256": "4271faece668be7fe6f47ed44c8f04e233bd80bccde0c8c96ea60171cf7a7d99",
+  "covered_companies": 125,
+  "deduplication": "Producer rows are not independently deduplicated propositions or approved benefits.",
+  "distinct_approved_benefits": 0,
+  "evidence_level": "research_only",
+  "inventory": {
+    "domestic-12": {
+      "canonical_company_list_sha256": "10adb0c92a227d813882adf6a592e80b8ed75fd0b9ec5ddab104845ba992d9d7",
+      "companies_with_leads": 8,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "41b03ade6d6f28189a3a84f40254e0335ef66c85c96027bad6d1312327207293",
+        "manifest.json": "bd2a29facec55ac2c88ee6dc6df183aa25c3874f8c187962c3117332fbdae7cc",
+        "observations.jsonl": "d0e41e97c5c3ebc39ad7cd8724ad6516d7e43f9eaaff84be89e7d28a6217bd1c"
+      },
+      "producer_leads": 87,
+      "research_incomplete_companies": 17
+    },
+    "domestic-13": {
+      "canonical_company_list_sha256": "6aa027f89e099142113748c5ede28ae204d53feb3573ba451689cf73c2148039",
+      "companies_with_leads": 11,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "bc5b5a9763bda84a0c1161c26715b55c8945e7f28a745e5357eea631d65556e4",
+        "manifest.json": "fd2ff56b6aa6cdd6ffd7e505ae33a3a42c0647b1212ed82d1caf2849a5c4b09a",
+        "observations.jsonl": "ef88ad9c5bdf9a481af44c58c53be8b1cf925ad76da07e64ad78bcd9735fca4e"
+      },
+      "producer_leads": 92,
+      "research_incomplete_companies": 14
+    },
+    "domestic-14": {
+      "canonical_company_list_sha256": "bb4d752ac025ff258b7e3abfb3f418811485a258020abb3d666a8e0fc677366b",
+      "companies_with_leads": 15,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "2cebf042c54bb92191a728f0d248edcc20cfe821c97cf44575b65ac01cd2dd3e",
+        "manifest.json": "b74cd07fc9737a8f37aa5b491dba0b98800c515bf86a37195b9d3d4756da8bd4",
+        "observations.jsonl": "7688fec4ad951e845266adff3b34777e9bda14f6a65082a8bfbce4004e692db6"
+      },
+      "producer_leads": 188,
+      "research_incomplete_companies": 10
+    },
+    "domestic-15": {
+      "canonical_company_list_sha256": "144afb4fa3a4f7938c25ac7a5fd9c71d8f4a028cd634c01ec019a987f3227da4",
+      "companies_with_leads": 10,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "76366586d7258ae0314f043c85216dcb1c0706501382ed274d689e35855565d1",
+        "manifest.json": "6313988d02a070f73e320f929bbde713684b71312495b474b71e33877a84cfb8",
+        "observations.jsonl": "9dc0163bc24bdfa8438bf740d59a4ff0b0d92daeb6251b44987737e97673bb90"
+      },
+      "producer_leads": 111,
+      "research_incomplete_companies": 15
+    },
+    "international-05": {
+      "canonical_company_list_sha256": "ca52b31c31b969dfad2d284f19f9c42de3e1c101a854b2a6a90843af31fe9f1c",
+      "companies_with_leads": 23,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "3d04ff41c0de2c9961f7eca2f806f3be76730aaa14ea51179c2415cc71d94d34",
+        "manifest.json": "235d6be32973013779b7e711e97d433f90d6c775e838287585330d50fb1142cf",
+        "observations.jsonl": "35c96619b99f242eedb4efc40bc8fb9a6b70a1352cd9683364c7621f3fb9eca8"
+      },
+      "producer_leads": 142,
+      "research_incomplete_companies": 2
+    }
+  },
+  "leads_sha256": "bfc755904efbe33035e31fa1343db29515a5f8ef29f86ca305ce058c2749f021",
+  "producer_leads": 620,
+  "research_incomplete_companies": 58,
+  "source_rights_status": "unreviewed",
+  "unencrypted_http_source_sha256_research_only": [
+    "005a1da03e181462eea2e92929fb95e539349bf4f945bf5a2e6f73ef520b03e3",
+    "1886ffc72221022835329c8fb4e1c160f5252ebeb8c591a31c9eae16b537f284",
+    "610eef31ad760243de58e543bac3f4ae323b5721013fcf264aff4961ce389840",
+    "8db8012273bc1b6b8264de0fc265e4ffa512d406698eea78b020cd14ced4d228",
+    "9ac46dfb642fa54f7f01092de3a6d2353addf8e9aa691a89c29599a06a1aeeab",
+    "dc6b680bf9213b5830323c871911bf227077d634fdd8607cf1d6cc4ab91424dc"
+  ]
+}

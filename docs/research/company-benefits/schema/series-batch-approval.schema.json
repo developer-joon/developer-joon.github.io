@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "company-benefits-series-batch-approval.schema.json",
+  "$comment": "Canonical immutable package/review identity record. Batch membership and effective/replacement lineage remain exclusively in series-batches.jsonl; external candidate and reviewer-receipt byte verification occurs during Task 6 promotion before this record is appended. Package and reviewer-receipt digests are globally replay-protected; reviewed_candidate_sha256 is an exact content digest and may repeat only when candidate bytes repeat.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approval_version", "batch_id", "status", "package_sha256", "reviewed_candidate_sha256", "reviewer_receipt_sha256"],
+  "properties": {
+    "approval_version": {"const": "1"},
+    "batch_id": {"type": "string", "pattern": "^(domestic|international)-(0[1-9]|[1-3][0-9]|40)$"},
+    "status": {"const": "approved"},
+    "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reviewed_candidate_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reviewer_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

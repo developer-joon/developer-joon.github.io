@@ -14,6 +14,7 @@ import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlparse
@@ -182,6 +183,7 @@ def load_assignment_validator():
     return module
 
 
+@lru_cache(maxsize=1)
 def load_verifier():
     path = Path(__file__).with_name("verify-company-benefits-ledger.py")
     spec = importlib.util.spec_from_file_location("company_benefits_artifact_verifier", path)
@@ -385,7 +387,8 @@ def _assemble_inputs(root, taxonomy, taxonomy_sha256, v2_snapshot=None):
                    for company_cells in cells_by_company.values())):
         raise ValueError("v2 artifact requires exact 2,000-company × 10-category explicit cell equality")
     state_counts = Counter(cell["state"] for cell in cells)
-    expected_states = ("official_verified", "reference", "community_report", "no_public_info")
+    expected_states = ("official_verified", "reference", "community_report", "no_public_info",
+                       "not_researched", "research_incomplete", "source_access_failed", "conflicting_evidence")
     if set(state_counts) - set(expected_states):
         raise ValueError("v2 artifact contains an unsupported cell state")
     ledger_sha256 = {
@@ -465,7 +468,8 @@ def validate_approved_v2_projection_inputs(root, taxonomy, taxonomy_sha256):
     if set(cells_by_company) != approved_set or any(set(value) != expected_categories for value in cells_by_company.values()):
         raise ValueError("approved projection company/category join is not exact")
     state_counts = Counter(cell["state"] for cell in cells)
-    states = ("official_verified", "reference", "community_report", "no_public_info")
+    states = ("official_verified", "reference", "community_report", "no_public_info",
+              "not_researched", "research_incomplete", "source_access_failed", "conflicting_evidence")
     if set(state_counts) - set(states):
         raise ValueError("approved projection contains unsupported cell state")
     protocol_path = root / "population-protocol.json"
@@ -483,7 +487,8 @@ def validate_approved_v2_projection_inputs(root, taxonomy, taxonomy_sha256):
               {state: state_counts.get(state, 0) for state in states},
               {filename: sha256((root / filename).read_bytes()) for filename in series.V2_LEDGER_FILES.values()}, indexes)
     metadata = {
-        "projection_kind": "approved_v2_additive", "projection_status": "in_progress",
+        "projection_kind": "approved_v2_additive", "projection_status": "research_incomplete",
+        "revalidation_status": "research_incomplete", "verified_proposition_count": 0,
         "approved_batch_count": len(approved_batches), "total_batch_count": 80,
         "projected_company_count": len(selected), "total_company_count": 2000,
         "cell_count": len(cells),
@@ -692,30 +697,33 @@ def merged_scope(records):
     return result
 
 
-def specific_benefit_record_ids(reference_records, community_records, source_index):
-    """Select emitted concrete-content records by canonical ID and bound-source eligibility."""
-    selected = []
-    for record in reference_records:
-        source = source_index[record["source_id"]]
-        if (record.get("publication_eligibility") in {"eligible", "reference_only"}
-                and source.get("publication_eligibility") in {"eligible", "reference_only"}):
-            selected.append(record["reference_id"])
-    for record in community_records:
-        source = source_index[record["source_id"]]
-        if (record.get("publication_eligibility") == "eligible"
-                and source.get("publication_eligibility") == "eligible"):
-            selected.append(record["community_report_id"])
-    return set(selected)
-
-
 def build_company(company, population_sequence, claims, gap, taxonomy, assignments, source_map, cells,
-                  v2_indexes=None):
+                  v2_indexes=None, verified_benefits=None, verified_benefit_review_binding=None):
     v2_indexes = v2_indexes or {
         "attempts": {}, "official_claims": {}, "references": {},
         "community_reports": {}, "sources": {},
     }
     type_map = {item["id"]: item for item in taxonomy["benefit_types"]}
     category_ids = [item["id"] for item in taxonomy["categories"]]
+    company_official_records = [
+        record for record in v2_indexes["official_claims"].values()
+        if record.get("company_id") == company["company_id"]
+    ]
+    company_reference_records = [
+        record for record in v2_indexes["references"].values()
+        if record.get("company_id") == company["company_id"]
+    ]
+    company_community_records = [
+        record for record in v2_indexes["community_reports"].values()
+        if record.get("company_id") == company["company_id"]
+    ]
+    series = load_verifier().company_benefits_series
+    verified_benefits = series.validate_verified_benefits(
+        [] if verified_benefits is None else verified_benefits,
+        [*company_official_records, *company_reference_records, *company_community_records],
+        verified_benefit_review_binding,
+    )
+    verified_counts = series.count_verified_benefits_by_category(verified_benefits)
     projections = []
     category_claims = {category_id: [] for category_id in category_ids}
     for claim in sorted(claims, key=lambda item: item["claim_id"]):
@@ -803,18 +811,20 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
             limitation_codes.append("conflicting_evidence")
         if cell["state"] in {"reference", "community_report"}:
             limitation_codes.append("lower_tier_evidence")
-        status = ("insufficient_evidence" if cell["state"] == "no_public_info"
+        unresolved_states = {"no_public_info", "not_researched", "research_incomplete",
+                             "source_access_failed", "conflicting_evidence"}
+        if cell["state"] in unresolved_states and (evidence_count or verified_counts[category_id]):
+            raise ValueError(f"{company['company_id']}:{category_id}: unresolved cell cannot publish evidence or verified benefits")
+        status = ("insufficient_evidence" if cell["state"] in unresolved_states
                   else "confirmed" if cell["scope_status"] == "exact_entity"
                   and cell["reliability"] in {"high", "medium"} else "bounded")
         outcome.update({
-            "kind": "insufficient_evidence" if cell["state"] == "no_public_info" else "evidenced",
+            "kind": "insufficient_evidence" if cell["state"] in unresolved_states else "evidenced",
             "status": status,
             "claim_count": evidence_count,
-            "benefit_type_count": (0 if cell["state"] == "no_public_info" else
+            "benefit_type_count": (0 if cell["state"] in unresolved_states else
                                    len({type_id for _, type_ids, _ in category_claims[category_id] for type_id in type_ids})),
-            "specific_benefit_count": len(specific_benefit_record_ids(
-                reference_records, community_records, v2_indexes["sources"]
-            )),
+            "specific_benefit_count": verified_counts[category_id],
             "scope": merged_scope(evidence_records),
             "limitation_codes": limitation_codes, "last_checked_at": assessed_at,
             "searched_source_ids": searched_source_ids,
@@ -829,6 +839,10 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
                 reason_code="searched_not_found",
                 searched_at=assessed_at,
             )
+        elif cell["state"] in unresolved_states:
+            outcome["nonabsence_notice"] = NONABSENCE_NOTICE
+            outcome.update(reason_code=cell["state"],
+                           searched_at=None if cell["state"] == "not_researched" else assessed_at)
         outcomes.append(outcome)
     listing = {
         "company_id": company["company_id"],
@@ -860,18 +874,9 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
         "employment_evidence_scope": company.get("employment_evidence_scope", ""),
         "employment_boundary_note": company.get("employment_boundary_note", ""),
     }
-    official_claims = [
-        public_v2_record(record) for record in v2_indexes["official_claims"].values()
-        if record.get("company_id") == company["company_id"]
-    ]
-    references = [
-        public_v2_record(record, ("checked_at",)) for record in v2_indexes["references"].values()
-        if record.get("company_id") == company["company_id"]
-    ]
-    community_reports = [
-        public_v2_record(record) for record in v2_indexes["community_reports"].values()
-        if record.get("company_id") == company["company_id"]
-    ]
+    official_claims = [public_v2_record(record) for record in company_official_records]
+    references = [public_v2_record(record, ("checked_at",)) for record in company_reference_records]
+    community_reports = [public_v2_record(record) for record in company_community_records]
     v2_source_ids = {
         source_id for record in [*official_claims, *references, *community_reports]
         for source_id in record.get("source_ids", [record.get("source_id")]) if source_id
@@ -898,7 +903,8 @@ def build_company(company, population_sequence, claims, gap, taxonomy, assignmen
     return {
         "listing": listing, "company": detail_company, "category_outcomes": outcomes,
         "claims": projections, "official_claims": official_claims, "references": references,
-        "community_reports": community_reports, "sources": public_sources,
+        "community_reports": community_reports, "verified_benefits": verified_benefits,
+        "sources": public_sources,
     }
 
 
@@ -1159,6 +1165,7 @@ def emit_artifacts(output_root, data_version, generated_at, taxonomy, inputs,
                 "official_claims": detail["official_claims"],
                 "references": detail["references"],
                 "community_reports": detail["community_reports"],
+                "verified_benefits": detail["verified_benefits"],
                 "sources": detail["sources"],
             }
             shard_descriptors[company_id] = {"company_id": company_id, **write_version(relative, payload, 1)}

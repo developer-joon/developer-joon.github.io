@@ -36,6 +36,7 @@ class ApprovedBatchReplacementTests(unittest.TestCase):
         self.approval_path = base / "correction-approval.json"
         self.freeze_receipt = base / "freeze-anchor-receipt.json"
         self.fixture = FrozenFixture(self.root)
+        (self.root / "verified-benefits.jsonl").write_bytes(b"")
         self.module.series.materialize_contract(self.root, set(), {}, {})
         batches = self.module.series.read_jsonl(self.root / "series-batches.jsonl")
         self.batch = next(item for item in batches if item["batch_id"] == "domestic-02")

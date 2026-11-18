@@ -1,0 +1,27 @@
+{
+  "record_type": "independent_research_review",
+  "publication_status": "research_only_not_approved",
+  "review_trace": "deleg_48c02ec9/task-0",
+  "reviewer_verdict": "limited",
+  "company_id": "KR-CRN-1201110018251",
+  "legal_entity": "코스모신소재(주)",
+  "category_id": "commute",
+  "bounded_proposition": "코스모신소재(주)는 통근버스를 운영한다고 안내한다.",
+  "source_url": "https://www.cosmoamt.com/?page_id=11184",
+  "final_url": "https://www.cosmoamt.com/?page_id=11184",
+  "observed_http_status": 200,
+  "observed_at": "2026-11-16T14:46:10.381782Z",
+  "review_observed_raw_response_sha256": "ed9ef4cce33425064f17337cfdf22d1256ff81fc17accebe86289c6359b7abc7",
+  "attributed_quote": "ㆍ통근버스 운영",
+  "quote_section": "기타 복리 후생",
+  "registry_source_id": "cosmo-daily-life-support-official-source::cosmo-daily-life-support",
+  "registry_row_sha256": "6726cc65dd23d0a7711f4ab2594f015d3cccb55352b7a7a176078adf35fcaf3a",
+  "eligibility": "not_specified",
+  "limitations": [
+    "The page does not specify eligible employment types or universal employee coverage.",
+    "The page does not specify routes, fare support, or an effective date.",
+    "This independently observed response digest differs from the candidate producer and registry historical response digests; byte equivalence is not asserted."
+  ],
+  "raw_body_retained": false,
+  "approved_benefit": false
+}

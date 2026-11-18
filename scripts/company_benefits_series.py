@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Deterministic contracts for the 2,000-company benefits series."""
 
+import fcntl
 import hashlib
 import importlib.util
 import json
+import os
 import re
+import secrets
 import shutil
+import stat
 import tempfile
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -43,6 +49,34 @@ V2_CATEGORIES = (
     "leave", "family", "health", "growth", "housing",
     "commute", "remote", "retirement", "meals", "inclusion",
 )
+VERIFIED_BENEFIT_REQUIRED_FIELDS = (
+    "benefit_id", "proposition_sha256", "company_id", "primary_category_id", "title",
+    "description", "scope", "currentness", "currentness_checked_at", "conflict_status",
+    "evidence_ids", "review",
+)
+VERIFIED_BENEFIT_SCOPE_FIELDS = (
+    "countries", "legal_entities", "roles", "employment_types", "family_members", "conditions",
+)
+VERIFIED_BENEFIT_REVIEW_FIELDS = (
+    "status", "reviewer_receipt_sha256", "reviewed_candidate_sha256", "reviewed_at",
+)
+VERIFIED_BENEFIT_REVIEW_BINDING_FIELDS = (
+    "reviewer_receipt_sha256", "reviewed_candidate_sha256", "reviewed_at",
+)
+VERIFIED_BENEFIT_CANDIDATE_INPUT_FIELDS = {
+    "company_id", "primary_category_id", "title", "description", "scope", "currentness",
+    "currentness_checked_at", "conflict_status", "evidence_ids",
+}
+VERIFIED_BENEFIT_CANDIDATE_FIELDS = VERIFIED_BENEFIT_CANDIDATE_INPUT_FIELDS | {
+    "benefit_id", "proposition_sha256",
+}
+BENEFIT_ID_PATTERN = re.compile(r"^benefit::[0-9a-f]{64}$")
+CANONICAL_RFC3339_PATTERN = re.compile(
+    r"^(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})T"
+    r"(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
+    r"(?:\.(?P<fraction>[0-9]+))?"
+    r"(?P<zone>Z|(?P<offset_sign>[+-])(?P<offset_hour>[0-9]{2}):(?P<offset_minute>[0-9]{2}))$"
+)
 V2_LEDGER_FILES = {
     "cells": "company-category-cells.jsonl",
     "attempts": "research-attempts.jsonl",
@@ -70,6 +104,811 @@ V2_STRUCTURAL_BINDING_FIELDS = {
 }
 V2_GAP_ID_PREFIX = "company-gap::v2::"
 LEGACY_GAP_ID_PREFIX = "company-gap::"
+
+
+def _open_directory_nofollow(path):
+    """Open every directory component without following a symlink."""
+    path = Path(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if path.is_absolute():
+        opened = [os.open("/", flags)]
+        parts = path.parts[1:]
+    else:
+        opened = [os.open(".", flags)]
+        parts = path.parts
+    try:
+        for part in parts:
+            if part in {"", "."}:
+                continue
+            opened.append(os.open(part, flags, dir_fd=opened[-1]))
+        return opened.pop()
+    finally:
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
+def read_bounded_regular_files(directory, expected_names, per_file_limit, total_limit, label):
+    """Read one exact directory inventory through one no-follow directory descriptor."""
+    directory = Path(directory)
+    expected = set(expected_names)
+    directory_fd = None
+    try:
+        directory_fd = _open_directory_nofollow(directory)
+        before_names = set(os.listdir(directory_fd))
+        if before_names != expected:
+            raise ValueError(f"{label} must contain the exact canonical file set")
+        result = {}
+        total = 0
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+        for name in sorted(expected):
+            descriptor = None
+            try:
+                descriptor = os.open(
+                    name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd,
+                )
+                before = os.fstat(descriptor)
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError(f"{label} {name} must be a regular file")
+                if before.st_size > per_file_limit or total + before.st_size > total_limit:
+                    raise ValueError(f"{label} exceeds the bounded byte limit")
+                chunks = []
+                remaining = before.st_size
+                while remaining:
+                    chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+                    if not chunk:
+                        raise ValueError(f"{label} {name} changed during bounded read")
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                after = os.fstat(descriptor)
+                path_state = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if any(getattr(before, field) != getattr(after, field)
+                       or getattr(before, field) != getattr(path_state, field)
+                       for field in stable_fields):
+                    raise ValueError(f"{label} {name} path changed during bounded read")
+                result[name] = b"".join(chunks)
+                total += before.st_size
+            except OSError as exc:
+                raise ValueError(f"{label} {name} is not a safe regular file") from exc
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        if set(os.listdir(directory_fd)) != before_names:
+            raise ValueError(f"{label} inventory changed during bounded read")
+        return result
+    except OSError as exc:
+        raise ValueError(f"{label} directory is not safe") from exc
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _directory_identity(descriptor):
+    state = os.fstat(descriptor)
+    return state.st_dev, state.st_ino, state.st_mode
+
+
+def _validate_directory_binding(path, descriptor, label):
+    """Require a lexical no-follow directory path to retain its opened identity."""
+    rebound = None
+    try:
+        rebound = _open_directory_nofollow(path)
+        if _directory_identity(rebound) != _directory_identity(descriptor):
+            raise ValueError(f"{label} changed during atomic publication")
+    except OSError as exc:
+        raise ValueError(f"{label} is not a safe directory") from exc
+    finally:
+        if rebound is not None:
+            os.close(rebound)
+
+
+def _fsync_directory_descriptors(*descriptors):
+    seen = set()
+    for descriptor in descriptors:
+        identity = _directory_identity(descriptor)[:2]
+        if identity not in seen:
+            os.fsync(descriptor)
+            seen.add(identity)
+
+
+PUBLICATION_LOCK_FILENAME = ".company-benefits-publication.lock"
+
+
+def _validate_trusted_output_parent(parent):
+    """Require the final publication parent to belong to this repository user."""
+    state = os.fstat(parent.descriptor)
+    if state.st_uid != os.geteuid() or state.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError(
+            "publication output parent must be owned by the effective user and not group/world-writable"
+        )
+
+
+@contextmanager
+def _lock_output_parent(parent):
+    """Serialize cooperating compiler/promoter publication beneath one parent."""
+    _validate_trusted_output_parent(parent)
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = None
+    try:
+        descriptor = os.open(
+            PUBLICATION_LOCK_FILENAME, flags, 0o600, dir_fd=parent.descriptor,
+        )
+        opened = os.fstat(descriptor)
+        named = os.stat(
+            PUBLICATION_LOCK_FILENAME, dir_fd=parent.descriptor, follow_symlinks=False,
+        )
+        identity = (opened.st_dev, opened.st_ino, opened.st_mode)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.geteuid()
+                or stat.S_IMODE(opened.st_mode) != 0o600
+                or (named.st_dev, named.st_ino, named.st_mode) != identity):
+            raise ValueError("publication lock must be an owned no-follow regular file with mode 0600")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        parent.validate_binding()
+        _validate_trusted_output_parent(parent)
+        rebound = os.stat(
+            PUBLICATION_LOCK_FILENAME, dir_fd=parent.descriptor, follow_symlinks=False,
+        )
+        if (rebound.st_dev, rebound.st_ino, rebound.st_mode) != identity:
+            raise ValueError("publication lock changed while acquiring exclusive access")
+        yield
+    except OSError as exc:
+        raise ValueError("publication lock is not a safe regular file") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+class PinnedOutputParent:
+    """A pre-existing symlink-free parent chain pinned through publication."""
+
+    def __init__(self, path, descriptors, component_names):
+        self.path = path
+        self.descriptors = descriptors
+        self.component_names = component_names
+        self.descriptor = descriptors[-1]
+        self.identities = [_directory_identity(descriptor) for descriptor in descriptors]
+
+    def validate_binding(self):
+        for index, name in enumerate(self.component_names, start=1):
+            named = os.stat(name, dir_fd=self.descriptors[index - 1], follow_symlinks=False)
+            named_identity = (named.st_dev, named.st_ino, named.st_mode)
+            if not stat.S_ISDIR(named.st_mode) or named_identity != self.identities[index]:
+                raise ValueError(
+                    "publication output parent directory changed during atomic publication"
+                )
+
+    def close(self):
+        for descriptor in reversed(self.descriptors):
+            if descriptor >= 0:
+                os.close(descriptor)
+        self.descriptors = []
+        self.descriptor = -1
+
+
+def _checked_directory_child(parent_fd, name, label):
+    """Open one real directory child and bind its name to the opened inode."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        opened = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        opened_identity = (opened.st_dev, opened.st_ino, opened.st_mode)
+        named_identity = (named.st_dev, named.st_ino, named.st_mode)
+        if not stat.S_ISDIR(opened.st_mode) or named_identity != opened_identity:
+            raise ValueError(f"{label} changed while it was opened")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+@contextmanager
+def open_existing_output_parent(output):
+    """Open and retain every component of a pre-existing output parent."""
+    supplied = Path(output)
+    if supplied.name in {"", ".", ".."} or ".." in supplied.parts:
+        raise ValueError("publication output path is invalid")
+    absolute_output = Path(os.path.abspath(supplied))
+    parent = absolute_output.parent
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors = []
+    try:
+        descriptors.append(os.open("/", flags))
+        component_names = list(parent.parts[1:])
+        for part in component_names:
+            descriptors.append(_checked_directory_child(
+                descriptors[-1], part, "publication output parent",
+            ))
+        pinned = PinnedOutputParent(parent, descriptors, component_names)
+        pinned.validate_binding()
+    except BaseException as exc:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        if isinstance(exc, OSError):
+            raise ValueError(
+                "publication output parent must pre-exist as a symlink-free directory chain"
+            ) from exc
+        raise
+    try:
+        yield pinned
+    finally:
+        pinned.close()
+
+
+class PinnedOutputStaging:
+    """A descriptor-relative staging directory beneath a pinned output parent."""
+
+    def __init__(self, parent, name, descriptor, output):
+        self.parent = parent
+        self.name = name
+        self.descriptor = descriptor
+        self.identity = _directory_identity(descriptor)
+        self.path = parent.path / name
+        self.output = Path(os.path.abspath(output))
+        self.publication_committed = False
+        self.displaced_tree = False
+        self.displaced_descriptor = -1
+
+    @staticmethod
+    def _entry_name(name):
+        if not isinstance(name, str) or not name or Path(name).name != name or name in {".", ".."}:
+            raise ValueError("staging entry name is invalid")
+        return name
+
+    def write_bytes(self, name, raw):
+        name = self._entry_name(name)
+        descriptor = os.open(
+            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o644, dir_fd=self.descriptor,
+        )
+        try:
+            view = memoryview(raw)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short staging write")
+                view = view[written:]
+            os.fchmod(descriptor, 0o644)
+        finally:
+            os.close(descriptor)
+
+    def write_text(self, name, text, encoding="utf-8"):
+        self.write_bytes(name, text.encode(encoding))
+
+    def read_bytes(self, name):
+        name = self._entry_name(name)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.descriptor)
+        try:
+            state = os.fstat(descriptor)
+            if not stat.S_ISREG(state.st_mode):
+                raise ValueError("staging entry is not a regular file")
+            chunks = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+        finally:
+            os.close(descriptor)
+
+    def names(self):
+        return sorted(os.listdir(self.descriptor))
+
+    def fsync_contents(self):
+        """Flush the compiler/promoter's flat staged package through its pinned FD."""
+        for name in self.names():
+            descriptor = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=self.descriptor,
+            )
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise ValueError("staged publication tree contains a non-regular entry")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        os.fsync(self.descriptor)
+
+    def validate_binding(self):
+        self.parent.validate_binding()
+        named = os.stat(self.name, dir_fd=self.parent.descriptor, follow_symlinks=False)
+        if (named.st_dev, named.st_ino, named.st_mode) != self.identity:
+            raise ValueError("staged output directory changed before publication")
+        _validate_directory_binding(self.path, self.descriptor, "staged output directory")
+
+    @staticmethod
+    def _remove_owned_contents(descriptor):
+        """Remove an owned tree through pinned descriptors, making directories writable."""
+        os.fchmod(descriptor, 0o700)
+        for name in os.listdir(descriptor):
+            state = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(state.st_mode):
+                child = os.open(
+                    name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=descriptor,
+                )
+                try:
+                    PinnedOutputStaging._remove_owned_contents(child)
+                finally:
+                    os.close(child)
+                os.rmdir(name, dir_fd=descriptor)
+            else:
+                os.unlink(name, dir_fd=descriptor)
+
+    def mark_committed(self, displaced=False, atomic_noreplace=None):
+        """Record the commit boundary and best-effort remove any displaced old tree."""
+        self.publication_committed = True
+        self.displaced_tree = displaced
+        if not displaced:
+            return
+        if atomic_noreplace is not None:
+            for _ in range(100):
+                garbage = f".company-benefits-publication-garbage-{secrets.token_hex(8)}"
+                try:
+                    atomic_noreplace(
+                        self.parent.descriptor, self.name,
+                        self.parent.descriptor, garbage,
+                    )
+                except FileExistsError:
+                    continue
+                except BaseException:
+                    break
+                self.name = garbage
+                try:
+                    os.fsync(self.parent.descriptor)
+                except BaseException:
+                    pass
+                break
+        try:
+            self.displaced_descriptor = _checked_directory_child(
+                self.parent.descriptor, self.name, "displaced publication tree",
+            )
+        except BaseException:
+            pass
+        self.cleanup()
+
+    def cleanup(self):
+        if self.publication_committed:
+            if self.displaced_tree and self.displaced_descriptor >= 0:
+                try:
+                    self._remove_owned_contents(self.displaced_descriptor)
+                except BaseException:
+                    pass
+                try:
+                    os.close(self.displaced_descriptor)
+                except BaseException:
+                    pass
+                self.displaced_descriptor = -1
+            if self.descriptor >= 0:
+                try:
+                    os.close(self.descriptor)
+                except BaseException:
+                    pass
+                self.descriptor = -1
+            if self.displaced_tree:
+                try:
+                    os.rmdir(self.name, dir_fd=self.parent.descriptor)
+                    os.fsync(self.parent.descriptor)
+                except BaseException:
+                    pass
+            return
+        if self.descriptor >= 0:
+            os.close(self.descriptor)
+            self.descriptor = -1
+        try:
+            shutil.rmtree(self.name, dir_fd=self.parent.descriptor)
+        except FileNotFoundError:
+            return
+        os.fsync(self.parent.descriptor)
+
+
+@contextmanager
+def create_output_staging(output, prefix):
+    """Create staging beneath a pinned parent under a cooperative exclusive lock."""
+    if not isinstance(prefix, str) or not prefix or "/" in prefix:
+        raise ValueError("staging prefix is invalid")
+    with open_existing_output_parent(output) as parent, _lock_output_parent(parent):
+        staging = None
+        for _ in range(100):
+            name = f".{prefix}{secrets.token_hex(8)}"
+            try:
+                os.mkdir(name, mode=0o755, dir_fd=parent.descriptor)
+                os.fsync(parent.descriptor)
+                descriptor = _checked_directory_child(
+                    parent.descriptor, name, "staged output directory",
+                )
+                try:
+                    os.fchmod(descriptor, 0o755)
+                    staging = PinnedOutputStaging(parent, name, descriptor, output)
+                except BaseException:
+                    os.close(descriptor)
+                    shutil.rmtree(name, dir_fd=parent.descriptor, ignore_errors=True)
+                    raise
+                break
+            except FileExistsError:
+                continue
+        if staging is None:
+            raise FileExistsError("unable to allocate a unique staging directory")
+        try:
+            staging.validate_binding()
+            yield staging
+        finally:
+            staging.cleanup()
+
+
+def publish_directory_atomically(staging, atomic_exchange, atomic_noreplace):
+    """Publish with the same pinned parent FD used to create staging."""
+    output = staging.output
+    parent_fd = staging.parent.descriptor
+    if staging.name == output.name or output.name in {"", ".", ".."}:
+        raise ValueError("atomic publication paths are invalid")
+    try:
+        staging.validate_binding()
+        staged_state = os.stat(staging.name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(staged_state.st_mode):
+            raise ValueError("staged publication entry is not a real directory")
+        try:
+            output_state = os.stat(output.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            output_state = None
+        if output_state is not None and not stat.S_ISDIR(output_state.st_mode):
+            raise ValueError("publication output exists and is not a real directory")
+
+        staging.fsync_contents()
+        staging.validate_binding()
+        current_staged = os.stat(staging.name, dir_fd=parent_fd, follow_symlinks=False)
+        staged_identity = (staged_state.st_dev, staged_state.st_ino, staged_state.st_mode)
+        if (current_staged.st_dev, current_staged.st_ino, current_staged.st_mode) != staged_identity:
+            raise ValueError("staged publication directory changed before atomic rename")
+
+        if output_state is None:
+            atomic_noreplace(parent_fd, staging.name, parent_fd, output.name)
+            try:
+                _fsync_directory_descriptors(parent_fd)
+                staging.parent.validate_binding()
+            except BaseException:
+                try:
+                    atomic_noreplace(parent_fd, output.name, parent_fd, staging.name)
+                    _fsync_directory_descriptors(parent_fd)
+                except BaseException as rollback_error:
+                    raise RuntimeError("atomic publication rollback failed") from rollback_error
+                raise
+            staging.mark_committed()
+            return
+
+        output_identity = (output_state.st_dev, output_state.st_ino, output_state.st_mode)
+        atomic_exchange(parent_fd, staging.name, parent_fd, output.name)
+        try:
+            displaced = os.stat(staging.name, dir_fd=parent_fd, follow_symlinks=False)
+            if (displaced.st_dev, displaced.st_ino, displaced.st_mode) != output_identity:
+                raise RuntimeError("publication destination changed concurrently")
+            _fsync_directory_descriptors(parent_fd)
+            staging.parent.validate_binding()
+        except BaseException:
+            atomic_exchange(parent_fd, staging.name, parent_fd, output.name)
+            _fsync_directory_descriptors(parent_fd)
+            raise
+        staging.mark_committed(displaced=True, atomic_noreplace=atomic_noreplace)
+    except OSError as exc:
+        raise ValueError("atomic publication parent or entry is not safe") from exc
+
+
+def _reject_unpaired_surrogates(value):
+    if isinstance(value, str):
+        if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+            raise ValueError("canonical text contains an unpaired surrogate code point")
+    elif isinstance(value, list):
+        for item in value:
+            _reject_unpaired_surrogates(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _reject_unpaired_surrogates(key)
+            _reject_unpaired_surrogates(item)
+
+
+def _canonical_json_bytes(value):
+    _reject_unpaired_surrogates(value)
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _normalized_proposition_text(value):
+    _reject_unpaired_surrogates(value)
+    normalized = []
+    pending_space = False
+    for character in value:
+        if character in "\t\n\v\f\r ":
+            pending_space = bool(normalized)
+            continue
+        if pending_space:
+            normalized.append(" ")
+            pending_space = False
+        code_point = ord(character)
+        normalized.append(chr(code_point + 32) if 0x41 <= code_point <= 0x5A else character)
+    return "".join(normalized)
+
+
+def parse_canonical_rfc3339(value, label="timestamp"):
+    """Parse canonical RFC3339 without accepting datetime normalization."""
+    match = CANONICAL_RFC3339_PATTERN.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
+        raise ValueError(f"invalid {label} timestamp")
+    offset_hour = int(match.group("offset_hour") or 0)
+    offset_minute = int(match.group("offset_minute") or 0)
+    if offset_hour > 23 or offset_minute > 59:
+        raise ValueError(f"invalid {label} timestamp")
+    offset = timedelta(hours=offset_hour, minutes=offset_minute)
+    if match.group("offset_sign") == "-":
+        offset = -offset
+    zone = timezone.utc if match.group("zone") == "Z" else timezone(offset)
+    fraction = match.group("fraction") or ""
+    microsecond = int((fraction[:6] + "000000")[:6])
+    try:
+        return datetime(
+            int(match.group("year")), int(match.group("month")), int(match.group("day")),
+            int(match.group("hour")), int(match.group("minute")), int(match.group("second")),
+            microsecond=microsecond, tzinfo=zone,
+        )
+    except ValueError as exc:
+        raise ValueError(f"invalid {label} timestamp") from exc
+
+
+def _canonical_verified_benefit_scope(scope):
+    return {
+        field: sorted(
+            (_normalized_proposition_text(value) for value in scope[field]),
+            key=lambda value: value.encode("utf-8"),
+        )
+        for field in VERIFIED_BENEFIT_SCOPE_FIELDS
+    }
+
+
+def _verified_benefit_proposition_payload(benefit):
+    return {
+        "company_id": benefit["company_id"],
+        "title": _normalized_proposition_text(benefit["title"]),
+        "description": _normalized_proposition_text(benefit["description"]),
+        "scope": _canonical_verified_benefit_scope(benefit["scope"]),
+        "currentness": benefit["currentness"],
+        "currentness_checked_at": benefit["currentness_checked_at"],
+        "conflict_status": benefit["conflict_status"],
+    }
+
+
+def validate_verified_benefit_candidate_shape(candidate):
+    """Validate every proposition field before canonical identity computation."""
+    if not isinstance(candidate, dict) or set(candidate) not in (
+            VERIFIED_BENEFIT_CANDIDATE_INPUT_FIELDS, VERIFIED_BENEFIT_CANDIDATE_FIELDS):
+        raise ValueError("verified benefit candidate fields do not match the contract")
+    try:
+        _reject_unpaired_surrogates(candidate)
+    except ValueError as exc:
+        raise ValueError("verified benefit candidate contains an unpaired surrogate") from exc
+    company_id = candidate.get("company_id")
+    if not isinstance(company_id, str) or not COMPANY_ID_PATTERN.fullmatch(company_id):
+        raise ValueError("verified benefit candidate company ID is invalid")
+    if candidate.get("primary_category_id") not in V2_CATEGORIES:
+        raise ValueError("verified benefit candidate primary category is invalid")
+    for field in ("title", "description"):
+        value = candidate.get(field)
+        if not isinstance(value, str) or not _normalized_proposition_text(value):
+            raise ValueError(f"verified benefit candidate {field} must be nonblank")
+    scope = candidate.get("scope")
+    if not isinstance(scope, dict) or set(scope) != set(VERIFIED_BENEFIT_SCOPE_FIELDS):
+        raise ValueError("verified benefit candidate scope fields do not match the contract")
+    for field in VERIFIED_BENEFIT_SCOPE_FIELDS:
+        values = scope[field]
+        if (not isinstance(values, list)
+                or any(not isinstance(value, str) or not _normalized_proposition_text(value)
+                       for value in values)):
+            raise ValueError("verified benefit candidate scope values must be nonblank string arrays")
+    if candidate.get("currentness") not in {"current", "historical", "unknown"}:
+        raise ValueError("verified benefit candidate currentness is invalid")
+    try:
+        parse_canonical_rfc3339(candidate.get("currentness_checked_at"), "currentness_checked_at")
+    except ValueError as exc:
+        raise ValueError("verified benefit candidate currentness_checked_at is invalid") from exc
+    if candidate.get("conflict_status") not in {"none", "disclosed", "contradictory"}:
+        raise ValueError("verified benefit candidate conflict status is invalid")
+    evidence_ids = candidate.get("evidence_ids")
+    if (not isinstance(evidence_ids, list) or not evidence_ids
+            or any(not isinstance(value, str) or not _normalized_proposition_text(value)
+                   for value in evidence_ids)
+            or len(evidence_ids) != len(set(evidence_ids))):
+        raise ValueError("verified benefit candidate evidence IDs must be nonblank and unique")
+    if "benefit_id" in candidate and (
+            not isinstance(candidate["benefit_id"], str)
+            or not BENEFIT_ID_PATTERN.fullmatch(candidate["benefit_id"])):
+        raise ValueError("verified benefit candidate benefit ID is invalid")
+    if "proposition_sha256" in candidate and (
+            not isinstance(candidate["proposition_sha256"], str)
+            or not HASH_PATTERN.fullmatch(candidate["proposition_sha256"])):
+        raise ValueError("verified benefit candidate proposition SHA-256 is invalid")
+    return candidate
+
+
+def compile_cell_outcomes(cells, attempts, verified_propositions, *, expected_count=None):
+    """Derive canonical outcomes from exact cells, attempts, and validated propositions."""
+    attempts_by_id = {item.get("attempt_id"): item for item in attempts if isinstance(item, dict)}
+    propositions_by_cell = {
+        (item.get("company_id"), item.get("primary_category_id")): item
+        for item in verified_propositions if isinstance(item, dict)
+    }
+    evidence_field = {
+        "official::": ("official_verified", "official_claim_ids"),
+        "reference::": ("reference", "reference_ids"),
+        "community::": ("community_report", "community_report_ids"),
+    }
+    outcomes = []
+    for cell in cells:
+        key = (cell.get("company_id"), cell.get("category_id"))
+        bound = [attempts_by_id.get(attempt_id, {}) for attempt_id in cell.get("attempt_ids", [])]
+        proposition = propositions_by_cell.get(key)
+        if proposition is not None:
+            state = cell.get("state")
+            if (state not in {"official_verified", "reference", "community_report"}
+                    or cell.get("conflict_status") == "contradictory"
+                    or not bound or not any(attempt.get("result") == "source_found" for attempt in bound)
+                    or any(attempt.get("result") == "access_failed" for attempt in bound)
+                    or any(
+                        not any(
+                            evidence_id.startswith(prefix) and state == allowed_state
+                            and evidence_id in cell.get(field, [])
+                            for prefix, (allowed_state, field) in evidence_field.items()
+                        )
+                        for evidence_id in proposition.get("evidence_ids", [])
+                    )):
+                raise ValueError(f"{cell.get('cell_id')}: proposition requires a validated, nonconflicted evidence-bearing cell")
+            reason = "verified_benefit"
+        elif cell.get("state") == "not_researched":
+            if bound or cell.get("attempt_ids") or cell.get("conflict_status") != "none" or any(
+                cell.get(field) for field in ("official_claim_ids", "reference_ids", "community_report_ids")
+            ) or cell.get("coverage_complete") is not None:
+                raise ValueError(f"{cell.get('cell_id')}: not_researched requires zero attempts and no claim or closure")
+            reason = "not_researched"
+        elif cell.get("conflict_status") == "contradictory":
+            successful = [attempt for attempt in bound
+                          if attempt.get("result") == "source_found" and attempt.get("source_ids")]
+            if (len(successful) < 2
+                    or len({source_id for attempt in successful for source_id in attempt["source_ids"]}) < 2
+                    or len({attempt.get("raw_response_sha256") for attempt in successful}) < 2
+                    or len({attempt.get("capture_locator") for attempt in successful}) < 2):
+                raise ValueError(f"{cell.get('cell_id')}: conflict requires two distinct evidence-bearing successful captures")
+            reason = "conflicting_evidence"
+        elif any(attempt.get("result") == "access_failed" for attempt in bound):
+            reason = "source_access_failed"
+        elif (cell.get("state") == "no_public_info" and cell.get("coverage_complete") is True
+              and bound and all(attempt.get("result") in {"no_result", "ineligible_source"} for attempt in bound)):
+            reason = "not_publicly_verifiable"
+        else:
+            reason = "research_incomplete"
+        outcomes.append({"cell_id": cell.get("cell_id"), "company_id": key[0],
+                         "category_id": key[1], "outcome_reason": reason})
+    if (len({item["cell_id"] for item in outcomes}) != len(outcomes)
+            or (expected_count is not None and len(outcomes) != expected_count)):
+        raise ValueError("cell outcomes require exact unique canonical cell membership")
+    return outcomes
+
+
+def count_verified_benefits_by_category(benefits):
+    """Count reviewed propositions in canonical category order."""
+    return {
+        category: sum(benefit.get("primary_category_id") == category for benefit in benefits)
+        for category in V2_CATEGORIES
+    }
+
+
+def validate_verified_benefits(benefits, evidence_records, review_binding):
+    """Validate reviewed propositions; receipt bytes are verified externally at promotion."""
+    if not isinstance(benefits, list) or not isinstance(evidence_records, list):
+        raise ValueError("verified benefits and evidence records must be arrays")
+    if not benefits:
+        if review_binding is not None:
+            raise ValueError("verified benefit review binding is forbidden without benefits")
+        return benefits
+    if (not isinstance(review_binding, dict)
+            or set(review_binding) != set(VERIFIED_BENEFIT_REVIEW_BINDING_FIELDS)):
+        raise ValueError("verified benefit review binding fields do not match the contract")
+    if any(not isinstance(review_binding.get(field), str) or not HASH_PATTERN.fullmatch(review_binding[field])
+           for field in ("reviewer_receipt_sha256", "reviewed_candidate_sha256")):
+        raise ValueError("verified benefit review binding hashes are invalid")
+    try:
+        parse_canonical_rfc3339(review_binding.get("reviewed_at"), "reviewed_at")
+    except ValueError as exc:
+        raise ValueError("verified benefit review binding reviewed_at is invalid") from exc
+    evidence = {}
+    for record in evidence_records:
+        if not isinstance(record, dict):
+            raise ValueError("verified benefit evidence must be objects")
+        record_id = next((record.get(field) for field in ("claim_id", "reference_id", "community_report_id") if field in record), None)
+        if not isinstance(record_id, str) or not record_id:
+            raise ValueError("verified benefit evidence requires an ID")
+        evidence.setdefault(record_id, []).append(record)
+
+    benefit_ids = set()
+    propositions = set()
+    for benefit in benefits:
+        if not isinstance(benefit, dict) or set(benefit) != set(VERIFIED_BENEFIT_REQUIRED_FIELDS):
+            raise ValueError("verified benefit fields do not match the contract")
+        validate_verified_benefit_candidate_shape({
+            field: benefit[field] for field in VERIFIED_BENEFIT_CANDIDATE_FIELDS
+        })
+        benefit_id = benefit.get("benefit_id")
+        proposition_sha256 = benefit.get("proposition_sha256")
+        company_id = benefit.get("company_id")
+        category_id = benefit.get("primary_category_id")
+        if not isinstance(benefit_id, str) or not BENEFIT_ID_PATTERN.fullmatch(benefit_id) or benefit_id in benefit_ids:
+            raise ValueError("verified benefit ID must be unique benefit::<64 lowercase hex>")
+        benefit_ids.add(benefit_id)
+        if not isinstance(proposition_sha256, str) or not HASH_PATTERN.fullmatch(proposition_sha256):
+            raise ValueError("verified benefit proposition SHA-256 is invalid")
+        if not isinstance(company_id, str) or not COMPANY_ID_PATTERN.fullmatch(company_id):
+            raise ValueError("verified benefit company ID is invalid")
+        if category_id not in V2_CATEGORIES:
+            raise ValueError("verified benefit primary category is invalid")
+        for field in ("title", "description"):
+            if not isinstance(benefit.get(field), str) or not _normalized_proposition_text(benefit[field]):
+                raise ValueError(f"verified benefit {field} must be nonblank")
+        if benefit.get("currentness") not in {"current", "historical", "unknown"}:
+            raise ValueError("verified benefit currentness is invalid")
+        try:
+            parse_canonical_rfc3339(benefit.get("currentness_checked_at"), "currentness_checked_at")
+        except ValueError as exc:
+            raise ValueError("verified benefit currentness_checked_at is invalid") from exc
+        if benefit.get("conflict_status") not in {"none", "disclosed", "contradictory"}:
+            raise ValueError("verified benefit conflict status is invalid")
+
+        scope = benefit.get("scope")
+        if not isinstance(scope, dict) or set(scope) != set(VERIFIED_BENEFIT_SCOPE_FIELDS):
+            raise ValueError("verified benefit scope fields do not match the contract")
+        if any(not isinstance(scope[field], list) or any(not isinstance(value, str) for value in scope[field]) for field in VERIFIED_BENEFIT_SCOPE_FIELDS):
+            raise ValueError("verified benefit scope values must be string arrays")
+        evidence_ids = benefit.get("evidence_ids")
+        if (not isinstance(evidence_ids, list) or not evidence_ids
+                or any(not isinstance(value, str) or not value for value in evidence_ids)
+                or len(evidence_ids) != len(set(evidence_ids))):
+            raise ValueError("verified benefit evidence IDs must be nonempty and unique")
+        for evidence_id in evidence_ids:
+            matches = evidence.get(evidence_id, [])
+            if (len(matches) != 1 or matches[0].get("company_id") != company_id
+                    or matches[0].get("category_id") != category_id):
+                raise ValueError("verified benefit evidence binding mismatch")
+
+        review = benefit.get("review")
+        if not isinstance(review, dict) or set(review) != set(VERIFIED_BENEFIT_REVIEW_FIELDS):
+            raise ValueError("verified benefit review fields do not match the contract")
+        if review.get("status") != "independently_reviewed":
+            raise ValueError("verified benefit requires independent review")
+        if any(not isinstance(review.get(field), str) or not HASH_PATTERN.fullmatch(review[field]) for field in ("reviewer_receipt_sha256", "reviewed_candidate_sha256")):
+            raise ValueError("verified benefit review hashes are invalid")
+        try:
+            parse_canonical_rfc3339(review.get("reviewed_at"), "reviewed_at")
+        except ValueError as exc:
+            raise ValueError("verified benefit reviewed_at is invalid") from exc
+        if {field: review[field] for field in VERIFIED_BENEFIT_REVIEW_BINDING_FIELDS} != review_binding:
+            raise ValueError("verified benefit review does not match detail review binding")
+
+        proposition_payload = _verified_benefit_proposition_payload(benefit)
+        expected_sha256 = hashlib.sha256(_canonical_json_bytes(proposition_payload)).hexdigest()
+        if proposition_sha256 != expected_sha256 or benefit_id != f"benefit::{proposition_sha256}":
+            raise ValueError("verified benefit ID/fingerprint mismatch")
+        proposition = _canonical_json_bytes({
+            "company_id": company_id,
+            "title": proposition_payload["title"],
+            "description": proposition_payload["description"],
+            "scope": proposition_payload["scope"],
+        })
+        if proposition in propositions:
+            raise ValueError("duplicate verified benefit proposition")
+        propositions.add(proposition)
+    candidate_payload = [
+        {key: value for key, value in benefit.items() if key != "review"}
+        for benefit in sorted(benefits, key=lambda item: item["benefit_id"])
+    ]
+    candidate_sha256 = hashlib.sha256(_canonical_json_bytes(candidate_payload)).hexdigest()
+    if review_binding["reviewed_candidate_sha256"] != candidate_sha256:
+        raise ValueError("verified benefit reviewed candidate SHA-256 mismatch")
+    return benefits
 
 
 def canonical_v2_gap_id(batch, company_id):

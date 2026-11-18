@@ -9,7 +9,7 @@
     "record_id": {"type": "string", "minLength": 1},
     "researcher_id": {"type": "string", "minLength": 1},
     "reviewer_id": {"type": "string", "minLength": 1},
-    "decision": {"const": "approved"},
+    "decision": {"enum": ["approved", "changes_required", "rejected"]},
     "reviewed_at": {"type": "string", "format": "date-time"},
     "issues": {"type": "array"},
     "resolution": {"type": "string", "minLength": 1},

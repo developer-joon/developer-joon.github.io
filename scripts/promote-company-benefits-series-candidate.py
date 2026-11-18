@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Promote a protocol-4 candidate using repository-external reviews."""
+"""Promote a protocol-2 candidate using repository-external reviews."""
 
 import argparse
 import copy
+import ctypes
+import hashlib
 import importlib.util
 import json
 import os
 import re
-import shutil
-import tempfile
-from datetime import datetime
+import stat
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import company_benefits_series as series
+import review_metadata_validation as review_metadata
 
 FINAL_FILES = (
     "sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl", "checks.jsonl",
@@ -18,8 +23,35 @@ FINAL_FILES = (
     "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl",
 )
 REVIEW_FILES = {"review-bundle.json", "reviews.jsonl", "checks.jsonl"}
+CURRENT_REVIEW_FILES = {*REVIEW_FILES, "reviewed-candidate.json", "reviewer-receipt.json"}
 HASH = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+MAX_REVIEW_ARTIFACT_BYTES = 16 * 1024 * 1024
+# Current independent review ingress is exactly five files. Keep an aggregate
+# bound in addition to the 16 MiB per-file limit to prevent multiplicative use.
+MAX_REVIEW_TOTAL_BYTES = 32 * 1024 * 1024
+
+
+def _renameat2(left_fd, left_name, right_fd, right_name, flags, message):
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise RuntimeError(message)
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(left_fd, os.fsencode(left_name), right_fd, os.fsencode(right_name), flags) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), f"{left_name} <-> {right_name}")
+
+
+def _atomic_exchange(left_fd, left_name, right_fd, right_name):
+    _renameat2(left_fd, left_name, right_fd, right_name, 2,
+               "atomic promotion replacement requires Linux renameat2")
+
+
+def _atomic_noreplace(left_fd, left_name, right_fd, right_name):
+    _renameat2(left_fd, left_name, right_fd, right_name, 1,
+               "atomic promotion publication requires Linux renameat2")
 
 
 def _load(path, name):
@@ -32,13 +64,7 @@ def _load(path, name):
 
 
 def _timestamp(value, label):
-    try:
-        result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if result.tzinfo is None:
-            raise ValueError
-        return result
-    except ValueError as exc:
-        raise ValueError(f"invalid {label} timestamp") from exc
+    return series.parse_canonical_rfc3339(value, label)
 
 
 def _external_directory(path):
@@ -54,6 +80,89 @@ def _external_directory(path):
     return resolved
 
 
+def _read_external_regular(directory, relative, limit=None, total_budget=None):
+    """Read one repository-external regular file without following links or blocking on devices."""
+    limit = MAX_REVIEW_ARTIFACT_BYTES if limit is None else limit
+    if not isinstance(relative, str) or not relative or Path(relative).name != relative:
+        raise ValueError("external review artifact path must be one bounded file name")
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = None
+    try:
+        descriptor = os.open(relative, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory_fd)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            raise ValueError("external review artifact must be a bounded regular file")
+        if total_budget is not None and total_budget[0] + before.st_size > MAX_REVIEW_TOTAL_BYTES:
+            raise ValueError("external review package exceeds aggregate bounded byte limit")
+        chunks = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise ValueError("external review artifact changed during bounded read")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        path_state = os.stat(relative, dir_fd=directory_fd, follow_symlinks=False)
+        stable = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field)
+               or getattr(before, field) != getattr(path_state, field) for field in stable):
+            raise ValueError("external review artifact changed during bounded read")
+        raw = b"".join(chunks)
+        if total_budget is not None:
+            total_budget[0] += len(raw)
+        return raw
+    except OSError as exc:
+        raise ValueError("external review artifact is not a safe regular file") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(directory_fd)
+
+
+def verify_external_review_bytes(review_dir, candidate_name, reviewed_candidate_sha256,
+                                 receipt_name, reviewer_receipt_sha256, compiler_identity,
+                                 total_budget=None, require_approval=True,
+                                 expected_status=None):
+    """Recompute candidate and reviewer-receipt identities from the actual external bytes."""
+    review_dir = _external_directory(review_dir)
+    candidate_raw = _read_external_regular(
+        review_dir, candidate_name, total_budget=total_budget,
+    )
+    if hashlib.sha256(candidate_raw).hexdigest() != reviewed_candidate_sha256:
+        raise ValueError("reviewed candidate SHA-256 does not match actual candidate bytes")
+    receipt_raw = _read_external_regular(
+        review_dir, receipt_name, total_budget=total_budget,
+    )
+    if hashlib.sha256(receipt_raw).hexdigest() != reviewer_receipt_sha256:
+        raise ValueError("reviewer receipt SHA-256 does not match actual receipt bytes")
+    try:
+        receipt = json.loads(receipt_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("reviewer receipt is invalid JSON") from exc
+    fields = {"schema_version", "status", "reviewer_id", "reviewed_candidate_sha256", "reviewed_at"}
+    allowed_statuses = {"approved"} if require_approval else {"approved", "rework", "rejected"}
+    if (not isinstance(receipt, dict) or set(receipt) != fields
+            or receipt.get("schema_version") != "1"
+            or receipt.get("status") not in allowed_statuses
+            or expected_status is not None and receipt.get("status") != expected_status):
+        raise ValueError("reviewer receipt schema or approval status is invalid")
+    if receipt_raw != json.dumps(receipt, ensure_ascii=False, separators=(",", ":"),
+                                 allow_nan=False).encode("utf-8"):
+        raise ValueError("reviewer receipt must use canonical JSON bytes")
+    reviewer = receipt.get("reviewer_id")
+    if not isinstance(reviewer, str) or not reviewer.strip() or reviewer == compiler_identity:
+        raise ValueError("reviewer receipt identity must be independent of the compiler")
+    if receipt.get("reviewed_candidate_sha256") != reviewed_candidate_sha256:
+        raise ValueError("reviewer receipt candidate hash binding mismatch")
+    reviewed_at = _timestamp(receipt.get("reviewed_at"), "receipt reviewed_at")
+    return {"receipt": receipt, "reviewed_candidate_sha256": reviewed_candidate_sha256,
+            "reviewer_receipt_sha256": reviewer_receipt_sha256,
+            "candidate_raw": candidate_raw, "receipt_raw": receipt_raw,
+            "reviewed_at_instant": reviewed_at}
+
+
 def _review_source_ids(kind, target, claim_map, gap_map, source_map):
     record = claim_map[target] if kind == "claim" else gap_map[target]
     source_ids = record.get("source_ids", []) + record.get("searched_source_ids", []) if kind == "claim" else record.get("searched_official_source_ids", [])
@@ -66,19 +175,28 @@ def _review_source_ids(kind, target, claim_map, gap_map, source_map):
     return set(source_ids)
 
 
-def validate_external_review(package, review_dir, validator):
+def validate_external_review(package, review_dir, validator, *, require_approval=True,
+                             expected_status=None):
     """Validate the promotion review contract without writing or integrating output."""
     review_dir = _external_directory(review_dir)
-    if {path.name for path in review_dir.iterdir()} != REVIEW_FILES or any(not path.is_file() for path in review_dir.iterdir()):
-        raise ValueError("external review package must contain exactly review-bundle.json, reviews.jsonl, and checks.jsonl")
+    expected_files = CURRENT_REVIEW_FILES if package.get("current_format") else REVIEW_FILES
+    if {path.name for path in review_dir.iterdir()} != expected_files or any(not path.is_file() for path in review_dir.iterdir()):
+        raise ValueError("external review package must contain the exact format-specific regular-file set")
+    total_budget = [0]
     try:
-        bundle_raw = (review_dir / "review-bundle.json").read_bytes()
+        bundle_raw = _read_external_regular(
+            review_dir, "review-bundle.json", total_budget=total_budget,
+        )
         bundle = json.loads(bundle_raw)
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("invalid external review bundle") from exc
     bundle_fields = {"schema_version", "candidate_manifest_sha256", "candidate_artifacts",
                      "promotion_reviewer_id", "approved_at", "artifacts"}
-    if set(bundle) != bundle_fields or bundle.get("schema_version") != "1":
+    current_fields = bundle_fields | {"reviewed_candidate_path", "reviewed_candidate_sha256",
+                                      "reviewer_receipt_path", "reviewer_receipt_sha256"}
+    expected_fields = current_fields if package.get("current_format") else bundle_fields
+    expected_version = "2" if package.get("current_format") else "1"
+    if set(bundle) != expected_fields or bundle.get("schema_version") != expected_version:
         raise ValueError("external review bundle schema mismatch")
     canonical_bundle = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if bundle_raw != canonical_bundle:
@@ -90,16 +208,41 @@ def validate_external_review(package, review_dir, validator):
     if not isinstance(reviewer, str) or not reviewer.strip() or reviewer == package["manifest"]["researcher_id"]:
         raise ValueError("promotion reviewer must be identified and independent")
     approved_at = _timestamp(bundle.get("approved_at"), "approved_at")
+    reviewed_bytes = None
+    if package.get("current_format"):
+        reviewed_bytes = verify_external_review_bytes(
+            review_dir, bundle["reviewed_candidate_path"], bundle["reviewed_candidate_sha256"],
+            bundle["reviewer_receipt_path"], bundle["reviewer_receipt_sha256"],
+            package["manifest"]["researcher_id"], total_budget=total_budget,
+            require_approval=require_approval, expected_status=expected_status,
+        )
+        if reviewed_bytes["receipt"]["reviewer_id"] != reviewer:
+            raise ValueError("review receipt and promotion reviewer identities differ")
+        if reviewed_bytes["reviewed_at_instant"] >= approved_at:
+            raise ValueError("receipt review must precede promotion approval")
+        candidate_payload = [
+            {key: value for key, value in benefit.items() if key != "review"}
+            for benefit in sorted(package["proposition_candidates"], key=lambda item: item["benefit_id"])
+        ]
+        expected_candidate_raw = validator._load_verifier().company_benefits_series.canonical_json_bytes(
+            candidate_payload
+        )
+        if reviewed_bytes["candidate_raw"] != expected_candidate_raw:
+            raise ValueError("actual reviewed candidate bytes differ from the candidate package")
     artifacts = bundle.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != {"reviews.jsonl", "checks.jsonl"}:
         raise ValueError("external review bundle must hash exact review artifacts")
+    review_artifact_raw = {
+        name: _read_external_regular(review_dir, name, total_budget=total_budget)
+        for name in artifacts
+    }
     for name in artifacts:
-        if not HASH.fullmatch(str(artifacts[name])) or artifacts[name] != validator.sha256((review_dir / name).read_bytes()):
+        if not HASH.fullmatch(str(artifacts[name])) or artifacts[name] != validator.sha256(review_artifact_raw[name]):
             raise ValueError(f"external review artifact hash mismatch: {name}")
 
-    reviews = validator.read_jsonl(review_dir / "reviews.jsonl")
+    reviews = validator.read_jsonl_bytes(review_artifact_raw["reviews.jsonl"], "reviews.jsonl")
     verifier = validator._load_verifier()
-    checks = verifier.company_benefits_series.read_source_checks(review_dir / "checks.jsonl")
+    checks = validator.read_jsonl_bytes(review_artifact_raw["checks.jsonl"], "checks.jsonl")
     claim_schema = verifier.load_schema("review.schema.json")
     outcome_schema = verifier.load_schema("outcome-review.schema.json")
     targets = [(kind, target) for kind, target, _ in package["targets"]]
@@ -121,10 +264,22 @@ def validate_external_review(package, review_dir, validator):
         if (kind, target) not in researchers:
             raise ValueError(f"{review_id}: orphan independent review target")
         verifier.validate_structure(review, claim_schema if kind == "claim" else outcome_schema, review_id, errors)
-        if (review.get("decision") != "approved" or review.get("researcher_id") != researchers[(kind, target)]
-                or review.get("reviewer_id") == review.get("researcher_id")
-                or review.get("quote_entailment_confirmed") is not True):
-            raise ValueError(f"{review_id}: review must be approved, independently authored, and bind the candidate researcher")
+        if (review.get("researcher_id") != researchers[(kind, target)]
+                or (package.get("current_format") and review.get("reviewer_id") != reviewer)
+                or review.get("reviewer_id") == review.get("researcher_id")):
+            raise ValueError(f"{review_id}: review must be independently authored and bind the candidate researcher")
+        for field in ("source_entailment_reviews", "conflict_side_entailments"):
+            entailments = review.get(field, [])
+            for entailment in entailments if isinstance(entailments, list) else []:
+                if (not isinstance(entailment, dict)
+                        or entailment.get("reviewer_id") != review.get("reviewer_id")
+                        or entailment.get("reviewer_id") == researchers[(kind, target)]):
+                    raise ValueError(
+                        f"{review_id}: every nested entailment reviewer must be the independent package reviewer"
+                    )
+        if require_approval and (review.get("decision") != "approved"
+                                 or review.get("quote_entailment_confirmed") is not True):
+            raise ValueError(f"{review_id}: review must be approved with explicit entailment before promotion")
         reviewed = _timestamp(review.get("reviewed_at"), "reviewed_at")
         if reviewed >= approved_at:
             raise ValueError(f"{review_id}: review must precede promotion approval")
@@ -133,6 +288,14 @@ def validate_external_review(package, review_dir, validator):
         raise ValueError("independent review coverage must be exact one-to-one in canonical order with no missing, duplicate, or orphan targets")
     if errors:
         raise ValueError("independent review schema validation failed:\n" + "\n".join(errors))
+    decisions = [review.get("decision") for review in reviews]
+    review_status = reviewed_bytes["receipt"]["status"] if reviewed_bytes else "approved"
+    if review_status == "approved" and any(decision != "approved" for decision in decisions):
+        raise ValueError("approved review receipt requires every disposition to be approved")
+    if review_status == "rework" and ("changes_required" not in decisions or "rejected" in decisions):
+        raise ValueError("rework review receipt requires an explicit changes_required disposition")
+    if review_status == "rejected" and "rejected" not in decisions:
+        raise ValueError("rejected review receipt requires an explicit rejected disposition")
 
     records = package["records"]
     source_map = {item["source_id"]: item for item in records["sources.jsonl"]}
@@ -151,6 +314,10 @@ def validate_external_review(package, review_dir, validator):
     check_contract = verifier.company_benefits_series
     for check in checks:
         source_id = check.get("source_id")
+        review_metadata.validate_review_metadata_observation(
+            check.get("url"), check, review_status=review_status,
+            label=f"{source_id}: source-check",
+        )
         check_contract.validate_source_check(check, source_map[source_id],
                                              package["legacy_sources"].get(source_id))
         checked = _timestamp(check.get("checked_at"), "check checked_at")
@@ -159,7 +326,8 @@ def validate_external_review(package, review_dir, validator):
         if checked >= approved_at:
             raise ValueError(f"{source_id}: post-review check must precede promotion approval")
 
-    return {"bundle": bundle, "reviews": reviews, "checks": checks, "verifier": verifier}
+    return {"bundle": bundle, "reviews": reviews, "checks": checks, "verifier": verifier,
+            "reviewed_bytes": reviewed_bytes}
 
 
 def promote(candidate_dir, review_dir, output_dir, research_root):
@@ -171,7 +339,6 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
     reviewer = bundle["promotion_reviewer_id"]
 
     output_dir = Path(output_dir)
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
     check_map = {check["source_id"]: check for check in checks}
     promoted_claims = copy.deepcopy(records["claims.jsonl"])
     for claim in promoted_claims:
@@ -188,16 +355,38 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
     }
     for name in validator.V2_FILES:
         values[name] = records[name]
-    with tempfile.TemporaryDirectory(prefix="benefits-promotion-", dir=output_dir.parent) as temporary:
-        staged = Path(temporary) / "package"
-        staged.mkdir()
+    final_files = FINAL_FILES
+    reviewed_bytes = review.get("reviewed_bytes")
+    if package.get("current_format"):
+        if reviewed_bytes is None:
+            raise ValueError("current promotion is missing verified external review bytes")
+        receipt = reviewed_bytes["receipt"]
+        review_binding = {
+            "reviewer_receipt_sha256": reviewed_bytes["reviewer_receipt_sha256"],
+            "reviewed_candidate_sha256": reviewed_bytes["reviewed_candidate_sha256"],
+            "reviewed_at": receipt["reviewed_at"],
+        }
+        verified_benefits = [
+            {**candidate, "review": {"status": "independently_reviewed", **review_binding}}
+            for candidate in package["proposition_candidates"]
+        ]
+        evidence = [*records["official-claims-v2.jsonl"], *records["reference-records.jsonl"],
+                    *records["community-benefit-reports.jsonl"]]
+        verifier.company_benefits_series.validate_verified_benefits(
+            verified_benefits, evidence, review_binding if verified_benefits else None
+        )
+        values["verified-benefits.jsonl"] = verified_benefits
+        values["company-category-outcomes.jsonl"] = package["cell_outcomes"]
+        final_files = (*FINAL_FILES, "verified-benefits.jsonl", "company-category-outcomes.jsonl")
+    with series.create_output_staging(output_dir, "benefits-promotion-") as staging:
+        staged = staging.path
         final_hashes = {}
-        for name in FINAL_FILES:
+        for name in final_files:
             raw = verifier.company_benefits_series.jsonl_bytes(values[name])
-            (staged / name).write_bytes(raw)
+            staging.write_bytes(name, raw)
             final_hashes[name] = validator.sha256(raw)
         manifest = {
-            "schema_version": "1", "batch_id": package["manifest"]["batch_id"],
+            "schema_version": "2" if package.get("current_format") else "1", "batch_id": package["manifest"]["batch_id"],
             "company_list_sha256": package["manifest"]["company_list_sha256"],
             "effective_sequence_sha256": package["manifest"]["effective_sequence_sha256"],
             "replacement_events_sha256": package["manifest"]["replacement_events_sha256"],
@@ -212,14 +401,35 @@ def promote(candidate_dir, review_dir, output_dir, research_root):
                              "review_bundle": bundle,
                              "review_artifacts": bundle["artifacts"]},
         }
-        (staged / "batch.json").write_bytes(verifier.company_benefits_series.json_bytes(manifest))
+        if package.get("current_format"):
+            if reviewed_bytes is None:
+                raise ValueError("current promotion is missing verified external review bytes")
+            manifest["review_audit"].update(
+                reviewed_candidate_sha256=reviewed_bytes["reviewed_candidate_sha256"],
+                reviewer_receipt_sha256=reviewed_bytes["reviewer_receipt_sha256"],
+                reviewer_receipt=reviewed_bytes["receipt"],
+            )
+        staging.write_bytes("batch.json", verifier.company_benefits_series.json_bytes(manifest))
         integrator = _load(Path(__file__).with_name("integrate-company-benefits-series-batch.py"), "candidate_promotion_integrator")
+        if package.get("current_format"):
+            approval = integrator.canonical_approval_row(
+                manifest["batch_id"], staging.read_bytes("batch.json"),
+                reviewed_bytes["reviewed_candidate_sha256"], reviewed_bytes["reviewer_receipt_sha256"],
+            )
+            staging.write_bytes(
+                "series-batch-approval.jsonl",
+                verifier.company_benefits_series.jsonl_bytes([approval])
+            )
+            inventory = staging.names()
+            checksum_lines = [f"{validator.sha256(staging.read_bytes(name))}  {name}\n"
+                              for name in inventory]
+            staging.write_text("SHA256SUMS", "".join(checksum_lines))
+        staging.validate_binding()
         integrator.load_package(staged, research_root)
-        if output_dir.exists():
-            if not output_dir.is_dir():
-                raise ValueError("promotion output exists and is not a directory")
-            shutil.rmtree(output_dir)
-        shutil.copytree(staged, output_dir)
+        staging.validate_binding()
+        series.publish_directory_atomically(
+            staging, _atomic_exchange, _atomic_noreplace,
+        )
     return manifest
 
 
@@ -227,7 +437,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate_dir", type=Path)
     parser.add_argument("review_dir", type=Path)
-    parser.add_argument("output_dir", type=Path)
+    parser.add_argument("output_dir", type=Path,
+                        help="approved package directory; its full parent chain must pre-exist")
     parser.add_argument("--research-root", type=Path, default=Path("docs/research/company-benefits"))
     args = parser.parse_args(argv)
     manifest = promote(args.candidate_dir, args.review_dir, args.output_dir, args.research_root)

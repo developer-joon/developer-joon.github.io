@@ -47,7 +47,7 @@ PINNED_PROTOCOL_FIELDS = (
 EXCLUSION_REASONS = {"entity_ineligible", "duplicate_entity", "evidence_invalidated", "scope_correction",
                      "workforce_below_minimum", "workforce_missing_or_ambiguous", "entity_ceased_before_cutoff"}
 OFFICIAL_SOURCE_TYPES = {"government_register", "regulator_filing", "public_enterprise_disclosure", "exchange_filing", "official_company_report"}
-PINNED_CONTRACT_SHA256 = "393c44ddd262c1d7be8877494aecc1fb2d4f4f2f88877d31042ec8de6e78e78d"
+PINNED_CONTRACT_SHA256 = "3f9fa4b5093af22531a5f03d0cb1205a7f37ab037a8dd79f62d6df021339df35"
 PINNED_CONTRACT_VERSION = "4.0.0"
 MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
 HASH_SCHEMA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
@@ -141,14 +141,10 @@ def parse_day(value, field, record_id, errors):
 
 
 def parse_timestamp(value, field, record_id, errors):
-    if not isinstance(value, str):
-        errors.append(f"{record_id}: invalid {field} timestamp")
-        return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            raise ValueError("timezone required")
-        return parsed.astimezone(timezone.utc)
+        return company_benefits_series.parse_canonical_rfc3339(
+            value, field,
+        ).astimezone(timezone.utc)
     except ValueError:
         errors.append(f"{record_id}: invalid {field} timestamp")
         return None
@@ -278,22 +274,23 @@ def pinned_protocol_contract():
     if sha256(raw) != PINNED_CONTRACT_SHA256:
         raise ValueError("pinned protocol contract violates repository integrity pin")
     contract = json.loads(raw)
-    if set(contract) != set(PINNED_PROTOCOL_FIELDS):
+    if set(contract) != {*PINNED_PROTOCOL_FIELDS, "verified_benefit_contract"}:
         raise ValueError("pinned protocol contract fields are incomplete")
     return contract
 
 
 def validate_protocol(protocol, source_map, errors):
     contract = pinned_protocol_contract()
+    population_contract = {field: contract[field] for field in PINNED_PROTOCOL_FIELDS}
     validate_structure(protocol, load_schema("population-protocol.schema.json"), "protocol", errors)
     if protocol.get("version") != PINNED_CONTRACT_VERSION:
         errors.append("protocol version violates independent pinned contract version")
-    for field, expected in contract.items():
+    for field, expected in population_contract.items():
         if protocol.get(field) != expected:
             errors.append(f"protocol {field} violates pinned protocol contract")
     schema_path = Path(__file__).resolve().parents[1] / "docs" / "research" / "company-benefits" / "schema" / "population-protocol.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    if schema.get("x-pinned-protocol-contract-sha256") != sha256(json_bytes(contract)):
+    if schema.get("x-pinned-protocol-contract-sha256") != sha256(json_bytes(population_contract)):
         errors.append("population protocol schema is not aligned with pinned protocol contract")
     scopes = protocol.get("scopes", {})
     domestic = scopes.get("domestic", {})

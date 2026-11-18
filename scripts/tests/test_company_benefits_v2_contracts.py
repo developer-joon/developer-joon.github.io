@@ -2,6 +2,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,7 @@ SCHEMA = RESEARCH / "schema"
 CONTRACT_FILES = (
     "company-gap.schema.json",
     "series-batch.schema.json",
+    "series-batch-approval.schema.json",
     "company-category-cell.schema.json",
     "research-attempt.schema.json",
     "official-claim-v2.schema.json",
@@ -27,6 +29,24 @@ CATEGORIES = {
     "commute", "remote", "retirement", "meals", "inclusion",
 }
 HASH = "a" * 64
+ASCII_WHITESPACE = "\t\n\v\f\r "
+
+
+def normalized_proposition_text(value):
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+        raise ValueError("unpaired surrogate code point")
+    tokens = []
+    token = []
+    for character in value:
+        if character in ASCII_WHITESPACE:
+            if token:
+                tokens.append("".join(token))
+                token = []
+        else:
+            token.append(chr(ord(character) + 32) if "A" <= character <= "Z" else character)
+    if token:
+        tokens.append("".join(token))
+    return " ".join(tokens)
 
 
 def official_claim_id(company_id, category_id, source_ids):
@@ -202,6 +222,65 @@ def base_source():
     }
 
 
+def base_verified_benefit():
+    benefit = {
+        "company_id": "KR-CRN-1101112948086",
+        "primary_category_id": "leave",
+        "title": "Paid leave",
+        "description": "Employees receive paid leave.",
+        "scope": {
+            "countries": ["KR"],
+            "legal_entities": ["(주)인텔리안테크놀로지스"],
+            "roles": ["all_employees"],
+            "employment_types": ["full_time"],
+            "family_members": [],
+            "conditions": [],
+        },
+        "currentness": "current",
+        "currentness_checked_at": "2026-11-01T01:02:03Z",
+        "conflict_status": "none",
+        "evidence_ids": [
+            "reference::KR-CRN-1101112948086::leave::source::example",
+            "community::KR-CRN-1101112948086::leave::source::community-1",
+        ],
+    }
+    proposition_sha256 = hashlib.sha256(json.dumps({
+        "company_id": benefit["company_id"],
+        "title": "paid leave",
+        "description": "employees receive paid leave.",
+        "scope": {
+            key: sorted(
+                (normalized_proposition_text(value) for value in values),
+                key=lambda value: value.encode("utf-8"),
+            )
+            for key, values in benefit["scope"].items()
+        },
+        "currentness": benefit["currentness"],
+        "currentness_checked_at": benefit["currentness_checked_at"],
+        "conflict_status": benefit["conflict_status"],
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    benefit.update(
+        benefit_id=f"benefit::{proposition_sha256}",
+        proposition_sha256=proposition_sha256,
+    )
+    return benefit
+
+
+def bind_verified_benefits(benefits):
+    candidate = sorted(benefits, key=lambda benefit: benefit["benefit_id"])
+    binding = {
+        "reviewed_candidate_sha256": hashlib.sha256(json.dumps(
+            candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest(),
+        "reviewer_receipt_sha256": "c" * 64,
+        "reviewed_at": "2026-11-01T01:02:03Z",
+    }
+    reviewed = copy.deepcopy(benefits)
+    for benefit in reviewed:
+        benefit["review"] = {"status": "independently_reviewed", **binding}
+    return reviewed, binding
+
+
 class V2ContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -297,6 +376,17 @@ class V2ContractTests(unittest.TestCase):
             "company_ids": company_ids,
         }
         self.assert_valid("series-batch.schema.json", batch_record)
+
+        approval_record = {
+            "approval_version": "1",
+            "batch_id": "domestic-01",
+            "status": "approved",
+            "package_sha256": HASH,
+            "reviewed_candidate_sha256": "b" * 64,
+            "reviewer_receipt_sha256": "c" * 64,
+        }
+        self.assert_valid("series-batch-approval.schema.json", approval_record)
+        self.assert_invalid("series-batch-approval.schema.json", dict(approval_record, scope="domestic"))
 
         for reserved in ("v2", "v2::reserved"):
             invalid_batch = copy.deepcopy(batch_record)
@@ -639,6 +729,184 @@ class V2ContractTests(unittest.TestCase):
         record = base_community()
         record["scope"]["countries"] = ["Korea"]
         self.assert_invalid("community-benefit-report.schema.json", record)
+
+    def test_verified_benefit_contract_accepts_atomic_reviewed_shape(self):
+        evidence = [base_reference(), base_community()]
+        benefits, binding = bind_verified_benefits([base_verified_benefit()])
+        self.assertEqual(
+            benefits,
+            self.series.validate_verified_benefits(benefits, evidence, binding),
+        )
+        contract = json.loads(
+            (ROOT / "scripts" / "company-benefits-protocol-contract.json").read_text()
+        )
+        self.assertEqual(
+            self.series.VERIFIED_BENEFIT_REQUIRED_FIELDS,
+            tuple(contract["verified_benefit_contract"]["required_fields"]),
+        )
+
+    def test_verified_benefit_canonicalization_is_ascii_only_and_utf8_byte_ordered(self):
+        benefit = base_verified_benefit()
+        benefit["title"] = "\tStraße\u0085STRASSE\ufeffA\u001cB\r"
+        benefit["description"] = "ABC  복지 \U0001f600"
+        benefit["company_id"] = "KR-CRN-0000000000001"
+        benefit["scope"]["legal_entities"] = ["Test Co"]
+        benefit["scope"]["roles"] = []
+        benefit["scope"]["employment_types"] = []
+        benefit["scope"]["conditions"] = [
+            "\U00010000", "\ue000", "e\u0301", "é", "한국", "Straße", "STRASSE",
+            "\u0085", "\ufeff", "\u001c",
+        ]
+        benefit["currentness_checked_at"] = "2026-11-05T00:00:00Z"
+        benefit["evidence_ids"] = ["reference::record-1"]
+
+        payload = self.series._verified_benefit_proposition_payload(benefit)
+
+        self.assertEqual("straße\u0085strasse\ufeffa\u001cb", payload["title"])
+        self.assertEqual("abc 복지 \U0001f600", payload["description"])
+        self.assertEqual(
+            sorted([
+                "\U00010000", "\ue000", "e\u0301", "é", "한국", "straße", "strasse",
+                "\u0085", "\ufeff", "\u001c",
+            ], key=lambda value: value.encode("utf-8")),
+            payload["scope"]["conditions"],
+        )
+        self.assertEqual(
+            payload["scope"]["conditions"],
+            sorted(payload["scope"]["conditions"], key=lambda value: value.encode("utf-8")),
+        )
+        self.assertNotEqual(payload["scope"]["conditions"].index("straße"), payload["scope"]["conditions"].index("strasse"))
+        self.assertIn("é", payload["scope"]["conditions"])
+        self.assertIn("e\u0301", payload["scope"]["conditions"])
+
+    def test_python_and_node_emit_identical_canonical_bytes_and_hashes(self):
+        benefit = base_verified_benefit()
+        benefit.update(
+            title="\tStraße\u0085STRASSE\ufeffA\u001cB\r",
+            description="ABC  복지 \U0001f600",
+        )
+        benefit["scope"]["conditions"] = [
+            "\U00010000", "\ue000", "e\u0301", "é", "한국", "Straße", "STRASSE",
+            "\u0085", "\ufeff", "\u001c",
+        ]
+        python_bytes = self.series._canonical_json_bytes(
+            self.series._verified_benefit_proposition_payload(benefit)
+        )
+        module_url = (ROOT / "scripts" / "verify-benefits-artifacts.mjs").as_uri()
+        probe = """
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const { verifiedBenefitPropositionCanonicalBytes } = await import(process.argv[1]);
+          const benefit = JSON.parse(readFileSync(0, 'utf8'));
+          const bytes = verifiedBenefitPropositionCanonicalBytes(benefit);
+          process.stdout.write(JSON.stringify({
+            hex: Buffer.from(bytes).toString('hex'),
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+          }));
+        """
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", probe, module_url],
+            input=json.dumps(benefit, ensure_ascii=True), text=True,
+            capture_output=True, check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        node_result = json.loads(result.stdout)
+        self.assertEqual(python_bytes.hex(), node_result["hex"])
+        self.assertEqual(hashlib.sha256(python_bytes).hexdigest(), node_result["sha256"])
+
+    def test_python_and_node_explicitly_reject_unpaired_surrogates(self):
+        benefit = base_verified_benefit()
+        benefit["title"] = "bad\ud800text"
+        with self.assertRaisesRegex(ValueError, "surrogate"):
+            self.series._verified_benefit_proposition_payload(benefit)
+
+        module_url = (ROOT / "scripts" / "verify-benefits-artifacts.mjs").as_uri()
+        probe = """
+          import { readFileSync } from 'node:fs';
+          const { verifiedBenefitPropositionCanonicalBytes } = await import(process.argv[1]);
+          try {
+            verifiedBenefitPropositionCanonicalBytes(JSON.parse(readFileSync(0, 'utf8')));
+          } catch (error) {
+            process.stdout.write(error.message);
+            process.exit(7);
+          }
+        """
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", probe, module_url],
+            input=json.dumps(benefit, ensure_ascii=True), text=True,
+            capture_output=True, check=False,
+        )
+        self.assertEqual(7, result.returncode, result.stderr)
+        self.assertRegex(result.stdout, "surrogate")
+
+    def test_verified_benefit_contract_rejects_bad_id_review_and_evidence_binding(self):
+        evidence = [base_reference(), base_community()]
+        valid, binding = bind_verified_benefits([base_verified_benefit()])
+        mutations = []
+        bad_id = copy.deepcopy(valid)
+        bad_id[0]["benefit_id"] = f"benefit::{'b' * 64}"
+        mutations.append(bad_id)
+        missing_review = copy.deepcopy(valid)
+        missing_review[0]["review"]["reviewer_receipt_sha256"] = ""
+        mutations.append(missing_review)
+        cross_category = copy.deepcopy(valid)
+        cross_category[0]["primary_category_id"] = "family"
+        mutations.append(cross_category)
+        for benefits in mutations:
+            with self.subTest(benefits=benefits):
+                with self.assertRaises(ValueError):
+                    self.series.validate_verified_benefits(benefits, evidence, binding)
+
+    def test_verified_benefit_rejects_candidate_and_detail_review_mismatches(self):
+        evidence = [base_reference(), base_community()]
+        benefits, binding = bind_verified_benefits([base_verified_benefit()])
+        forged_candidate = copy.deepcopy(binding)
+        forged_candidate["reviewed_candidate_sha256"] = "d" * 64
+        forged_benefits = copy.deepcopy(benefits)
+        forged_benefits[0]["review"]["reviewed_candidate_sha256"] = "d" * 64
+        with self.assertRaises(ValueError):
+            self.series.validate_verified_benefits(forged_benefits, evidence, forged_candidate)
+        forged_review = copy.deepcopy(benefits)
+        forged_review[0]["review"]["reviewed_at"] = "2026-11-02T01:02:03Z"
+        with self.assertRaises(ValueError):
+            self.series.validate_verified_benefits(forged_review, evidence, binding)
+
+    def test_verified_benefit_rejects_cross_category_replay_and_missing_currentness_timestamp(self):
+        evidence = [base_reference(), base_community()]
+        benefits, binding = bind_verified_benefits([base_verified_benefit()])
+        missing = copy.deepcopy(benefits)
+        missing[0].pop("currentness_checked_at")
+        with self.assertRaises(ValueError):
+            self.series.validate_verified_benefits(missing, evidence, binding)
+
+        replay = copy.deepcopy(base_verified_benefit())
+        replay["primary_category_id"] = "family"
+        replay["evidence_ids"] = ["reference::family"]
+        family_evidence = copy.deepcopy(base_reference())
+        family_evidence.update(reference_id="reference::family", category_id="family")
+        replayed, replay_binding = bind_verified_benefits([base_verified_benefit(), replay])
+        with self.assertRaises(ValueError):
+            self.series.validate_verified_benefits(replayed, evidence + [family_evidence], replay_binding)
+
+    def test_verified_benefit_count_helper_matches_category_counts(self):
+        benefits, _ = bind_verified_benefits([base_verified_benefit()])
+        expected = {category: int(category == "leave") for category in self.series.V2_CATEGORIES}
+        self.assertEqual(expected, self.series.count_verified_benefits_by_category(benefits))
+
+    def test_verified_benefit_timestamps_reject_malformed_and_naive_values(self):
+        evidence = [base_reference(), base_community()]
+        for timestamp in ("2026-11-01T01:02:03", "2026-99-01T01:02:03Z", "2026-10-29T24:00:00Z"):
+            benefit = base_verified_benefit()
+            benefit["currentness_checked_at"] = timestamp
+            benefits, binding = bind_verified_benefits([benefit])
+            with self.subTest(timestamp=timestamp), self.assertRaises(ValueError):
+                self.series.validate_verified_benefits(benefits, evidence, binding)
+        # jsonschema's format checker varies by dependency version; the production
+        # parser, not that library's permissive date-time check, is authoritative.
+        with self.assertRaises(ValueError):
+            self.series.parse_canonical_rfc3339("2026-10-29T24:00:00Z")
+        parsed = self.series.parse_canonical_rfc3339("2026-10-29T23:59:59.123+09:00")
+        self.assertEqual(parsed.isoformat(), "2026-10-29T23:59:59.123000+09:00")
 
     def test_source_v2_represents_every_tier_and_quality_dimension(self):
         tiers = (

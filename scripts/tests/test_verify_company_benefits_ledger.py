@@ -936,8 +936,18 @@ class VerifierTests(unittest.TestCase):
         schema = json.loads((research / "schema" / "population-protocol.schema.json").read_text())
         self.assertEqual(PANEL, schema["$defs"]["country_panel"]["const"])
         contract = json.loads((ROOT / "scripts" / "company-benefits-protocol-contract.json").read_text())
-        self.assertEqual(contract, {field: protocol[field] for field in self.verifier.PINNED_PROTOCOL_FIELDS})
-        self.assertEqual(self.verifier.sha256(self.verifier.json_bytes(contract)), schema["x-pinned-protocol-contract-sha256"])
+        self.assertEqual(
+            {*self.verifier.PINNED_PROTOCOL_FIELDS, "verified_benefit_contract"},
+            set(contract),
+        )
+        self.assertNotIn("verified_benefit_contract", self.verifier.PINNED_PROTOCOL_FIELDS)
+        self.assertNotIn("verified_benefit_contract", protocol)
+        population_contract = {field: contract[field] for field in self.verifier.PINNED_PROTOCOL_FIELDS}
+        self.assertEqual(population_contract, {field: protocol[field] for field in self.verifier.PINNED_PROTOCOL_FIELDS})
+        self.assertEqual(
+            self.verifier.sha256(self.verifier.json_bytes(population_contract)),
+            schema["x-pinned-protocol-contract-sha256"],
+        )
 
     def test_repository_real_population_requires_approved_external_receipt_and_verifies(self):
         research = ROOT / "docs" / "research" / "company-benefits"
