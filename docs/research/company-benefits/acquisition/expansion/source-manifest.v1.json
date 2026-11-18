@@ -1,0 +1,23 @@
+{
+  "schema_version": "expansion-identity-sources-v1",
+  "sources": {
+    "us": {
+      "filename": "expansion-us-candidates.json",
+      "sha256": "b261593b9fd4c8c2a8b601546898d5ebd8f45955f31a7f3ec644a071898d451d",
+      "expected_count": 27,
+      "authority": "SEC submissions company identity"
+    },
+    "kr": {
+      "filename": "expansion-kr-candidates.json",
+      "sha256": "b5004be53ea80a6dae35af71c0d19aee1525ebe3e37a34a710fe73b05a178b8d",
+      "expected_count": 9,
+      "authority": "DART corporation registration identity"
+    }
+  },
+  "canonical": {
+    "companies.jsonl": "e5888e3081d8ead3cc67c18d8e8e8007066c1c0de1c68103c59e390be77894ed",
+    "series-batches.jsonl": "51e1ae04cc02584199de65be73e0723b808216ccc93ecea5dfdb0f3a85f95423",
+    "company_count": 2000
+  },
+  "expected_total": 36
+}

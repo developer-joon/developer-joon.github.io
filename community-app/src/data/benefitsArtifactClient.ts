@@ -146,12 +146,12 @@ export class BenefitsArtifactClient {
     const companies = chunks.flat()
     if (companies.length !== projection.projected_company_count) throw new Error('approved projection 회사 개수 불일치')
     assertListingOutcomes(companies)
-    const counts = { official_verified: 0, reference: 0, community_report: 0, no_public_info: 0 }
+    const counts = { official_verified: 0, reference: 0, community_report: 0, no_public_info: 0, not_researched: 0, research_incomplete: 0, source_access_failed: 0, conflicting_evidence: 0 }
     for (const company of companies) for (const outcome of company.category_outcomes) {
       if (!('state' in outcome)) throw new Error('approved projection에 legacy category outcome이 포함됨')
       counts[outcome.state]++
     }
-    if (JSON.stringify(counts) !== JSON.stringify(projection.cell_state_counts)) throw new Error('approved projection cell inventory 불일치')
+    if (Object.keys(counts).some((state) => counts[state as keyof typeof counts] !== (projection.cell_state_counts[state as keyof typeof counts] ?? 0))) throw new Error('approved projection cell inventory 불일치')
     return { companies, approvedV2Sources }
   }
 

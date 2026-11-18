@@ -56,6 +56,10 @@ CELL_PUBLICATION_ELIGIBILITY = {
     "reference": "reference_only",
     "community_report": "community_only",
     "no_public_info": "discovery_only",
+    "research_incomplete": "discovery_only",
+    "source_access_failed": "discovery_only",
+    "conflicting_evidence": "discovery_only",
+    "not_researched": "discovery_only",
 }
 COMMUNITY_HOST_SUFFIXES = (
     "blind.com", "glassdoor.com", "jobplanet.co.kr", "teamblind.com",
@@ -1071,6 +1075,48 @@ def validate_package(package, repo_root=ROOT, prepromotion=False, validation_con
                 for source_id in claim.get("source_ids", []):
                     if indexes["sources"].get(source_id, {}).get("scope_status") != "exact_entity":
                         errors.append(f"{source_id}: official_verified requires exact_entity source scope")
+
+        if cell.get("state") in {"research_incomplete", "source_access_failed", "conflicting_evidence", "not_researched"}:
+            state = cell["state"]
+            if state == "not_researched":
+                if bound_attempts or discovered_source_ids:
+                    errors.append(f"{cell_id}: not_researched cannot have attempts or discovered sources")
+            elif not bound_attempts:
+                errors.append(f"{cell_id}: unresolved cell requires an actual bound attempt")
+            if state == "conflicting_evidence":
+                successful = [receipt for receipt in bound_attempts
+                              if receipt.get("result") == "source_found" and receipt.get("source_ids")]
+                if (len(successful) < 2
+                        or len({source_id for receipt in successful for source_id in receipt["source_ids"]}) < 2
+                        or len({receipt.get("raw_response_sha256") for receipt in successful}) < 2
+                        or len({receipt.get("capture_locator") for receipt in successful}) < 2):
+                    errors.append(f"{cell_id}: conflicting_evidence requires two distinct evidence-bearing successful captures")
+                elif not any(indexes["sources"].get(source_id, {}).get("conflict_status") == "contradictory"
+                             for receipt in successful for source_id in receipt["source_ids"]):
+                    errors.append(f"{cell_id}: conflicting_evidence requires a contradictory discovered source")
+            if state == "source_access_failed" and not any(
+                receipt.get("result") == "access_failed" for receipt in bound_attempts
+            ):
+                errors.append(f"{cell_id}: source_access_failed requires a bound access_failed attempt")
+            if state == "research_incomplete" and (
+                cell.get("conflict_status") == "contradictory"
+                or any(receipt.get("result") == "access_failed" for receipt in bound_attempts)
+            ):
+                errors.append(f"{cell_id}: research_incomplete hides access failure or contradiction")
+            if state == "source_access_failed" and cell.get("conflict_status") == "contradictory":
+                errors.append(f"{cell_id}: source_access_failed hides contradictory evidence")
+            if state == "conflicting_evidence" and cell.get("conflict_status") != "contradictory":
+                errors.append(f"{cell_id}: conflicting_evidence requires contradictory conflict_status")
+            if any(cell.get(field) for field in (
+                "official_claim_ids", "reference_ids", "community_report_ids"
+            )):
+                errors.append(f"{cell_id}: unresolved cell cannot claim publishable evidence")
+            if any(
+                source_id in indexes["sources"] and
+                indexes["sources"][source_id].get("publication_eligibility") in {"eligible", "reference_only"}
+                for source_id in discovered_source_ids
+            ):
+                errors.append(f"{cell_id}: unresolved cell cannot retain unadjudicated publishable source")
 
         if cell.get("state") == "no_public_info":
             required_routes = category_routes.get(cell.get("category_id"), [])

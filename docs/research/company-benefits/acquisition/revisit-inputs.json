@@ -1,0 +1,21 @@
+{
+  "revisits": [
+    {
+      "files": {
+        "coverage.jsonl": "3089cd91737dde38728cc6d10aaf2f48312756e1e4b14d431154f1c299c0074e",
+        "manifest.json": "ca53f4bc19223175ebb36a3370526a2a40f2fd3c2d11cc16def8d880fee68d2b",
+        "observations.jsonl": "bf608be2102938958f58adefbefa906c70a67e734a3ac125841b20b5fe016e12"
+      },
+      "scope": "domestic"
+    },
+    {
+      "files": {
+        "coverage.jsonl": "b884fd726326b3c60c249f14e3cb3c0dac9d92a50e68fdd3bbd4947dba6f1a6f",
+        "manifest.json": "050386a6c765e7851d9798dd5d2137e4970eb2bb35e0aa6cef5f7ba82cbcb078",
+        "observations.jsonl": "601fde3f91d70c281db9faf976e301b1bc33b263e66a33380be34e125b89d7f1"
+      },
+      "scope": "international"
+    }
+  ],
+  "schema_version": 1
+}

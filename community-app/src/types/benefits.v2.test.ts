@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, categories, claimSchema, compatibleCategoryOutcomeSchema, detailSchema, listingChunkSchema, manifestSchema, sourcesDocumentSchema, specificBenefitRecords, vNextCategoryOutcomeSchema as categoryOutcomeSchema, type CompanyListing, type Detail } from './benefits'
+import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, categories, claimSchema, compatibleCategoryOutcomeSchema, detailSchema, listingChunkSchema, manifestSchema, sourcesDocumentSchema, specificBenefitRecords, verifiedBenefitPropositions, verifiedBenefitSchema, vNextCategoryOutcomeSchema as categoryOutcomeSchema, type CompanyListing, type Detail } from './benefits'
 
 function validManifest() {
   const descriptor = { url: 'community/data/company-benefits/v2/taxonomy.json', sha256: 'a'.repeat(64), record_count: 10, byte_count: 100 }
@@ -13,7 +14,7 @@ function validManifest() {
     protocol: { protocol_id: 'company-benefits-population-v4', protocol_version: '4.0.0', protocol_sha256: 'b'.repeat(64), effective_selection_sha256: 'c'.repeat(64) },
     taxonomy_version: 'benefit-taxonomy-v1', company_count: 2000, listing_chunk_size: 50, listing_chunk_count: 40, category_count: 10,
     cell_count: 20000,
-    cell_state_counts: { official_verified: 1, reference: 2, community_report: 3, no_public_info: 19994 },
+    cell_state_counts: { official_verified: 1, reference: 2, community_report: 3, no_public_info: 19994, not_researched: 0, research_incomplete: 0, source_access_failed: 0, conflicting_evidence: 0 },
     ledger_sha256: Object.fromEntries(['company-category-cells.jsonl', 'research-attempts.jsonl', 'official-claims-v2.jsonl', 'reference-records.jsonl', 'community-benefit-reports.jsonl', 'sources-v2.jsonl'].map((name, index) => [name, String(index).repeat(64)])),
     taxonomy: descriptor, sources: { ...descriptor, url: 'community/data/company-benefits/v2/sources.json' }, methodology: { ...descriptor, url: 'community/data/company-benefits/v2/methodology.json' },
     listing_chunks: Array.from({ length: 40 }, (_, i) => ({ ...descriptor, url: `community/data/company-benefits/v2/listings/companies-${String(i + 1).padStart(2, '0')}.json`, chunk_index: i + 1, first_sequence: i * 50 + 1, last_sequence: i * 50 + 50, record_count: 50 })),
@@ -39,7 +40,24 @@ it('accepts all four explicit cell states and rejects not_researched', () => {
     { ...base, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only', kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, benefit_type_count: 0, specific_benefit_count: 0, limitation_codes: ['scope_limit', 'currentness_limit'], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_source_ids: [], searched_at: '2026-11-01T00:00:00Z' },
   ]
   outcomes.forEach((outcome) => expect(categoryOutcomeSchema.safeParse(outcome).success).toBe(true))
-  expect(categoryOutcomeSchema.safeParse({ ...base, state: 'not_researched' }).success).toBe(false)
+  for (const state of ['not_researched', 'research_incomplete', 'source_access_failed', 'conflicting_evidence']) {
+    const unresolved = { ...outcomes[3], state, reason_code: state, searched_at: state === 'not_researched' ? null : base.assessed_at, conflict_status: state === 'conflicting_evidence' ? 'contradictory' : 'none', limitation_codes: state === 'conflicting_evidence' ? ['scope_limit', 'currentness_limit', 'conflicting_evidence'] : ['scope_limit', 'currentness_limit'] }
+    expect(categoryOutcomeSchema.safeParse(unresolved).success).toBe(true)
+    expect(categoryOutcomeSchema.safeParse({ ...unresolved, reason_code: 'searched_not_found' }).success).toBe(false)
+    expect(categoryOutcomeSchema.safeParse({ ...unresolved, kind: 'evidenced' }).success).toBe(false)
+    expect(categoryOutcomeSchema.safeParse({ ...unresolved, specific_benefit_count: 1 }).success).toBe(false)
+  }
+})
+
+it('accounts unresolved cells in the full population without promoting a benefit or terminal closure', () => {
+  const manifest = validManifest()
+  manifest.cell_state_counts.no_public_info -= 4
+  manifest.cell_state_counts.not_researched = 1
+  manifest.cell_state_counts.research_incomplete = 1
+  manifest.cell_state_counts.source_access_failed = 1
+  manifest.cell_state_counts.conflicting_evidence = 1
+  expect(manifestSchema.safeParse(manifest).success).toBe(true)
+  expect(manifestSchema.safeParse({ ...manifest, cell_state_counts: { ...manifest.cell_state_counts, no_public_info: manifest.cell_state_counts.no_public_info + 1 } }).success).toBe(false)
 })
 
 it('requires an explicit protocol and rejects contradictory derived outcome projections', () => {
@@ -86,7 +104,7 @@ it('accepts an additive approved-v2 checkpoint without relabeling the active v1 
     base_data_version: manifest.data_version, base_manifest_sha256: 'f'.repeat(64), data_version: 'approved-v2-checkpoint-38',
     approved_batch_count: 38, total_batch_count: 80, projected_company_count: 950,
     total_company_count: 2000, cell_count: 9500,
-    cell_state_counts: { official_verified: 142, reference: 1811, community_report: 49, no_public_info: 7498 },
+    cell_state_counts: { official_verified: 142, reference: 1811, community_report: 49, no_public_info: 7498, not_researched: 0, research_incomplete: 0, source_access_failed: 0, conflicting_evidence: 0 },
     listing_chunk_size: 50, listing_chunk_count: 19,
     ledger_sha256: validManifest().ledger_sha256,
     taxonomy: { ...manifest.taxonomy, url: 'community/data/company-benefits/approved-v2-checkpoint-38/taxonomy.json' },
@@ -120,7 +138,7 @@ it('accepts a 39-batch projection descriptor inventory with one final 25-company
     base_data_version: manifest.data_version, base_manifest_sha256: 'f'.repeat(64), data_version: dataVersion,
     approved_batch_count: 39, total_batch_count: 80, projected_company_count: 975,
     total_company_count: 2000, cell_count: 9750,
-    cell_state_counts: { official_verified: 0, reference: 0, community_report: 0, no_public_info: 9750 },
+    cell_state_counts: { official_verified: 0, reference: 0, community_report: 0, no_public_info: 9750, not_researched: 0, research_incomplete: 0, source_access_failed: 0, conflicting_evidence: 0 },
     listing_chunk_size: 50, listing_chunk_count: 20,
     ledger_sha256: validManifest().ledger_sha256,
     taxonomy: { ...manifest.taxonomy, url: `community/data/company-benefits/${dataVersion}/taxonomy.json` },
@@ -279,7 +297,7 @@ function vNextDetailWithReference() {
   const category_outcomes = categories.map((category_id) => category_id === 'leave' ? {
     ...task7Official, category_id, state: 'reference', source_tiers: ['other_public_web'],
     official_claim_ids: [], official_claim_count: 0, reference_ids: ['reference::record-1'], reference_count: 1,
-    reliability: 'medium', publication_eligibility: 'reference_only', specific_benefit_count: 1, limitation_codes: ['lower_tier_evidence'],
+    reliability: 'medium', publication_eligibility: 'reference_only', specific_benefit_count: 0, limitation_codes: ['lower_tier_evidence'],
   } : task7Outcome(category_id))
   return {
     schema_version: 1, artifact_kind: 'company_detail', artifact_protocol: 'vNext', data_version: 'v2', taxonomy_version: 'benefit-taxonomy-v1',
@@ -319,6 +337,40 @@ function vNextDetailWithSpecificRecords() {
     reliability: 'low',
     publication_eligibility: 'eligible',
   }
+  const canonicalJson = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+    if (value && typeof value === 'object') return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`).join(',')}}`
+    return JSON.stringify(value)
+  }
+  const sha256 = (value: unknown) => createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex')
+  const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US')
+  const canonicalScope = (scope: Record<string, string[]>) => Object.fromEntries(Object.entries(scope).map(([key, values]) => [key, values.map(normalize).sort()]))
+  const benefitBase = {
+    company_id: base.company.company_id,
+    primary_category_id: 'leave',
+    title: 'Paid leave',
+    description: 'Employees receive paid leave.',
+    scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [], family_members: [], conditions: [] },
+    currentness: 'current',
+    currentness_checked_at: '2026-11-01T00:00:00Z',
+    conflict_status: 'none',
+    evidence_ids: ['reference::record-1', 'community::record-1'],
+  }
+  const proposition_sha256 = sha256({
+    company_id: benefitBase.company_id,
+    title: normalize(benefitBase.title),
+    description: normalize(benefitBase.description),
+    scope: canonicalScope(benefitBase.scope),
+    currentness: benefitBase.currentness,
+    currentness_checked_at: benefitBase.currentness_checked_at,
+    conflict_status: benefitBase.conflict_status,
+  })
+  const candidateBenefit = { benefit_id: `benefit::${proposition_sha256}`, proposition_sha256, ...benefitBase }
+  const verified_benefit_review_binding = {
+    reviewer_receipt_sha256: 'd'.repeat(64),
+    reviewed_candidate_sha256: sha256([candidateBenefit]),
+    reviewed_at: '2026-11-01T00:00:00Z',
+  }
   return {
     ...base,
     category_outcomes: base.category_outcomes.map((outcome, index) => index === 0 ? {
@@ -327,12 +379,100 @@ function vNextDetailWithSpecificRecords() {
       community_report_ids: ['community::record-1'],
       community_report_count: 1,
       claim_count: 2,
-      specific_benefit_count: 2,
+      specific_benefit_count: 1,
     } : outcome),
     community_reports: [communityReport],
+    verified_benefit_review_binding,
+    verified_benefits: [{
+      ...candidateBenefit,
+      review: {
+        status: 'independently_reviewed',
+        ...verified_benefit_review_binding,
+      },
+    }],
     sources: [...base.sources, communitySource],
   }
 }
+
+it('counts one independently reviewed proposition backed by two evidence records', () => {
+  const detail = detailSchema.parse(vNextDetailWithSpecificRecords())
+  expect(verifiedBenefitPropositions(detail, 'leave')).toHaveLength(1)
+  expect(verifiedBenefitPropositions(detail, 'leave')[0].evidence_ids).toEqual([
+    'reference::record-1',
+    'community::record-1',
+  ])
+  const listing = { company_id: detail.company.company_id, category_outcomes: structuredClone(detail.category_outcomes) } as unknown as CompanyListing
+  expect(() => assertCompanyDetailEvidence(listing, detail)).not.toThrow()
+  const expectedCounts = Object.fromEntries(categories.map((category) => [category, category === 'leave' ? 1 : 0]))
+  const actualCounts = Object.fromEntries(categories.map((category) => [category, verifiedBenefitPropositions(detail, category).length]))
+  expect(actualCounts).toEqual(expectedCounts)
+})
+
+it('does not count raw reference and community statements as benefit propositions', () => {
+  const rawOnly = vNextDetailWithSpecificRecords()
+  rawOnly.verified_benefits = []
+  delete (rawOnly as Partial<typeof rawOnly>).verified_benefit_review_binding
+  rawOnly.category_outcomes[0].specific_benefit_count = 0
+  const detail = detailSchema.parse(rawOnly)
+  expect(specificBenefitRecords(detail, 'leave')).toHaveLength(2)
+  expect(verifiedBenefitPropositions(detail, 'leave')).toEqual([])
+})
+
+it('rejects the same proposition SHA-256 in two categories', () => {
+  const detail = vNextDetailWithSpecificRecords()
+  detail.verified_benefits.push({
+    ...structuredClone(detail.verified_benefits[0]),
+    primary_category_id: 'family',
+    title: 'A different title whose hash is not recomputed until Task 5',
+  })
+  const result = detailSchema.safeParse(detail)
+  expect(result.error?.issues.map((issue) => issue.message)).toContain('verified benefit proposition SHA-256 중복')
+})
+
+it('rejects an arbitrary benefit ID that does not equal its proposition fingerprint', () => {
+  const detail = vNextDetailWithSpecificRecords()
+  detail.verified_benefits[0].benefit_id = `benefit::${'f'.repeat(64)}`
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('rejects a per-benefit review that differs from the detail review binding', () => {
+  const detail = vNextDetailWithSpecificRecords()
+  detail.verified_benefits[0].review.reviewer_receipt_sha256 = 'f'.repeat(64)
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('requires currentness_checked_at on every verified benefit', () => {
+  const detail = vNextDetailWithSpecificRecords()
+  delete (detail.verified_benefits[0] as Partial<typeof detail.verified_benefits[0]>).currentness_checked_at
+  expect(detailSchema.safeParse(detail).success).toBe(false)
+})
+
+it('requires review binding exactly when verified benefits are present', () => {
+  const reviewed = vNextDetailWithSpecificRecords()
+  delete (reviewed as Partial<typeof reviewed>).verified_benefit_review_binding
+  expect(detailSchema.safeParse(reviewed).success).toBe(false)
+
+  const empty = vNextDetailWithReference()
+  expect(detailSchema.safeParse({ ...empty, verified_benefits: [], verified_benefit_review_binding: { reviewer_receipt_sha256: 'a'.repeat(64), reviewed_candidate_sha256: 'b'.repeat(64), reviewed_at: '2026-11-01T00:00:00Z' } }).success).toBe(false)
+})
+
+it('rejects cross-category and cross-company benefit evidence', () => {
+  const crossCategory = vNextDetailWithSpecificRecords()
+  crossCategory.verified_benefits[0].primary_category_id = 'family'
+  expect(detailSchema.safeParse(crossCategory).success).toBe(false)
+
+  const crossCompany = vNextDetailWithSpecificRecords()
+  crossCompany.references[0].company_id = 'KR-CRN-0000000000002'
+  expect(detailSchema.safeParse(crossCompany).success).toBe(false)
+})
+
+it('rejects missing independent review hashes', () => {
+  for (const field of ['reviewer_receipt_sha256', 'reviewed_candidate_sha256'] as const) {
+    const detail = vNextDetailWithSpecificRecords()
+    detail.verified_benefits[0].review[field] = ''
+    expect(detailSchema.safeParse(detail).success).toBe(false)
+  }
+})
 
 it('requires specific benefit metadata only on every vNext outcome variant', () => {
   expect(categoryOutcomeSchema.safeParse(task7Official).success).toBe(true)
@@ -381,13 +521,35 @@ it('rejects blank specific benefit statements instead of silently dropping them'
   expect(detailSchema.safeParse(blankCommunity).success).toBe(false)
 })
 
+it('validates verified-benefit nonblank text with canonical ASCII whitespace only', () => {
+  const benefit = {
+    benefit_id: `benefit::${'a'.repeat(64)}`,
+    proposition_sha256: 'a'.repeat(64),
+    company_id: 'KR-CRN-0000000000001',
+    primary_category_id: 'leave',
+    title: '유급 휴가',
+    description: 'Employees receive paid leave.',
+    scope: { countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [], family_members: [], conditions: [] },
+    currentness: 'current',
+    currentness_checked_at: '2026-11-01T00:00:00Z',
+    conflict_status: 'none',
+    evidence_ids: ['reference::record-1'],
+    review: { status: 'independently_reviewed', reviewer_receipt_sha256: 'b'.repeat(64), reviewed_candidate_sha256: 'c'.repeat(64), reviewed_at: '2026-11-01T00:00:00Z' },
+  } as const
+
+  expect(verifiedBenefitSchema.safeParse({ ...benefit, title: '\t\n\v\f\r ' }).success).toBe(false)
+  expect(verifiedBenefitSchema.safeParse({ ...benefit, description: ' \r\f\v\n\t' }).success).toBe(false)
+  expect(verifiedBenefitSchema.safeParse({ ...benefit, title: '\ufeff', description: '\ufeff' }).success).toBe(true)
+  expect(verifiedBenefitSchema.safeParse(benefit).success).toBe(true)
+})
+
 it('binds listing specific benefit counts exactly to validated detail records', () => {
   const detail = detailSchema.parse(vNextDetailWithSpecificRecords())
   const listing = { company_id: detail.company.company_id, category_outcomes: structuredClone(detail.category_outcomes) } as unknown as CompanyListing
   expect(() => assertCompanyDetailEvidence(listing, detail)).not.toThrow()
 
   const mismatchedDetail = structuredClone(detail)
-  if ('specific_benefit_count' in mismatchedDetail.category_outcomes[0]) mismatchedDetail.category_outcomes[0].specific_benefit_count = 1
+  if ('specific_benefit_count' in mismatchedDetail.category_outcomes[0]) mismatchedDetail.category_outcomes[0].specific_benefit_count = 0
   const mismatchedListing = { company_id: detail.company.company_id, category_outcomes: structuredClone(mismatchedDetail.category_outcomes) } as unknown as CompanyListing
   expect(() => assertCompanyDetailEvidence(mismatchedListing, mismatchedDetail)).toThrow(/specific benefit count/)
 
@@ -530,7 +692,7 @@ it('fails closed when projected evidence or its bound source is not publication 
   expect(detailSchema.safeParse(official).success).toBe(false)
 
   const community = structuredClone(valid) as unknown as MutableVNextDetail
-  community.category_outcomes[0] = { ...task7Official, state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, specific_benefit_count: 1, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] }
+  community.category_outcomes[0] = { ...task7Official, state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, specific_benefit_count: 0, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] }
   community.references = []
   community.community_reports = [{ community_report_id: 'community::record-1', cell_id: `cell::${community.company.company_id}::leave`, company_id: community.company.company_id, category_id: 'leave', source_id: 'source::reference', source_tier: 'user_submission', statement: 'Employee report.', reliability: 'low', currentness: 'current', scope_status: 'exact_entity', scope: community.sources[0].scope, conflict_status: 'none', frozen_snapshot: { locator: 'https://reference.example/snapshot', content_sha256: 'b'.repeat(64), frozen_at: '2026-11-01T00:00:00Z' }, publication_eligibility: 'eligible' }]
   community.sources[0] = { ...community.sources[0], source_tier: 'user_submission', reliability: 'low', publication_eligibility: 'eligible' }
@@ -579,7 +741,7 @@ it('binds official and community limitation metadata to every source', () => {
 
   const community = vNextDetailWithReference()
   community.references = []
-  Object.assign(community.category_outcomes[0], task7Official, { state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, specific_benefit_count: 1, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] })
+  Object.assign(community.category_outcomes[0], task7Official, { state: 'community_report', source_tiers: ['user_submission'], official_claim_ids: [], official_claim_count: 0, community_report_ids: ['community::record-1'], community_report_count: 1, specific_benefit_count: 0, reliability: 'low', publication_eligibility: 'community_only', status: 'bounded', limitation_codes: ['lower_tier_evidence'] })
   Object.assign(community, { community_reports: [{ community_report_id: 'community::record-1', cell_id: `cell::${community.company.company_id}::leave`, company_id: community.company.company_id, category_id: 'leave', source_id: 'source::reference', source_tier: 'user_submission', statement: 'Employee report.', reliability: 'low', currentness: 'current', scope_status: 'exact_entity', scope: structuredClone(community.sources[0].scope), conflict_status: 'none', frozen_snapshot: { locator: 'https://reference.example/snapshot', content_sha256: 'b'.repeat(64), frozen_at: '2026-11-01T00:00:00Z' }, publication_eligibility: 'eligible' }] })
   community.sources[0] = { ...community.sources[0], source_tier: 'user_submission', reliability: 'low', publication_eligibility: 'eligible' }
   const communityListing = { company_id: community.company.company_id, category_outcomes: community.category_outcomes } as unknown as CompanyListing

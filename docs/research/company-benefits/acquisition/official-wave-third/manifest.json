@@ -1,0 +1,257 @@
+{
+  "approved_benefits": 0,
+  "authority": "local_audit_only_not_promotion_or_publication_input",
+  "canonical_input_sha256": {
+    "companies.jsonl": "e5888e3081d8ead3cc67c18d8e8e8007066c1c0de1c68103c59e390be77894ed",
+    "series-batches.jsonl": "51e1ae04cc02584199de65be73e0723b808216ccc93ecea5dfdb0f3a85f95423"
+  },
+  "companies_with_leads": 28,
+  "coverage_sha256": "04a4ad56fd2da9eaa2aaebb298ecce940ad7302d1c73fa20a310ca8a8519553a",
+  "covered_companies": 75,
+  "deduplication": "Producer rows are not independently deduplicated propositions or approved benefits.",
+  "distinct_approved_benefits": 0,
+  "evidence_level": "research_only",
+  "international_04_identity_correction": {
+    "basis": "international-04 observations.jsonl, 1-based nonempty lines; identity only, not benefit approval",
+    "newly_bindable_rows": 4,
+    "previously_proven_rows": 3,
+    "previously_unbound_rows": 29,
+    "records": [
+      {
+        "classification": "affiliate_only",
+        "company_id": "US-CIK0001101215",
+        "identity_source_urls": [
+          "https://sec.gov/Archives/edgar/data/1101215/000110121526000063/bfh-20260610.htm"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          1
+        ]
+      },
+      {
+        "classification": "proven_exact_entity",
+        "company_id": "US-CIK0000723125",
+        "identity_source_urls": [
+          "https://micron.com/content/dam/micron/global/public/corporate/benefits/benefits-book-retirement.pdf",
+          "https://www.micron.com/about/careers/benefits"
+        ],
+        "newly_bindable_row_numbers": [
+          4
+        ],
+        "unbound_row_numbers": [
+          2,
+          3,
+          5
+        ]
+      },
+      {
+        "classification": "unresolved",
+        "company_id": "US-CIK0000923796",
+        "identity_source_urls": [
+          "https://jobs.geogroup.com/benefits",
+          "https://sec.gov/Archives/edgar/data/923796/000119312523040224/d419976d8k.htm"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      {
+        "classification": "affiliate_only",
+        "company_id": "US-CIK0000750577",
+        "identity_source_urls": [
+          "https://sec.gov/Archives/edgar/data/750577/000119312526077903/hwc-20251231.htm",
+          "https://www.hancockwhitney.com/inside-our-company"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          10
+        ]
+      },
+      {
+        "classification": "unresolved",
+        "company_id": "US-CIK0000775158",
+        "identity_source_urls": [
+          "https://www.sec.gov/Archives/edgar/data/775158/000119312526054061/osk-20251231.htm",
+          "https://www.oshkoshcorp.com/careers"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          11,
+          12,
+          13
+        ]
+      },
+      {
+        "classification": "proven_exact_entity",
+        "company_id": "US-CIK0001099800",
+        "identity_source_urls": [
+          "https://sec.gov/Archives/edgar/data/1099800/000109980025000048/ex-1012001usesppplan.htm",
+          "https://www.edwards.com/careers/about-us/what-we-offer"
+        ],
+        "newly_bindable_row_numbers": [
+          14
+        ],
+        "unbound_row_numbers": [
+          15
+        ]
+      },
+      {
+        "classification": "affiliate_only",
+        "company_id": "US-CIK0000040533",
+        "identity_source_urls": [
+          "https://s22.q4cdn.com/891946778/files/doc_financials/2025/q4/GD-2025-10-K.pdf",
+          "https://www.gd.com/careers/benefits/"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          16,
+          17
+        ]
+      },
+      {
+        "classification": "affiliate_only",
+        "company_id": "US-CIK0000020286",
+        "identity_source_urls": [
+          "https://www.sec.gov/Archives/edgar/data/20286/000002028626000008/cinf-20251231.htm",
+          "https://cinfin.com/cincinnati-insurance-careers/benefits"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          21
+        ]
+      },
+      {
+        "classification": "unresolved",
+        "company_id": "US-CIK0001875444",
+        "identity_source_urls": [
+          "https://www.arhaus.com/careers",
+          "https://sec.gov/Archives/edgar/data/1875444/000187544424000024/R17.htm"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          22
+        ]
+      },
+      {
+        "classification": "unresolved",
+        "company_id": "US-CIK0001853513",
+        "identity_source_urls": [
+          "https://careers.mistercarwash.com/benefits-overview/",
+          "https://www.sec.gov/Archives/edgar/data/1853513/000095017025024533/mcw-ex10_27.htm"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          23
+        ]
+      },
+      {
+        "classification": "unresolved",
+        "company_id": "US-CIK0001576942",
+        "identity_source_urls": [
+          "https://sec.gov/Archives/edgar/data/1576942/000162828026063365/ex1022-sreesreedhararajoff.htm",
+          "https://stitchfix.com/careers"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          24,
+          25
+        ]
+      },
+      {
+        "classification": "proven_exact_entity",
+        "company_id": "US-CIK0001193311",
+        "identity_source_urls": [
+          "https://www.sec.gov/Archives/edgar/data/1193311/000119331126000007/c311-20251231x10k.htm",
+          "https://www.oncor.com/content/oncorwww/us/en/home/about-us/careers/employee-benefits.html",
+          "https://www.oncor.com/content/dam/oncorwww/documents/investorrelations/ferc-form/Oncor%20FERC%20Form%201%202024.pdf"
+        ],
+        "newly_bindable_row_numbers": [
+          26,
+          27
+        ],
+        "unbound_row_numbers": []
+      },
+      {
+        "classification": "affiliate_only",
+        "company_id": "US-CIK0001794515",
+        "identity_source_urls": [
+          "https://job-boards.greenhouse.io/embed/job_board?for=zoominfo&format=json",
+          "https://www.sec.gov/Archives/edgar/data/1794515/000179451524000016/zi-ex211x20240215.htm",
+          "https://www.sec.gov/Archives/edgar/data/1794515/000179451526000012/zi-20251231.htm"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          28,
+          29,
+          30,
+          31
+        ]
+      },
+      {
+        "classification": "unresolved",
+        "company_id": "US-CIK0001792044",
+        "identity_source_urls": [
+          "https://www.viatris.com/en/Careers/Working-at-Viatris",
+          "https://www.sec.gov/Archives/edgar/data/1792044/000179204425000018/ex_101xvtrsx20250331.htm"
+        ],
+        "newly_bindable_row_numbers": [],
+        "unbound_row_numbers": [
+          32
+        ]
+      }
+    ],
+    "source_sha256": "012424cac9e9fe52785ebfb7d8358c4091d1e9631b25e703f3462807b997fbe8",
+    "still_unbound_rows": 25
+  },
+  "inventory": {
+    "domestic-09": {
+      "canonical_company_list_sha256": "d461cba9ce12b654c0a259af6b7d44fb941cc1c02c1c15a939973822815cbb95",
+      "companies_with_leads": 10,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "9ebc66f7e19967d01437cb011416e4cd88a54e84bd7ca8926ebb399402e75eab",
+        "manifest.json": "3847418e954c2ebda3fe7a759bd9b89a36b8c2327efb175d3f9148f8e47a9dde",
+        "observations.jsonl": "8f73dc2e9445d5e09ef7dfe5eefbcda04bd011117832c3abf5a5b9a5fecc6edc"
+      },
+      "producer_leads": 134,
+      "research_incomplete_companies": 15
+    },
+    "domestic-10": {
+      "canonical_company_list_sha256": "627b8970754dc35cf28d92567b00f35a25e55be798fb5cc684149101583f0719",
+      "companies_with_leads": 11,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "a15b286c06fe979e9bed141ded3a80a97b01d08325ecfa7d0ce969a13b755ee3",
+        "manifest.json": "0935c1a1956c5a7f67dc3c1f0e4d9f6c504a2fd6402059527a3841eea444e25b",
+        "observations.jsonl": "28678b57c100d270236a6e325b548c132916ffddbd677e067723b25b066713f9"
+      },
+      "producer_leads": 111,
+      "research_incomplete_companies": 14
+    },
+    "domestic-11": {
+      "canonical_company_list_sha256": "5b1250bbaca0ef0d5ab1e27515c311e8aa927420fabd0236dcebd13499a12561",
+      "companies_with_leads": 7,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "67b9b6f6282edd1bf671f942ea8c46ccc4f3c2b742e20bafcae910e98ccb555a",
+        "manifest.json": "be60dc86bb1c615404432b7afe017fbeafccb49064a43837a106f58f1c0d7935",
+        "observations.jsonl": "f8250cd1c5a70ef7baf4ef9e1204ac4d8cdc0f4aae443b306f23c3c1c74fd915"
+      },
+      "producer_leads": 50,
+      "research_incomplete_companies": 18
+    }
+  },
+  "leads_sha256": "5bf4d8117059a5f7f0e250d04a8912662af9771498a4377967658afd3a7ed9e7",
+  "producer_leads": 295,
+  "research_incomplete_companies": 47,
+  "source_rights_status": "unreviewed",
+  "unencrypted_http_source_sha256_research_only": [
+    "029a581b21e21008829b7100378d77e3a544c24964c83b4422136610aa167f31",
+    "702d51a00539161858c32b2341824b84bc0d4707713fcd2f61198fcf0bd55829",
+    "9577efca6a6a1f913369a7b57621811e9613a5adac08dac8911ab79b37ca17c9"
+  ]
+}

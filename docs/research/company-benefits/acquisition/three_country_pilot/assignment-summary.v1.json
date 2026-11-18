@@ -1,0 +1,44 @@
+{
+  "candidate_generated_at": {
+    "JP": null,
+    "KR": "2026-11-17T10:17:22.237510+00:00",
+    "US": null
+  },
+  "counts": {
+    "JP": 100,
+    "KR": 100,
+    "US": 28
+  },
+  "employment_verified": 0,
+  "identity_observed_at": {
+    "JP": "2026-11-17T10:13:18.643110+00:00",
+    "KR": null,
+    "US": "2026-11-17T10:19:28.534885+00:00"
+  },
+  "identity_only": 228,
+  "retrieval_status": {
+    "JP": "private_raw_zip_csv_hash_verified",
+    "KR": "private_raw_xlsx_hash_verified",
+    "US": "direct_403_extractor_text_only_no_raw_http"
+  },
+  "review_status": "pending_independent_review",
+  "rights_status": {
+    "JP": "attribution_required_review_pending",
+    "KR": "republication_not_established",
+    "US": "extractor_only_rights_unreviewed"
+  },
+  "schema_version": "three-country-pilot-assignment-summary-v1",
+  "source_sha256": {
+    "jp/identity-pilot.json": "cdb88f1b64b790ecb287b9fe86625eca549db30d6a59019b6f751932a23c0738",
+    "jp/nta-2026-10-30-tottori-unicode.zip": "7a97dc4b2b16b8b23ba79d5a972eedb6b6819e5b50336ce0d35e54f3d8546072",
+    "kr/candidates.jsonl": "799e03f5f1c8f9b725d760e55e12f01fd651d1c6bf6f391ab98b8e487b322a67",
+    "kr/dart-company-overview.xlsx": "265c6baf6899aa6e310b1b61c88768c62fb46a6c755b24b6996d5edd0b276824",
+    "kr/pilot-manifest.json": "8172a7af20b2aa2495183c757c0ee3e5c438e9c5fcf8b801c03652aff6917096",
+    "us/candidate-pilot.json": "4de22deb414ce4484920eabfa512b6882b860d5ee0cd9c5b242d3c05d125ed1a"
+  },
+  "source_snapshot_date": {
+    "JP": "2026-10-30",
+    "KR": null,
+    "US": null
+  }
+}

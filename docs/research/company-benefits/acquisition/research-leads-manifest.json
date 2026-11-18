@@ -1,0 +1,124 @@
+{
+  "authority": "audit_only_unapproved_not_a_publication_or_promotion_input",
+  "coverage": {
+    "allowed-priority-a": 44,
+    "allowed-priority-b": 20,
+    "domestic-01-a": 19,
+    "domestic-01-b": 29,
+    "domestic-02-a": 56,
+    "domestic-03-a": 43,
+    "domestic-31-b": 58,
+    "domestic-31-c": 25,
+    "international-01-a": 21,
+    "international-01-b": 43,
+    "international-31-b": 46,
+    "retention-allowed-cosmo-pilot": 25
+  },
+  "custody": "Deleted prohibited raw captures and Cosmo pilot body cannot be revalidated; SHA256SUMS entries with absent files are historical assertions only. No raw bytes copied.",
+  "evidence_level": "research_only",
+  "inventory": {
+    "allowed-priority-a": {
+      "candidate_file": "hmm.candidates.jsonl",
+      "candidate_sha256": "e6397c266de470a93da665f55324d012499994ac8a03bdfefeb3c36f1d6a9e32",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=0",
+      "review": "hmm-independent-review.json",
+      "review_sha256": "7482cc1f132268634aebf8416d68b6e7d43ef99e6ac6345427337c169fb722b4",
+      "rows": 44
+    },
+    "allowed-priority-b": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "e646ff336fc94c17bbae5a2433bffa060b8d93f05d878571e532a9419fa6476c",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=0",
+      "review": "unisem-independent-review.json",
+      "review_sha256": "31efbbd2b4302819fb7190063292f0b4cca1185ff1eae2eb41f025977021a1e4",
+      "rows": 20
+    },
+    "domestic-01-a": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "1bf3d9644a79bff69b114d220fa96e1545f290ec85982e05ebfc6fb417266b5c",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=4",
+      "review": "domestic-independent-review.json",
+      "review_sha256": "e489a527209f6b74302d031d23a6a963e684ddc313a862dea7adb6bfc24408de",
+      "rows": 19
+    },
+    "domestic-01-b": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "ab362de014eeaa466b10b2549e6c94b57beeca1653661e9560e7fe23db2875df",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=4",
+      "review": "domestic-second-review.json",
+      "review_sha256": "446c1f48873619ffb96a877d7b2bea91992a7ee186fe628b3333636c97bc972d",
+      "rows": 29
+    },
+    "domestic-02-a": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "2d92f25d4f30d17f36d63f87d0df6b1feb70a16928b6b09b02a981f015cae6ea",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=0",
+      "review": "domestic-02-independent-review.json",
+      "review_sha256": "a99c5aaaabe157de54fad631c85a68a8daa7b8e9282728c14800a7fc3defce71",
+      "rows": 56
+    },
+    "domestic-03-a": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "cc510f60c18e1cb02e8146df8c54bb1bf8f813639af1a73a51bfc41e82d0f4b6",
+      "input_manifest": "absent",
+      "review": "domestic-03-independent-review.json",
+      "review_sha256": "4448bbd1d36f9411cdbe8c5a535eff242002b0c44496a5784d6d9999adefcd4c",
+      "rows": 43
+    },
+    "domestic-31-b": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "f2bbeb363aed22c54d2f2ab030aa827f28cc042e4e5d36789e5fbe83e1742577",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=0",
+      "review": "domestic-independent-review.json",
+      "review_sha256": "e489a527209f6b74302d031d23a6a963e684ddc313a862dea7adb6bfc24408de",
+      "rows": 58
+    },
+    "domestic-31-c": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "e595451008a10a4771b1fb118d87e6b1efe07c328d385e178d81b4796ed1f850",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=0",
+      "review": "domestic-second-review.json",
+      "review_sha256": "446c1f48873619ffb96a877d7b2bea91992a7ee186fe628b3333636c97bc972d",
+      "rows": 25
+    },
+    "international-01-a": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "1d1acefb80e99cad4e5b16fa16517f062ab26b16aae1dcff8aae96e7ce84b0d4",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=0",
+      "review": "international-independent-review.json",
+      "review_sha256": "ff92aa7b430db4c4b29b53666482b40fb8e87943398f0e82e7c9c3bd3975e4be",
+      "rows": 21
+    },
+    "international-01-b": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "c9b3a05f6f2d321b004a96bbae9d0dc0292350d9f5438620472dd08b6ae072f8",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=0",
+      "review": "international-second-review.json",
+      "review_sha256": "0c08aa7cbec13c49edde184e589570d2e9075323ae9d5fddb04e6ab2bd228cf3",
+      "rows": 43
+    },
+    "international-31-b": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "cebbe67c9047375733d5a93a716a19c4f0099d732cdebcbba46ff57b725ac1a2",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=0",
+      "review": "international-independent-review.json",
+      "review_sha256": "ff92aa7b430db4c4b29b53666482b40fb8e87943398f0e82e7c9c3bd3975e4be",
+      "rows": 46
+    },
+    "retention-allowed-cosmo-pilot": {
+      "candidate_file": "candidates.jsonl",
+      "candidate_sha256": "af73892cea12c8da91821efbd8d00ba97f6564f3fe0f6e9edad78260c0a4a8e6",
+      "input_manifest": "verified_present_entries;deleted_tombstoned_entries=2",
+      "review": "cosmo-independent-review.json",
+      "review_sha256": "59982526bec289fe87746b26a7d44d531b6f9f8a88a7479843756151b2f441c5",
+      "rows": 25
+    }
+  },
+  "ledger_sha256": "9f1806540f4d85fee98ecaf10373f73785d380bdbbaf94e33dc7395a2a3e0cba",
+  "omissions": {
+    "allowed-priority-a/whanin.candidates.jsonl": "one zero-positive route outcome, not a benefit lead"
+  },
+  "provisional_group_keys": 347,
+  "raw_rows": 429,
+  "source_registry_sha256": "0ede865aa8e4621188b0910c6a4c7c842628f37e3be00ff0f1c7fffe8a5643a2"
+}

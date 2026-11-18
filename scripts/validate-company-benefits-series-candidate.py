@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Validate the sole protocol-4 review-pending series candidate layout."""
+"""Validate the protocol-2 review-pending series candidate layout."""
 
 import argparse
 import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import stat
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from review_metadata_validation import (
+    access_observation_tuple_error,
+    validate_credential_free_https,
+    validate_review_metadata_observation,
+)
 
 CANDIDATE_FILES = ("sources.jsonl", "claims.jsonl", "gaps.jsonl", "review-requests.jsonl")
 V2_FILES = (
@@ -18,7 +26,10 @@ V2_FILES = (
     "reference-records.jsonl", "community-benefit-reports.jsonl", "sources-v2.jsonl",
 )
 ALL_ARTIFACT_FILES = (*CANDIDATE_FILES, *V2_FILES)
+CURRENT_FILES = ("verified-benefit-candidates.jsonl", "company-category-outcomes.jsonl")
+CURRENT_ARTIFACT_FILES = (*ALL_ARTIFACT_FILES, *CURRENT_FILES)
 ALLOWED_FILES = {"candidate.json", *ALL_ARTIFACT_FILES}
+CURRENT_ALLOWED_FILES = {"candidate.json", *CURRENT_ARTIFACT_FILES}
 HASH = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_FIELDS = {"request_id", "target_type", "target_id", "researcher_id", "status"}
 LOCAL_ABSOLUTE_PATH = re.compile(r"^(?:\\|[A-Za-z]:[\\/]|file://)", re.IGNORECASE)
@@ -28,6 +39,10 @@ FILESYSTEM_ROOTS = {
     "volumes",
 }
 MAX_PERCENT_DECODE_PASSES = 5
+MAX_CANDIDATE_FILE_BYTES = 64 * 1024 * 1024
+# One protocol-2 candidate has 13 files; cap their retained ingress well below
+# the independent 13 * per-file limit while leaving ample room for 250 cells.
+MAX_CANDIDATE_TOTAL_BYTES = 128 * 1024 * 1024
 
 
 def sha256(data):
@@ -57,6 +72,60 @@ def read_jsonl(path):
             raise ValueError(f"{Path(path).name}:{number}: record must be an object")
         values.append(value)
     return values
+
+
+def read_jsonl_bytes(raw, label):
+    values = []
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{label}: invalid UTF-8") from exc
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{label}:{number}: invalid JSON") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"{label}:{number}: record must be an object")
+        values.append(value)
+    return values
+
+
+def _read_candidate_regular(candidate_dir, name, limit=None, total_budget=None):
+    limit = MAX_CANDIDATE_FILE_BYTES if limit is None else limit
+    directory_fd = os.open(candidate_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = None
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory_fd)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            raise ValueError(f"{name}: candidate artifact must be a bounded regular file")
+        if total_budget is not None and total_budget[0] + before.st_size > MAX_CANDIDATE_TOTAL_BYTES:
+            raise ValueError("candidate package exceeds aggregate bounded byte limit")
+        raw = b""
+        while len(raw) < before.st_size:
+            chunk = os.read(descriptor, min(before.st_size - len(raw), 1024 * 1024))
+            if not chunk:
+                raise ValueError(f"{name}: candidate artifact changed during read")
+            raw += chunk
+        after = os.fstat(descriptor)
+        path_state = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        stable = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field)
+               or getattr(before, field) != getattr(path_state, field) for field in stable):
+            raise ValueError(f"{name}: candidate artifact changed during read")
+        if total_budget is not None:
+            total_budget[0] += len(raw)
+        return raw
+    except OSError as exc:
+        raise ValueError(f"{name}: candidate artifact is not a safe regular file") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(directory_fd)
 
 
 def _unique(records, field, label):
@@ -167,8 +236,6 @@ def _validate_sources(records, verifier):
                   "locator", "http_verification", "evidence_path", "evidence_file"}
     for source in records:
         source_id = source.get("source_id", "source[missing-id]")
-        if not isinstance(source.get("url"), str) or not source["url"].startswith("https://"):
-            errors.append(f"{source_id}: candidate source URL must use HTTPS")
         if source.get("record_type") == "nonpublishable_metadata":
             metadata_ids.add(source_id)
             leaked = sorted(set(source) & prohibited)
@@ -176,11 +243,25 @@ def _validate_sources(records, verifier):
                 errors.append(f"{source_id}: metadata source contains prohibited retained/asserted fields: {', '.join(leaked)}")
             verifier.validate_structure(source, metadata_schema, source_id, errors)
             observation = source.get("access_observation", {})
-            if observation.get("status") is None and observation.get("final_url") is not None:
-                errors.append(f"{source_id}: network failure final URL must be null")
+            try:
+                validate_review_metadata_observation(
+                    source.get("url"), observation, label=f"{source_id}: candidate source",
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
             if source.get("publication_eligible") is not False or source.get("retention_mode") != "metadata_only":
                 errors.append(f"{source_id}: metadata source must be nonpublishable metadata_only")
         else:
+            try:
+                validate_credential_free_https(
+                    source.get("url"), f"{source_id}: candidate source URL",
+                )
+                validate_credential_free_https(
+                    source.get("http_verification", {}).get("final_url"),
+                    f"{source_id}: candidate source final URL",
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
             if source.get("hash_provenance") == "retained_file":
                 errors.append(f"{source_id}: retained_file provenance cannot be integrated and is prohibited in candidates")
             verifier.validate_structure(source, publishable_schema, source_id, errors)
@@ -199,26 +280,102 @@ def _candidate_claim_schema(verifier):
     return schema
 
 
+PROPOSITION_CANDIDATE_INPUT_FIELDS = _load_verifier().company_benefits_series.VERIFIED_BENEFIT_CANDIDATE_INPUT_FIELDS
+PROPOSITION_CANDIDATE_FIELDS = _load_verifier().company_benefits_series.VERIFIED_BENEFIT_CANDIDATE_FIELDS
+OUTCOME_REASONS = {
+    "verified_benefit", "not_publicly_verifiable", "research_incomplete",
+    "source_access_failed", "conflicting_evidence", "not_researched",
+}
+
+
+def validate_proposition_candidates(candidates, evidence_records, batch):
+    """Canonicalize unapproved atomic propositions using the Task 5 hash contract."""
+    if not isinstance(candidates, list):
+        raise ValueError("verified benefit candidates must be an array")
+    contract = _load_verifier().company_benefits_series
+    company_ids = batch.get("company_ids", [])
+    evidence = {}
+    for record in evidence_records:
+        if not isinstance(record, dict):
+            raise ValueError("proposition evidence records must be objects")
+        record_id = next((record.get(field) for field in (
+            "claim_id", "reference_id", "community_report_id"
+        ) if field in record), None)
+        if not isinstance(record_id, str) or not record_id or record_id in evidence:
+            raise ValueError("proposition evidence IDs must be unique and nonempty")
+        evidence[record_id] = record
+    result = []
+    logical = set()
+    identifiers = set()
+    for supplied in candidates:
+        contract.validate_verified_benefit_candidate_shape(supplied)
+        if "review" in supplied:
+            raise ValueError("candidate compiler cannot self-approve a verified benefit")
+        benefit = dict(supplied)
+        company_id, category_id = benefit.get("company_id"), benefit.get("primary_category_id")
+        if company_id not in company_ids or category_id not in contract.V2_CATEGORIES:
+            raise ValueError("verified benefit candidate company/category binding mismatch")
+        evidence_ids = benefit.get("evidence_ids")
+        if (not isinstance(evidence_ids, list) or not evidence_ids
+                or len(evidence_ids) != len(set(evidence_ids))):
+            raise ValueError("verified benefit candidate requires unique evidence IDs")
+        for evidence_id in evidence_ids:
+            record = evidence.get(evidence_id)
+            if (record is None or record.get("company_id") != company_id
+                    or record.get("category_id") != category_id):
+                raise ValueError("verified benefit candidate evidence binding mismatch")
+        payload = contract._verified_benefit_proposition_payload(benefit)
+        proposition_sha256 = sha256(contract._canonical_json_bytes(payload))
+        expected_id = f"benefit::{proposition_sha256}"
+        if ("proposition_sha256" in benefit and benefit["proposition_sha256"] != proposition_sha256) or (
+                "benefit_id" in benefit and benefit["benefit_id"] != expected_id):
+            raise ValueError("verified benefit candidate ID/fingerprint mismatch")
+        benefit["proposition_sha256"] = proposition_sha256
+        benefit["benefit_id"] = expected_id
+        key = contract._canonical_json_bytes({
+            "company_id": company_id, "title": payload["title"],
+            "description": payload["description"], "scope": payload["scope"],
+        })
+        if expected_id in identifiers or key in logical:
+            raise ValueError("duplicate verified benefit candidate proposition")
+        identifiers.add(expected_id)
+        logical.add(key)
+        result.append(benefit)
+    return sorted(result, key=lambda item: item["benefit_id"])
+
+
+def compile_cell_outcomes(cells, attempts, proposition_candidates):
+    """Materialize one truthful outcome reason for every canonical research cell."""
+    return _load_verifier().company_benefits_series.compile_cell_outcomes(
+        cells, attempts, proposition_candidates, expected_count=250
+    )
+
+
 def validate_candidate(candidate_dir, research_root):
     candidate_dir, research_root = Path(candidate_dir), Path(research_root)
     if _has_symlink_component(candidate_dir) or not candidate_dir.is_dir():
         raise ValueError("candidate package directory is missing or symlink-aliased")
     actual = {path.name for path in candidate_dir.iterdir()}
-    if actual != ALLOWED_FILES or any(
+    current_format = actual == CURRENT_ALLOWED_FILES
+    if actual not in (ALLOWED_FILES, CURRENT_ALLOWED_FILES) or any(
         path.is_symlink() or not path.is_file() for path in candidate_dir.iterdir()
     ):
         raise ValueError(
-            "candidate package must contain exactly candidate.json and ten canonical regular files; symlinks are prohibited"
+            "candidate package must contain exactly one legacy/current canonical regular-file set; symlinks are prohibited"
         )
     _validate_package_modes(candidate_dir)
+    total_budget = [0]
     try:
-        manifest_raw = (candidate_dir / "candidate.json").read_bytes()
+        manifest_raw = _read_candidate_regular(
+            candidate_dir, "candidate.json", total_budget=total_budget,
+        )
         manifest = json.loads(manifest_raw)
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("invalid candidate manifest") from exc
     fields = {"schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256",
               "replacement_events_sha256", "status", "researcher_id", "artifacts"}
-    if set(manifest) != fields or manifest.get("schema_version") != "1" or manifest.get("status") != "review_pending":
+    expected_version = "2" if current_format else "1"
+    if set(manifest) != fields or manifest.get("schema_version") != expected_version or manifest.get("status") != "review_pending":
         raise ValueError("candidate manifest schema mismatch; status must be review_pending")
     canonical_manifest = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"),
                                     allow_nan=False).encode("utf-8")
@@ -232,14 +389,17 @@ def validate_candidate(candidate_dir, research_root):
         if not HASH.fullmatch(str(manifest.get(field, ""))) or manifest.get(field) != batch.get(field):
             raise ValueError(f"candidate strict batch hash mismatch: {field}")
     artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, dict) or set(artifacts) != set(ALL_ARTIFACT_FILES):
-        raise ValueError("candidate manifest must hash the ten exact v1/v2 artifacts")
+    expected_artifacts = CURRENT_ARTIFACT_FILES if current_format else ALL_ARTIFACT_FILES
+    if not isinstance(artifacts, dict) or set(artifacts) != set(expected_artifacts):
+        raise ValueError("candidate manifest must hash the exact format-specific artifacts")
     records = {}
-    for name in ALL_ARTIFACT_FILES:
-        raw = (candidate_dir / name).read_bytes()
+    artifact_raw = {}
+    for name in expected_artifacts:
+        raw = _read_candidate_regular(candidate_dir, name, total_budget=total_budget)
+        artifact_raw[name] = raw
         if artifacts.get(name) != sha256(raw):
             raise ValueError(f"candidate artifact hash mismatch: {name}")
-        records[name] = read_jsonl(candidate_dir / name)
+        records[name] = read_jsonl_bytes(raw, name)
         _reject_local_absolute_paths(records[name], name)
 
     verifier = _load_verifier()
@@ -251,8 +411,26 @@ def validate_candidate(candidate_dir, research_root):
     verifier.company_benefits_series.validate_v2_package_records(
         v2_records, batch, research_root, prepromotion=True
     )
+    proposition_candidates = []
+    cell_outcomes = []
+    if current_format:
+        evidence_records = [
+            *records["official-claims-v2.jsonl"], *records["reference-records.jsonl"],
+            *records["community-benefit-reports.jsonl"],
+        ]
+        proposition_candidates = validate_proposition_candidates(
+            records["verified-benefit-candidates.jsonl"], evidence_records, batch
+        )
+        if proposition_candidates != records["verified-benefit-candidates.jsonl"]:
+            raise ValueError("verified benefit candidates are not in canonical identity order")
+        cell_outcomes = compile_cell_outcomes(
+            records["company-category-cells.jsonl"], records["research-attempts.jsonl"],
+            proposition_candidates,
+        )
+        if cell_outcomes != records["company-category-outcomes.jsonl"]:
+            raise ValueError("cell outcomes do not exactly match the canonical 250-cell package")
     legacy_sources = verifier.company_benefits_series.frozen_source_records(research_root)
-    for raw in (candidate_dir / "sources.jsonl").read_bytes().splitlines(keepends=True):
+    for raw in artifact_raw["sources.jsonl"].splitlines(keepends=True):
         if raw.strip():
             source_id = json.loads(raw).get("source_id")
             if source_id in legacy_sources and raw != legacy_sources[source_id]:
@@ -353,8 +531,10 @@ def validate_candidate(candidate_dir, research_root):
     if requests != expected_requests or any(set(request) != REQUEST_FIELDS for request in requests):
         raise ValueError("review requests require exact one pending target per outcome in canonical order; duplicate or orphan targets are prohibited")
     return {"manifest": manifest, "batch": batch, "records": records, "targets": targets,
+            "current_format": current_format, "proposition_candidates": proposition_candidates,
+            "cell_outcomes": cell_outcomes,
             "legacy_sources": legacy_sources,
-            "manifest_sha256": sha256((candidate_dir / "candidate.json").read_bytes())}
+            "manifest_sha256": sha256(manifest_raw)}
 
 
 def main(argv=None):

@@ -173,19 +173,74 @@ async function filesRecursively(rootHandle, relativeRoot, hooks = {}, displayRoo
   await withBoundDirectory(rootHandle, relativeRoot, 'benefits version directory', (directory) => visit(directory, relativeRoot), hooks, displayRoot)
   return output
 }
-function rejectForbiddenKeys(value, location) {
-  if (Array.isArray(value)) return value.forEach((entry) => rejectForbiddenKeys(entry, location))
+function approvedPublicReviewField(key, fieldPath) {
+  if (key === 'review') return fieldPath.length === 3 && fieldPath[0] === 'verified_benefits' && Number.isInteger(fieldPath[1]) && fieldPath[2] === 'review'
+  if (key !== 'reviewed_at') return false
+  return (fieldPath.length === 4 && fieldPath[0] === 'verified_benefits' && Number.isInteger(fieldPath[1]) && fieldPath[2] === 'review')
+    || (fieldPath.length === 2 && fieldPath[0] === 'verified_benefit_review_binding')
+}
+function rejectForbiddenKeys(value, location, fieldPath = []) {
+  if (Array.isArray(value)) return value.forEach((entry, index) => rejectForbiddenKeys(entry, location, [...fieldPath, index]))
   if (!value || typeof value !== 'object') return
   for (const [key, child] of Object.entries(value)) {
     if (forbiddenKey.test(key)) throw Error(`forbidden benefits key ${key}: ${location}`)
-    if (internalReviewKeys.has(key)) throw Error(`internal review field ${key}: ${location}`)
-    rejectForbiddenKeys(child, location)
+    const childPath = [...fieldPath, key]
+    if (internalReviewKeys.has(key) && !approvedPublicReviewField(key, childPath)) throw Error(`internal review field ${key}: ${location}`)
+    rejectForbiddenKeys(child, location, childPath)
   }
 }
 const manifestDescriptors = (manifest) => [manifest.taxonomy, manifest.sources, manifest.methodology, ...manifest.listing_chunks, ...Object.values(manifest.company_shards)]
-const canonicalJson = (value) => JSON.stringify(value, (_key, child) => child && typeof child === 'object' && !Array.isArray(child)
-  ? Object.fromEntries(Object.entries(child).sort(([left], [right]) => left.localeCompare(right)))
-  : child)
+function assertUnicodeScalars(value) {
+  if (typeof value === 'string') {
+    for (const character of value) {
+      const codePoint = character.codePointAt(0)
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) throw Error('canonical text contains an unpaired surrogate code point')
+    }
+  } else if (Array.isArray(value)) {
+    value.forEach(assertUnicodeScalars)
+  } else if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      assertUnicodeScalars(key)
+      assertUnicodeScalars(child)
+    }
+  }
+}
+const canonicalJson = (value) => {
+  assertUnicodeScalars(value)
+  return JSON.stringify(value, (_key, child) => child && typeof child === 'object' && !Array.isArray(child)
+    ? Object.fromEntries(Object.keys(child).sort().map((key) => [key, child[key]]))
+    : child)
+}
+const normalizedPropositionText = (value) => {
+  assertUnicodeScalars(value)
+  let normalized = ''
+  let pendingSpace = false
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)
+    if ((codePoint >= 0x09 && codePoint <= 0x0d) || codePoint === 0x20) {
+      pendingSpace = normalized.length > 0
+      continue
+    }
+    if (pendingSpace) normalized += ' '
+    pendingSpace = false
+    normalized += codePoint >= 0x41 && codePoint <= 0x5a ? String.fromCodePoint(codePoint + 32) : character
+  }
+  return normalized
+}
+const compareUtf8 = (left, right) => Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'))
+const verifiedBenefitScopeFields = ['countries', 'legal_entities', 'roles', 'employment_types', 'family_members', 'conditions']
+const canonicalVerifiedBenefitScope = (scope) => Object.fromEntries(verifiedBenefitScopeFields.map((field) => [field, scope[field].map(normalizedPropositionText).sort(compareUtf8)]))
+const verifiedBenefitPropositionPayload = (benefit) => ({
+  company_id: benefit.company_id,
+  title: normalizedPropositionText(benefit.title),
+  description: normalizedPropositionText(benefit.description),
+  scope: canonicalVerifiedBenefitScope(benefit.scope),
+  currentness: benefit.currentness,
+  currentness_checked_at: benefit.currentness_checked_at,
+  conflict_status: benefit.conflict_status,
+})
+export const verifiedBenefitPropositionCanonicalBytes = (benefit) => Buffer.from(canonicalJson(verifiedBenefitPropositionPayload(benefit)), 'utf8')
+const sha256Canonical = (value) => createHash('sha256').update(canonicalJson(value)).digest('hex')
 
 function descriptorByteLimit(url) {
   if (url.includes('/companies/')) return descriptorByteLimits.company
@@ -292,27 +347,54 @@ export function assertUniqueProjectionEvidenceIds(details) {
 }
 
 export function assertSpecificBenefitInventory(listingCompany, detail) {
-  const sourceEligibility = new Map(detail.sources.map((source) => [source.source_id, source.publication_eligibility]))
-  const counts = new Map()
-  const record = (categoryId, canonicalId) => {
-    if (!counts.has(categoryId)) counts.set(categoryId, new Set())
-    counts.get(categoryId).add(canonicalId)
-  }
-  for (const reference of detail.references) {
-    if (['eligible', 'reference_only'].includes(reference.publication_eligibility)
-      && ['eligible', 'reference_only'].includes(sourceEligibility.get(reference.source_id))) {
-      record(reference.category_id, reference.reference_id)
-    }
-  }
-  for (const report of detail.community_reports) {
-    if (report.publication_eligibility === 'eligible' && sourceEligibility.get(report.source_id) === 'eligible') {
-      record(report.category_id, report.community_report_id)
-    }
-  }
+  const counts = new Map(categories.map((category) => [category, 0]))
+  for (const benefit of detail.verified_benefits ?? []) counts.set(benefit.primary_category_id, (counts.get(benefit.primary_category_id) ?? 0) + 1)
   for (const outcome of listingCompany.category_outcomes) {
-    const actual = counts.get(outcome.category_id)?.size ?? 0
+    const actual = counts.get(outcome.category_id) ?? 0
     if (actual !== outcome.specific_benefit_count) throw Error(`approved projection specific benefit inventory mismatch: ${listingCompany.company_id}:${outcome.category_id}`)
   }
+}
+
+export function assertVerifiedBenefitInventory(listingCompany, detail, globalPropositions = new Set()) {
+  const benefits = detail.verified_benefits ?? []
+  const reviewBinding = detail.verified_benefit_review_binding
+  if (benefits.length === 0) {
+    if (reviewBinding !== undefined) throw Error(`verified benefit review binding without propositions: ${listingCompany.company_id}`)
+    assertSpecificBenefitInventory(listingCompany, detail)
+    return 0
+  }
+  if (!reviewBinding) throw Error(`verified benefit review binding missing: ${listingCompany.company_id}`)
+  const evidence = new Map()
+  for (const record of [...(detail.official_claims ?? []), ...(detail.references ?? []), ...(detail.community_reports ?? [])]) {
+    const id = record.claim_id ?? record.reference_id ?? record.community_report_id
+    if (!evidence.has(id)) evidence.set(id, [])
+    evidence.get(id).push(record)
+  }
+  for (const benefit of benefits) {
+    if (!categories.includes(benefit.primary_category_id)) throw Error(`verified benefit requires one primary category: ${benefit.benefit_id}`)
+    if (benefit.company_id !== listingCompany.company_id || benefit.company_id !== detail.company.company_id) throw Error(`verified benefit company binding mismatch: ${benefit.benefit_id}`)
+    const payload = verifiedBenefitPropositionPayload(benefit)
+    const propositionSha256 = createHash('sha256').update(verifiedBenefitPropositionCanonicalBytes(benefit)).digest('hex')
+    if (benefit.proposition_sha256 !== propositionSha256 || benefit.benefit_id !== `benefit::${propositionSha256}`) throw Error(`verified benefit proposition hash/fingerprint mismatch: ${benefit.benefit_id}`)
+    const propositionIdentity = canonicalJson({ company_id: payload.company_id, title: payload.title, description: payload.description, scope: payload.scope })
+    for (const replayKey of [`hash:${propositionSha256}`, `identity:${propositionIdentity}`]) {
+      if (globalPropositions.has(replayKey)) throw Error(`duplicate or replayed verified benefit proposition: ${benefit.benefit_id}`)
+      globalPropositions.add(replayKey)
+    }
+    for (const evidenceId of benefit.evidence_ids) {
+      const matches = evidence.get(evidenceId) ?? []
+      if (matches.length !== 1 || matches[0].company_id !== benefit.company_id || matches[0].category_id !== benefit.primary_category_id) throw Error(`verified benefit evidence binding mismatch: ${benefit.benefit_id}`)
+    }
+    if (benefit.review.reviewer_receipt_sha256 !== reviewBinding.reviewer_receipt_sha256
+      || benefit.review.reviewed_candidate_sha256 !== reviewBinding.reviewed_candidate_sha256
+      || benefit.review.reviewed_at !== reviewBinding.reviewed_at) throw Error(`verified benefit review binding mismatch: ${benefit.benefit_id}`)
+  }
+  const candidate = benefits
+    .toSorted((left, right) => left.benefit_id < right.benefit_id ? -1 : left.benefit_id > right.benefit_id ? 1 : 0)
+    .map(({ review: _review, ...benefit }) => benefit)
+  if (sha256Canonical(candidate) !== reviewBinding.reviewed_candidate_sha256) throw Error(`verified benefit reviewed candidate hash mismatch: ${listingCompany.company_id}`)
+  assertSpecificBenefitInventory(listingCompany, detail)
+  return benefits.length
 }
 
 function recordProjectionEvidenceIds(detail, seen) {
@@ -362,6 +444,8 @@ async function verifyApprovedV2ProjectionBound(releaseRoot, projection, baseById
   const canonicalSources = new Map(sourceDocument.sources.map((source) => [source.source_id, canonicalJson(source)]))
   const requiredSourceIds = new Set()
   const evidenceIds = new Set()
+  const propositionIdentities = new Set()
+  let verifiedBenefitCount = 0
   for (const [id, descriptor] of Object.entries(projection.company_shards)) {
     const detail = detailSchema.parse(await load(descriptor))
     const listingCompany = byId.get(id)
@@ -371,7 +455,7 @@ async function verifyApprovedV2ProjectionBound(releaseRoot, projection, baseById
     if (!baseDetailCompany) throw Error(`approved projection canonical base detail identity unavailable: ${id}`)
     assertCompanyDetailIdentityProjection(baseDetailCompany, detail.company)
     assertCompanyDetailEvidence(listingCompany, detail)
-    assertSpecificBenefitInventory(listingCompany, detail)
+    verifiedBenefitCount += assertVerifiedBenefitInventory(listingCompany, detail, propositionIdentities)
     for (const source of detail.sources) if (canonicalSources.get(source.source_id) !== canonicalJson(source)) throw Error(`approved projection company source canonical mismatch: ${id}:${source.source_id}`)
     recordProjectionEvidenceIds(detail, evidenceIds)
     for (const sourceId of detail.category_outcomes.flatMap((outcome) => outcome.searched_source_ids)) requiredSourceIds.add(sourceId)
@@ -380,6 +464,9 @@ async function verifyApprovedV2ProjectionBound(releaseRoot, projection, baseById
     for (const record of [...detail.references, ...detail.community_reports]) requiredSourceIds.add(record.source_id)
   }
   if (Object.keys(projection.company_shards).length !== projection.projected_company_count) throw Error('approved projection shard count mismatch')
+  const listedBenefitCount = companies.flatMap((company) => company.category_outcomes).reduce((sum, outcome) => sum + outcome.specific_benefit_count, 0)
+  if (listedBenefitCount !== verifiedBenefitCount) throw Error('approved projection global specific benefit count mismatch')
+  if (projection.verified_proposition_count !== undefined && projection.verified_proposition_count !== verifiedBenefitCount) throw Error('approved projection verified proposition count mismatch')
   const sourceIds = sourceDocument.sources.map((source) => source.source_id)
   if (sourceDocument.data_version !== projection.data_version || sourceIds.length !== projection.sources.record_count || sourceIds.length !== requiredSourceIds.size || sourceIds.some((sourceId) => !requiredSourceIds.has(sourceId))) throw Error('approved projection source inventory mismatch')
   await assertNoBenefitsFixtureLeaksBound(releaseRoot, manifestDescriptors(projection), projection.data_version, options)
@@ -393,6 +480,27 @@ export async function verifyApprovedV2Projection(root, projection, baseById, bas
   })
 }
 
+function parseBenefitsManifest(rawManifest) {
+  const projection = rawManifest.approved_v2_projection
+  if (projection?.projection_status !== 'research_incomplete') return manifestSchema.parse(rawManifest)
+  if (projection.revalidation_status !== 'research_incomplete'
+    || !Number.isSafeInteger(projection.verified_proposition_count)
+    || projection.verified_proposition_count < 0) throw Error('approved projection revalidation metadata mismatch')
+  const schemaProjection = { ...projection, projection_status: 'in_progress' }
+  delete schemaProjection.revalidation_status
+  delete schemaProjection.verified_proposition_count
+  const parsed = manifestSchema.parse({ ...rawManifest, approved_v2_projection: schemaProjection })
+  parsed.approved_v2_projection = projection
+  return parsed
+}
+
+export function projectionSummaryMessage(projected, projection) {
+  if (projection.projection_status === 'research_incomplete') {
+    return ` Additive v2 projection: ${projected} projected companies; ${projection.verified_proposition_count} verified benefit propositions; status research_incomplete.`
+  }
+  return ` Additive approved-v2 projection: ${projected} approved companies; status ${projection.projection_status}.`
+}
+
 async function verifyBenefitsArtifactsBound(releaseRoot, options) {
   const displayManifestPath = path.join(options.displayRoot ?? '', 'community/data/company-benefits/manifest.json')
   if (!releaseRoot) return 'Benefits artifacts unavailable: no approved manifest.'
@@ -400,7 +508,7 @@ async function verifyBenefitsArtifactsBound(releaseRoot, options) {
   try {
     manifestRaw = await readBoundedRegularFile(releaseRoot, ['manifest.json'], manifestByteLimit, 'benefits manifest', options.boundedReadHooks, displayManifestPath)
   } catch (error) { if (error.code === 'ENOENT') { await assertNoBenefitsFixtureLeaksBound(releaseRoot, [], 'v2', options); return 'Benefits artifacts unavailable: no approved manifest.' } throw error }
-  const rawManifest = JSON.parse(manifestRaw); const manifest = manifestSchema.parse(rawManifest); const companies = []; const byId = new Map(); const detailById = new Map()
+  const rawManifest = JSON.parse(manifestRaw); const manifest = parseBenefitsManifest(rawManifest); const companies = []; const byId = new Map(); const detailById = new Map()
   await assertExactReleaseRootInventoryBound(releaseRoot, manifest)
   await assertExactArtifactInventoryBound(releaseRoot, manifest, options)
   const load = async (descriptor) => {
@@ -434,7 +542,7 @@ async function verifyBenefitsArtifactsBound(releaseRoot, options) {
   if (manifest.approved_v2_projection) {
     assertApprovedProjectionBaseHash(rawManifest)
     const projected = await verifyApprovedV2ProjectionBound(releaseRoot, manifest.approved_v2_projection, byId, detailById, options)
-    projectionMessage = ` Additive approved-v2 projection: ${projected} approved companies; status in_progress.`
+    projectionMessage = projectionSummaryMessage(projected, manifest.approved_v2_projection)
   }
   return `Benefits artifacts ${manifest.data_version}: ${companies.length} companies; ${manifest.listing_chunks.length} listing chunks; ${categories.length} categories.${projectionMessage}`
 }

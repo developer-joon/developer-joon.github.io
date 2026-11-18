@@ -603,18 +603,32 @@ def outcome_by_category(detail, category_id):
                 if outcome["category_id"] == category_id)
 
 
-def test_specific_benefit_count_includes_eligible_reference_statement():
+def test_unreviewed_raw_evidence_is_preserved_but_never_counted_as_a_verified_benefit():
+    detail = build_specific_benefit_count_detail(["reference", "community"])
+    assert [record["statement"] for record in detail["references"]] == [
+        "Paid leave is reported."
+    ]
+    assert [record["statement"] for record in detail["community_reports"]] == [
+        "Employees report paid leave."
+    ]
+    assert detail["verified_benefits"] == []
+    assert all(outcome["specific_benefit_count"] == 0
+               for outcome in detail["category_outcomes"])
+
+
+def test_absent_verified_inventory_exposes_no_user_visible_verified_propositions():
     detail = build_specific_benefit_count_detail(["reference"])
-    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 1
-
-
-def test_specific_benefit_count_includes_eligible_community_statement():
-    detail = build_specific_benefit_count_detail(["community"])
-    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 1
+    serialized_verified = json.dumps(detail["verified_benefits"], ensure_ascii=False)
+    assert "Paid leave is reported." not in serialized_verified
+    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 0
 
 
 def test_specific_benefit_count_is_zero_for_official_only_evidence():
     detail = build_specific_benefit_count_detail(["official"])
+    assert [record["claim_id"] for record in detail["official_claims"]] == [
+        "official::" + f"{1:064x}"
+    ]
+    assert detail["verified_benefits"] == []
     assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 0
 
 
@@ -624,31 +638,37 @@ def test_specific_benefit_count_is_zero_for_no_public_info():
                for outcome in detail["category_outcomes"])
 
 
-def test_specific_benefit_count_counts_same_category_records_by_canonical_id():
-    detail = build_specific_benefit_count_detail(["reference", "reference"])
-    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 2
-
-
-def test_specific_benefit_count_rejects_ineligible_or_missing_bound_source_records():
-    module_spec = importlib.util.spec_from_file_location("artifact_specific_benefit_sources", SCRIPT)
-    assert module_spec is not None and module_spec.loader is not None
+def test_unresolved_cells_never_project_benefits_or_terminal_absence():
+    module_spec = importlib.util.spec_from_file_location("artifact_mixed_projection", SCRIPT)
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)
-    record = {
-        "reference_id": "reference::record-1", "source_id": "source::reference",
-        "publication_eligibility": "reference_only",
-    }
-    ineligible = {
-        "source::reference": {
-            "source_id": "source::reference", "publication_eligibility": "ineligible",
-        },
-    }
-    assert module.specific_benefit_record_ids([record], [], ineligible) == set()
-    with raises(KeyError):
-        module.specific_benefit_record_ids([record], [], {})
-    rebound = {**record, "source_id": "source::rebound"}
-    with raises(KeyError):
-        module.specific_benefit_record_ids([rebound], [], ineligible)
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    company = {"company_id": "KR-CRN-0000000000001", "legal_name": "Example", "scope": "domestic", "jurisdiction": "KR"}
+    states = ("not_researched", "research_incomplete", "source_access_failed", "conflicting_evidence")
+    categories = [item["id"] for item in taxonomy["categories"]]
+    cells = {category: {"category_id": category, "state": states[index % 4],
+             "reliability": "none", "currentness": "unknown", "scope_status": "unresolved",
+             "conflict_status": "contradictory" if index % 4 == 3 else "none",
+             "publication_eligibility": "discovery_only", "assessed_at": "2026-11-01T00:00:00Z",
+             "official_claim_ids": [], "reference_ids": [], "community_report_ids": [],
+             "attempt_ids": [] if index % 4 == 0 else [f"attempt::{category}"]}
+             for index, category in enumerate(categories)}
+    attempts = {f"attempt::{category}": {"source_ids": [], "completed_at": "2026-11-01T00:00:00Z"}
+                for category in categories if cells[category]["attempt_ids"]}
+    detail = module.build_company(company, 1, [], None, taxonomy, {}, {}, cells,
+        {"attempts": attempts, "official_claims": {}, "references": {}, "community_reports": {}, "sources": {}})
+    for outcome in detail["category_outcomes"]:
+        assert outcome["kind"] == outcome["status"] == "insufficient_evidence"
+        assert outcome["claim_count"] == outcome["benefit_type_count"] == outcome["specific_benefit_count"] == 0
+        assert outcome["reason_code"] == outcome["state"]
+        assert outcome["searched_at"] == (None if outcome["state"] == "not_researched" else "2026-11-01T00:00:00Z")
+        assert "searched_not_found" not in json.dumps(outcome)
+    assert detail["verified_benefits"] == []
+
+
+def test_specific_benefit_count_does_not_count_duplicate_raw_records():
+    detail = build_specific_benefit_count_detail(["reference", "reference"])
+    assert outcome_by_category(detail, "leave")["specific_benefit_count"] == 0
 
 
 def test_taxonomy_has_reviewed_shape_and_conservative_dol_mappings():
@@ -826,7 +846,9 @@ def test_additive_projection_accepts_only_approved_checkpoint_and_complete_gate_
     inputs, metadata = module.validate_approved_v2_projection_inputs(research, taxonomy, file_digest(TAXONOMY))
     assert len(inputs[0]) == len(approved_companies) == 950
     assert metadata["projection_kind"] == "approved_v2_additive"
-    assert metadata["projection_status"] == "in_progress"
+    assert metadata["projection_status"] == "research_incomplete"
+    assert metadata["revalidation_status"] == "research_incomplete"
+    assert metadata["verified_proposition_count"] == 0
     assert metadata["approved_batch_count"] == 38
     assert metadata["projected_company_count"] == 950
     assert metadata["cell_count"] == 9500

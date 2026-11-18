@@ -9,8 +9,10 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +24,9 @@ FILES = (
     *series.V2_LEDGER_FILES.values(),
 )
 ALLOWED_FILES = {"batch.json", *FILES}
+CURRENT_EXTRA_FILES = ("verified-benefits.jsonl", "company-category-outcomes.jsonl")
+CURRENT_FILES = (*FILES, *CURRENT_EXTRA_FILES)
+CURRENT_ALLOWED_FILES = {"batch.json", *CURRENT_FILES, "series-batch-approval.jsonl", "SHA256SUMS"}
 TARGETS = {
     "sources.jsonl": "source-registry.jsonl",
     "claims.jsonl": "benefit-claims.jsonl",
@@ -36,25 +41,100 @@ ID_FIELDS = {
     "gaps.jsonl": "audit_id", "checks.jsonl": "source_id",
     **{filename: series.V2_ID_FIELDS[ledger] for ledger, filename in series.V2_LEDGER_FILES.items()},
 }
-LEDGER_TARGETS = tuple(V2_TARGETS.values()) + ("series-progress.json", "series-batches.jsonl")
+CURRENT_LEDGER_TARGETS = ("verified-benefits.jsonl", "company-category-outcomes.jsonl",
+                          "series-batch-approvals.jsonl")
+LEDGER_TARGETS = tuple(V2_TARGETS.values()) + CURRENT_LEDGER_TARGETS + (
+    "series-progress.json", "series-batches.jsonl"
+)
 IMMUTABLE_LEGACY_FILES = ("sources.jsonl", "claims.jsonl", "reviews.jsonl", "gaps.jsonl")
 TRANSACTION_DIRNAME = ".company-benefits-series-batch-transaction"
 COMMITTED_TRANSACTION_DIRNAME = ".company-benefits-series-batch-committed"
 TRANSACTION_SCHEMA_VERSION = "1"
+MAX_PACKAGE_FILE_BYTES = 64 * 1024 * 1024
+MAX_PACKAGE_BYTES = 256 * 1024 * 1024
 
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def parse_timestamp(value, label):
+def research_tree_manifest(root):
+    """Return a deterministic byte inventory for stale-tree detection."""
+    root = Path(root)
+    entries = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        if path.is_symlink():
+            raise ValueError(f"research tree symlinks are prohibited during publication: {path}")
+        if path.is_file():
+            digest = hashlib.sha256()
+            length = 0
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(64 * 1024), b""):
+                    digest.update(chunk)
+                    length += len(chunk)
+            entries.append({
+                "path": path.relative_to(root).as_posix(),
+                "sha256": digest.hexdigest(),
+                "bytes": length,
+            })
+    return entries
+
+
+def capture_active_root(research_root):
+    """Bind a publisher transaction to one active root inode and tree."""
+    research_root = Path(research_root)
+    identity = research_root.lstat()
+    if not stat.S_ISDIR(identity.st_mode):
+        raise RuntimeError("active research root is no longer a real directory")
+    manifest = research_tree_manifest(research_root)
+    digest = sha256(json.dumps(
+        manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8"))
+    return identity.st_dev, identity.st_ino, digest
+
+
+def assert_active_root_unchanged(research_root, expected):
+    """Fail before commit if the active root or any tree byte went stale."""
+    actual = capture_active_root(research_root)
+    if actual != expected:
+        raise RuntimeError("active research tree changed during publisher transaction")
+
+
+@contextmanager
+def acquire_publisher_lock(research_root):
+    """Serialize every cooperating publisher on the stable root-parent inode."""
+    research_root = Path(research_root)
+    descriptor = os.open(research_root.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            raise ValueError
-        return parsed
-    except ValueError as exc:
-        raise ValueError(f"invalid {label} timestamp") from exc
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("another company-benefits publisher is in progress") from exc
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def canonical_approval_row(batch_id, package_manifest_raw, reviewed_candidate_sha256,
+                           reviewer_receipt_sha256):
+    """Bind one promoted manifest to the independently reviewed byte identities."""
+    if batch_id not in series.BATCH_IDS:
+        raise ValueError("canonical approval batch ID is invalid")
+    for value, label in ((reviewed_candidate_sha256, "reviewed candidate"),
+                         (reviewer_receipt_sha256, "reviewer receipt")):
+        if not isinstance(value, str) or not series.HASH_PATTERN.fullmatch(value):
+            raise ValueError(f"canonical approval {label} hash is invalid")
+    return {
+        "approval_version": "1", "batch_id": batch_id, "status": "approved",
+        "package_sha256": sha256(package_manifest_raw),
+        "reviewed_candidate_sha256": reviewed_candidate_sha256,
+        "reviewer_receipt_sha256": reviewer_receipt_sha256,
+    }
+
+
+def parse_timestamp(value, label):
+    return series.parse_canonical_rfc3339(value, label)
 
 
 def _unique_map(records, field, label):
@@ -67,10 +147,29 @@ def _unique_map(records, field, label):
     return dict(zip(values, records))
 
 
-def _raw_record_map(path, records, field, label):
+def _read_jsonl_bytes(raw, label):
+    records = []
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{label} is not UTF-8") from exc
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{label}:{number}: invalid JSON") from exc
+        if not isinstance(record, dict):
+            raise ValueError(f"{label}:{number}: record must be an object")
+        records.append(record)
+    return records
+
+
+def _raw_record_map(path, records, field, label, raw=None):
     """Index parsed records by ID while retaining their exact JSON line bytes."""
     path = Path(path)
-    raw = path.read_bytes() if path.is_file() else b""
+    raw = (path.read_bytes() if path.is_file() else b"") if raw is None else raw
     raw_records = [line for line in raw.splitlines() if line.strip()]
     record_map = _unique_map(records, field, label)
     if len(raw_records) != len(records):
@@ -78,10 +177,13 @@ def _raw_record_map(path, records, field, label):
     return {record[field]: raw for record, raw in zip(records, raw_records)}, record_map
 
 
-def validate_record_collisions(name, incoming_path, existing_path, incoming_records, existing_records):
+def validate_record_collisions(name, incoming_path, existing_path, incoming_records, existing_records,
+                               incoming_raw=None):
     """Allow legacy duplicate IDs only when the complete raw records are byte-identical."""
     field = ID_FIELDS[name]
-    incoming_raw, incoming_by_id = _raw_record_map(incoming_path, incoming_records, field, name)
+    incoming_raw, incoming_by_id = _raw_record_map(
+        incoming_path, incoming_records, field, name, incoming_raw,
+    )
     existing_raw, existing_by_id = _raw_record_map(existing_path, existing_records, field, f"existing {name}")
     overlaps = set(incoming_by_id) & set(existing_by_id)
     if overlaps and name not in IMMUTABLE_LEGACY_FILES:
@@ -186,7 +288,12 @@ def validate_review_audit(manifest, batch, records, research_root):
     audit = manifest.get("review_audit")
     audit_fields = {"candidate_manifest_sha256", "candidate_manifest", "candidate_artifacts",
                     "review_bundle_sha256", "review_bundle", "review_artifacts"}
-    if not isinstance(audit, dict) or set(audit) != audit_fields:
+    current_format = manifest.get("schema_version") == "2"
+    candidates = candidate_bytes = reviewer_receipt_raw = None
+    expected_audit_fields = audit_fields | ({"reviewed_candidate_sha256", "reviewer_receipt_sha256",
+                                              "reviewer_receipt"}
+                                            if current_format else set())
+    if not isinstance(audit, dict) or set(audit) != expected_audit_fields:
         raise ValueError("v2 package requires an exact candidate/promotion review_audit")
     candidate_manifest = audit.get("candidate_manifest")
     review_bundle = audit.get("review_bundle")
@@ -205,6 +312,53 @@ def validate_review_audit(manifest, batch, records, research_root):
     if (review_bundle.get("promotion_reviewer_id") != manifest.get("reviewer_id")
             or review_bundle.get("approved_at") != manifest.get("approved_at")):
         raise ValueError("review_audit promotion identity or approval timestamp mismatch")
+
+    # The external promoter accepts only these two single-file names. Enforce
+    # that contract before reconstructing any attacker-controlled audit path.
+    if current_format and (review_bundle.get("reviewed_candidate_path") != "reviewed-candidate.json"
+                           or review_bundle.get("reviewer_receipt_path") != "reviewer-receipt.json"):
+        raise ValueError("review_audit external review artifact path is invalid")
+
+    if current_format:
+        if (candidate_manifest.get("schema_version") != "2" or review_bundle.get("schema_version") != "2"
+                or review_bundle.get("reviewed_candidate_sha256") != audit.get("reviewed_candidate_sha256")
+                or review_bundle.get("reviewer_receipt_sha256") != audit.get("reviewer_receipt_sha256")):
+            raise ValueError("current review_audit external candidate/receipt binding mismatch")
+        benefits = records["verified-benefits.jsonl"]
+        candidates = [{key: value for key, value in benefit.items() if key != "review"}
+                      for benefit in benefits]
+        candidate_bytes = series.canonical_json_bytes(sorted(candidates, key=lambda item: item["benefit_id"]))
+        if sha256(candidate_bytes) != audit["reviewed_candidate_sha256"]:
+            raise ValueError("review_audit reviewed candidate bytes do not match verified benefits")
+        candidate_hashes = candidate_manifest.get("artifacts", {})
+        if (candidate_hashes.get("verified-benefit-candidates.jsonl") != sha256(series.jsonl_bytes(candidates))
+                or candidate_hashes.get("company-category-outcomes.jsonl") != sha256(
+                    series.jsonl_bytes(records["company-category-outcomes.jsonl"]))):
+            raise ValueError("review_audit current candidate artifacts do not reproduce promoted records")
+        reviewer_receipt = audit.get("reviewer_receipt")
+        if not isinstance(reviewer_receipt, dict):
+            raise ValueError("review_audit must retain the immutable external reviewer receipt")
+        reviewer_receipt_raw = series.json_bytes(reviewer_receipt)
+        if sha256(reviewer_receipt_raw) != audit["reviewer_receipt_sha256"]:
+            raise ValueError("review_audit reviewer receipt byte/hash binding mismatch")
+        receipt_fields = {"schema_version", "status", "reviewer_id", "reviewed_candidate_sha256", "reviewed_at"}
+        if (set(reviewer_receipt) != receipt_fields
+                or reviewer_receipt.get("schema_version") != "1"
+                or reviewer_receipt.get("status") != "approved"
+                or reviewer_receipt.get("reviewer_id") != manifest.get("reviewer_id")
+                or reviewer_receipt.get("reviewed_candidate_sha256") != audit["reviewed_candidate_sha256"]):
+            raise ValueError("review_audit retained reviewer receipt contract mismatch")
+        series.parse_canonical_rfc3339(reviewer_receipt.get("reviewed_at"), "receipt reviewed_at")
+        authoritative_binding = {
+            "reviewer_receipt_sha256": sha256(reviewer_receipt_raw),
+            "reviewed_candidate_sha256": sha256(candidate_bytes),
+            "reviewed_at": reviewer_receipt["reviewed_at"],
+        }
+        evidence = [*records["official-claims-v2.jsonl"], *records["reference-records.jsonl"],
+                    *records["community-benefit-reports.jsonl"]]
+        series.validate_verified_benefits(
+            benefits, evidence, authoritative_binding if benefits else None,
+        )
 
     candidate_claims = []
     for claim in records["claims.jsonl"]:
@@ -237,6 +391,11 @@ def validate_review_audit(manifest, batch, records, research_root):
         "gaps.jsonl": records["gaps.jsonl"], "review-requests.jsonl": requests,
         **{filename: records[filename] for filename in series.V2_LEDGER_FILES.values()},
     }
+    if current_format:
+        candidate_values.update({
+            "verified-benefit-candidates.jsonl": candidates,
+            "company-category-outcomes.jsonl": records["company-category-outcomes.jsonl"],
+        })
     with tempfile.TemporaryDirectory(prefix="benefits-review-audit-") as directory:
         base = Path(directory)
         candidate_dir, review_dir = base / "candidate", base / "review"
@@ -248,6 +407,9 @@ def validate_review_audit(manifest, batch, records, research_root):
         (review_dir / "review-bundle.json").write_bytes(review_raw)
         for name in ("reviews.jsonl", "checks.jsonl"):
             (review_dir / name).write_bytes(series.jsonl_bytes(records[name]))
+        if current_format:
+            (review_dir / review_bundle["reviewed_candidate_path"]).write_bytes(candidate_bytes)
+            (review_dir / review_bundle["reviewer_receipt_path"]).write_bytes(reviewer_receipt_raw)
         candidate_validator = _load_script(Path(__file__).with_name("validate-company-benefits-series-candidate.py"),
                                            "integrated_candidate_audit_validator")
         package = candidate_validator.validate_candidate(candidate_dir, research_root)
@@ -271,22 +433,81 @@ def validate_review_audit(manifest, batch, records, research_root):
     return audit
 
 
-def load_package(input_dir, research_root, validate_immutable_legacy_collisions=True):
+def validate_verified_benefit_review_chronology(benefits, approved_at_by_company):
+    """Require every reviewed proposition to predate its package approval."""
+    for benefit in benefits:
+        company_id = benefit.get("company_id") if isinstance(benefit, dict) else None
+        approved_at = (approved_at_by_company.get(company_id)
+                       if isinstance(approved_at_by_company, dict) else approved_at_by_company)
+        if approved_at is None:
+            raise ValueError(f"{company_id}: verified benefit package approval timestamp is missing")
+        approved = series.parse_canonical_rfc3339(approved_at, "approved_at")
+        review = benefit.get("review") if isinstance(benefit, dict) else None
+        reviewed_at = review.get("reviewed_at") if isinstance(review, dict) else None
+        reviewed = series.parse_canonical_rfc3339(reviewed_at, "verified benefit reviewed_at")
+        if reviewed >= approved:
+            raise ValueError("verified benefit review must precede package approval")
+
+
+def validate_current_outcomes(records, *, expected_count=None, approved_at_by_company=None):
+    """Independently derive outcomes from validated proposition and research state."""
+    benefits = records["verified-benefits.jsonl"]
+    evidence = [*records["official-claims-v2.jsonl"], *records["reference-records.jsonl"],
+                *records["community-benefit-reports.jsonl"]]
+    if benefits:
+        validate_verified_benefit_review_chronology(benefits, approved_at_by_company)
+    if benefits:
+        groups = {}
+        for benefit in benefits:
+            review = benefit.get("review", {})
+            key = tuple(review.get(field) for field in series.VERIFIED_BENEFIT_REVIEW_BINDING_FIELDS)
+            groups.setdefault(key, []).append(benefit)
+        for key, group in groups.items():
+            binding = dict(zip(series.VERIFIED_BENEFIT_REVIEW_BINDING_FIELDS, key))
+            series.validate_verified_benefits(group, evidence, binding)
+    else:
+        series.validate_verified_benefits([], evidence, None)
+    expected = series.compile_cell_outcomes(
+        records["company-category-cells.jsonl"], records["research-attempts.jsonl"],
+        benefits, expected_count=expected_count,
+    )
+    if expected != records["company-category-outcomes.jsonl"]:
+        raise ValueError("company-category cell outcomes do not exactly match independently derived outcomes")
+
+
+def load_package(input_dir, research_root, validate_immutable_legacy_collisions=True,
+                 retained_approval=None):
+    """Validate a package for integration or as an already-integrated retained package.
+
+    ``retained_approval`` switches only the canonical-state checks: all package
+    inventory, checksum, review, proposition, outcome, chronology, and 25/250
+    validation remains shared with the production integration path.
+    """
     input_dir, research_root = Path(input_dir), Path(research_root)
-    actual = {path.name for path in input_dir.iterdir()}
-    if actual != ALLOWED_FILES or any(not path.is_file() for path in input_dir.iterdir()):
-        raise ValueError("unexpected input or evidence file; package must contain only batch.json and eleven JSONL artifacts")
+    retained = retained_approval is not None
     try:
-        manifest = json.loads((input_dir / "batch.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        actual = set(os.listdir(input_dir))
+    except OSError as exc:
+        raise ValueError("package directory is invalid") from exc
+    current_format = actual == CURRENT_ALLOWED_FILES
+    if actual not in (ALLOWED_FILES, CURRENT_ALLOWED_FILES):
+        raise ValueError("unexpected or mixed-format package file set")
+    package_raw = series.read_bounded_regular_files(
+        input_dir, actual, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_BYTES,
+        "integration package",
+    )
+    try:
+        manifest = json.loads(package_raw["batch.json"])
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid batch manifest: {exc}") from exc
     expected_manifest_fields = {"schema_version", "batch_id", "company_list_sha256", "effective_sequence_sha256",
                                 "replacement_events_sha256", "status", "approved_at", "reviewer_id", "artifacts"}
-    if set(manifest) != expected_manifest_fields | {"review_audit"} or manifest.get("schema_version") != "1":
+    expected_version = "2" if current_format else "1"
+    if set(manifest) != expected_manifest_fields | {"review_audit"} or manifest.get("schema_version") != expected_version:
         raise ValueError("batch manifest schema mismatch; v2 packages require review_audit")
     if manifest.get("status") != "approved" or not manifest.get("reviewer_id"):
         raise ValueError("only explicitly approved batches with reviewer identity may be integrated")
-    parse_timestamp(manifest.get("approved_at"), "approved_at")
+    series.parse_canonical_rfc3339(manifest.get("approved_at"), "approved_at")
     batches = {item["batch_id"]: item for item in series.read_jsonl(research_root / "series-batches.jsonl")}
     batch = batches.get(manifest.get("batch_id"))
     if batch is None or manifest.get("company_list_sha256") != batch.get("company_list_sha256"):
@@ -297,31 +518,95 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
     progress = json.loads((research_root / "series-progress.json").read_text(encoding="utf-8"))
     series.validate_persisted_v2_hashes(research_root, list(batches.values()), progress, v2_transition=True)
     current = next((item for item in progress["batches"] if item["batch_id"] == batch["batch_id"]), None)
-    if current is None or current.get("status") != "pending" or current.get("cell_count", 0) != 0:
+    if retained:
+        if (current is None or current.get("status") != "approved"
+                or current.get("cell_count") != 250):
+            raise ValueError("retained v2 package does not match an approved 250-cell canonical batch")
+    elif current is None or current.get("status") != "pending" or current.get("cell_count", 0) != 0:
         raise ValueError("v2 batch is not pending or already contains v2 cells")
 
     artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, dict) or set(artifacts) != set(FILES):
-        raise ValueError("batch manifest must hash all eleven exact artifacts")
+    expected_files = CURRENT_FILES if current_format else FILES
+    if not isinstance(artifacts, dict) or set(artifacts) != set(expected_files):
+        raise ValueError("batch manifest must hash the exact format-specific artifacts")
 
     records = {}
-    for name in FILES:
-        raw = (input_dir / name).read_bytes()
+    for name in expected_files:
+        raw = package_raw[name]
         if artifacts.get(name) != sha256(raw):
             raise ValueError(f"artifact hash mismatch: {name}")
-        records[name] = (series.read_source_checks(input_dir / name) if name == "checks.jsonl"
-                         else series.read_jsonl(input_dir / name))
+        records[name] = _read_jsonl_bytes(raw, name)
 
     v2_records = {ledger: records[filename] for ledger, filename in series.V2_LEDGER_FILES.items()}
+    if current_format:
+        validate_verified_benefit_review_chronology(
+            records["verified-benefits.jsonl"], manifest["approved_at"]
+        )
     series.validate_v2_record_structure(v2_records, batch)
-    for name in FILES:
+    for name in expected_files:
         if name == "checks.jsonl":
             series.source_check_map(records[name])
+        elif name == "verified-benefits.jsonl":
+            _unique_map(records[name], "benefit_id", name)
+        elif name == "company-category-outcomes.jsonl":
+            _unique_map(records[name], "cell_id", name)
         else:
             _unique_map(records[name], ID_FIELDS[name], name)
         serialized = json.dumps(records[name], ensure_ascii=False)
         if "evidence_path" in serialized or "evidence_file" in serialized or any(item.get("hash_provenance") == "retained_file" for item in records[name]):
             raise ValueError("evidence files and retained-file provenance are prohibited")
+
+    if current_format:
+        checksums = {}
+        try:
+            checksum_lines = package_raw["SHA256SUMS"].decode("utf-8").splitlines()
+        except UnicodeDecodeError as exc:
+            raise ValueError("SHA256SUMS is malformed") from exc
+        for line in checksum_lines:
+            parts = line.split("  ", 1)
+            if len(parts) != 2 or not series.HASH_PATTERN.fullmatch(parts[0]) or parts[1] in checksums:
+                raise ValueError("SHA256SUMS is malformed")
+            checksums[parts[1]] = parts[0]
+        inventory = actual - {"SHA256SUMS"}
+        if set(checksums) != inventory or any(
+                checksums[name] != sha256(package_raw[name]) for name in inventory):
+            raise ValueError("SHA256SUMS must exactly equal the complete package inventory")
+        approvals = _read_jsonl_bytes(
+            package_raw["series-batch-approval.jsonl"], "series-batch-approval.jsonl",
+        )
+        if len(approvals) != 1:
+            raise ValueError("current package requires exactly one canonical approval row")
+        records["series-batch-approval.jsonl"] = approvals
+        audit = manifest.get("review_audit", {})
+        expected_approval = canonical_approval_row(
+            manifest.get("batch_id"), package_raw["batch.json"],
+            audit.get("reviewed_candidate_sha256"), audit.get("reviewer_receipt_sha256"),
+        )
+        if approvals[0] != expected_approval:
+            raise ValueError("canonical approval row does not bind exact package/candidate/receipt bytes")
+        approval_path = research_root / "series-batch-approvals.jsonl"
+        existing_approvals = series.read_jsonl(approval_path) if approval_path.is_file() else []
+        if retained:
+            if retained_approval != expected_approval or existing_approvals.count(expected_approval) != 1:
+                raise ValueError("retained package approval does not equal the canonical approval ledger")
+        else:
+            if any(item.get("batch_id") == expected_approval["batch_id"] for item in existing_approvals):
+                raise ValueError("approved batch is copied or replayed")
+            # Candidate hashes are content digests, not package identities: two
+            # independently reviewed empty candidate sets have the same bytes.
+            for field in ("package_sha256", "reviewer_receipt_sha256"):
+                if any(item.get(field) == expected_approval[field] for item in existing_approvals):
+                    raise ValueError("approved package/receipt identity is copied or replayed")
+        for name, field in (("verified-benefits.jsonl", "benefit_id"),
+                            ("company-category-outcomes.jsonl", "cell_id")):
+            target = research_root / name
+            existing_records = series.read_jsonl(target) if target.is_file() else []
+            existing_by_id = {item.get(field): item for item in existing_records}
+            if retained and any(existing_by_id.get(item[field]) != item for item in records[name]):
+                raise ValueError(f"retained package {field} records differ from canonical integrated bytes")
+            incoming_ids = {item[field] for item in records[name]}
+            if not retained and incoming_ids & set(existing_by_id):
+                raise ValueError(f"cross-batch {field} proposition/outcome replay")
 
     verifier = _load_script(Path(__file__).with_name("verify-company-benefits-ledger.py"), "series_package_verifier")
     source_errors = []
@@ -330,10 +615,18 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
         raise ValueError("incoming source schema validation failed:\n" + "\n".join(source_errors))
     series.validate_v2_package_records(v2_records, batch, research_root)
     validate_review_audit(manifest, batch, records, research_root)
+    if current_format:
+        validate_current_outcomes(
+            records, expected_count=250,
+            approved_at_by_company={company_id: manifest["approved_at"] for company_id in batch["company_ids"]},
+        )
 
     existing = {name: series.read_jsonl(research_root / target) for name, target in TARGETS.items()}
     existing["checks.jsonl"] = series.read_source_checks(research_root / TARGETS["checks.jsonl"])
-    incoming_gap_raw = series.jsonl_raw_record_map(input_dir / "gaps.jsonl", "audit_id")
+    incoming_gap_raw, _ = _raw_record_map(
+        input_dir / "gaps.jsonl", records["gaps.jsonl"], "audit_id", "gaps.jsonl",
+        package_raw["gaps.jsonl"],
+    )
     frozen_gap_raw = series.jsonl_raw_record_map(research_root / TARGETS["gaps.jsonl"], "audit_id")
     for gap in records["gaps.jsonl"]:
         series.validate_v2_gap_id(
@@ -344,9 +637,16 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
     if validate_immutable_legacy_collisions:
         collision_files[:0] = IMMUTABLE_LEGACY_FILES
     for name in collision_files:
-        validate_record_collisions(
-            name, input_dir / name, research_root / TARGETS[name], records[name], existing[name]
-        )
+        if retained:
+            field = ID_FIELDS[name]
+            existing_by_id = {item.get(field): item for item in existing[name]}
+            if any(existing_by_id.get(item[field]) != item for item in records[name]):
+                raise ValueError(f"retained package {field} records differ from canonical integrated records")
+        else:
+            validate_record_collisions(
+                name, input_dir / name, research_root / TARGETS[name], records[name], existing[name],
+                package_raw[name],
+            )
     company_ids = set(batch["company_ids"])
     claims = records["claims.jsonl"]
     gaps = records["gaps.jsonl"]
@@ -447,8 +747,13 @@ def load_package(input_dir, research_root, validate_immutable_legacy_collisions=
             current = latest_review_by_source_id.get(source_id)
             if current is None or parse_timestamp(reviewed_at, "outcome reviewed_at") > parse_timestamp(current, "latest review"):
                 latest_review_by_source_id[source_id] = reviewed_at
-    merge_checks(existing["checks.jsonl"], records["checks.jsonl"], latest_review_by_source_id, expected_source_ids,
-                 source_map=source_map, legacy_sources=legacy_sources)
+    if retained:
+        existing_checks = {item.get("source_id"): item for item in existing["checks.jsonl"]}
+        if any(existing_checks.get(item["source_id"]) != item for item in records["checks.jsonl"]):
+            raise ValueError("retained package source checks differ from canonical integrated records")
+    else:
+        merge_checks(existing["checks.jsonl"], records["checks.jsonl"], latest_review_by_source_id, expected_source_ids,
+                     source_map=source_map, legacy_sources=legacy_sources)
     return manifest, batch, records
 
 
@@ -720,68 +1025,123 @@ def commit_staged_outputs(research_root, replacements):
         raise
 
 
+def merge_loaded_package(staged, manifest, batch, incoming):
+    """Apply one production-validated package slice directly to a staged tree."""
+    staged = Path(staged)
+    # The v1 projections are immutable refreeze audit inputs while v2 is in
+    # progress. They validate the package but are never merged or promoted.
+    for target in CURRENT_LEDGER_TARGETS:
+        path = staged / target
+        if not path.is_file():
+            path.write_bytes(b"")
+    for name, target in V2_TARGETS.items():
+        current = series.read_jsonl(staged / target)
+        field = ID_FIELDS[name]
+        series.write_jsonl(
+            staged / target,
+            sorted(current + incoming[name], key=lambda item: item[field]),
+        )
+    progress = json.loads((staged / "series-progress.json").read_text(encoding="utf-8"))
+    approved_entries = {
+        item["batch_id"]: item for item in progress["batches"]
+        if item["status"] == "approved"
+    }
+    approved = set(approved_entries) | {batch["batch_id"]}
+    approval_times = {key: value["approved_at"] for key, value in approved_entries.items()}
+    reviewer_ids = {key: value["reviewer_ids"] for key, value in approved_entries.items()}
+    approval_times[batch["batch_id"]] = manifest["approved_at"]
+    reviewer_ids[batch["batch_id"]] = [manifest["reviewer_id"]]
+    if manifest.get("schema_version") == "2":
+        for name, field in (("verified-benefits.jsonl", "benefit_id"),
+                            ("company-category-outcomes.jsonl", "cell_id")):
+            target = staged / name
+            current = series.read_jsonl(target) if target.is_file() else []
+            series.write_jsonl(
+                target, sorted(current + incoming[name], key=lambda item: item[field]),
+            )
+        approval_target = staged / "series-batch-approvals.jsonl"
+        approvals = series.read_jsonl(approval_target) if approval_target.is_file() else []
+        series.write_jsonl(
+            approval_target,
+            sorted(approvals + incoming["series-batch-approval.jsonl"],
+                   key=lambda item: item["batch_id"]),
+        )
+    _, new_progress = series.materialize_contract(
+        staged, approved, approval_times, reviewer_ids, progress["status"],
+    )
+    return new_progress, approval_times
+
+
+def validate_merged_current_outcomes(staged, approval_times):
+    """Recompute the complete merged proposition/outcome contract once."""
+    staged = Path(staged)
+    merged_current = {
+        "company-category-cells.jsonl": series.read_jsonl(staged / "company-category-cells.jsonl"),
+        "research-attempts.jsonl": series.read_jsonl(staged / "research-attempts.jsonl"),
+        "official-claims-v2.jsonl": series.read_jsonl(staged / "official-claims-v2.jsonl"),
+        "reference-records.jsonl": series.read_jsonl(staged / "reference-records.jsonl"),
+        "community-benefit-reports.jsonl": series.read_jsonl(staged / "community-benefit-reports.jsonl"),
+        "verified-benefits.jsonl": series.read_jsonl(staged / "verified-benefits.jsonl"),
+        "company-category-outcomes.jsonl": series.read_jsonl(staged / "company-category-outcomes.jsonl"),
+    }
+    approval_by_company = {
+        company_id: approval_times[item["batch_id"]]
+        for item in series.read_jsonl(staged / "series-batches.jsonl")
+        if item["batch_id"] in approval_times
+        for company_id in item["company_ids"]
+    }
+    validate_current_outcomes(
+        merged_current, approved_at_by_company=approval_by_company,
+    )
+
+
 def _integrate_batch_locked(input_dir, research_root, freeze_anchor_receipt, effective_selection_receipt=None,
                             as_of=None, dry_run=False):
     input_dir, research_root = Path(input_dir), Path(research_root)
+    active_root = capture_active_root(research_root)
     manifest, batch, incoming = load_package(input_dir, research_root)
     with tempfile.TemporaryDirectory(prefix="company-benefits-series-") as directory:
         staged = Path(directory) / "research"
         shutil.copytree(research_root, staged)
-        # The v1 projections are immutable refreeze audit inputs while v2 is in
-        # progress. They validate the package but are never merged or promoted.
-        for name, target in V2_TARGETS.items():
-            current = series.read_jsonl(staged / target)
-            field = ID_FIELDS[name]
-            values = sorted(current + incoming[name], key=lambda item: item[field])
-            series.write_jsonl(staged / target, values)
-        progress = json.loads((staged / "series-progress.json").read_text(encoding="utf-8"))
-        approved_entries = {item["batch_id"]: item for item in progress["batches"] if item["status"] == "approved"}
-        approved = set(approved_entries) | {batch["batch_id"]}
-        approval_times = {key: value["approved_at"] for key, value in approved_entries.items()}
-        reviewer_ids = {key: value["reviewer_ids"] for key, value in approved_entries.items()}
-        approval_times[batch["batch_id"]] = manifest["approved_at"]
-        reviewer_ids[batch["batch_id"]] = [manifest["reviewer_id"]]
-        _, new_progress = series.materialize_contract(staged, approved, approval_times, reviewer_ids, progress["status"])
+        new_progress, approval_times = merge_loaded_package(staged, manifest, batch, incoming)
+        if manifest.get("schema_version") == "2":
+            validate_merged_current_outcomes(staged, approval_times)
         verifier = _load_script(Path(__file__).with_name("verify-company-benefits-ledger.py"), "series_verifier")
         errors = verifier.verify_workspace(staged, as_of=as_of, freeze_anchor_receipt=freeze_anchor_receipt,
                                            effective_selection_receipt=effective_selection_receipt)
         if errors:
             raise ValueError("staged series verification failed:\n" + "\n".join(errors))
         renderer = _load_script(Path(__file__).with_name("render-company-benefits-drafts.py"), "series_renderer")
-        renderer.render_batch(staged, staged / "drafts", batch["scope"], batch["batch_number"], as_of=as_of,
-                              freeze_anchor_receipt=freeze_anchor_receipt,
-                              effective_selection_receipt=effective_selection_receipt)
+        renderer._render_verified_batch(staged, staged / "drafts", batch["scope"], batch["batch_number"], as_of=as_of)
         if not dry_run:
             draft = f"drafts/{batch['batch_id']}.md"
             replacements = [(staged / target, target) for target in LEDGER_TARGETS]
             replacements.append((staged / draft, draft))
+            assert_active_root_unchanged(research_root, active_root)
             commit_staged_outputs(research_root, replacements)
     return new_progress
 
 
 def integrate_batch(input_dir, research_root, freeze_anchor_receipt, effective_selection_receipt=None,
                     as_of=None, dry_run=False):
-    """Serialize recovery, validation, staging, and commit on the research root."""
+    """Serialize recovery through cleanup on the shared publisher lock."""
     research_root = Path(research_root)
     if research_root.is_symlink():
         raise ValueError("research root symlinks are prohibited")
     research_root = research_root.resolve(strict=True)
-    lock_descriptor = os.open(research_root, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        try:
-            fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ValueError("another company-benefits batch integration is in progress") from exc
+    with acquire_publisher_lock(research_root):
         recover_transaction(research_root)
         return _integrate_batch_locked(input_dir, research_root, freeze_anchor_receipt,
                                        effective_selection_receipt, as_of, dry_run)
-    finally:
-        os.close(lock_descriptor)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input_dir", type=Path, help="directory containing batch.json and eleven JSONL artifacts")
+    parser.add_argument(
+        "input_dir", type=Path,
+        help=("directory containing a protocol-2 approved package: batch.json, "
+              "thirteen manifest-bound JSONL artifacts, series-batch-approval.jsonl, and SHA256SUMS"),
+    )
     parser.add_argument("--research-root", type=Path, default=Path("docs/research/company-benefits"))
     parser.add_argument("--freeze-anchor-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_FREEZE_ANCHOR_RECEIPT"), required=False)
     parser.add_argument("--effective-selection-receipt", type=Path, default=os.environ.get("COMPANY_BENEFITS_EFFECTIVE_SELECTION_RECEIPT"))

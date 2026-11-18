@@ -4,8 +4,16 @@ import { mkdtemp, mkdir, readFile, rename, rm, symlink, truncate, writeFile } fr
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertExactReleaseRootInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin, assertSpecificBenefitInventory, assertUniqueProjectionEvidenceIds, verifyApprovedV2Projection, verifyBenefitsArtifacts } from './verify-benefits-artifacts.mjs'
+import { assertApprovedProjectionBaseHash, assertExactArtifactInventory, assertExactReleaseRootInventory, assertNoBenefitsFixtureLeaks, assertProjectionCompanyJoin, assertSpecificBenefitInventory, assertUniqueProjectionEvidenceIds, assertVerifiedBenefitInventory, projectionSummaryMessage, verifyApprovedV2Projection, verifyBenefitsArtifacts } from './verify-benefits-artifacts.mjs'
 import { assertExplicitCellInventory, categories } from '../community-app/src/types/benefits.ts'
+
+test('research-incomplete projection summary does not claim approval', () => {
+  const message = projectionSummaryMessage(950, {
+    projection_status: 'research_incomplete', verified_proposition_count: 0,
+  })
+  assert.match(message, /950 projected companies.*0 verified benefit propositions/)
+  assert.doesNotMatch(message, /approved companies/)
+})
 
 const descriptor = (url) => ({ url })
 const manifest = (version = 'release-v9') => ({
@@ -216,7 +224,7 @@ async function writeProjectionArtifact(root, version, relative, value, record_co
 
 function projectedOutcome(category_id) {
   const base = { category_id, source_tiers: [], official_claim_ids: [], reference_ids: [], community_report_ids: [], official_claim_count: 0, reference_count: 0, community_report_count: 0, benefit_type_count: 0, specific_benefit_count: 0, scope: { countries: [], legal_entities: [], roles: [], employment_types: [], tenure_conditions: [] }, assessed_at: '2026-11-01T00:00:00Z', last_checked_at: '2026-11-01T00:00:00Z', searched_source_ids: [], conflict_status: 'none' }
-  if (category_id === 'leave') return { ...base, state: 'reference', reliability: 'medium', currentness: 'current', scope_status: 'exact_entity', publication_eligibility: 'reference_only', kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 1, specific_benefit_count: 1, reference_ids: ['reference::record-1'], reference_count: 1, source_tiers: ['other_public_web'], limitation_codes: ['lower_tier_evidence'] }
+  if (category_id === 'leave') return { ...base, state: 'reference', reliability: 'medium', currentness: 'current', scope_status: 'exact_entity', publication_eligibility: 'reference_only', kind: 'evidenced', status: 'confirmed', claim_count: 1, benefit_type_count: 1, specific_benefit_count: 0, reference_ids: ['reference::record-1'], reference_count: 1, source_tiers: ['other_public_web'], limitation_codes: ['lower_tier_evidence'] }
   return { ...base, state: 'no_public_info', reliability: 'none', currentness: 'unknown', scope_status: 'unresolved', publication_eligibility: 'discovery_only', kind: 'insufficient_evidence', status: 'insufficient_evidence', claim_count: 0, limitation_codes: ['scope_limit', 'currentness_limit'], nonabsence_notice: '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.', reason_code: 'searched_not_found', searched_at: '2026-11-01T00:00:00Z' }
 }
 
@@ -435,16 +443,8 @@ async function rebindProjectionDetailAndListing(root, projection, company_id, de
 }
 
 for (const [name, mutate, expectedError] of [
-  ['inflated specific benefit count', (detail) => { detail.category_outcomes[0].specific_benefit_count = 2 }, /listing\/detail specific benefit count mismatch/],
-  ['removed reference record with listing count unchanged', (detail) => { detail.references = []; detail.sources = [] }, /listing\/detail specific benefit count mismatch/],
-  ['cross-category reference record move', (detail) => {
-    const movedOutcome = { ...detail.category_outcomes[0], category_id: 'health', specific_benefit_count: 0 }
-    const vacatedOutcome = { ...detail.category_outcomes[2], category_id: 'leave' }
-    detail.references[0].category_id = 'health'
-    detail.references[0].cell_id = `cell::${detail.company.company_id}::health`
-    detail.category_outcomes[0] = vacatedOutcome
-    detail.category_outcomes[2] = movedOutcome
-  }, /listing\/detail specific benefit count mismatch/],
+  ['inflated specific benefit count', (detail) => { detail.category_outcomes[0].specific_benefit_count = 2 }, /verified benefit count|specific benefit/],
+  ['removed reference record with listing count unchanged', (detail) => { detail.references = []; detail.sources = [] }, /evidence ID inventory|source inventory/],
   ['missing or rebound reference source', (detail) => { detail.sources[0].source_id = 'source::rebound' }, /상세 source inventory closure 불일치/],
 ]) {
   test(`projection verifier rejects ${name} after descriptors are rebound`, () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
@@ -497,7 +497,7 @@ test('projection verifier rejects an official-only nonzero specific benefit coun
   )
   reboundDetail.category_outcomes[0].specific_benefit_count = 1
   await rebindProjectionCompany(root, projection, company_id, reboundDetail, version)
-  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /specific benefit/i)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /specific benefit|verified benefit count/i)
 }))
 
 test('projection verifier accepts official source limitations matching the canonical cell outcome', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
@@ -575,49 +575,125 @@ test('projection evidence IDs are globally unique across company shards', () => 
   assert.throws(() => assertUniqueProjectionEvidenceIds([first, crossKindReplay]), /duplicate canonical evidence ID/)
 })
 
-test('Node verifier independently derives specific benefit counts from eligible bound records', () => {
-  const reference = {
-    reference_id: 'reference::record-1', category_id: 'leave', source_id: 'source::reference',
-    publication_eligibility: 'reference_only',
-  }
-  const community = {
-    community_report_id: 'community::record-1', category_id: 'health', source_id: 'source::community',
-    publication_eligibility: 'eligible',
-  }
-  const listing = {
-    company_id: 'KR-CRN-0000000000001',
-    category_outcomes: [
-      { category_id: 'leave', state: 'reference', specific_benefit_count: 1 },
-      { category_id: 'health', state: 'community_report', specific_benefit_count: 1 },
-      { category_id: 'family', state: 'official_verified', specific_benefit_count: 0 },
-      { category_id: 'growth', state: 'no_public_info', specific_benefit_count: 0 },
-    ],
-  }
-  const detail = {
-    references: [reference, structuredClone(reference)],
-    community_reports: [community],
-    sources: [
-      { source_id: 'source::reference', publication_eligibility: 'reference_only' },
-      { source_id: 'source::community', publication_eligibility: 'eligible' },
-    ],
-  }
-  assert.doesNotThrow(() => assertSpecificBenefitInventory(listing, detail))
+const canonicalObject = (value) => Array.isArray(value) ? value.map(canonicalObject) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalObject(value[key])]))
+  : value
+const canonicalBytes = (value) => JSON.stringify(canonicalObject(value))
+const normalizedPropositionText = (value) => {
+  const tokens = value.split(/[\u0009-\u000d\u0020]+/u).filter(Boolean)
+  return tokens.join(' ').replace(/[A-Z]/g, (character) => String.fromCharCode(character.charCodeAt(0) + 32))
+}
+const utf8Compare = (left, right) => Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'))
 
-  const mutations = [
-    ['inflated count', (nextListing) => { nextListing.category_outcomes[0].specific_benefit_count = 2 }],
-    ['official-only count', (nextListing) => { nextListing.category_outcomes[2].specific_benefit_count = 1 }],
-    ['removed record', (_nextListing, nextDetail) => { nextDetail.references = [] }],
-    ['cross-category record replay', (_nextListing, nextDetail) => { nextDetail.references[0].category_id = 'health'; nextDetail.references[1].category_id = 'health' }],
-    ['ineligible record', (_nextListing, nextDetail) => { nextDetail.references[0].publication_eligibility = 'ineligible'; nextDetail.references[1].publication_eligibility = 'ineligible' }],
-    ['ineligible bound source', (_nextListing, nextDetail) => { nextDetail.sources[0].publication_eligibility = 'ineligible' }],
-    ['missing or rebound source', (_nextListing, nextDetail) => { nextDetail.sources[0].source_id = 'source::rebound' }],
-  ]
-  for (const [name, mutate] of mutations) {
-    const nextListing = structuredClone(listing)
-    const nextDetail = structuredClone(detail)
-    mutate(nextListing, nextDetail)
-    assert.throws(() => assertSpecificBenefitInventory(nextListing, nextDetail), /specific benefit inventory/, name)
+function reviewedBenefitFixture({
+  company_id = 'KR-CRN-0000000000001',
+  evidence_id = 'reference::record-1',
+  title = '  Paid   Leave ',
+  description = 'Employees receive PAID leave.',
+  scope = { countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: ['Full Time'], family_members: [], conditions: [] },
+} = {}) {
+  const reviewBinding = { reviewer_receipt_sha256: 'a'.repeat(64), reviewed_candidate_sha256: '', reviewed_at: '2026-11-06T00:00:00Z' }
+  const benefit = {
+    benefit_id: '', proposition_sha256: '', company_id, primary_category_id: 'leave', title, description, scope,
+    currentness: 'current', currentness_checked_at: '2026-11-05T00:00:00Z', conflict_status: 'none', evidence_ids: [evidence_id],
+    review: { status: 'independently_reviewed', ...reviewBinding },
   }
+  const proposition = {
+    company_id,
+    title: normalizedPropositionText(benefit.title),
+    description: normalizedPropositionText(benefit.description),
+    scope: Object.fromEntries(Object.entries(benefit.scope).map(([key, values]) => [key, values.map(normalizedPropositionText).sort(utf8Compare)])),
+    currentness: benefit.currentness,
+    currentness_checked_at: benefit.currentness_checked_at,
+    conflict_status: benefit.conflict_status,
+  }
+  benefit.proposition_sha256 = createHash('sha256').update(canonicalBytes(proposition)).digest('hex')
+  benefit.benefit_id = `benefit::${benefit.proposition_sha256}`
+  const candidate = [{ ...benefit }]
+  delete candidate[0].review
+  reviewBinding.reviewed_candidate_sha256 = createHash('sha256').update(canonicalBytes(candidate)).digest('hex')
+  benefit.review.reviewed_candidate_sha256 = reviewBinding.reviewed_candidate_sha256
+  const detail = {
+    company: { company_id }, verified_benefits: [benefit], verified_benefit_review_binding: reviewBinding,
+    official_claims: [], community_reports: [],
+    references: [{ reference_id: evidence_id, company_id, category_id: 'leave' }],
+  }
+  const listing = { company_id, category_outcomes: categories.map((category_id) => ({ category_id, specific_benefit_count: category_id === 'leave' ? 1 : 0 })) }
+  return { listing, detail }
+}
+
+test('full projection verification accepts approved review fields only at verified-benefit paths', () => projectionFixture(async ({ root, projection, company_id, detail, version, baseById, baseDetailById }) => {
+  const reviewed = reviewedBenefitFixture({ company_id, evidence_id: detail.references[0].reference_id })
+  const rebound = structuredClone(detail)
+  rebound.verified_benefits = reviewed.detail.verified_benefits
+  rebound.verified_benefit_review_binding = reviewed.detail.verified_benefit_review_binding
+  rebound.category_outcomes[0].specific_benefit_count = 1
+  await rebindProjectionDetailAndListing(root, projection, company_id, rebound, version)
+  projection.verified_proposition_count = 1
+  await assert.doesNotReject(verifyApprovedV2Projection(root, projection, baseById, baseDetailById))
+
+  rebound.references[0].reviewed_at = '2026-11-06T00:00:00Z'
+  await rebindProjectionDetailAndListing(root, projection, company_id, rebound, version)
+  await assert.rejects(verifyApprovedV2Projection(root, projection, baseById, baseDetailById), /internal review/i)
+}))
+
+test('Node verifier recomputes canonical proposition and reviewed candidate hashes', () => {
+  const { listing, detail } = reviewedBenefitFixture()
+  assert.doesNotThrow(() => assertVerifiedBenefitInventory(listing, detail, new Set()))
+
+  const contentMutation = structuredClone(detail)
+  contentMutation.verified_benefits[0].description = 'Mutated content'
+  assert.throws(() => assertVerifiedBenefitInventory(listing, contentMutation, new Set()), /proposition.*hash|fingerprint/i)
+
+  const reviewMutation = structuredClone(detail)
+  reviewMutation.verified_benefit_review_binding.reviewed_candidate_sha256 = 'b'.repeat(64)
+  reviewMutation.verified_benefits[0].review.reviewed_candidate_sha256 = 'b'.repeat(64)
+  assert.throws(() => assertVerifiedBenefitInventory(listing, reviewMutation, new Set()), /candidate.*hash/i)
+})
+
+test('Node verifier uses ASCII-only normalization and UTF-8 byte ordering', () => {
+  const fixture = reviewedBenefitFixture({
+    title: '\tStraße\u0085STRASSE\ufeffA\u001cB\r',
+    description: 'ABC  복지 \u{1f600}',
+    scope: {
+      countries: ['KR'], legal_entities: ['Test Co'], roles: [], employment_types: [], family_members: [],
+      conditions: ['\u{10000}', '\ue000', 'e\u0301', 'é', '한국', 'Straße', 'STRASSE', '\u0085', '\ufeff', '\u001c'],
+    },
+  })
+  assert.doesNotThrow(() => assertVerifiedBenefitInventory(fixture.listing, fixture.detail, new Set()))
+})
+
+test('Node verifier explicitly rejects unpaired surrogates before hashing', () => {
+  const { listing, detail } = reviewedBenefitFixture()
+  detail.verified_benefits[0].title = 'bad\ud800text'
+  assert.throws(() => assertVerifiedBenefitInventory(listing, detail, new Set()), /surrogate/i)
+})
+
+test('specific benefit counts derive only from verified propositions, never raw evidence', () => {
+  const { listing, detail } = reviewedBenefitFixture()
+  const evidenceOnly = structuredClone(detail)
+  evidenceOnly.verified_benefits = []
+  delete evidenceOnly.verified_benefit_review_binding
+  assert.throws(() => assertSpecificBenefitInventory(listing, evidenceOnly), /specific benefit inventory/i)
+  const zeroListing = structuredClone(listing)
+  zeroListing.category_outcomes.forEach((outcome) => { outcome.specific_benefit_count = 0 })
+  assert.doesNotThrow(() => assertSpecificBenefitInventory(zeroListing, evidenceOnly))
+})
+
+test('Node verifier rejects cross-category replay and company/evidence mismatch', () => {
+  const { listing, detail } = reviewedBenefitFixture()
+  const replay = reviewedBenefitFixture()
+  replay.detail.verified_benefits[0].primary_category_id = 'health'
+  const seen = new Set()
+  assert.doesNotThrow(() => assertVerifiedBenefitInventory(listing, detail, seen))
+  assert.throws(() => assertVerifiedBenefitInventory(replay.listing, replay.detail, seen), /duplicate.*proposition|replay/i)
+
+  const wrongCompany = structuredClone(detail)
+  wrongCompany.verified_benefits[0].company_id = 'KR-CRN-0000000000002'
+  assert.throws(() => assertVerifiedBenefitInventory(listing, wrongCompany, new Set()), /company.*binding/i)
+  const wrongEvidence = structuredClone(detail)
+  wrongEvidence.references[0].category_id = 'health'
+  assert.throws(() => assertVerifiedBenefitInventory(listing, wrongEvidence, new Set()), /evidence.*binding/i)
 })
 
 test('projection verifier rejects a cross-company reference ID replay after descriptor rebinding', () => projectionFixture(async ({ root, projection, version, baseById, baseDetailById }) => {

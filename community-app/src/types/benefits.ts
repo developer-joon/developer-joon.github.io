@@ -7,15 +7,16 @@ export const categoryLabels: Record<Category, string> = {
 }
 export const outcomeStatuses = ['confirmed', 'bounded', 'insufficient_evidence'] as const
 export const outcomeLabels = { confirmed: '확인됨', bounded: '범위 제한 확인', insufficient_evidence: '근거 부족' } as const
-export const researchStates = ['official_verified', 'reference', 'community_report', 'no_public_info'] as const
+export const researchStates = ['official_verified', 'reference', 'community_report', 'no_public_info', 'not_researched', 'research_incomplete', 'source_access_failed', 'conflicting_evidence'] as const
 export type ResearchState = (typeof researchStates)[number]
 export const researchStateLabels: Record<ResearchState, string> = {
-  official_verified: '공식 확인', reference: '참고 정보', community_report: '커뮤니티 보고', no_public_info: '공개 정보 없음',
+  official_verified: '공식 자료', reference: '참고 정보', community_report: '커뮤니티 보고', no_public_info: '게시 가능한 공개 근거 미확인',
+  not_researched: '미조사', research_incomplete: '조사 미완료', source_access_failed: '출처 접근 실패', conflicting_evidence: '근거 상충',
 }
 export const sourceTiers = ['official_government', 'company_recruiting_major_media', 'other_public_web', 'community_employee_review', 'user_submission'] as const
 export type SourceTier = (typeof sourceTiers)[number]
 export const sourceTierLabels: Record<SourceTier, string> = {
-  official_government: '공식 확인', company_recruiting_major_media: '채용·언론 참고', other_public_web: '기타 공개자료',
+  official_government: '공식 자료', company_recruiting_major_media: '채용·언론 참고', other_public_web: '기타 공개자료',
   community_employee_review: '커뮤니티 보고', user_submission: '커뮤니티 보고',
 }
 
@@ -77,7 +78,21 @@ const noPublicInfoOutcomeSchema = z.strictObject({
   const limitations = [value.scope_status !== 'exact_entity' && 'scope_limit', 'currentness_limit'].filter(Boolean)
   if (value.assessed_at !== value.last_checked_at || value.assessed_at !== value.searched_at || JSON.stringify(value.limitation_codes) !== JSON.stringify(limitations)) ctx.addIssue({ code: 'custom', message: '근거 부족 파생 메타데이터 불일치' })
 })
-const explicitCellOutcomeSchema = z.union([officialOutcomeSchema, referenceOutcomeSchema, communityOutcomeSchema, noPublicInfoOutcomeSchema])
+const unresolvedStateSchema = z.enum(['not_researched', 'research_incomplete', 'source_access_failed', 'conflicting_evidence'])
+const unresolvedOutcomeSchema = z.strictObject({
+  ...explicitCellBase, state: unresolvedStateSchema, reliability: z.enum(['none', 'low', 'medium', 'high']),
+  publication_eligibility: z.literal('discovery_only'),
+  official_claim_ids: z.array(z.string()).length(0), reference_ids: z.array(z.string()).length(0), community_report_ids: z.array(z.string()).length(0),
+  official_claim_count: z.literal(0), reference_count: z.literal(0), community_report_count: z.literal(0), specific_benefit_count: z.literal(0),
+  kind: z.literal('insufficient_evidence'), status: z.literal('insufficient_evidence'), claim_count: z.literal(0), benefit_type_count: z.literal(0), nonabsence_notice: insufficientNotice,
+  reason_code: unresolvedStateSchema, searched_at: z.iso.datetime().nullable(),
+}).superRefine((value, ctx) => {
+  const limitations = [value.scope_status !== 'exact_entity' && 'scope_limit', value.currentness !== 'current' && 'currentness_limit', value.conflict_status !== 'none' && 'conflicting_evidence'].filter(Boolean)
+  if (value.state !== value.reason_code || value.assessed_at !== value.last_checked_at || value.searched_at !== (value.state === 'not_researched' ? null : value.assessed_at) ||
+      (value.state === 'not_researched' && (value.searched_source_ids.length !== 0 || value.source_tiers.length !== 0 || value.conflict_status !== 'none')) ||
+      JSON.stringify(value.limitation_codes) !== JSON.stringify(limitations)) ctx.addIssue({ code: 'custom', message: '미해결 cell 파생 메타데이터 불일치' })
+})
+const explicitCellOutcomeSchema = z.union([officialOutcomeSchema, referenceOutcomeSchema, communityOutcomeSchema, noPublicInfoOutcomeSchema, unresolvedOutcomeSchema])
 export const vNextCategoryOutcomeSchema = explicitCellOutcomeSchema
 export const compatibleCategoryOutcomeSchema = z.union([categoryOutcomeSchema, explicitCellOutcomeSchema])
 export type CategoryOutcome = z.infer<typeof compatibleCategoryOutcomeSchema>
@@ -86,19 +101,20 @@ export type ResearchedCategoryOutcome = z.infer<typeof explicitCellOutcomeSchema
 export function isResearchedOutcome(outcome: CategoryOutcome): outcome is ResearchedCategoryOutcome { return 'state' in outcome }
 export function hasOutcomeScope(outcome: CategoryOutcome): outcome is CategoryOutcome & { scope: z.infer<typeof categoryScopeSchema> } { return 'scope' in outcome }
 export function researchStateFor(outcome: CategoryOutcome): ResearchState { return isResearchedOutcome(outcome) ? outcome.state : outcome.kind === 'evidenced' ? 'official_verified' : 'no_public_info' }
-export const researchStatePrecedence: Record<ResearchState, number> = { official_verified: 0, reference: 1, community_report: 2, no_public_info: 3 }
+export const researchStatePrecedence: Record<ResearchState, number> = { official_verified: 0, reference: 1, community_report: 2, no_public_info: 3, not_researched: 4, research_incomplete: 4, source_access_failed: 4, conflicting_evidence: 4 }
 export type SpecificContentStatus = 'specific_content' | 'evidence_only' | 'no_public_info' | 'projection_pending'
 export function specificContentStatus(outcome?: ResearchedCategoryOutcome): SpecificContentStatus {
   if (!outcome) return 'projection_pending'
   if (outcome.state === 'no_public_info') return 'no_public_info'
+  if (['not_researched', 'research_incomplete', 'source_access_failed', 'conflicting_evidence'].includes(outcome.state)) return 'projection_pending'
   return outcome.specific_benefit_count > 0 ? 'specific_content' : 'evidence_only'
 }
 export function specificContentLabel(outcome?: ResearchedCategoryOutcome) {
   const status = specificContentStatus(outcome)
   if (status === 'specific_content') return `혜택 내용 확인 ${outcome!.specific_benefit_count}건`
   if (status === 'evidence_only') return '구체 혜택 확인 필요'
-  if (status === 'no_public_info') return '공개 정보 없음'
-  return 'v2 승인 조사 미적용'
+  if (status === 'no_public_info') return '게시 가능한 공개 근거 미확인'
+  return outcome ? '근거 부족 · 혜택 확인 안 됨' : '추가 조사 미적용'
 }
 export const reliabilityLabels = { high: '신뢰도 높음', medium: '신뢰도 보통', low: '신뢰도 낮음', none: '신뢰도 없음' } as const
 export const currentnessLabels = { current: '현재 정보', historical: '과거 정보', unknown: '현재성 미확인' } as const
@@ -156,17 +172,68 @@ const sourceEvidenceSchema = z.strictObject({
 export const claimSchema = z.strictObject({ claim_id: z.string().min(1), benefit_type_ids: z.array(z.string().min(1)).min(1), category_ids: z.array(z.enum(categories)).min(1), benefit_name: z.string().min(1), detail: z.string().min(1), research_status: z.enum(['confirmed','limited','past','name_only','conflict']), current_validity: z.enum(['current','undated_current','historical']), evidence_grade: z.enum(['A','B']), application_scope: z.strictObject({ countries: z.array(z.string()), legal_entities: z.array(z.string()), roles: z.array(z.string()), employment_types: z.array(z.string()), tenure_condition: z.string() }), limitation_codes: z.array(z.string()), publication_date: z.iso.date().nullable(), checked_at: z.iso.datetime(), source_evidence: z.array(sourceEvidenceSchema).min(1) })
 export type Claim = z.infer<typeof claimSchema>
 const evidenceScopeSchema = z.strictObject({ countries: z.array(z.string()), legal_entities: z.array(z.string()), roles: z.array(z.string()), employment_types: z.array(z.string()) })
+const verifiedBenefitScopeSchema = evidenceScopeSchema.extend({ family_members: z.array(z.string()), conditions: z.array(z.string()) })
 const officialClaimV2Schema = z.strictObject({ claim_id: z.string().regex(/^official::[a-f0-9]{64}$/), cell_id: z.string(), company_id: companyId, category_id: z.enum(categories), jurisdiction: z.string().length(2), source_ids: uniqueStringArray.min(1), source_tier: z.literal('official_government'), scope_status: z.literal('exact_entity'), scope: evidenceScopeSchema, conflict_status: z.enum(['none', 'disclosed', 'contradictory']), publication_eligibility: z.literal('eligible') })
-const nonblankStatement = z.string().refine((value) => value.trim().length > 0, '구체 혜택 문장 누락')
+// Match the canonical ASCII whitespace set without a control-character regex.
+const nonblankStatement = z.string().refine((value) => [...value].some((character) => {
+  const code = character.charCodeAt(0)
+  return code !== 32 && (code < 9 || code > 13)
+}), '구체 혜택 문장 누락')
 const referenceV2Schema = z.strictObject({ reference_id: z.string().min(1), cell_id: z.string(), company_id: companyId, category_id: z.enum(categories), source_id: z.string().min(1), source_tier: z.enum(['official_government', 'company_recruiting_major_media', 'other_public_web']), statement: nonblankStatement, supporting_quote: z.string().min(1), source_locator: z.string().url(), reliability: z.enum(['medium', 'low']), currentness: z.enum(['current', 'historical', 'unknown']), scope: evidenceScopeSchema.extend({ status: z.enum(['exact_entity', 'bounded_entity', 'group_only', 'unresolved']) }), conflict_status: z.enum(['none', 'disclosed', 'contradictory']), publication_eligibility: z.enum(['eligible', 'reference_only', 'ineligible']), checked_at: z.iso.datetime() })
 const communityV2Schema = z.strictObject({ community_report_id: z.string().min(1), cell_id: z.string(), company_id: companyId, category_id: z.enum(categories), source_id: z.string().min(1), source_tier: z.enum(['community_employee_review', 'user_submission']), statement: nonblankStatement, reliability: z.literal('low'), currentness: z.enum(['current', 'historical', 'unknown']), scope_status: z.enum(['exact_entity', 'group_only', 'unresolved']), scope: evidenceScopeSchema, conflict_status: z.enum(['none', 'disclosed', 'contradictory']), frozen_snapshot: z.strictObject({ locator: z.string().url(), content_sha256: hash, frozen_at: z.iso.datetime() }), publication_eligibility: z.literal('eligible') })
+export const verifiedBenefitSchema = z.strictObject({
+  benefit_id: z.string().regex(/^benefit::[a-f0-9]{64}$/), proposition_sha256: hash, company_id: companyId, primary_category_id: z.enum(categories),
+  title: nonblankStatement, description: nonblankStatement, scope: verifiedBenefitScopeSchema,
+  currentness: z.enum(['current', 'historical', 'unknown']), currentness_checked_at: z.iso.datetime(), conflict_status: z.enum(['none', 'disclosed', 'contradictory']),
+  evidence_ids: uniqueStringArray.min(1),
+  review: z.strictObject({ status: z.literal('independently_reviewed'), reviewer_receipt_sha256: hash, reviewed_candidate_sha256: hash, reviewed_at: z.iso.datetime() }),
+})
+const verifiedBenefitReviewBindingSchema = z.strictObject({ reviewer_receipt_sha256: hash, reviewed_candidate_sha256: hash, reviewed_at: z.iso.datetime() })
 const legacyPublicSourceSchema = z.strictObject({ source_id: z.string().min(1), title: z.string().min(1), owner: z.string().min(1), source_type: z.string().min(1), jurisdiction: z.string().min(1), url: safePublicSourceUrlSchema, locator: z.string().optional(), publication_date: z.iso.date().nullable().optional(), checked_at: z.iso.datetime(), evidence_eligibility: z.enum(['A', 'B']) })
 const v2PublicSourceSchema = z.strictObject({ source_id: z.string().min(1), source_tier: z.enum(['official_government', 'company_recruiting_major_media', 'other_public_web', 'community_employee_review', 'user_submission']), title: z.string().min(1), url: safePublicSourceUrlSchema, retrieved_at: z.iso.datetime(), content_sha256: hash, reliability: z.enum(['high', 'medium', 'low', 'unrated']), currentness: z.enum(['current', 'historical', 'unknown']), scope_status: z.enum(['exact_entity', 'bounded_entity', 'group_only', 'unresolved']), scope: evidenceScopeSchema, conflict_status: z.enum(['none', 'disclosed', 'contradictory']), publication_eligibility: z.enum(['eligible', 'reference_only', 'discovery_only', 'ineligible']) })
 export const sourcesDocumentSchema = z.strictObject({ schema_version: z.literal(1), artifact_kind: z.literal('company_benefits_sources'), data_version: version, sources: z.array(z.union([legacyPublicSourceSchema, v2PublicSourceSchema])) }).superRefine((document, ctx) => { const ids = document.sources.map((source) => source.source_id); if (ids.length !== new Set(ids).size) ctx.addIssue({ code: 'custom', message: 'source inventory ID 중복' }) })
 export type SourcesDocument = z.infer<typeof sourcesDocumentSchema>
 const unknownValueSchema = z.union([z.string().min(1), z.strictObject({ kind: z.literal('unknown'), reason: z.string().min(1) })])
 export const detailCompanySchema = z.strictObject({ company_id: companyId, population_sequence: z.number().int().min(1).max(2000), legal_name: z.string().min(1), scope: z.enum(['domestic','international']), jurisdiction: z.enum(['KR','US']), registry_id: z.string().min(1), selected_reporting_legal_entity: z.string().min(1), incorporation_country: z.string().length(2), registered_head_office_country: z.string().length(2), financial_consolidation_parent: unknownValueSchema, ultimate_parent: unknownValueSchema, benefit_policy_owner: unknownValueSchema, sector: z.enum(['financial','non_financial']), employment_evidence_scope: z.string(), employment_boundary_note: z.string() })
-export const detailSchema = z.strictObject({ schema_version: z.literal(1), artifact_kind: z.literal('company_detail'), artifact_protocol: z.enum(['v1', 'vNext']).optional(), data_version: version, taxonomy_version: z.literal('benefit-taxonomy-v1'), company: detailCompanySchema, category_outcomes: z.array(compatibleCategoryOutcomeSchema).length(10), claims: z.array(claimSchema), official_claims: z.array(officialClaimV2Schema).optional(), references: z.array(referenceV2Schema).optional(), community_reports: z.array(communityV2Schema).optional(), sources: z.array(z.union([legacyPublicSourceSchema, v2PublicSourceSchema])).optional() }).superRefine((detail, ctx) => { const vNextFields = [detail.official_claims, detail.references, detail.community_reports, detail.sources]; if (detail.artifact_protocol === 'vNext' && (vNextFields.some((value) => value === undefined) || detail.category_outcomes.some((outcome) => !('state' in outcome)))) ctx.addIssue({ code: 'custom', message: 'vNext 상세 evidence inventory 불완전' }); if (detail.artifact_protocol !== 'vNext' && (vNextFields.some((value) => value !== undefined) || detail.category_outcomes.some((outcome) => 'state' in outcome))) ctx.addIssue({ code: 'custom', message: 'v1 상세에 vNext projection 포함' }); if (detail.artifact_protocol === 'vNext') { const evidenceRecords = [...(detail.official_claims ?? []), ...(detail.references ?? []), ...(detail.community_reports ?? [])]; const evidenceIds = evidenceRecords.map((record) => 'claim_id' in record ? record.claim_id : 'reference_id' in record ? record.reference_id : record.community_report_id); if (evidenceIds.length !== new Set(evidenceIds).size) ctx.addIssue({ code: 'custom', message: '상세 evidence inventory ID 중복' }); if (evidenceRecords.some((record) => record.company_id !== detail.company.company_id || record.cell_id !== canonicalCellId(detail.company.company_id, record.category_id))) ctx.addIssue({ code: 'custom', message: '상세 evidence company/cell binding 불일치' }); const sourceIds = (detail.sources ?? []).map((source) => source.source_id); const required = detail.category_outcomes.flatMap((outcome) => 'searched_source_ids' in outcome ? outcome.searched_source_ids : []).concat(detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id)), (detail.official_claims ?? []).flatMap((claim) => claim.source_ids), (detail.references ?? []).map((record) => record.source_id), (detail.community_reports ?? []).map((record) => record.source_id)); const requiredSet = new Set(required); if (sourceIds.length !== new Set(sourceIds).size || sourceIds.length !== requiredSet.size || sourceIds.some((sourceId) => !requiredSet.has(sourceId))) ctx.addIssue({ code: 'custom', message: '상세 source inventory closure 불일치' }) } }).superRefine((detail, ctx) => {
+export const detailSchema = z.strictObject({
+  schema_version: z.literal(1), artifact_kind: z.literal('company_detail'), artifact_protocol: z.enum(['v1', 'vNext']).optional(), data_version: version, taxonomy_version: z.literal('benefit-taxonomy-v1'),
+  company: detailCompanySchema, category_outcomes: z.array(compatibleCategoryOutcomeSchema).length(10), claims: z.array(claimSchema),
+  official_claims: z.array(officialClaimV2Schema).optional(), references: z.array(referenceV2Schema).optional(), community_reports: z.array(communityV2Schema).optional(),
+  verified_benefits: z.array(verifiedBenefitSchema).optional(), verified_benefit_review_binding: verifiedBenefitReviewBindingSchema.optional(), sources: z.array(z.union([legacyPublicSourceSchema, v2PublicSourceSchema])).optional(),
+}).superRefine((detail, ctx) => {
+  const vNextFields = [detail.official_claims, detail.references, detail.community_reports, detail.sources]
+  if (detail.artifact_protocol === 'vNext' && (vNextFields.some((value) => value === undefined) || detail.category_outcomes.some((outcome) => !('state' in outcome)))) ctx.addIssue({ code: 'custom', message: 'vNext 상세 evidence inventory 불완전' })
+  if (detail.artifact_protocol !== 'vNext' && (vNextFields.some((value) => value !== undefined) || detail.verified_benefits !== undefined || detail.verified_benefit_review_binding !== undefined || detail.category_outcomes.some((outcome) => 'state' in outcome))) ctx.addIssue({ code: 'custom', message: 'v1 상세에 vNext projection 포함' })
+  if (detail.artifact_protocol === 'vNext') {
+    const evidenceRecords = [...(detail.official_claims ?? []), ...(detail.references ?? []), ...(detail.community_reports ?? [])]
+    const evidenceIds = evidenceRecords.map((record) => 'claim_id' in record ? record.claim_id : 'reference_id' in record ? record.reference_id : record.community_report_id)
+    if (evidenceIds.length !== new Set(evidenceIds).size) ctx.addIssue({ code: 'custom', message: '상세 evidence inventory ID 중복' })
+    if (evidenceRecords.some((record) => record.company_id !== detail.company.company_id || record.cell_id !== canonicalCellId(detail.company.company_id, record.category_id))) ctx.addIssue({ code: 'custom', message: '상세 evidence company/cell binding 불일치' })
+    const evidenceById = new Map<string, typeof evidenceRecords>()
+    evidenceRecords.forEach((record, index) => { const id = evidenceIds[index]; evidenceById.set(id, [...(evidenceById.get(id) ?? []), record]) })
+    const benefits = detail.verified_benefits ?? []
+    const reviewBinding = detail.verified_benefit_review_binding
+    if ((benefits.length > 0) !== (reviewBinding !== undefined)) ctx.addIssue({ code: 'custom', message: 'verified benefit review binding presence 불일치' })
+    const benefitIds = benefits.map((benefit) => benefit.benefit_id)
+    if (benefitIds.length !== new Set(benefitIds).size) ctx.addIssue({ code: 'custom', message: 'verified benefit ID 중복' })
+    const propositionHashes = benefits.map((benefit) => benefit.proposition_sha256)
+    if (propositionHashes.length !== new Set(propositionHashes).size) ctx.addIssue({ code: 'custom', message: 'verified benefit proposition SHA-256 중복' })
+    for (const benefit of benefits) {
+      if (benefit.benefit_id !== `benefit::${benefit.proposition_sha256}`) ctx.addIssue({ code: 'custom', message: `verified benefit ID/fingerprint 불일치: ${benefit.benefit_id}` })
+      if (reviewBinding && (benefit.review.reviewer_receipt_sha256 !== reviewBinding.reviewer_receipt_sha256 || benefit.review.reviewed_candidate_sha256 !== reviewBinding.reviewed_candidate_sha256 || benefit.review.reviewed_at !== reviewBinding.reviewed_at)) ctx.addIssue({ code: 'custom', message: `verified benefit review binding 불일치: ${benefit.benefit_id}` })
+      if (benefit.company_id !== detail.company.company_id) ctx.addIssue({ code: 'custom', message: `verified benefit company binding 불일치: ${benefit.benefit_id}` })
+      for (const evidenceId of benefit.evidence_ids) {
+        const matches = evidenceById.get(evidenceId) ?? []
+        if (matches.length !== 1 || matches[0].company_id !== benefit.company_id || matches[0].category_id !== benefit.primary_category_id) ctx.addIssue({ code: 'custom', message: `verified benefit evidence binding 불일치: ${benefit.benefit_id}` })
+      }
+    }
+    for (const outcome of detail.category_outcomes) if ('specific_benefit_count' in outcome && outcome.specific_benefit_count !== benefits.filter((benefit) => benefit.primary_category_id === outcome.category_id).length) ctx.addIssue({ code: 'custom', message: `verified benefit count 불일치: ${outcome.category_id}` })
+    const sourceIds = (detail.sources ?? []).map((source) => source.source_id)
+    const required = detail.category_outcomes.flatMap((outcome) => 'searched_source_ids' in outcome ? outcome.searched_source_ids : []).concat(detail.claims.flatMap((claim) => claim.source_evidence.map((evidence) => evidence.source_id)), (detail.official_claims ?? []).flatMap((claim) => claim.source_ids), (detail.references ?? []).map((record) => record.source_id), (detail.community_reports ?? []).map((record) => record.source_id))
+    const requiredSet = new Set(required)
+    if (sourceIds.length !== new Set(sourceIds).size || sourceIds.length !== requiredSet.size || sourceIds.some((sourceId) => !requiredSet.has(sourceId))) ctx.addIssue({ code: 'custom', message: '상세 source inventory closure 불일치' })
+  }
+}).superRefine((detail, ctx) => {
   if (detail.artifact_protocol !== 'vNext') return
   const sources = new Map((detail.sources ?? []).map((source) => [source.source_id, source]))
   const eligibility = (sourceId: string) => { const source = sources.get(sourceId); return source && 'publication_eligibility' in source ? source.publication_eligibility : undefined }
@@ -176,6 +243,11 @@ export const detailSchema = z.strictObject({ schema_version: z.literal(1), artif
 })
 export type Detail = z.infer<typeof detailSchema>
 
+export function verifiedBenefitPropositions(detail: Detail, category: Category) {
+  return (detail.verified_benefits ?? []).filter((benefit) => benefit.primary_category_id === category)
+}
+
+// Temporary compatibility wrapper for Task 3 UI migration; raw evidence is not counted.
 export function specificBenefitRecords(detail: Detail, category: Category) {
   const sourceEligibility = new Map((detail.sources ?? []).flatMap((source) => 'publication_eligibility' in source ? [[source.source_id, source.publication_eligibility] as const] : []))
   const references = (detail.references ?? []).filter((record) => record.category_id === category && ['eligible', 'reference_only'].includes(record.publication_eligibility) && ['eligible', 'reference_only'].includes(sourceEligibility.get(record.source_id) ?? ''))
@@ -197,16 +269,18 @@ export function assertCompanyDetailIdentityProjection(base: Detail['company'], p
 
 export const methodologySchema = z.strictObject({ schema_version: z.literal(1), artifact_kind: z.literal('company_benefits_methodology'), data_version: version, taxonomy_version: z.literal('benefit-taxonomy-v1'), title: z.string().min(1), paragraphs: z.array(z.string().min(1)).min(1) })
 
-const stateCountsSchema = z.strictObject({ official_verified: z.number().int().nonnegative(), reference: z.number().int().nonnegative(), community_report: z.number().int().nonnegative(), no_public_info: z.number().int().nonnegative() })
+const stateCountsSchema = z.strictObject({ official_verified: z.number().int().nonnegative(), reference: z.number().int().nonnegative(), community_report: z.number().int().nonnegative(), no_public_info: z.number().int().nonnegative(), not_researched: z.number().int().nonnegative().optional(), research_incomplete: z.number().int().nonnegative().optional(), source_access_failed: z.number().int().nonnegative().optional(), conflicting_evidence: z.number().int().nonnegative().optional() })
 const ledgerHashesSchema = z.strictObject({ 'company-category-cells.jsonl': hash, 'research-attempts.jsonl': hash, 'official-claims-v2.jsonl': hash, 'reference-records.jsonl': hash, 'community-benefit-reports.jsonl': hash, 'sources-v2.jsonl': hash })
 const approvedV2ProjectionSchema = z.strictObject({
-  projection_kind: z.literal('approved_v2_additive'), projection_status: z.literal('in_progress'), base_data_version: version, base_manifest_sha256: hash, data_version: version,
+  projection_kind: z.literal('approved_v2_additive'), projection_status: z.enum(['in_progress', 'research_incomplete']), revalidation_status: z.literal('research_incomplete').optional(), verified_proposition_count: z.number().int().nonnegative().optional(), base_data_version: version, base_manifest_sha256: hash, data_version: version,
   approved_batch_count: z.number().int().min(1).max(79), total_batch_count: z.literal(80), projected_company_count: z.number().int().positive().max(1975), total_company_count: z.literal(2000),
   cell_count: z.number().int().positive().max(19750), cell_state_counts: stateCountsSchema, listing_chunk_size: z.literal(50), listing_chunk_count: z.number().int().positive().max(40), ledger_sha256: ledgerHashesSchema,
   taxonomy: descriptorSchema, sources: descriptorSchema, methodology: descriptorSchema,
   listing_chunks: z.array(descriptorSchema.extend({ chunk_index: z.number().int().positive(), first_sequence: z.number().int().positive(), last_sequence: z.number().int().max(2000) })),
   company_shards: z.record(companyId, descriptorSchema.extend({ company_id: companyId })),
 }).superRefine((projection, ctx) => {
+  const revalidating = projection.projection_status === 'research_incomplete'
+  if (revalidating ? projection.revalidation_status !== 'research_incomplete' || projection.verified_proposition_count === undefined : projection.revalidation_status !== undefined || projection.verified_proposition_count !== undefined) ctx.addIssue({ code: 'custom', message: 'projection 재검증 메타데이터 불일치' })
   const prefix = `community/data/company-benefits/${projection.data_version}/`
   const descriptors = [projection.taxonomy, projection.sources, projection.methodology, ...projection.listing_chunks, ...Object.values(projection.company_shards)]
   if (projection.projected_company_count !== projection.approved_batch_count * 25 || projection.cell_count !== projection.projected_company_count * categories.length || Object.values(projection.cell_state_counts).reduce((sum, count) => sum + count, 0) !== projection.cell_count) ctx.addIssue({ code: 'custom', message: 'projection 파생 개수 불일치' })
@@ -255,12 +329,12 @@ export function assertListingOutcomes(companies: CompanyListing[]) {
 }
 export function assertExplicitCellInventory(companies: CompanyListing[], manifest: Manifest) {
   if (manifest.artifact_protocol === 'v1') return
-  const counts = { official_verified: 0, reference: 0, community_report: 0, no_public_info: 0 }
+  const counts = { official_verified: 0, reference: 0, community_report: 0, no_public_info: 0, not_researched: 0, research_incomplete: 0, source_access_failed: 0, conflicting_evidence: 0 }
   for (const company of companies) for (const outcome of company.category_outcomes) {
     if (!('state' in outcome)) throw new Error('vNext artifact에 legacy category outcome이 포함됨')
     counts[outcome.state as keyof typeof counts]++
   }
-  if (companies.length * categories.length !== manifest.cell_count || JSON.stringify(counts) !== JSON.stringify(manifest.cell_state_counts)) throw new Error('명시적 cell inventory 불일치')
+  if (companies.length * categories.length !== manifest.cell_count || researchStates.some((state) => counts[state] !== (manifest.cell_state_counts?.[state] ?? 0))) throw new Error('명시적 cell inventory 불일치')
 }
 export function assertCompanyDetailEvidence(listing: CompanyListing, detail: Detail) {
   if (listing.company_id !== detail.company.company_id) throw new Error('상세 기업 참조 불일치')
@@ -301,7 +375,7 @@ export function assertCompanyDetailEvidence(listing: CompanyListing, detail: Det
       if (claims.length !== listed.claim_count) throw new Error('결과와 claim 개수 불일치')
     }
     if (isResearchedOutcome(listed)) {
-      if (specificBenefitRecords(detail, category).length !== listed.specific_benefit_count) throw new Error('listing/detail specific benefit count mismatch')
+      if (verifiedBenefitPropositions(detail, category).length !== listed.specific_benefit_count) throw new Error('listing/detail specific benefit count mismatch')
       if (listed.official_claim_count !== listed.official_claim_ids.length || listed.reference_count !== listed.reference_ids.length || listed.community_report_count !== listed.community_report_ids.length) throw new Error('결과와 근거 ID 개수 불일치')
       const official = detail.official_claims?.filter((claim) => claim.category_id === category).map((claim) => claim.claim_id) ?? []
       const references = detail.references?.filter((record) => record.category_id === category).map((record) => record.reference_id) ?? []

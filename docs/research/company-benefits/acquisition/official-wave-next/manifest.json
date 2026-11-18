@@ -1,0 +1,58 @@
+{
+  "approved_benefits": 0,
+  "authority": "local_audit_only_not_promotion_or_publication_input",
+  "canonical_input_sha256": {
+    "companies.jsonl": "e5888e3081d8ead3cc67c18d8e8e8007066c1c0de1c68103c59e390be77894ed",
+    "series-batches.jsonl": "51e1ae04cc02584199de65be73e0723b808216ccc93ecea5dfdb0f3a85f95423"
+  },
+  "companies_with_leads": 37,
+  "coverage_sha256": "356fee27a26223218f47b92d0c9f1f7432cacf74ab1d77e91b9325622e83a948",
+  "covered_companies": 75,
+  "deduplication": "Producer rows are not independently deduplicated propositions or approved benefits.",
+  "distinct_approved_benefits": 0,
+  "evidence_level": "research_only",
+  "inventory": {
+    "domestic-07": {
+      "canonical_company_list_sha256": "bbc7368c82fa78b7ef3368cab3643111b9a033b7968a479c003639febc1420b0",
+      "companies_with_leads": 12,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "19a2c15cd6af452d19b93a4bfee176f22764aaf19582862f5840ba6546eac9f0",
+        "manifest.json": "86d1289e75bca636c74bf1f400746b85415bfc9b51ea7562e26331b9eddc2558",
+        "observations.jsonl": "c781f7e9f170a0bf8152d68407b812d743a9108065f60d6e3511ae8b84312d65"
+      },
+      "producer_leads": 132,
+      "research_incomplete_companies": 13
+    },
+    "domestic-08": {
+      "canonical_company_list_sha256": "409c3fda2abc59760d1f0c86a73caceabc726d08511f491e8c22c17dacd72d14",
+      "companies_with_leads": 10,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "102d5f929a277a80b9697a50273f19845ca19c345b99e39f6a0378dda16d0bf2",
+        "manifest.json": "2cbba6ed6577dc918a5680476ba39cc4b83fdf34d7262b7e42372545dd55ee66",
+        "observations.jsonl": "3fe61b336aa185491a3b4d8f2047c7c48b1693661058342dbc54096e89341ea4"
+      },
+      "producer_leads": 110,
+      "research_incomplete_companies": 15
+    },
+    "international-04": {
+      "canonical_company_list_sha256": "f69757654c1663d333c1cca9471dc41c2bc06cbc1352eb0766387434b18d1218",
+      "companies_with_leads": 15,
+      "covered_companies": 25,
+      "input_sha256": {
+        "coverage.jsonl": "b898f92bb87006780ccf4dcdde2b6729318c15753fa591a636cd6c0acff973f1",
+        "manifest.json": "9330cc2d064fca4a5e4d16d30b8b56946f3defb7887eb0b83672bb7cc39e6cd8",
+        "observations.jsonl": "b7233040911aa0a0a8c33f2bca3f63595dbebe99c022699ccc39431b0171743b"
+      },
+      "producer_leads": 32,
+      "research_incomplete_companies": 10
+    }
+  },
+  "leads_sha256": "810c6acfe1420193ac36d25a90a9818537e196b33e3ec2dcda547e57ff84e519",
+  "producer_leads": 274,
+  "research_incomplete_companies": 38,
+  "source_rights_status": "unreviewed",
+  "us_binding_proven_rows": 3,
+  "us_binding_unproven_rows": 29
+}

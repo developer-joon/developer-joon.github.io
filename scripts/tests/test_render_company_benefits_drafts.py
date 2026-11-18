@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from scripts.tests.benefits_test_fixture import FrozenFixture
+from scripts import company_benefits_series as series
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "scripts" / "render-company-benefits-drafts.py"
@@ -30,6 +32,7 @@ class RendererTests(unittest.TestCase):
         self.out = self.root / "out"
         self.fixture = FrozenFixture(self.root)
         self.approved_freeze_anchors = self.fixture.approved_freeze_anchors()
+        (self.root / "verified-benefits.jsonl").write_bytes(b"")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -52,10 +55,98 @@ class RendererTests(unittest.TestCase):
         expected_first = self.fixture.current["domestic"][0]["legal_name"]
         self.assertLess(text.index(expected_first), text.index(self.fixture.current["domestic"][1]["legal_name"]))
 
+    def test_zero_verified_propositions_never_publish_legacy_claim_fields(self):
+        claim = self.fixture.claims[0]
+        claim["benefit_name"] = "LEGACY_BENEFIT_NAME_SENTINEL"
+        claim["detail"] = "LEGACY_DETAIL_SENTINEL"
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        (self.root / "verified-benefits.jsonl").write_bytes(b"")
+        text = self.render().read_text(encoding="utf-8")
+        self.assertNotIn("LEGACY_BENEFIT_NAME_SENTINEL", text)
+        self.assertNotIn("LEGACY_DETAIL_SENTINEL", text)
+        self.assertNotIn("**", text)
+        self.assertIn("게시 가능한 공식 복지 근거를 확보하지 못했습니다", text)
+
+    def _prepare_approved_proposition(self):
+        company_id = self.fixture.current["domestic"][0]["company_id"]
+        self.fixture.claims[0]["detail"] = "LEGACY_DETAIL_SENTINEL"
+        self.fixture.write_jsonl("benefit-claims.jsonl", self.fixture.claims)
+        evidence_id = "official::reviewed"
+        self.fixture.write_jsonl("official-claims-v2.jsonl", [{
+            "claim_id": evidence_id, "company_id": company_id, "category_id": "leave",
+        }])
+        benefit = {
+            "company_id": company_id, "primary_category_id": "leave",
+            "title": "REVIEWED_TITLE", "description": "REVIEWED_DESCRIPTION",
+            "scope": {"countries": ["KR"], "legal_entities": ["Reviewed Entity"],
+                      "roles": [], "employment_types": ["full_time"], "family_members": [], "conditions": []},
+            "currentness": "current", "currentness_checked_at": "2026-10-20T04:00:00Z",
+            "conflict_status": "none", "evidence_ids": [evidence_id],
+        }
+        digest = hashlib.sha256(series._canonical_json_bytes(
+            series._verified_benefit_proposition_payload(benefit))).hexdigest()
+        benefit.update(benefit_id=f"benefit::{digest}", proposition_sha256=digest)
+        candidate_digest = hashlib.sha256(series._canonical_json_bytes([benefit])).hexdigest()
+        benefit["review"] = {"status": "independently_reviewed", "reviewed_at": "2026-10-20T05:00:00Z",
+                             "reviewer_receipt_sha256": "a" * 64, "reviewed_candidate_sha256": candidate_digest}
+        self.fixture.write_jsonl("verified-benefits.jsonl", [benefit])
+        self.fixture.write_jsonl("series-batch-approvals.jsonl", [{
+            "batch_id": "domestic-01", "status": "approved", "approval_version": "1",
+            "package_sha256": "b" * 64, "reviewer_receipt_sha256": "a" * 64,
+            "reviewed_candidate_sha256": candidate_digest,
+        }])
+
+    def test_standalone_rejects_self_hashed_approval_without_external_receipt(self):
+        self._prepare_approved_proposition()
+        # Isolate the renderer ingress: the legacy verifier does not establish
+        # external review bytes for this self-consistent forged approval.
+        verifier = self.renderer.load_verifier()
+        with mock.patch.object(verifier, "verify_workspace", return_value=[]), mock.patch.object(
+            self.renderer, "load_verifier", return_value=verifier,
+        ):
+            with self.assertRaisesRegex(ValueError, "validated package integration"):
+                self.renderer.render_batch(self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29))
+        self.assertFalse(self.out.exists())
+
+    def test_direct_render_rejects_forged_review_status_without_evidence_or_approval(self):
+        self.fixture.write_jsonl("verified-benefits.jsonl", [{
+            "benefit_id": "benefit::forged", "company_id": self.fixture.current["domestic"][0]["company_id"],
+            "title": "FORGED_TITLE", "description": "FORGED_DESCRIPTION",
+            "scope": {"countries": ["KR"], "legal_entities": [], "employment_types": []},
+            "currentness_checked_at": "2026-10-20T04:00:00Z", "evidence_ids": ["absent"],
+            "review": {"status": "independently_reviewed"},
+        }])
+        with self.assertRaisesRegex(ValueError, "verified benefit|review|evidence"):
+            self.render()
+        self.assertFalse((self.out / "domestic-01.md").exists())
+
+    def test_direct_render_rejects_missing_evidence_even_with_approved_review(self):
+        self._prepare_approved_proposition()
+        (self.root / "official-claims-v2.jsonl").write_bytes(b"")
+        verifier = self.renderer.load_verifier()
+        empty_out = self.root / "unpublished"
+        with mock.patch.object(verifier, "verify_workspace", return_value=[]), mock.patch.object(
+            self.renderer, "load_verifier", return_value=verifier,
+        ):
+            with self.assertRaisesRegex(ValueError, "validated package integration"):
+                self.renderer.render_batch(self.root, empty_out, "domestic", 1, as_of=date(2026, 10, 29))
+        self.assertFalse(empty_out.exists())
+
     def test_renderer_calls_same_fail_closed_workspace_verifier(self):
         (self.root / "population" / "freeze-manifest.json").unlink()
         with self.assertRaisesRegex(ValueError, "freeze manifest"):
             self.render()
+
+    def test_verified_workspace_render_path_does_not_repeat_full_verification(self):
+        with mock.patch.object(
+            self.renderer, "load_verifier",
+            side_effect=AssertionError("verified render repeated workspace verification"),
+        ) as load_verifier:
+            output = self.renderer._render_verified_batch(
+                self.root, self.out, "domestic", 1, as_of=date(2026, 10, 29),
+            )
+        load_verifier.assert_not_called()
+        self.assertTrue(output.is_file())
 
     def test_renderer_cannot_bypass_production_freeze_anchor(self):
         with self.assertRaisesRegex(ValueError, "external freeze-anchor receipt"):
@@ -206,7 +297,7 @@ class RendererTests(unittest.TestCase):
         self.assertIn("규모 기준", text)
         self.assertIn("회계연도 말", text)
         self.assertIn("법인·정책 경계", text)
-        self.assertIn("최종 확인", text)
+        self.assertNotIn("최종 확인", text)  # no reviewed proposition in this legacy fixture
         self.assertIn("사내 비공개·기밀 자료나 개인정보를 댓글로 올리지 마세요", text)
         self.assertNotIn("매출 순위", text)
 

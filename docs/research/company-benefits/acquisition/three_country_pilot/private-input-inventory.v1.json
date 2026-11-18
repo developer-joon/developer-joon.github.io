@@ -1,0 +1,22 @@
+{
+  "schema_version": "three-country-pilot-private-input-inventory-v1",
+  "authoritative": [
+    {"path": "kr/candidates.jsonl", "sha256": "799e03f5f1c8f9b725d760e55e12f01fd651d1c6bf6f391ab98b8e487b322a67"},
+    {"path": "kr/dart-company-overview.xlsx", "sha256": "265c6baf6899aa6e310b1b61c88768c62fb46a6c755b24b6996d5edd0b276824"},
+    {"path": "kr/pilot-manifest.json", "sha256": "8172a7af20b2aa2495183c757c0ee3e5c438e9c5fcf8b801c03652aff6917096"},
+    {"path": "jp/identity-pilot.json", "sha256": "cdb88f1b64b790ecb287b9fe86625eca549db30d6a59019b6f751932a23c0738"},
+    {"path": "jp/nta-2026-10-30-tottori-unicode.zip", "sha256": "7a97dc4b2b16b8b23ba79d5a972eedb6b6819e5b50336ce0d35e54f3d8546072"},
+    {"path": "us/candidate-pilot.json", "sha256": "4de22deb414ce4484920eabfa512b6882b860d5ee0cd9c5b242d3c05d125ed1a"}
+  ],
+  "auxiliary": [
+    {"path": "kr/acquisition.json", "sha256": "35212e08fa38f6285d9b67e85ad9f736e6f1628f1ce5604b4d4f2567c60f52ff"},
+    {"path": "kr/parse_pilot.py", "sha256": "d6b2aea3342e9a30f22031dc3dbe663939c56e542bfa576ddf0fd31824acb4fa"},
+    {"path": "kr/sample-workforce-checks.json", "sha256": "8815824b1d0878783536d864fd699a125d6231e1e53dccc7fef7c40372779909"},
+    {"path": "jp/citation-ledger.json", "sha256": "56612f54446e7f9ce69a67589ed6dfc57eff6bd3223d141c064612da71f7a180"},
+    {"path": "us/citations.json", "sha256": "bf8c5dec54880ca877a42cbcc345b68cd529e0df0adee3957a8d8e3b9a2a2ce1"},
+    {"path": "us/fdic-probe.json", "sha256": "5f5a9d77732f831cd1051765ff82a7bd4f9621864a672ba2a01578496b0a7941"},
+    {"path": "us/sec-probes-v2.jsonl", "sha256": "5f9a6c65db84eee538b04cda4c1c1eed7aa5692ffaed7afaed99aa303caba6eb"},
+    {"path": "us/sec-probes.jsonl", "sha256": "dfe034c64be93fd54dc8af9bb73502bc4d2ee6bcc67d02d777729ff7cff57eae"},
+    {"path": "us/seed.json", "sha256": "cdad637db31f571653a9ffa082d2ac48a8873425d96edc9e653fb3c97ccde226"}
+  ]
+}

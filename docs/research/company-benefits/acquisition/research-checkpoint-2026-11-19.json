@@ -1,0 +1,69 @@
+{
+  "schema_version": "benefit-atlas-research-checkpoint-v1",
+  "status": "research_only_not_public_benefit_approval",
+  "frozen_population": {
+    "companies": 2000,
+    "batches": 80,
+    "countries": {"KR": 1000, "US": 1000},
+    "companies_sha256": "e5888e3081d8ead3cc67c18d8e8e8007066c1c0de1c68103c59e390be77894ed",
+    "batches_sha256": "51e1ae04cc02584199de65be73e0723b808216ccc93ecea5dfdb0f3a85f95423"
+  },
+  "additive_identity_research": {
+    "pilot_candidates": {"KR": 100, "JP": 100, "US": 28},
+    "private_assignment_sha256": "19ce90ac09926b93a5bdc9cbf2f317942a319f3bd66abd84e7acd8211f8420f4",
+    "private_employment_evidence_decisions": {"KR": 7, "JP": 2, "US": 0},
+    "private_employment_decisions_sha256": "47bcc744f28863a79d4056d7b8855fb5f67c23f76261d72287d778448adcdcb5",
+    "separate_us_fdic_exact_identity_bridges": 23,
+    "private_us_fdic_candidate_sha256": "2a68bd7808534589aed1dc0df61ebbaa704019e94a35faa03e3260647e0f6476",
+    "publication_status": "not_integrated_into_public_roster",
+    "rights_status": "republication_review_pending"
+  },
+  "bounded_benefit_research": [
+    {
+      "scope": "three_country_pilot_initial_KR_JP",
+      "covered_legal_entities": 5,
+      "research_rows": 57,
+      "private_source_sha256": ["5aedfe6f264cb8da2209e09ba1741f395b5389897e86d5e247a0a475dc6c6b07", "26199c51e76019a1c5a096f2c9da09188fb581b45f4df20927e8a283b1de9cad"],
+      "private_semantic_triage_sha256": "0af3c79827c211d3da5ca8ce33b9c04d7974c7a0314708600ba1c4abb0bec5fc"
+    },
+    {
+      "scope": "four_KR_two_source_employer_candidates",
+      "covered_legal_entities": 4,
+      "research_rows": 43,
+      "private_source_sha256": ["61d17c61834671f3a0b0333ad98464b412df9f116d9b303af77aed42c45c24da"],
+      "private_semantic_triage_sha256": "7376f1838dd39ba72cd209fbad072732ca98a23880a6d3167b3a4351f32ce164"
+    },
+    {
+      "scope": "five_KR_FSC_legal_id_candidates",
+      "covered_legal_entities": 5,
+      "entity_named_research_rows": 47,
+      "unassigned_group_context_rows": 50,
+      "private_source_sha256": ["8c4b56f006781dc5a16bc108d6a333f9785aee09ed8a8e0a675012ba978f5356"],
+      "private_semantic_triage_sha256": "4ebfb5b05775bc726034a02274ef0b3a9e6f29a3bf91dc9d7c9c214cbc98255a"
+    },
+    {
+      "scope": "five_US_FDIC_banks_identity_only",
+      "covered_legal_entities": 5,
+      "bank_named_research_rows": 15,
+      "private_source_sha256": ["9d38121ce9d618fa1cacca80f76eeca6dab26dcd1db6fca81cf325a188a8430a"],
+      "private_semantic_triage_sha256": "4ebfb5b05775bc726034a02274ef0b3a9e6f29a3bf91dc9d7c9c214cbc98255a"
+    },
+    {
+      "scope": "frozen_roster_first_five_KR",
+      "covered_legal_entities": 5,
+      "entity_named_research_rows": 30,
+      "private_bundle_manifest_sha256": "9cf219af11debf738b6d1d50eb4bbddebd8ac96c600269bf4dc7452b9217eb85",
+      "independent_semantic_review": "pending"
+    },
+    {
+      "scope": "frozen_roster_first_five_US",
+      "covered_legal_entities": 5,
+      "entity_named_research_rows": 0,
+      "unassigned_group_context_rows": 114,
+      "private_bundle_manifest_sha256": "39d624e16bb76ec42941b16612005b9e0cb4144ea767de813f0b46c97ec969e7",
+      "independent_semantic_review": "pending"
+    }
+  ],
+  "approved_concrete_benefit_propositions": 0,
+  "note": "Rows are source-discovery observations, not distinct approved benefits. Group context is not assigned to a selected legal employer. Identity and worker evidence do not establish a benefit policy owner. No private body, quotation, credential, or individual rights-uncleared identity is published by this aggregate checkpoint."
+}

@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from unittest import mock
 
 from scripts.tests.benefits_test_fixture import FrozenFixture
 from scripts.tests.benefits_v2_batch_fixture import V2_FILES, no_public_info_records
+from scripts.tests.test_verify_benefit_release_checkpoint import promoted_current_package
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "scripts" / "integrate-company-benefits-series-batch.py"
@@ -23,6 +25,64 @@ def load_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class ResearchTreeManifestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module()
+
+    def test_large_file_manifest_streams_exact_hash_and_length(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "research"
+            root.mkdir()
+            large = root / "a-ledger.jsonl"
+            with large.open("wb") as stream:
+                stream.seek(9 * 1024 * 1024)
+                stream.write(b"ledger end\n")
+            (root / "z.txt").write_bytes(b"small")
+            digest = hashlib.sha256()
+            with large.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(64 * 1024), b""):
+                    digest.update(chunk)
+            original_read_bytes = Path.read_bytes
+
+            def forbid_large_read_bytes(path):
+                if path == large:
+                    raise AssertionError("large research ledger must be hashed in chunks")
+                return original_read_bytes(path)
+
+            with mock.patch.object(Path, "read_bytes", forbid_large_read_bytes):
+                manifest = self.module.research_tree_manifest(root)
+                captured = self.module.capture_active_root(root)
+                self.module.assert_active_root_unchanged(root, captured)
+
+            self.assertEqual(manifest, [
+                {"path": "a-ledger.jsonl", "sha256": digest.hexdigest(), "bytes": large.stat().st_size},
+                {"path": "z.txt", "sha256": hashlib.sha256(b"small").hexdigest(), "bytes": 5},
+            ])
+            self.assertEqual(captured, self.module.capture_active_root(root))
+            with large.open("r+b") as stream:
+                stream.seek(0)
+                stream.write(b"X")
+            with self.assertRaisesRegex(RuntimeError, "active research tree changed"):
+                self.module.assert_active_root_unchanged(root, captured)
+
+    def test_active_root_inode_and_symlink_changes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "research"
+            root.mkdir()
+            (root / "file").write_bytes(b"unchanged")
+            captured = self.module.capture_active_root(root)
+            moved = Path(tmp) / "old-research"
+            root.rename(moved)
+            root.mkdir()
+            (root / "file").write_bytes(b"unchanged")
+            with self.assertRaisesRegex(RuntimeError, "active research tree changed"):
+                self.module.assert_active_root_unchanged(root, captured)
+            (root / "link").symlink_to(root / "file")
+            with self.assertRaisesRegex(ValueError, "symlinks are prohibited"):
+                self.module.capture_active_root(root)
 
 
 class SeriesIntegrationTests(unittest.TestCase):
@@ -169,6 +229,150 @@ class SeriesIntegrationTests(unittest.TestCase):
         self.package(include_review_audit=False)
         with self.assertRaisesRegex(ValueError, "review_audit|candidate|promotion"):
             self.module.load_package(self.input, self.root)
+
+    def test_approval_row_binds_exact_package_candidate_and_receipt_hashes(self):
+        row = self.module.canonical_approval_row(
+            "domestic-02", b"exact batch manifest", "a" * 64, "b" * 64
+        )
+        self.assertEqual({
+            "approval_version": "1", "batch_id": "domestic-02", "status": "approved",
+            "package_sha256": hashlib.sha256(b"exact batch manifest").hexdigest(),
+            "reviewed_candidate_sha256": "a" * 64, "reviewer_receipt_sha256": "b" * 64,
+        }, row)
+
+    def test_external_review_paths_cannot_write_outside_audit_directory(self):
+        research_root = Path(self.tmp.name) / "current-research"
+        package_dir = Path(self.tmp.name) / "current-package"
+        shutil.copytree(ROOT / "docs" / "research" / "company-benefits", research_root)
+        for relative in self.module.LEDGER_TARGETS:
+            target = research_root / relative
+            if target.suffix == ".jsonl":
+                target.write_bytes(b"")
+        self.module.series.materialize_contract(research_root, set(), {}, {})
+        promoted_current_package(package_dir, "domestic-22")
+        manifest = json.loads((package_dir / "batch.json").read_bytes())
+        audit = manifest["review_audit"]
+        # A real promoted package retains all bindings. Rebind only its review
+        # path and its enclosing hashes so the production audit reaches the write.
+        outside = Path(self.tmp.name) / "audit-escape-sentinel.json"
+        outside.write_bytes(b"do-not-overwrite")
+        alias = Path(self.tmp.name) / "audit-escape-link.json"
+        alias.symlink_to(outside)
+        for field, path in (("reviewed_candidate_path", str(outside)),
+                            ("reviewer_receipt_path", str(outside)),
+                            ("reviewed_candidate_path", "../audit-escape-sentinel.json"),
+                            ("reviewed_candidate_path", str(alias))):
+            with self.subTest(field=field, path=path):
+                audit["review_bundle"][field] = path
+                audit["review_bundle_sha256"] = self.module.sha256(
+                    self.module.series.json_bytes(audit["review_bundle"])
+                )
+                raw = self.module.series.json_bytes(manifest)
+                (package_dir / "batch.json").write_bytes(raw)
+                approval = self.module.series.read_jsonl(package_dir / "series-batch-approval.jsonl")[0]
+                approval["package_sha256"] = self.module.sha256(raw)
+                self.module.series.write_jsonl(package_dir / "series-batch-approval.jsonl", [approval])
+                (package_dir / "SHA256SUMS").write_text("".join(
+                    f"{self.module.sha256((package_dir / name).read_bytes())}  {name}\n"
+                    for name in sorted(self.module.CURRENT_ALLOWED_FILES - {"SHA256SUMS"})
+                ))
+                with self.assertRaisesRegex(ValueError, "review_audit external review artifact path"):
+                    self.module.load_package(package_dir, research_root)
+                self.assertEqual(outside.read_bytes(), b"do-not-overwrite")
+                audit["review_bundle"][field] = ("reviewed-candidate.json" if field == "reviewed_candidate_path"
+                                                 else "reviewer-receipt.json")
+
+    def test_refreshed_local_hashes_cannot_replace_external_review_bytes(self):
+        research_root = Path(self.tmp.name) / "current-research"
+        package_dir = Path(self.tmp.name) / "current-package"
+        shutil.copytree(ROOT / "docs" / "research" / "company-benefits", research_root)
+        for relative in self.module.LEDGER_TARGETS:
+            target = research_root / relative
+            if target.suffix == ".jsonl":
+                target.write_bytes(b"")
+        self.module.series.materialize_contract(research_root, set(), {}, {})
+        promoted_current_package(package_dir, "domestic-22")
+        manifest = json.loads((package_dir / "batch.json").read_bytes())
+        audit = manifest["review_audit"]
+        audit["review_bundle"]["approved_at"] = "2026-11-07T00:00:00Z"
+        audit["review_bundle_sha256"] = self.module.sha256(self.module.series.json_bytes(audit["review_bundle"]))
+        raw = self.module.series.json_bytes(manifest)
+        (package_dir / "batch.json").write_bytes(raw)
+        approval = self.module.series.read_jsonl(package_dir / "series-batch-approval.jsonl")[0]
+        approval["package_sha256"] = self.module.sha256(raw)
+        self.module.series.write_jsonl(package_dir / "series-batch-approval.jsonl", [approval])
+        (package_dir / "SHA256SUMS").write_text("".join(
+            f"{self.module.sha256((package_dir / name).read_bytes())}  {name}\n"
+            for name in sorted(self.module.CURRENT_ALLOWED_FILES - {"SHA256SUMS"})
+        ))
+        with self.assertRaises(ValueError):
+            self.module.load_package(package_dir, research_root)
+
+    def test_distinct_empty_reviewed_candidates_may_share_content_digest(self):
+        research_root = Path(self.tmp.name) / "current-research"
+        package_root = Path(self.tmp.name) / "current-packages"
+        canonical = ROOT / "docs" / "research" / "company-benefits"
+        shutil.copytree(canonical, research_root)
+        package_root.mkdir()
+        for relative in self.module.LEDGER_TARGETS:
+            target = research_root / relative
+            if target.suffix == ".jsonl":
+                target.write_bytes(b"")
+        self.module.series.materialize_contract(research_root, set(), {}, {})
+
+        batch_ids = ("domestic-22", "international-02")
+        reviewers = ("reviewer::kr-empty", "reviewer::us-empty")
+        for batch_id, reviewer_id in zip(batch_ids, reviewers):
+            promoted_current_package(package_root / batch_id, batch_id, reviewer_id)
+        approvals = [
+            self.module.series.read_jsonl(package_root / batch_id / "series-batch-approval.jsonl")[0]
+            for batch_id in batch_ids
+        ]
+        self.assertEqual(approvals[0]["reviewed_candidate_sha256"],
+                         approvals[1]["reviewed_candidate_sha256"])
+        self.assertNotEqual(approvals[0]["package_sha256"], approvals[1]["package_sha256"])
+        self.assertNotEqual(approvals[0]["reviewer_receipt_sha256"],
+                            approvals[1]["reviewer_receipt_sha256"])
+
+        protocol = json.loads((research_root / "population-protocol.json").read_bytes())
+        freeze_receipt = Path(self.tmp.name) / "current-freeze-receipt.json"
+        freeze_receipt.write_bytes(self.module.series.json_bytes({
+            "schema_version": "1", "protocol_version": protocol["version"],
+            "freeze_manifest_sha256": hashlib.sha256(
+                (research_root / "population" / "freeze-manifest.json").read_bytes()
+            ).hexdigest(),
+            "review_status": "approved", "issued_at": "2026-10-21T00:00:00Z",
+        }))
+
+        self.module.integrate_batch(
+            package_root / batch_ids[0], research_root, freeze_receipt,
+            as_of=date(2026, 11, 7),
+        )
+        approval_path = research_root / "series-batch-approvals.jsonl"
+        first_approval = self.module.series.read_jsonl(approval_path)[0]
+        duplicate_package = dict(
+            first_approval, batch_id="domestic-21",
+            package_sha256=approvals[1]["package_sha256"],
+        )
+        self.module.series.write_jsonl(approval_path, [first_approval, duplicate_package])
+        with self.assertRaisesRegex(ValueError, "package/receipt identity.*replayed"):
+            self.module.load_package(package_root / batch_ids[1], research_root)
+        duplicate_receipt = dict(
+            first_approval, batch_id="domestic-21", package_sha256="f" * 64,
+            reviewer_receipt_sha256=approvals[1]["reviewer_receipt_sha256"],
+        )
+        self.module.series.write_jsonl(approval_path, [first_approval, duplicate_receipt])
+        with self.assertRaisesRegex(ValueError, "package/receipt identity.*replayed"):
+            self.module.load_package(package_root / batch_ids[1], research_root)
+        self.module.series.write_jsonl(approval_path, [first_approval])
+
+        self.module.load_package(package_root / batch_ids[1], research_root)
+        progress = self.module.integrate_batch(
+            package_root / batch_ids[1], research_root, freeze_receipt,
+            as_of=date(2026, 11, 7),
+        )
+        approved = {item["batch_id"] for item in progress["batches"] if item["status"] == "approved"}
+        self.assertTrue(set(batch_ids) <= approved)
 
     def test_rejects_already_approved_legacy_entry_even_without_cell_count(self):
         progress_path = self.root / "series-progress.json"
