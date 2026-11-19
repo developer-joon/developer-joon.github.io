@@ -49,6 +49,26 @@ const researchedCompany = (index: number): CompanyListing => ({
     return researched(category, 'no_public_info', [])
   }),
 })
+it('keeps legacy raw benefit text out of the detail when a research-only projection is active', () => {
+  const manifest = JSON.parse(readFileSync('public/data/company-benefits/manifest.json', 'utf8'))
+  const descriptor = manifest.company_shards['US-CIK0000038725']
+  const detail = detailSchema.parse(JSON.parse(readFileSync(`public/${descriptor.url.replace(/^community\//, '')}`, 'utf8')))
+  const claim = detail.claims[0]
+  expect(claim.detail.length).toBeGreaterThan(200)
+  const category = claim.category_ids[0]
+  const outcome = detail.category_outcomes.find((item) => item.category_id === category)!
+
+  render(<BenefitClaimGroup category={category} outcome={outcome} claims={[claim]} hideUnreviewedClaims />)
+  expect(screen.getByRole('heading', { name: /기존 조사 자료 1/ })).toBeVisible()
+  expect(screen.getByText('과거 자료 (현재 제공 여부 미확인)')).toBeVisible()
+  expect(screen.getByText('적용 범위 또는 조사 한계, 과거 근거')).toBeVisible()
+  expect(document.body).not.toHaveTextContent(claim.detail)
+  expect(document.body).not.toHaveTextContent(claim.source_evidence[0].supporting_quote)
+  expect(screen.queryByRole('heading', { name: claim.benefit_name })).not.toBeInTheDocument()
+  expect(screen.getAllByRole('link').length).toBeGreaterThan(0)
+  expect(screen.queryByText(/확인된 claim/)).not.toBeInTheDocument()
+})
+
 it('renders confirmed, bounded and insufficient outcomes with source-scope facts', () => {
   render(<BenefitsHeatmapTable companies={[company(1)]} selectedCategories={[]} compare={[]} toggle={() => undefined} link={() => '#'} />)
   expect(screen.getByText('확인됨')).toBeVisible(); expect(screen.getByText('범위 제한 확인')).toBeVisible(); expect(screen.getAllByText('근거 부족')).toHaveLength(8); expect(screen.getAllByText(/KR/).length).toBeGreaterThan(0)
@@ -357,12 +377,34 @@ it('renders approved-v2 evidence in distinct official, reference and lower-tier 
   expect(screen.getByRole('heading', { name: '추가 복지 조사 근거' })).toBeVisible()
   expect(screen.getByText('공식 자료 조사 맥락')).toBeVisible()
   expect(screen.getByText('참고 조사 근거 · 구체 혜택으로 집계하지 않음')).toBeVisible()
-  expect(screen.getByText('연차 휴가 제도를 안내합니다.')).toBeVisible()
-  expect(screen.getByText('연차 휴가를 사용할 수 있습니다.')).toBeVisible()
+  expect(screen.queryByText('연차 휴가 제도를 안내합니다.')).not.toBeInTheDocument()
+  expect(screen.queryByText('연차 휴가를 사용할 수 있습니다.')).not.toBeInTheDocument()
+  expect(screen.getAllByText('원문 복지 항목은 분야·법인별로 분리 검토되지 않아 표시하지 않습니다.')).toHaveLength(2)
   expect(screen.getByText('커뮤니티 조사 맥락 · 구체 혜택으로 집계하지 않음')).toBeVisible()
-  expect(screen.getByText('직원 커뮤니티의 휴가 사용 보고입니다.')).toBeVisible()
+  expect(screen.queryByText('직원 커뮤니티의 휴가 사용 보고입니다.')).not.toBeInTheDocument()
   expect(screen.getAllByRole('link')).toHaveLength(3)
   for (const link of screen.getAllByRole('link')) { expect(link).toHaveAttribute('target', '_blank'); expect(link).toHaveAttribute('rel', 'noopener noreferrer') }
+})
+
+it('does not repeat a multi-benefit source paragraph inside category-specific reference cards', () => {
+  const manifest = JSON.parse(readFileSync('public/data/company-benefits/manifest.json', 'utf8'))
+  const descriptor = manifest.approved_v2_projection.company_shards['KR-CRN-1101112948086']
+  const detail = detailSchema.parse(JSON.parse(readFileSync(`public/${descriptor.url.replace(/^community\//, '')}`, 'utf8')))
+  const broadQuote = detail.references?.find((record) => record.category_id === 'commute')?.supporting_quote
+  const commuteStatement = detail.references?.find((record) => record.category_id === 'commute')?.statement
+  expect(broadQuote).toContain('통근버스 운행')
+  expect(broadQuote).toContain('자녀 학자금 지원')
+  expect(commuteStatement).toContain('통근버스 지원')
+
+  render(<BenefitV2EvidenceSection detail={detail} />)
+  expect(screen.getByRole('heading', { name: '확인된 복지 혜택 (0건)' })).toBeVisible()
+  expect(within(document.getElementById('commute')!).getByRole('heading', { name: '이동·통근' })).toBeVisible()
+  expect(within(document.getElementById('family')!).getByRole('heading', { name: '육아·가족' })).toBeVisible()
+  expect(document.body).not.toHaveTextContent(commuteStatement!)
+  expect(within(document.getElementById('commute')!).queryByText(broadQuote!)).not.toBeInTheDocument()
+  expect(within(document.getElementById('family')!).queryByText(broadQuote!)).not.toBeInTheDocument()
+  expect(document.querySelectorAll('.benefits-evidence--reference blockquote')).toHaveLength(0)
+  expect(within(document.getElementById('family')!).getAllByRole('link').length).toBeGreaterThan(0)
 })
 
 it('renders material reference and community evidence limitations with accessible Korean labels', () => {
@@ -382,13 +424,13 @@ it('renders material reference and community evidence limitations with accessibl
     ],
   } as unknown as Detail
   render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
-  const reference = screen.getByRole('article', { name: /과거 그룹 단위 참고 자료입니다.*참고 조사 근거 1번/ })
+  const reference = screen.getByRole('article', { name: /참고 자료 1.*참고 조사 근거 1번/ })
   expect(reference).toHaveTextContent('신뢰도: 낮음')
   expect(reference).toHaveTextContent('현재성: 과거 정보')
   expect(reference).toHaveTextContent('적용 범위 상태: 그룹 단위')
   expect(reference).toHaveTextContent('법인 Test Group')
   expect(reference).toHaveTextContent('상충 상태: 모순됨')
-  const community = screen.getByRole('article', { name: /범위 미확인 커뮤니티 보고입니다.*커뮤니티 조사 맥락 1번/ })
+  const community = screen.getByRole('article', { name: /커뮤니티 자료 1.*커뮤니티 조사 맥락 1번/ })
   expect(community).toHaveTextContent('신뢰도: 낮음')
   expect(community).toHaveTextContent('현재성: 확인되지 않음')
   expect(community).toHaveTextContent('적용 범위 상태: 미확인')
@@ -408,7 +450,7 @@ it.each([
     sources: [{ source_id: 'source::reference', title: '안전하지 않은 출처', url, publication_eligibility: 'reference_only' }],
   } as unknown as Detail
   render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
-  expect(screen.getByRole('article', { name: /참고 자료입니다.*참고 조사 근거 1번/ })).toHaveTextContent('참고 자료입니다.')
+  expect(screen.getByRole('article', { name: /참고 자료 1.*참고 조사 근거 1번/ })).toHaveTextContent('원문 복지 항목은 분야·법인별로 분리 검토되지 않아 표시하지 않습니다.')
   expect(screen.queryByRole('link', { name: /안전하지 않은 출처/ })).not.toBeInTheDocument()
   expect(document.querySelectorAll('a')).toHaveLength(0)
 })
@@ -438,8 +480,9 @@ it('shows zero concrete benefits when raw publishable records have no verified p
   expect(screen.getByRole('heading', { name: '확인된 복지 혜택 (0건)' })).toBeVisible()
   expect(screen.queryByRole('article', { name: /구체 혜택/ })).not.toBeInTheDocument()
   expect(screen.getByText(/재검증 중.*구체 혜택 확인 필요/)).toBeVisible()
-  expect(screen.getByText('매년 유급 휴가 20일을 지원합니다.')).toBeVisible()
-  expect(screen.getByText('직원들이 반차를 사용할 수 있다고 보고했습니다.')).toBeVisible()
+  expect(screen.queryByText('매년 유급 휴가 20일을 지원합니다.')).not.toBeInTheDocument()
+  expect(screen.queryByText('직원들이 반차를 사용할 수 있다고 보고했습니다.')).not.toBeInTheDocument()
+  expect(screen.getAllByText('원문 복지 항목은 분야·법인별로 분리 검토되지 않아 표시하지 않습니다.')).toHaveLength(2)
   for (const link of screen.getAllByRole('link')) {
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
@@ -603,7 +646,7 @@ it('gives repeated reference and community cards unique heading-based accessible
 
   render(<BenefitV2EvidenceSection detail={detail} />)
 
-  const cards = screen.getAllByRole('article', { name: /동일한 휴가 혜택을 제공합니다/ })
+  const cards = screen.getAllByRole('article', { name: /(?:참고 자료|커뮤니티 자료) [12]/ })
   expect(cards).toHaveLength(4)
   const headingIds = cards.map((card) => card.getAttribute('aria-labelledby'))
   expect(headingIds.every(Boolean)).toBe(true)
@@ -612,7 +655,7 @@ it('gives repeated reference and community cards unique heading-based accessible
   for (const headingId of headingIds) expect(document.getElementById(headingId!)).toHaveAttribute('id', headingId)
 })
 
-it('keeps long unbroken benefit statements and quotes intact and applies narrow-width wrapping', () => {
+it('does not present a long unreviewed reference statement or quote as a benefit', () => {
   const longToken = `benefit-${'x'.repeat(240)}`
   const detail = {
     official_claims: [],
@@ -623,7 +666,8 @@ it('keeps long unbroken benefit statements and quotes intact and applies narrow-
 
   render(<BenefitV2EvidenceGroup category="leave" detail={detail} />)
 
-  expect(screen.getAllByText(longToken)).toHaveLength(2)
+  expect(screen.queryByText(longToken)).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: '출처: 긴 자료' })).toBeVisible()
   const css = readFileSync('src/styles/benefits.css', 'utf8')
   expect(css).toContain(`.benefits-specific-card h4,
 .benefits-specific-card blockquote {

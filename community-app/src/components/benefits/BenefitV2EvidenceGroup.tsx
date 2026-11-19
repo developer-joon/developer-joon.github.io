@@ -131,8 +131,8 @@ export function BenefitV2EvidenceGroup({ category, detail, prepared }: BenefitV2
       const headingId = `${groupId}-${category}-evidence-${index + 1}`
       return <article aria-labelledby={headingId} className={`benefits-evidence${isReference ? ' benefits-evidence--reference' : ' benefits-evidence--community'}`} key={recordId}>
         <p>{tier} · 구체 혜택으로 집계하지 않음</p>
-        <h4 id={headingId}>{record.statement}<span className="sr-only"> — {categoryLabels[category]} {tier} {tierOrdinal}번</span></h4>
-        {isReference && <blockquote>{record.supporting_quote}</blockquote>}
+        <h4 id={headingId}>{isReference ? '참고 자료' : '커뮤니티 자료'} {tierOrdinal}<span className="sr-only"> — {categoryLabels[category]} {tier} {tierOrdinal}번</span></h4>
+        <p>원문 복지 항목은 분야·법인별로 분리 검토되지 않아 표시하지 않습니다.</p>
         <Limitations reliability={record.reliability} currentness={record.currentness} scopeStatus={isReference ? record.scope?.status : record.scope_status} scope={record.scope} conflictStatus={record.conflict_status} />
         {source && <p><a href={source.url} target="_blank" rel="noopener noreferrer">출처: {source.title}</a></p>}
       </article>
@@ -151,7 +151,7 @@ export function BenefitV2EvidenceSection({ detail }: { detail: Detail }) {
   const count = categories.reduce((total, category) => total + (prepared.benefitsByCategory.get(category)?.length ?? 0), 0)
   return <section className="benefits-specific-section" aria-labelledby="confirmed-specific-benefits">
     <h2 id="confirmed-specific-benefits">확인된 복지 혜택 ({count}건)</h2>
-    <p className="benefits-specific-section__intro">독립 검토를 완료한 구체 혜택만 집계합니다. 참고 자료와 커뮤니티 보고는 조사 맥락으로만 표시합니다.</p>
+    <p className="benefits-specific-section__intro">독립 검토를 완료한 구체 혜택만 집계합니다. 참고 자료와 커뮤니티 보고는 분야·출처·적용 범위만 조사 맥락으로 표시하며, 미검토 원문은 반복하지 않습니다.</p>
     {count === 0 && <p className="benefits-official-only-notice">재검증 중 — 구체 혜택 확인 필요</p>}
     {categories.map((category) => <BenefitV2EvidenceGroup key={category} category={category} detail={detail} prepared={prepared} />)}
   </section>
