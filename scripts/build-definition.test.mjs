@@ -30,6 +30,11 @@ test('aligns the workflow and package engine with the supported Docker toolchain
 
   assert.match(workflow, /node-version: ['"]24\.15\.0['"]/, 'workflow must use the exact Docker Node version')
   assert.match(workflow, /ruby-version: ['"]3\.3\.10['"]/, 'workflow must use the exact Docker Ruby version')
+  assert.deepEqual(
+    [...workflow.matchAll(/^\s+runs-on: (\S+)$/gm)].map((match) => match[1]),
+    ['ubuntu-24.04', 'ubuntu-24.04'],
+    'both Pages jobs must use the runner that supplied the pinned Ruby in the last successful deployment',
+  )
   assert.equal(packageJson.engines.node, '^24.15.0')
   assert.equal(packageLock.packages[''].engines.node, '^24.15.0')
 })
