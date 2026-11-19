@@ -260,9 +260,10 @@ async function readDescriptor(releaseRoot, descriptor, options = {}) {
   return raw
 }
 
-async function assertExactReleaseRootInventoryBound(releaseRoot, manifest) {
+async function assertExactReleaseRootInventoryBound(releaseRoot, manifest, options = {}) {
   const expected = new Map([['manifest.json', 'file'], [manifest.data_version, 'directory']])
   if (manifest.approved_v2_projection) expected.set(manifest.approved_v2_projection.data_version, 'directory')
+  if (options.allowResearchSibling === true) expected.set('research-leads-v1', 'directory')
   const entries = await readdir(descriptorPath(releaseRoot), { withFileTypes: true })
   if (entries.length !== expected.size || entries.some((entry) => !expected.has(entry.name))) throw Error('benefits release root inventory mismatch')
   for (const entry of entries) {
@@ -284,10 +285,10 @@ async function assertExactReleaseRootInventoryBound(releaseRoot, manifest) {
   }
 }
 
-export async function assertExactReleaseRootInventory(root, manifest) {
+export async function assertExactReleaseRootInventory(root, manifest, options = {}) {
   return withBoundVerifierRoot(root, (releaseRoot) => {
     if (!releaseRoot) throw Object.assign(Error('benefits release root unavailable'), { code: 'ENOENT' })
-    return assertExactReleaseRootInventoryBound(releaseRoot, manifest)
+    return assertExactReleaseRootInventoryBound(releaseRoot, manifest, options)
   })
 }
 
@@ -509,7 +510,7 @@ async function verifyBenefitsArtifactsBound(releaseRoot, options) {
     manifestRaw = await readBoundedRegularFile(releaseRoot, ['manifest.json'], manifestByteLimit, 'benefits manifest', options.boundedReadHooks, displayManifestPath)
   } catch (error) { if (error.code === 'ENOENT') { await assertNoBenefitsFixtureLeaksBound(releaseRoot, [], 'v2', options); return 'Benefits artifacts unavailable: no approved manifest.' } throw error }
   const rawManifest = JSON.parse(manifestRaw); const manifest = parseBenefitsManifest(rawManifest); const companies = []; const byId = new Map(); const detailById = new Map()
-  await assertExactReleaseRootInventoryBound(releaseRoot, manifest)
+  await assertExactReleaseRootInventoryBound(releaseRoot, manifest, options)
   await assertExactArtifactInventoryBound(releaseRoot, manifest, options)
   const load = async (descriptor) => {
     const raw = await readDescriptor(releaseRoot, descriptor, options)

@@ -1,7 +1,9 @@
 import { createHash, webcrypto } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { BenefitsArtifactClient } from './benefitsArtifactClient'
-import { categories, type CompanyListing } from '../types/benefits'
+import { researchActionKey } from './researchActionKey'
+import { categories, researchLeadsSchema, type CompanyListing } from '../types/benefits'
 
 const notice = '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.'
 const json = (value: unknown) => `${JSON.stringify(value)}\n`
@@ -14,7 +16,7 @@ function artifacts() {
   }
   const base = (name: string) => descriptor(`community/data/company-benefits/${version}/${name}.json`, '{}\n', name === 'taxonomy' ? 10 : 0)
   const manifest = { schema_version: 2, artifact_kind: 'company_benefits_manifest', artifact_protocol: 'v1', data_version: version, fixture: false, generated_at: '2026-10-31T00:00:00Z', protocol: { protocol_id: 'company-benefits-population-v4', protocol_version: '4.0.0', protocol_sha256: 'a'.repeat(64), effective_selection_sha256: 'b'.repeat(64) }, taxonomy_version: 'benefit-taxonomy-v1', company_count: 2000, listing_chunk_size: 50, listing_chunk_count: 40, category_count: 10, taxonomy: base('taxonomy'), sources: base('sources'), methodology: base('methodology'), listing_chunks, company_shards }
-  bodies.set('/community/data/company-benefits/manifest.json', json(manifest)); return { bodies }
+  bodies.set('/community/data/company-benefits/manifest.json', json(manifest)); return withResearch({ bodies })
 }
 
 const noPublicInfo = (category_id: (typeof categories)[number]) => ({
@@ -54,7 +56,7 @@ function withProjection(corrupt: 'none'|'hash'|'join' = 'none', projectedCount =
     ledger_sha256: { 'company-category-cells.jsonl': 'a'.repeat(64), 'research-attempts.jsonl': 'b'.repeat(64), 'official-claims-v2.jsonl': 'c'.repeat(64), 'reference-records.jsonl': 'd'.repeat(64), 'community-benefit-reports.jsonl': 'e'.repeat(64), 'sources-v2.jsonl': 'f'.repeat(64) },
     taxonomy: empty('taxonomy', 10), sources: descriptor(sourceUrl, sourceBody, 0), methodology: empty('methodology'), listing_chunks: listingDescriptors, company_shards,
   }
-  fixture.bodies.set(manifestUrl, json(manifest)); return fixture
+  fixture.bodies.set(manifestUrl, json(manifest)); return withResearch(fixture)
 }
 
 function withProjectionDetail(detailCount = 1) {
@@ -73,8 +75,102 @@ function withProjectionDetail(detailCount = 1) {
   }
   const projection = manifest.approved_v2_projection; delete manifest.approved_v2_projection
   projection.base_manifest_sha256 = createHash('sha256').update(`${JSON.stringify(manifest)}\n`).digest('hex')
-  manifest.approved_v2_projection = projection; fixture.bodies.set(manifestUrl, json(manifest)); return fixture
+  manifest.approved_v2_projection = projection; fixture.bodies.set(manifestUrl, json(manifest)); return withResearch(fixture)
 }
+const researchManifestUrl = '/community/data/company-benefits/research-leads-v1/manifest.json'
+const researchLeadsUrl = '/community/data/company-benefits/research-leads-v1/leads.json'
+function withResearch(fixture: { bodies: Map<string, string> }) {
+  const manifest = JSON.parse(fixture.bodies.get('/community/data/company-benefits/manifest.json')!)
+  const company = JSON.parse(fixture.bodies.get(`/${manifest.listing_chunks[0].url}`)!).companies[0]
+  const lead = (benefit_action: string) => ({ company_id: company.company_id, primary_category: 'leave', benefit_action, source_url: 'https://example.org/benefits', source_registry_id: 'registry::1', source_text_sha256: 'a'.repeat(64), scope: { legal_entity: company.legal_name, roles: 'all', employment_types: ['full_time'], conditions: { tenure: 'one year' } }, currentness: 'unknown', observed_at: '2026-11-19T00:00:00Z', limitations: ['Research only'], status: 'research_only' })
+  const leads = [lead('Paid vacation'), { ...lead('Family care leave'), primary_category: 'family' }]
+  const body = json({ artifact_kind: 'company_benefits_research_leads', schema_version: 1, status: 'research_only', leads })
+  fixture.bodies.set(researchManifestUrl, json({ artifact_kind: 'company_benefits_research_manifest', schema_version: 1, status: 'research_only', base_manifest_sha256: createHash('sha256').update(fixture.bodies.get('/community/data/company-benefits/manifest.json')!).digest('hex'), leads_sha256: createHash('sha256').update(body).digest('hex'), leads_byte_count: new TextEncoder().encode(body).byteLength, record_count: leads.length, company_count: 1 }))
+  fixture.bodies.set(researchLeadsUrl, body)
+  return fixture
+}
+const researchClient = (bodies: Map<string, string>) => new BenefitsArtifactClient(async (url) => new Response(bodies.get(url), { status: bodies.has(url) ? 200 : 404 }), webcrypto.subtle as SubtleCrypto)
+function researchActions(actions: [string, string]) {
+  const { bodies } = artifacts()
+  const payload = JSON.parse(bodies.get(researchLeadsUrl)!)
+  payload.leads.forEach((lead: { benefit_action: string }, index: number) => { lead.benefit_action = actions[index]! })
+  const body = json(payload)
+  bodies.set(researchLeadsUrl, body)
+  const manifest = JSON.parse(bodies.get(researchManifestUrl)!)
+  manifest.leads_sha256 = createHash('sha256').update(body).digest('hex')
+  manifest.leads_byte_count = new TextEncoder().encode(body).byteLength
+  bodies.set(researchManifestUrl, json(manifest))
+  return bodies
+}
+describe('research-only sibling', () => {
+  it('matches pinned Python 3.14 Unicode 16 split/NFKC/casefold corpus', () => {
+    const cases = JSON.parse(readFileSync('src/data/researchActionKey.python16.json', 'utf8')) as [string, string][]
+    expect(cases).toHaveLength(5263)
+    for (const [input, expected] of cases) expect(researchActionKey(input), JSON.stringify(input)).toBe(expected)
+  })
+  it('rejects producer-colliding casefold actions after integrity rebinding', async () => {
+    await expect(researchClient(researchActions(['Straße commuter pass', 'STRASSE commuter pass'])).loadAtlas()).rejects.toThrow('research atomic action 중복')
+  })
+  it.each([
+    ['Straße commuter pass', 'Train commuter pass'],
+    ['꟱ commuter pass', 'S commuter pass'],
+  ])('keeps producer-distinct Unicode actions %s / %s', async (first, second) => {
+    const atlas = await researchClient(researchActions([first, second])).loadAtlas()
+    expect(atlas.research.leads.map((lead) => lead.benefit_action)).toEqual([first, second])
+  })
+  it('loads two source-backed actions separately without promoting approved lineage', async () => {
+    const { bodies } = withResearch(withProjection())
+    const atlas = await researchClient(bodies).loadAtlas()
+    expect(atlas.research.leads.map((lead) => lead.benefit_action)).toEqual(['Paid vacation', 'Family care leave'])
+    expect(atlas.research.companyIds).toEqual(['KR-CRN-0000000000001'])
+    expect(atlas.research.leads.every((lead) => lead.status === 'research_only')).toBe(true)
+    expect(atlas.companies[0].lineage.approved_v2?.category_outcomes[0]).toMatchObject({ state: 'no_public_info' })
+  })
+  it.each(['missing manifest', 'missing leads', 'wrong base sha', 'wrong byte count', 'wrong hash', 'wrong record count', 'wrong company count'])(
+    'fails closed on %s', async (mutation) => {
+      const { bodies } = artifacts()
+      const sibling = JSON.parse(bodies.get(researchManifestUrl)!)
+      if (mutation === 'missing manifest') bodies.delete(researchManifestUrl)
+      if (mutation === 'missing leads') bodies.delete(researchLeadsUrl)
+      if (mutation === 'wrong base sha') sibling.base_manifest_sha256 = 'b'.repeat(64)
+      if (mutation === 'wrong byte count') sibling.leads_byte_count++
+      if (mutation === 'wrong hash') sibling.leads_sha256 = 'b'.repeat(64)
+      if (mutation === 'wrong record count') sibling.record_count++
+      if (mutation === 'wrong company count') sibling.company_count++
+      if (!mutation.startsWith('missing')) bodies.set(researchManifestUrl, json(sibling))
+      await expect(researchClient(bodies).loadAtlas()).rejects.toThrow()
+    },
+  )
+  it.each(['unknown company', 'wrong legal entity', 'duplicate normalized action', 'unsafe url', 'credential query', 'approved status'])(
+    'rejects %s even with recomputed payload integrity', async (mutation) => {
+      const { bodies } = artifacts()
+      const payload = JSON.parse(bodies.get(researchLeadsUrl)!)
+      if (mutation === 'unknown company') payload.leads[0].company_id = 'KR-CRN-9999999999999'
+      if (mutation === 'wrong legal entity') payload.leads[0].scope.legal_entity = 'Other Company'
+      if (mutation === 'duplicate normalized action') payload.leads[1].benefit_action = 'paid   VACATION'
+      if (mutation === 'unsafe url') payload.leads[0].source_url = 'https://user:pass@example.org/benefits'
+      if (mutation === 'credential query') payload.leads[0].source_url = 'https://example.org/benefits?token=secret'
+      if (mutation === 'approved status') payload.leads[0].status = 'approved'
+      const body = json(payload); bodies.set(researchLeadsUrl, body)
+      const sibling = JSON.parse(bodies.get(researchManifestUrl)!)
+      sibling.leads_sha256 = createHash('sha256').update(body).digest('hex')
+      sibling.leads_byte_count = new TextEncoder().encode(body).byteLength
+      bodies.set(researchManifestUrl, json(sibling))
+      await expect(researchClient(bodies).loadAtlas()).rejects.toThrow()
+    },
+  )
+  it('parses and hashes the committed 128-row sibling against the committed 2000-company listing', async () => {
+    const request = async (url: string) => {
+      const prefix = '/community/data/company-benefits/'
+      if (!url.startsWith(prefix)) throw new Error(`Unexpected artifact URL: ${url}`)
+      return new Response(new Uint8Array(readFileSync(`public/data/company-benefits/${url.slice(prefix.length)}`)))
+    }
+    const atlas = await new BenefitsArtifactClient(request, webcrypto.subtle as SubtleCrypto).loadAtlas()
+    expect(researchLeadsSchema.parse({ artifact_kind: 'company_benefits_research_leads', schema_version: 1, status: 'research_only', leads: atlas.research.leads }).leads).toHaveLength(128)
+    expect(atlas.research.companyIds).toHaveLength(12)
+    expect(atlas.companies).toHaveLength(2000)
+  })
+})
 describe('artifact v2 listing client', () => {
   it('loads the real research-incomplete projection status without calling companies approved', async () => {
     const { bodies } = withProjection()

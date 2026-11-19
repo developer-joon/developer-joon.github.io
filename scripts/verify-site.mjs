@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { verifyBenefitsArtifacts } from './verify-benefits-artifacts.mjs'
+import { verifyBenefitsResearchArtifacts } from './verify-benefits-research-artifacts.mjs'
 import { createReadStream } from 'node:fs'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
@@ -686,7 +687,15 @@ async function main() {
     if(!communityAssetReferences(html,relativePath).length)fail(`${relativePath} missing compiled assets`)
     if(/\/(?:src|node_modules)\//.test(html))fail(`${relativePath} references implementation source`)
   }
-  try { console.log(await verifyBenefitsArtifacts(siteRoot)) } catch(error) { fail(`benefits artifacts: ${error.message}`) }
+  // Research is separately verified; the base verifier reads the original root.
+  const releaseRoot = path.join(siteRoot, 'community/data/company-benefits')
+  const baseManifest = path.join(releaseRoot, 'manifest.json')
+  let hasBase = false
+  try { await lstat(baseManifest); hasBase = true } catch (error) { if (error.code !== 'ENOENT') fail(`research artifacts: ${error.message}`) }
+  if (hasBase) {
+    try { console.log(await verifyBenefitsResearchArtifacts(siteRoot)) } catch (error) { fail(`research artifacts: ${error.message}`) }
+  }
+  try { console.log(await verifyBenefitsArtifacts(siteRoot, { allowResearchSibling: hasBase })) } catch(error) { fail(`benefits artifacts: ${error.message}`) }
   const communityShells = [
     ['community/index.html', '<title>Community · Ria &amp; Seoa PaPa</title>'],
     ['community/write/index.html', '<title>글쓰기 · Ria &amp; Seoa PaPa</title>'],

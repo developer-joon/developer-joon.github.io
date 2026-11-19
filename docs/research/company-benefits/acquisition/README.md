@@ -16,3 +16,14 @@ python3 docs/research/company-benefits/acquisition/test_research_leads.py
 ```
 
 Scratch is transient; after its deletion, the committed normalized rows, source/reviewer checksums and documented missing-byte status remain auditable, but original source bodies cannot be reconstructed from a digest. Reacquire and independently review permitted evidence before any separate promotion workflow.
+
+## Source-backed atomic preview (separate from the raw lead inventory)
+
+`source-backed-benefits.jsonl` contains **128 individual research-only actions from 12 distinct companies**. Each action was split from an employer source, independently triaged for this bounded preview, and bound to an exact legal entity, primary category, claim-specific source-registry permission, HTTPS URL, scope, observation time and material limitations. The public input contains paraphrases and digests, not source bodies or quoted spans. The separate `research-leads-v1/{manifest,leads}.json` binds these rows to the unchanged 2,000-company base manifest; the existing 950-company research projection and its **zero independently approved benefit propositions** are unchanged. The 128 actions are neither the 429 raw leads above nor verified benefits, and no employee-wide eligibility or present-day policy continuity is implied.
+
+```sh
+python3 scripts/generate-company-benefits-research.py \
+  --input docs/research/company-benefits/acquisition/source-backed-benefits.jsonl --check
+```
+
+The default Benefit Atlas list displays companies with these concrete research actions; `전체 조사 기업` retains the full 2,000-company roster. A missing action means **no publishable specific action in this bounded preview**, not that the employer has no benefits. Further official-source discovery is held outside Git while legal-entity binding and claim-specific reuse rights are unresolved; its unreviewed candidates are not included in the 128 public research actions or the approved-benefit count. This sibling is a research display path, not a shortcut into the approved-benefits promotion workflow.

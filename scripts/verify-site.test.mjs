@@ -119,6 +119,19 @@ async function withArtifact(run) {
   }
 }
 
+test('site verification accepts the real research sibling and rejects its removal', async () => {
+  await withArtifact(async (root) => {
+    const release = path.join(root, 'community/data/company-benefits')
+    await cp(path.join(repoRoot, 'community-app/public/data/company-benefits'), release, { recursive: true })
+    const accepted = verify(root)
+    assert.equal(accepted.status, 0, accepted.stderr)
+    await rm(path.join(release, 'research-leads-v1/leads.json'))
+    const rejected = verify(root)
+    assert.notEqual(rejected.status, 0)
+    assert.match(rejected.stderr, /research artifacts.*inventory/i)
+  })
+})
+
 test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
@@ -784,11 +797,6 @@ test('rejects a community snapshot without canonical, OpenGraph, and JSON-LD met
     await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="예시 데이터"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
   }
   await cp(path.join(repoRoot, 'community-app/public/data/company-benefits'),path.join(root,'community/data/company-benefits'),{recursive:true})
-  const copiedManifestPath = path.join(root, 'community/data/company-benefits/manifest.json')
-  const copiedManifest = JSON.parse(await readFile(copiedManifestPath, 'utf8'))
-  const copiedDescriptors = [copiedManifest.taxonomy, copiedManifest.sources, copiedManifest.methodology, ...copiedManifest.listing_chunks, ...Object.values(copiedManifest.company_shards)]
-  for (const descriptor of copiedDescriptors) descriptor.url = descriptor.url.replace(/^\//, '')
-  await writeFile(copiedManifestPath, JSON.stringify(copiedManifest))
   await put(root,'community/benefits/methodology/index.html','<h1>조사 기준·정정 이력</h1><p>예시 데이터</p>')
   await put(root, snapshotPath, '<title>Published snapshot example | Breadlab 커뮤니티</title>')
     const result = verify(root)
