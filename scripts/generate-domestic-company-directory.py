@@ -93,6 +93,8 @@ def read_jobs(path):
         if reader.fieldnames != COLUMNS:
             raise ValueError('CSV schema changed')
         for entry in reader:
+            if None in entry or any(value is None for value in entry.values()):
+                raise ValueError('CSV row schema changed')
             job_rows += 1
             bid, day = entry['사업자번호'], entry['공고등록일']
             name = safe_text(entry['기업명'] or '', 120)
@@ -129,6 +131,8 @@ def _expected(csv_path, dart_path, selected_path, base_path, hashes):
         raise ValueError('no base CRNs')
     job_rows, latest, invalid_date_rows, valid_named_bids = read_jobs(csv_path)
     joins = bridge(dart_path, latest)
+    if any(len(crns) > 1 for crns in joins.values()):
+        raise ValueError('ambiguous DART bridge')
     records = []
     conflicts = aliases = 0
     for bid in sorted(latest):

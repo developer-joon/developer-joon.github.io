@@ -64,7 +64,7 @@ class DirectoryTests(unittest.TestCase):
             ['충돌회사','0000000003','C','1','private title','full','2026-01-01'],
             ['별명회사','0000000004','C','1','private title','full','2026-01-01'],
             ['불명회사','0000000005','C','1','private title','full','2026-01-01'],
-        ], [('0000000000001','0000000004'), ('0000000000002','0000000005'), ('0000000000003','0000000005')])
+        ], [('0000000000001','0000000004'), ('0000000000002','0000000005')])
         manifest = self.build()
         self.assertEqual(manifest['sources']['dart_bridge']['acquired_on'], '2026-11-20')
         self.assertEqual(manifest['limits']['max_shards'], 400)
@@ -112,12 +112,24 @@ class DirectoryTests(unittest.TestCase):
         record = json.loads((self.output / manifest['chunks'][0]['path']).read_text())['records'][0]
         self.assertEqual(record['id'], 'KR-CRN-0000000000001')
 
-    def test_ambiguous_base_bridge_does_not_alias(self):
+    def test_ambiguous_base_bridge_rejects_before_writing(self):
         self.fixture([['가상회사','0000000002','','','x','x','2026-01-01']],
                      [('0000000000001','0000000002'),('0000000000002','0000000002')])
-        manifest = self.build()
-        record = json.loads((self.output / manifest['chunks'][0]['path']).read_text())['records'][0]
-        self.assertEqual(record['id'], 'KR-BIZ-0000000002')
+        with self.assertRaisesRegex(ValueError, '^ambiguous DART bridge$'):
+            self.build()
+        self.assertFalse(self.output.exists())
+
+    def test_extra_csv_cell_rejects_before_writing(self):
+        self.fixture([['가상회사','0000000002','','','x','x','2026-01-01','private extra']])
+        with self.assertRaisesRegex(ValueError, '^CSV row schema changed$'):
+            self.build()
+        self.assertFalse(self.output.exists())
+
+    def test_missing_csv_cell_rejects_before_writing(self):
+        self.fixture([['가상회사','0000000002','','','x','x']])
+        with self.assertRaisesRegex(ValueError, '^CSV row schema changed$'):
+            self.build()
+        self.assertFalse(self.output.exists())
 
 
 if __name__ == '__main__': unittest.main()
