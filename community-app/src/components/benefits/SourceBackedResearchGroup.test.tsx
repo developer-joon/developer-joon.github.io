@@ -168,6 +168,7 @@ it('leads with an atomic action and compact category/status before collapsed sou
   const card = screen.getByRole('article', { name: /통근버스를 운행한다/ })
   const heading = within(card).getByRole('heading', { name: /통근버스를 운행한다/ })
   const disclosure = within(card).getByText('적용 범위·조사 한계·출처 보기')
+  expect(disclosure).toHaveAccessibleName('통근버스를 운행한다 적용 범위·조사 한계·출처 보기')
   expect(card.firstElementChild).toBe(heading)
   expect(heading.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(card).toHaveTextContent('통근버스를 운행한다')

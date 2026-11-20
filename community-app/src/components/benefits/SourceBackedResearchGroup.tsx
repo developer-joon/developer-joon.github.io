@@ -23,7 +23,7 @@ export function SourceBackedResearchGroup({ leads }: { leads: ResearchLead[] }) 
             <h4 id={`research-${category}-action-${index}`}>{lead.benefit_action}<span className="sr-only"> — {categoryLabels[category]} 조사 중 {index + 1}번</span></h4>
             <p className="benefits-research-card__excerpt">{categoryLabels[category]} · 조사 중—확인된 혜택 아님</p>
             <details className="benefits-research-card__details">
-              <summary>적용 범위·조사 한계·출처 보기</summary>
+              <summary aria-label={`${lead.benefit_action} 적용 범위·조사 한계·출처 보기`}>적용 범위·조사 한계·출처 보기</summary>
               <dl className="benefits-research-card__scope">
                 <dt>적용 범위</dt><dd>법인 {lead.scope.legal_entity} · 직군 {scopeList(lead.scope.roles)} · 고용형태 {scopeList(lead.scope.employment_types)} · 조건 {conditionText(lead.scope.conditions)}</dd>
                 <dt>현재성</dt><dd>{lead.currentness === 'unknown' ? '현재성 미확인' : lead.currentness === 'historical' ? '과거 정보' : '현재 정보'}</dd>
