@@ -79,6 +79,7 @@ async function makeValidArtifact() {
   for (const [part,title] of [['','복지 현황'],['fit/','조건 탐색'],['company/','기업 근거 상세'],['methodology/','조사 기준·정정 이력']]) {
     await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
   }
+  await put(root, 'community/benefits/directory/index.html', '<!doctype html><html lang="ko"><head><title>국내 기업 검색 · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/directory/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
   await put(root, snapshotPath, `<title>Published snapshot example | Breadlab 커뮤니티</title><link rel="canonical" href="${snapshotUrl}"><meta property="og:type" content="article"><meta property="og:url" content="${snapshotUrl}"><script type="application/ld+json">{"@type":"BlogPosting"}</script>`)
   await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 Google OAuth 로그인은 Supabase Auth를 사용합니다. 안정적인 provider subject는 인증 계층에서만 사용하고 공개 프로필에는 개인정보가 아닌 결정적 로그인 이름, 최대 120자의 Google 표시 이름, 최대 2,048자의 HTTPS 프로필 이미지 URL, 사용자 ID와 로그인 세션 정보를 처리합니다. 이메일과 provider access token 또는 refresh token은 공개 프로필에 저장하지 않습니다. 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
@@ -119,12 +120,83 @@ async function withArtifact(run) {
   }
 }
 
+test('site verification accepts the real research sibling and rejects its removal', async () => {
+  await withArtifact(async (root) => {
+    const release = path.join(root, 'community/data/company-benefits')
+    await cp(path.join(repoRoot, 'community-app/public/data/company-benefits'), release, { recursive: true })
+    const accepted = verify(root)
+    assert.equal(accepted.status, 0, accepted.stderr)
+    assert.match(accepted.stdout, /size artifacts: 402 labels.*3143 FTC-only/)
+    const sizeRecords = path.join(release, 'domestic-size-evidence-v1/records.json')
+    const originalSizeRecords = await readFile(sizeRecords)
+    await rm(sizeRecords)
+    const missingSize = verify(root)
+    assert.notEqual(missingSize.status, 0)
+    assert.match(missingSize.stderr, /size artifacts/i)
+    await writeFile(sizeRecords, originalSizeRecords)
+    const index = path.join(release, 'domestic-search-index-v1/index.json')
+    const originalIndex = await readFile(index)
+    const cut = JSON.parse(originalIndex.toString('utf8'))
+    cut.entries.pop(); cut.totals.records--
+    await writeFile(index, JSON.stringify(cut))
+    const missingSearchRow = verify(root)
+    assert.notEqual(missingSearchRow.status, 0)
+    assert.match(missingSearchRow.stderr, /search index artifacts/i)
+    await writeFile(index, originalIndex)
+    await rm(path.join(release, 'domestic-directory-v1/shards/0000.json'))
+    const missingDirectoryShard = verify(root)
+    assert.notEqual(missingDirectoryShard.status, 0)
+    assert.match(missingDirectoryShard.stderr, /directory artifacts/i)
+    await cp(path.join(repoRoot, 'community-app/public/data/company-benefits/domestic-directory-v1/shards/0000.json'), path.join(release, 'domestic-directory-v1/shards/0000.json'))
+    await rm(path.join(release, 'research-leads-v1/leads.json'))
+    const rejected = verify(root)
+    assert.notEqual(rejected.status, 0)
+    assert.match(rejected.stderr, /research artifacts.*inventory/i)
+  })
+})
+
 test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
 })
+
+test('rejects a missing domestic search route from an otherwise valid site', async () => {
+  await withArtifact(async (root) => {
+    await rm(path.join(root, 'community/benefits/directory/index.html'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /missing required artifact: community\/benefits\/directory\/index\.html/)
+  })
+})
+
+test('rejects a domestic directory canonical that appears only in a comment', async () => {
+  await withArtifact(async (root) => {
+    const route = path.join(root, 'community/benefits/directory/index.html')
+    const expected = '<link rel="canonical" href="https://www.breadlab.ai/community/benefits/directory/">'
+    const html = await readFile(route, 'utf8')
+    await writeFile(route, html.replace(expected, `<link rel="canonical" href="https://www.breadlab.ai/stale/">\n<!-- ${expected} -->`))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /community\/benefits\/directory\/index\.html is missing canonical URL/)
+  })
+})
+
+for (const [field, oldValue, expected] of [
+  ['title', '국내 기업 검색 · Benefit Atlas', /community\/benefits\/directory\/index\.html has unexpected document title/],
+  ['canonical', 'https://www.breadlab.ai/community/benefits/directory/', /community\/benefits\/directory\/index\.html is missing canonical URL/],
+]) {
+  test(`rejects a wrong domestic search ${field}`, async () => {
+    await withArtifact(async (root) => {
+      const route = path.join(root, 'community/benefits/directory/index.html')
+      await writeFile(route, (await readFile(route, 'utf8')).replace(oldValue, 'stale'))
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, expected)
+    })
+  })
+}
 
 for (const [relativePath, staleTitle] of [
   ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>'],
@@ -784,11 +856,6 @@ test('rejects a community snapshot without canonical, OpenGraph, and JSON-LD met
     await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="예시 데이터"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
   }
   await cp(path.join(repoRoot, 'community-app/public/data/company-benefits'),path.join(root,'community/data/company-benefits'),{recursive:true})
-  const copiedManifestPath = path.join(root, 'community/data/company-benefits/manifest.json')
-  const copiedManifest = JSON.parse(await readFile(copiedManifestPath, 'utf8'))
-  const copiedDescriptors = [copiedManifest.taxonomy, copiedManifest.sources, copiedManifest.methodology, ...copiedManifest.listing_chunks, ...Object.values(copiedManifest.company_shards)]
-  for (const descriptor of copiedDescriptors) descriptor.url = descriptor.url.replace(/^\//, '')
-  await writeFile(copiedManifestPath, JSON.stringify(copiedManifest))
   await put(root,'community/benefits/methodology/index.html','<h1>조사 기준·정정 이력</h1><p>예시 데이터</p>')
   await put(root, snapshotPath, '<title>Published snapshot example | Breadlab 커뮤니티</title>')
     const result = verify(root)

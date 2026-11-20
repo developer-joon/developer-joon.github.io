@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import { verifyBenefitsArtifacts } from './verify-benefits-artifacts.mjs'
+import { verifyBenefitsResearchArtifacts } from './verify-benefits-research-artifacts.mjs'
+import { verifyDomesticDirectoryArtifacts } from './verify-domestic-directory-artifacts.mjs'
+import { verifyDomesticSizeArtifacts } from './verify-domestic-size-artifacts.mjs'
+import { verifyDomesticSearchIndex } from './verify-domestic-search-index.mjs'
 import { createReadStream } from 'node:fs'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
@@ -30,6 +34,7 @@ const requiredFiles = [
   'community/benefits/index.html',
   'community/benefits/fit/index.html',
   'community/benefits/company/index.html',
+  'community/benefits/directory/index.html',
   'community/benefits/methodology/index.html',
   'community/benefits/correction/index.html',
   'community/benefits/my-corrections/index.html',
@@ -224,6 +229,7 @@ function skipRawTextElement(html, lowerHtml, position, name) {
 function extractDocumentTitle(html) {
   const lowerHtml = html.toLowerCase()
   const titles = []
+  const canonicalLinks = []
   let position = 0
   const inertStack = []
   let htmlStarts = 0
@@ -368,11 +374,16 @@ function extractDocumentTitle(html) {
     }
     if (tag.name === 'title') {
       const closingTag = findRawTextClosingTag(html, lowerHtml, tagEnd + 1, tag.name)
-      if (!closingTag || closingTag.invalid) return { error: 'unclosed-title', titles }
+      if (!closingTag || closingTag.invalid) return { error: 'unclosed-title', titles, canonicalLinks }
       titles.push(html.slice(tagEnd + 1, closingTag.start).trim())
       if (!inHead) error ??= 'title-outside-head'
       position = closingTag.end
       continue
+    }
+
+    if (tag.name === 'link' && inHead &&
+        (tag.attributes.get('rel') ?? '').toLowerCase().split(htmlWhitespaceSequence).includes('canonical')) {
+      canonicalLinks.push(tag.attributes.get('href'))
     }
 
     position = tagEnd + 1
@@ -380,7 +391,7 @@ function extractDocumentTitle(html) {
 
   if (htmlStarts !== 1 || htmlEnds !== 1 || inHtml) error ??= 'html'
   if (headStarts !== 1 || headEnds !== 1 || inHead) error ??= 'head'
-  return { error, titles }
+  return { error, titles, canonicalLinks }
 }
 
 function hasCommunityAjaxOptOut(html) {
@@ -626,6 +637,7 @@ async function main() {
       'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm',
     ],
     ['404.html', 'Page Not Found – Ria & Seoa PaPa', 'https://www.breadlab.ai/404.html'],
+    ['community/benefits/directory/index.html', '국내 기업 검색 · Benefit Atlas', 'https://www.breadlab.ai/community/benefits/directory/'],
   ]
   for (const [relativePath, expectedTitle, canonical] of routeChecks) {
     const html = await readText(relativePath)
@@ -643,7 +655,13 @@ async function main() {
     } else if (documentTitle.titles[0] !== expectedTitle) {
       fail(`${relativePath} has unexpected document title: ${JSON.stringify(documentTitle.titles[0])} (expected ${JSON.stringify(expectedTitle)})`)
     }
-    assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'canonical URL')
+    if (relativePath === 'community/benefits/directory/index.html') {
+      if (documentTitle.canonicalLinks.length !== 1 || documentTitle.canonicalLinks[0] !== canonical) {
+        fail(`${relativePath} is missing canonical URL in the document head`)
+      }
+    } else {
+      assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'canonical URL')
+    }
   }
   const home = await readText('index.html')
   if (!hasCommunityAjaxOptOut(home)) {
@@ -686,7 +704,18 @@ async function main() {
     if(!communityAssetReferences(html,relativePath).length)fail(`${relativePath} missing compiled assets`)
     if(/\/(?:src|node_modules)\//.test(html))fail(`${relativePath} references implementation source`)
   }
-  try { console.log(await verifyBenefitsArtifacts(siteRoot)) } catch(error) { fail(`benefits artifacts: ${error.message}`) }
+  // Research is separately verified; the base verifier reads the original root.
+  const releaseRoot = path.join(siteRoot, 'community/data/company-benefits')
+  const baseManifest = path.join(releaseRoot, 'manifest.json')
+  let hasBase = false
+  try { await lstat(baseManifest); hasBase = true } catch (error) { if (error.code !== 'ENOENT') fail(`research artifacts: ${error.message}`) }
+  if (hasBase) {
+    try { console.log(await verifyBenefitsResearchArtifacts(siteRoot)) } catch (error) { fail(`research artifacts: ${error.message}`) }
+    try { console.log(await verifyDomesticDirectoryArtifacts(siteRoot)) } catch (error) { fail(`directory artifacts: ${error.message}`) }
+    try { console.log(await verifyDomesticSizeArtifacts(siteRoot)) } catch (error) { fail(`size artifacts: ${error.message}`) }
+    try { console.log(await verifyDomesticSearchIndex(siteRoot)) } catch (error) { fail(`search index artifacts: ${error.message}`) }
+  }
+  try { console.log(await verifyBenefitsArtifacts(siteRoot, { allowResearchSibling: hasBase, allowDirectorySibling: hasBase, allowSizeSibling: hasBase, allowSearchIndexSibling: hasBase })) } catch(error) { fail(`benefits artifacts: ${error.message}`) }
   const communityShells = [
     ['community/index.html', '<title>Community · Ria &amp; Seoa PaPa</title>'],
     ['community/write/index.html', '<title>글쓰기 · Ria &amp; Seoa PaPa</title>'],

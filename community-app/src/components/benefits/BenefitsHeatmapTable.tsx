@@ -1,14 +1,17 @@
 import { categories, categoryLabels, conflictStatusLabels, currentnessLabels, isResearchedOutcome, outcomeFor, outcomeLabels, reliabilityLabels, researchStateFor, scopeStatusLabels, sourceTierLabels, specificContentLabel, specificContentStatus, type Category, type CompanyListing } from '../../types/benefits'
 import { BenefitEvidenceCounts, BenefitSourceBadges } from './BenefitSourceBadges'
 import { BenefitLineageBadge } from './BenefitLineageBadge'
+import type { ResearchLeadIndex } from '../../lib/benefitsQueryState'
 
-export function BenefitsHeatmapTable({ companies, selectedCategories, compare, toggle, link, projectionActive = false }: { companies: CompanyListing[]; selectedCategories: Category[]; compare: string[]; toggle: (id: string) => void; link: (id: string, category?: Category) => string; projectionActive?: boolean }) {
+export function BenefitsHeatmapTable({ companies, selectedCategories, compare, toggle, link, researchIndex, projectionActive = false }: { companies: CompanyListing[]; selectedCategories: Category[]; compare: string[]; toggle: (id: string) => void; link: (id: string, category?: Category) => string; researchIndex?: ResearchLeadIndex; projectionActive?: boolean }) {
   const visible = selectedCategories.length ? selectedCategories : categories
   return <div className="benefits-table-scroll" role="region" aria-label="복지 현황 표" tabIndex={0}>
     <table className="benefits-heatmap"><caption>기업별 공개 근거 상태</caption><thead><tr><th scope="col">기업 / 비교 (최대 4개)</th>{visible.map((category) => <th key={category}>{categoryLabels[category]}</th>)}</tr></thead>
       <tbody>{companies.slice(0, 50).map((company) => <tr key={company.company_id} data-company-id={company.company_id}>
         <th scope="row"><a href={link(company.company_id)}>{company.display_name}</a><BenefitLineageBadge company={company} projectionActive={projectionActive} /><small>{company.registered_head_office_country} · {company.sector === 'financial' ? '금융' : '비금융'}</small><label><input type="checkbox" aria-label={`비교 ${company.display_name}`} checked={compare.includes(company.company_id)} disabled={!compare.includes(company.company_id) && compare.length >= 4} onChange={() => toggle(company.company_id)} />비교</label></th>
         {visible.map((category) => {
+          const researchCount = researchIndex?.get(company.company_id)?.get(category)?.length ?? 0
+          if (researchCount) return <td key={category}><a className="benefits-status status-projection-pending" href={`${link(company.company_id).split('#')[0]}#research-${category}`} aria-label={`${company.display_name} ${categoryLabels[category]} 조사 중 ${researchCount}건`}><strong>조사 중 {researchCount}건</strong><small>출처가 있는 구체적 조사 항목 · 승인된 혜택 아님</small></a></td>
           const outcome = outcomeFor(company, category)
           if (isResearchedOutcome(outcome)) {
             const state = researchStateFor(outcome)

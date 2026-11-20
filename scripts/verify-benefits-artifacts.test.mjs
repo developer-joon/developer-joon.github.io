@@ -92,6 +92,26 @@ test('release root rejects secret-unmanifested.txt and rogue versions', () => fi
   await assert.rejects(assertExactReleaseRootInventory(root, value), /release root inventory/i)
 }))
 
+test('research sibling requires explicit opt-in and exact named directory', () => fixture(async (root, value) => {
+  const releaseRoot = path.join(root, 'community/data/company-benefits')
+  await writeFile(path.join(releaseRoot, 'manifest.json'), '{}\n')
+  await mkdir(path.join(releaseRoot, 'research-leads-v1'))
+  await assert.rejects(assertExactReleaseRootInventory(root, value), /release root inventory/)
+  await assert.doesNotReject(assertExactReleaseRootInventory(root, value, { allowResearchSibling: true }))
+  await writeFile(path.join(releaseRoot, 'rogue.txt'), 'not a sibling')
+  await assert.rejects(assertExactReleaseRootInventory(root, value, { allowResearchSibling: true }), /release root inventory/)
+}))
+
+test('search index sibling requires exact named opt-in, not an unknown directory', () => fixture(async (root, value) => {
+  const release = path.join(root, 'community/data/company-benefits')
+  await writeFile(path.join(release, 'manifest.json'), '{}\n')
+  await mkdir(path.join(release, 'domestic-search-index-v1'))
+  await assert.rejects(assertExactReleaseRootInventory(root, value), /release root inventory/)
+  await assert.doesNotReject(assertExactReleaseRootInventory(root, value, { allowSearchIndexSibling: true }))
+  await mkdir(path.join(release, 'unknown-version'))
+  await assert.rejects(assertExactReleaseRootInventory(root, value, { allowSearchIndexSibling: true }), /release root inventory/)
+}))
+
 test('release inventory rejects a symlinked release root and parent chain', () => fixture(async (root, value) => {
   const releaseRoot = path.join(root, 'community/data/company-benefits')
   await writeFile(path.join(releaseRoot, 'manifest.json'), '{}\n')

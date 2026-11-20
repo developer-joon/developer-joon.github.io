@@ -3,7 +3,7 @@ import { AppHeader } from '../AppHeader'
 import { AppFooter } from '../AppFooter'
 import type { Manifest } from '../../types/benefits'
 
-export function BenefitsExplorerShell({ route, query, manifest, children }: { route: string; query: string; manifest?: Manifest; children: ReactNode }) {
+export function BenefitsExplorerShell({ route, query, manifest, researchSummary, children }: { route: string; query: string; manifest?: Manifest; researchSummary?: { companies: number; items: number }; children: ReactNode }) {
   return <div className="community-page benefits-page">
     <AppHeader />
     <main className="benefits-main">
@@ -12,12 +12,14 @@ export function BenefitsExplorerShell({ route, query, manifest, children }: { ro
           <p className="benefits-kicker">공개 근거로 살펴보는 기업 복지</p>
           <h1 id="benefit-atlas-title">Benefit Atlas</h1>
           <p className="benefit-atlas-hero__copy">기업별 공개 근거와 확인 범위를 한눈에 탐색하세요.</p>
-          {manifest && <p className="benefits-version">데이터 {manifest.data_version} · {manifest.company_count}개 기업 · 생성일 {manifest.generated_at.slice(0, 10)}</p>}
+          {manifest && <p className="benefits-version">기준 명부 {manifest.company_count.toLocaleString('ko-KR')}개 기업</p>}
           {manifest?.approved_v2_projection && <p className="benefits-coverage">추가 복지 조사 · 전체 {manifest.approved_v2_projection.total_batch_count}개 중 {manifest.approved_v2_projection.approved_batch_count}개 batch · {manifest.approved_v2_projection.projected_company_count.toLocaleString('en-US')}/{manifest.approved_v2_projection.total_company_count.toLocaleString('en-US')}개 기업{manifest.approved_v2_projection.verified_proposition_count === undefined ? ' · 혜택 검증 수 미집계' : ` · 확인된 혜택 ${manifest.approved_v2_projection.verified_proposition_count.toLocaleString('en-US')}건`}</p>}
+          {researchSummary && <p className="benefits-coverage">출처 확인된 구체적 조사 항목 {researchSummary.items.toLocaleString('en-US')}건 · {researchSummary.companies.toLocaleString('en-US')}개 기업 · 승인된 혜택과 별도</p>}
         </div>
       </section>
       <div className="benefits-workspace community-wrap">
         <nav className="benefits-tabs" aria-label="복지 탐색 화면">
+          <a aria-current={route === 'directory' ? 'page' : undefined} href="/community/benefits/directory/">국내 기업 검색</a>
           <a aria-current={route === 'heatmap' ? 'page' : undefined} href={`/community/benefits/${query}`}>복지 현황</a>
           <a aria-current={route === 'fit' ? 'page' : undefined} href={`/community/benefits/fit/${query}`}>조건 탐색</a>
           <a aria-current={route === 'methodology' ? 'page' : undefined} href={`/community/benefits/methodology/${query}`}>조사 기준·정정 이력</a>

@@ -319,6 +319,35 @@ export const manifestSchema = z.strictObject({
 })
 export type Manifest = z.infer<typeof manifestSchema>
 
+// Discovery-only sibling: these records never contribute to approved category outcomes.
+const hasResearchControl = (value: string) => [...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+const researchText = (limit: number) => z.string().max(limit).refine((value) => value.length > 0 && value === value.trim() && !hasResearchControl(value), 'invalid research text')
+const researchScopeValue = (limit: number, allowEmpty = false) => z.union([researchText(limit), z.array(researchText(limit)).max(8).refine((items) => allowEmpty || items.length > 0)])
+const researchUrl = z.string().max(2048).refine((value) => {
+  if (!value.startsWith('https://') || hasResearchControl(value)) return false
+  const authority = value.slice(8).split(/[/?#]/, 1)[0]
+  if (!authority || /[%@\\[\]\\\s]/.test(authority) || [...authority].some((character) => character.charCodeAt(0) > 126)) return false
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443') || url.hash || !/^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/.test(url.hostname) || url.hostname.split('.').some((part) => part.startsWith('-') || part.endsWith('-'))) return false
+    return ![...url.searchParams.keys()].some((key) => /^(?:api[_-]?key|access[_-]?token|token|secret|password|passwd|session|auth|signature|sig|code)$/i.test(key))
+  } catch { return false }
+}, 'unsafe research URL')
+const researchScopeSchema = z.strictObject({
+  legal_entity: researchText(160), roles: researchScopeValue(160), employment_types: researchScopeValue(160),
+  conditions: z.union([researchScopeValue(160, true), z.strictObject({ occasion: researchText(160).optional(), education_level: researchText(160).optional(), covered_persons: researchText(160).optional(), purpose: researchText(160).optional(), residence: researchText(160).optional(), tenure: researchText(160).optional(), price: researchText(160).optional() })]),
+})
+export const researchLeadSchema = z.strictObject({
+  company_id: companyId, primary_category: z.enum(categories), benefit_action: researchText(300), source_url: researchUrl,
+  source_registry_id: researchText(240), source_text_sha256: hash, scope: researchScopeSchema,
+  currentness: researchText(80), observed_at: z.iso.datetime({ offset: true }),
+  limitations: z.array(researchText(240)).min(1).max(8), status: z.literal('research_only'),
+})
+export const researchLeadsSchema = z.strictObject({ artifact_kind: z.literal('company_benefits_research_leads'), schema_version: z.literal(1), status: z.literal('research_only'), leads: z.array(researchLeadSchema).min(1).max(1000) })
+export const researchManifestSchema = z.strictObject({ artifact_kind: z.literal('company_benefits_research_manifest'), schema_version: z.literal(1), status: z.literal('research_only'), base_manifest_sha256: hash, leads_sha256: hash, leads_byte_count: z.number().int().positive().max(1_000_000), record_count: z.number().int().min(1).max(1000), company_count: z.number().int().min(1).max(1000) })
+export type ResearchLead = z.infer<typeof researchLeadSchema>
+export type ResearchManifest = z.infer<typeof researchManifestSchema>
+
 export function outcomeFor(company: CompanyListing, category: Category) { return company.category_outcomes.find((outcome) => outcome.category_id === category)! }
 export function assertListingOutcomes(companies: CompanyListing[]) {
   const ids = new Set<string>(); const sequences = new Set<number>()

@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, assertCompanyDetailIdentityProjection, assertCompanyIdentityProjection, assertExplicitCellInventory, assertListingOutcomes, detailSchema, listingChunkSchema, manifestSchema, methodologySchema, sourcesDocumentSchema, type BenefitCompanyView, type CompanyListing, type Detail, type Manifest, type SourcesDocument } from '../types/benefits'
+import { researchActionKey } from './researchActionKey'
+import { approvedV2ListingChunkSchema, assertCompanyDetailEvidence, assertCompanyDetailIdentityProjection, assertCompanyIdentityProjection, assertExplicitCellInventory, assertListingOutcomes, detailSchema, listingChunkSchema, manifestSchema, methodologySchema, researchLeadsSchema, researchManifestSchema, sourcesDocumentSchema, type BenefitCompanyView, type CompanyListing, type Detail, type Manifest, type ResearchLead, type ResearchManifest, type SourcesDocument } from '../types/benefits'
 
 const RESPONSE_LIMIT = 12_000_000
 const SHARD_LIMIT = 256_000
@@ -8,7 +9,7 @@ const FETCH_CONCURRENCY = 4
 
 type Descriptor = { url: string; sha256: string; record_count: number; byte_count: number }
 type ArtifactContext = { data_version: string }
-export type BenefitAtlasData = { manifest: Manifest; companies: BenefitCompanyView[]; approvedV2Sources?: SourcesDocument }
+export type BenefitAtlasData = { manifest: Manifest; companies: BenefitCompanyView[]; approvedV2Sources?: SourcesDocument; research: { manifest: ResearchManifest; leads: ResearchLead[]; companyIds: string[] } }
 export type BenefitCompanyDetailView = { legacy: Detail; approvedV2?: Detail }
 const safePathSegment = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/
 const requestUrl = (manifest: ArtifactContext, descriptor: Descriptor) => {
@@ -72,18 +73,45 @@ export class BenefitsArtifactClient {
     try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { throw new Error('데이터 UTF-8 오류') }
   }
 
-  async loadManifest(signal?: AbortSignal) {
-    const parsed = JSON.parse(await this.raw('/community/data/company-benefits/manifest.json', signal))
+  private async digest(raw: string) {
+    const hash = await this.subtle.digest('SHA-256', new TextEncoder().encode(raw))
+    return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+
+  private async loadBaseManifest(signal?: AbortSignal) {
+    const raw = await this.raw('/community/data/company-benefits/manifest.json', signal)
+    const parsed = JSON.parse(raw)
     const manifest = manifestSchema.parse(parsed)
+    const base = { ...parsed }; delete base.approved_v2_projection
+    const baseSha = await this.digest(raw)
     if (manifest.approved_v2_projection) {
-      const base = { ...parsed }; delete base.approved_v2_projection
-      const encoded = new TextEncoder().encode(`${JSON.stringify(base)}\n`)
-      const digest = await this.subtle.digest('SHA-256', encoded)
-      const actual = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
-      if (actual !== manifest.approved_v2_projection.base_manifest_sha256) throw new Error('approved projection base manifest 무결성 오류')
+      if (await this.digest(`${JSON.stringify(base)}\n`) !== manifest.approved_v2_projection.base_manifest_sha256) throw new Error('approved projection base manifest 무결성 오류')
     }
     signal?.throwIfAborted()
-    return manifest
+    return { manifest, baseSha }
+  }
+  async loadManifest(signal?: AbortSignal) { return (await this.loadBaseManifest(signal)).manifest }
+
+  private async loadResearch(baseSha: string, companies: CompanyListing[], signal?: AbortSignal): Promise<BenefitAtlasData['research']> {
+    const prefix = '/community/data/company-benefits/research-leads-v1/'
+    const manifest = researchManifestSchema.parse(JSON.parse(await this.raw(`${prefix}manifest.json`, signal, 1_000_000)))
+    if (manifest.base_manifest_sha256 !== baseSha) throw new Error('research base manifest 무결성 오류')
+    const raw = await this.raw(`${prefix}leads.json`, signal, 1_000_000)
+    const bytes = new TextEncoder().encode(raw)
+    if (bytes.byteLength !== manifest.leads_byte_count) throw new Error('research byte count 불일치')
+    if (await this.digest(raw) !== manifest.leads_sha256) throw new Error('research 무결성 오류')
+    const { leads } = researchLeadsSchema.parse(JSON.parse(raw))
+    if (leads.length !== manifest.record_count) throw new Error('research record count 불일치')
+    const byId = new Map(companies.map((company) => [company.company_id, company.legal_name]))
+    const seen = new Set<string>(); const companyIds = new Set<string>()
+    for (const lead of leads) {
+      if (byId.get(lead.company_id) !== lead.scope.legal_entity) throw new Error('research canonical legal entity 불일치')
+      const key = `${lead.company_id}\u0000${researchActionKey(lead.benefit_action)}`
+      if (seen.has(key)) throw new Error('research atomic action 중복')
+      seen.add(key); companyIds.add(lead.company_id)
+    }
+    if (companyIds.size !== manifest.company_count) throw new Error('research company count 불일치')
+    return { manifest, leads, companyIds: [...companyIds].sort() }
   }
 
   private async payload<T>(manifest: ArtifactContext, descriptor: Descriptor, schema: z.ZodType<T>, count: (value: T) => number, signal?: AbortSignal, limits?: { maxBytes: number; account?: (bytes: number) => void }) {
@@ -156,9 +184,10 @@ export class BenefitsArtifactClient {
   }
 
   async loadAtlas(signal?: AbortSignal): Promise<BenefitAtlasData> {
-    const manifest = await this.loadManifest(signal)
+    const { manifest, baseSha } = await this.loadBaseManifest(signal)
     const legacy = await this.loadListingChunks(manifest, signal)
-    if (!manifest.approved_v2_projection) return { manifest, companies: legacy.map((company) => ({ ...company, lineage: { legacy: company } })) }
+    const research = await this.loadResearch(baseSha, legacy, signal)
+    if (!manifest.approved_v2_projection) return { manifest, research, companies: legacy.map((company) => ({ ...company, lineage: { legacy: company } })) }
     const projected = await this.loadApprovedV2Projection(manifest, signal)
     if (!projected) throw new Error('approved projection inventory 누락')
     const { companies: projectedCompanies, approvedV2Sources } = projected
@@ -171,6 +200,7 @@ export class BenefitsArtifactClient {
     }))
     return {
       manifest,
+      research,
       approvedV2Sources,
       companies: legacy.map((base) => {
         const approved_v2 = projectedById.get(base.company_id)
