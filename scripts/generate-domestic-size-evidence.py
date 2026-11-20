@@ -5,8 +5,10 @@ import csv
 from datetime import date
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -17,6 +19,16 @@ MID_SHA = '962e10cb95b8b8ee274d420f4e89293dbc8da8e4ba9966178ef6af068fe6e040'
 SME_SHA = 'c8242d45872ffb1d35241b434b4dfce828a39697fc27bb6f9d8b565730bed4ba'
 NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
 CUTOFF = '2026-11-20'
+MAX_XLSX_MEMBERS = 64
+MAX_SHEET_BYTES = 200_000_000  # Pinned DART sheet: 170,339,698 bytes.
+MAX_SHEET_COMPRESSED = 30_000_000
+MAX_SHARED_BYTES = 5_000_000
+MAX_SHEET_ROWS = 130_000  # Pinned DART sheet: 120,050 rows.
+FTC_FOOTER = '* 음영표시는 상호출자제한기업집단(자산총액 12.0조 원 이상)'
+# The pinned DART edition has blank or short registry identifiers on these rows;
+# none can establish an exact BID-to-CRN bridge. Refuse any new such exclusion.
+DART_EXCLUSIONS = {'crn_blank': 1901, 'bid_blank': 747, 'both_blank': 90,
+                   'bid_invalid': 29, 'crn_invalid': 11}
 
 
 def digest(path):
@@ -41,18 +53,40 @@ def same_name(left, right):
     return left.replace('(주)', '').strip() == right.replace('(주)', '').strip()
 
 
+def bounded_member(archive, name, byte_limit, compressed_limit):
+    if len(archive.infolist()) > MAX_XLSX_MEMBERS:
+        raise ValueError('XLSX member count exceeded')
+    info = archive.getinfo(name)
+    if info.file_size > byte_limit or info.compress_size > compressed_limit:
+        raise ValueError('XLSX member size exceeded: ' + name)
+    return archive.open(info)
+
+
 def rows(archive, sheet):
     shared = []
     if 'xl/sharedStrings.xml' in archive.namelist():
-        with archive.open('xl/sharedStrings.xml') as stream:
-            for _, element in ET.iterparse(stream, events=('end',)):
+        with bounded_member(archive, 'xl/sharedStrings.xml', MAX_SHARED_BYTES, MAX_SHARED_BYTES) as stream:
+            root = None
+            for event, element in ET.iterparse(stream, events=('start', 'end')):
+                if root is None:
+                    root = element
+                if event != 'end':
+                    continue
                 if element.tag == NS + 'si':
                     shared.append(''.join(element.itertext()))
-                    element.clear()
-    with archive.open(f'xl/worksheets/sheet{sheet}.xml') as stream:
-        for _, row in ET.iterparse(stream, events=('end',)):
-            if row.tag != NS + 'row':
+                    root.clear()
+    with bounded_member(archive, f'xl/worksheets/sheet{sheet}.xml',
+                        MAX_SHEET_BYTES, MAX_SHEET_COMPRESSED) as stream:
+        sheet_data = None
+        count = 0
+        for event, row in ET.iterparse(stream, events=('start', 'end')):
+            if event == 'start' and row.tag == NS + 'sheetData':
+                sheet_data = row
+            if event != 'end' or row.tag != NS + 'row':
                 continue
+            count += 1
+            if count > MAX_SHEET_ROWS:
+                raise ValueError('XLSX row ceiling exceeded')
             values = {}
             for cell in row:
                 match = re.match(r'[A-Z]+', cell.get('r', ''))
@@ -62,60 +96,97 @@ def rows(archive, sheet):
                 value = shared[int(element.text)] if cell.get('t') == 's' and element is not None else ''.join(cell.itertext())
                 values[match.group()] = value.strip()
             yield int(row.get('r')), values
-            row.clear()
+            # Clearing just the row retains 120K empty children on sheetData.
+            if sheet_data is None:
+                raise ValueError('XLSX sheetData missing')
+            sheet_data.clear()
 
 
-def ftc_affiliates(path):
+def ftc_affiliates(path, pinned=False):
     claims = {}
     count = 0
+    footers = 0
     with zipfile.ZipFile(path) as book:
         for number, values in rows(book, 4):
-            if number <= 3 or not values.get('D', ''):
+            if number == 3:
+                if tuple(values.get(key) for key in ('B', 'C', 'D')) != ('기업집단', '소속회사명', '법인등록번호'):
+                    raise ValueError('FTC header changed')
+                continue
+            if number < 3:
+                continue
+            if values == {'A': FTC_FOOTER} and footers == 0:
+                footers += 1
                 continue
             crn, name, group = (values.get(key, '') for key in ('D', 'C', 'B'))
             if re.fullmatch(r'\d{6}-\d{7}', crn):
                 crn = crn.replace('-', '')
             if not re.fullmatch(r'\d{13}', crn) or not safe(name) or not safe(group, 80):
-                raise ValueError('FTC affiliate row schema changed')
+                raise ValueError(f'FTC affiliate row schema changed at {number}')
             count += 1
             claims.setdefault(crn, set()).add((name, group))
+    if pinned and (count, footers) != (3529, 1):
+        raise ValueError('FTC pinned row/footer counts changed')
     conflicts = {crn for crn, claims_for_crn in claims.items() if len(claims_for_crn) != 1}
     return {crn: next(iter(items)) for crn, items in claims.items() if crn not in conflicts}, conflicts, count
 
 
-def dart_bridge(path, bids):
+def dart_bridge(path, bids, pinned=False):
     mapping = {}
+    exclusions = {key: 0 for key in DART_EXCLUSIONS}
+    valid = 0
     with zipfile.ZipFile(path) as book:
-        for _, values in rows(book, 1):
+        for number, values in rows(book, 1):
+            if number == 1:
+                if (values.get('G'), values.get('H')) != ('법인등록번호', '사업자등록번호'):
+                    raise ValueError('DART header changed')
+                continue
             bid = values.get('H', '')
             if re.fullmatch(r'\d{3}-\d{2}-\d{5}', bid):
                 bid = bid.replace('-', '')
             crn = values.get('G', '')
-            if bid in bids and re.fullmatch(r'\d{13}', crn):
+            crn_ok = bool(re.fullmatch(r'\d{13}', crn))
+            bid_ok = bool(re.fullmatch(r'\d{10}', bid))
+            if not crn_ok or not bid_ok:
+                reason = ('both_blank' if not crn and not bid else
+                          'crn_blank' if not crn else 'bid_blank' if not bid else
+                          'crn_invalid' if not crn_ok else 'bid_invalid')
+                if not pinned:
+                    raise ValueError(f'DART row schema changed at {number}: {reason}')
+                exclusions[reason] += 1
+                continue
+            valid += 1
+            if bid in bids:
                 mapping.setdefault(bid, set()).add(crn)
+    if pinned and (valid != 117271 or exclusions != DART_EXCLUSIONS):
+        raise ValueError('DART pinned row/exclusion counts changed')
     return mapping
 
 
-def csv_records(path, fields, bid_key, name_key, expiry_key=None):
+def csv_records(path, fields, bid_key, name_key, expiry_key=None, pinned=False):
     result = {}
+    count = expired = 0
     with open(path, encoding='cp949', newline='') as stream:
         reader = csv.DictReader(stream)
         if reader.fieldnames != fields:
             raise ValueError('source CSV schema changed')
         for row in reader:
+            count += 1
             if None in row or any(value is None for value in row.values()):
                 raise ValueError('source CSV row schema changed')
             bid, name = row[bid_key], row[name_key].strip()
             if not re.fullmatch(r'\d{10}', bid) or not safe(name):
-                continue
+                raise ValueError(f'CSV identity schema changed at row {count + 1}')
             expiry = row[expiry_key] if expiry_key else None
             if expiry_key:
                 try:
                     if date.fromisoformat(expiry) < date.fromisoformat(CUTOFF):
+                        expired += 1
                         continue
                 except ValueError:
-                    continue
+                    raise ValueError(f'CSV expiry schema changed at row {count + 1}') from None
             result.setdefault(bid, set()).add((name, expiry))
+    if pinned and (count, expired) != ((557, 326) if expiry_key else (30, 0)):
+        raise ValueError('CSV pinned row/expiry counts changed')
     return result
 
 
@@ -163,13 +234,13 @@ def build(ftc, dart, mid, sme, selected, base, directory, output,
     if (directory_manifest['sources']['recruitment']['sha256'] != JOB_SHA or
             directory_manifest['sources']['dart_bridge']['sha256'] != hashes[1]):
         raise ValueError('directory source binding mismatch')
-    claims, conflicts, ftc_rows = ftc_affiliates(ftc)
+    claims, conflicts, ftc_rows = ftc_affiliates(ftc, pinned=hashes[0] == FTC_SHA)
     bids = {ident[7:] for ident in directory_ids if ident.startswith('KR-BIZ-')}
-    bridges = dart_bridge(dart, bids)
+    bridges = dart_bridge(dart, bids, pinned=hashes[1] == DART_SHA)
     ambiguous = {bid for bid, crns in bridges.items() if len(crns) != 1}
     claimed_crns = set().union(*bridges.values()) if bridges else set()
-    mid_claims = csv_records(mid, ['순번','사업자번호','업체명','내일채움공제 가입인원'], '사업자번호', '업체명')
-    sme_claims = csv_records(sme, ['연번','사업자번호','상호','대표자명','주소','주생산품','선정일','유효기간 종료일'], '사업자번호', '상호', '유효기간 종료일')
+    mid_claims = csv_records(mid, ['순번','사업자번호','업체명','내일채움공제 가입인원'], '사업자번호', '업체명', pinned=hashes[2] == MID_SHA)
+    sme_claims = csv_records(sme, ['연번','사업자번호','상호','대표자명','주소','주생산품','선정일','유효기간 종료일'], '사업자번호', '상호', '유효기간 종료일', pinned=hashes[3] == SME_SHA)
     candidates = {}
     name_mismatch = set()
 
@@ -241,9 +312,26 @@ def build(ftc, dart, mid, sme, selected, base, directory, output,
             if (output / filename).read_bytes() != content:
                 raise ValueError('overlay byte mismatch: '+filename)
     else:
-        output.mkdir(parents=True, exist_ok=True)
-        for filename, content in files.items():
-            (output / filename).write_bytes(content)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        # Stage/verify the pair together; rollback ordinary rename failures.
+        # This is not a crash-atomic directory exchange.
+        with tempfile.TemporaryDirectory(prefix='.domestic-size-stage-', dir=output.parent) as temp:
+            stage = Path(temp) / 'new'
+            stage.mkdir()
+            for filename, content in files.items():
+                (stage / filename).write_bytes(content)
+            if {p.name for p in stage.iterdir()} != set(files) or any(
+                    (stage / name).read_bytes() != content for name, content in files.items()):
+                raise ValueError('staged overlay byte mismatch')
+            prior = Path(temp) / 'prior'
+            if output.exists():
+                os.replace(output, prior)
+            try:
+                os.replace(stage, output)
+            except OSError:
+                if prior.exists():
+                    os.replace(prior, output)
+                raise
     return manifest
 
 

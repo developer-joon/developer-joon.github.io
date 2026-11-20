@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -59,7 +60,7 @@ class SizeTests(unittest.TestCase):
         headers = [{'A':'source title'}, {'A':'as-of'}, {'A':'연번','B':'기업집단','C':'소속회사명','D':'법인등록번호','E':'금융여부'}]
         headers += [{'A':1,'B':group,'C':name,'D':crn,'E':'비금융'} for group,name,crn in ftc_rows]
         workbook(self.ftc, 4, headers)
-        workbook(self.dart, 1, [{'G':crn,'H':bid} for crn,bid in (bridges if bridges is not None else [
+        workbook(self.dart, 1, [{'G':'법인등록번호','H':'사업자등록번호'}] + [{'G':crn,'H':bid} for crn,bid in (bridges if bridges is not None else [
             ('0000000000002','0000000002'),('0000000000004','0000000004'),
             ('0000000000005','0000000005')])])
         with self.mid.open('w', encoding='cp949', newline='') as f:
@@ -149,6 +150,77 @@ class SizeTests(unittest.TestCase):
         records = json.loads((self.output/'records.json').read_text())
         self.assertNotIn('KR-BIZ-0000000002', {r['id'] for r in records['labels']})
         self.assertNotIn('KR-CRN-0000000000002', {r['id'] for r in records['ftc_only']})
+
+    def test_shifted_dart_bridge_headers_rejected(self):
+        self.fixture()
+        workbook(self.dart, 1, [{'G':'사업자등록번호','H':'법인등록번호'},
+                                {'G':'0000000000002','H':'0000000002'}])
+        with self.assertRaisesRegex(ValueError, 'DART header'):
+            size.dart_bridge(self.dart, {'0000000002'})
+
+    def test_ftc_headers_partial_row_and_known_footer(self):
+        self.fixture()
+        workbook(self.ftc, 4, [{'A':'title'}, {'A':'date'},
+                               {'B':'기업집단','C':'법인등록번호','D':'소속회사명'},
+                               {'B':'갑','C':'Base','D':'0000000000001'}])
+        with self.assertRaisesRegex(ValueError, 'FTC header'):
+            self.build()
+        workbook(self.ftc, 4, [{'A':'title'}, {'A':'date'},
+                               {'B':'기업집단','C':'소속회사명','D':'법인등록번호'},
+                               {'B':'갑','C':'Base','D':'0000000000001'},
+                               {'B':'갑','C':'Missing CRN'},
+                               {'A':'* 음영표시는 상호출자제한기업집단(자산총액 12.0조 원 이상)'}])
+        with self.assertRaisesRegex(ValueError, 'FTC affiliate row'):
+            self.build()
+        workbook(self.ftc, 4, [{'A':'title'}, {'A':'date'},
+                               {'B':'기업집단','C':'소속회사명','D':'법인등록번호'},
+                               {'B':'갑','C':'Base','D':'0000000000001'},
+                               {'A':'* 음영표시는 상호출자제한기업집단(자산총액 12.0조 원 이상)'}])
+        self.assertEqual(self.build()['totals']['ftc_rows'], 1)
+
+    def test_csv_invalid_bid_and_expiry_are_not_skipped(self):
+        self.fixture()
+        self.mid.write_text('순번,사업자번호,업체명,내일채움공제 가입인원\n1,not-a-bid,Mid,1\n', encoding='cp949')
+        with self.assertRaisesRegex(ValueError, 'CSV identity'):
+            self.build()
+        self.fixture()
+        self.sme.write_text('연번,사업자번호,상호,대표자명,주소,주생산품,선정일,유효기간 종료일\n1,0000000009,SME,person,address,product,2025-01-01,not-a-date\n', encoding='cp949')
+        with self.assertRaisesRegex(ValueError, 'CSV expiry'):
+            self.build()
+
+    def test_xlsx_member_size_and_row_ceiling(self):
+        self.fixture()
+        with patch.object(size, 'MAX_SHEET_BYTES', 100):
+            with self.assertRaisesRegex(ValueError, 'XLSX member'):
+                self.build()
+        with patch.object(size, 'MAX_SHEET_COMPRESSED', 100):
+            with self.assertRaisesRegex(ValueError, 'XLSX member'):
+                self.build()
+        with patch.object(size, 'MAX_XLSX_MEMBERS', 0):
+            with self.assertRaisesRegex(ValueError, 'XLSX member count'):
+                self.build()
+        with patch.object(size, 'MAX_SHEET_ROWS', 2):
+            with self.assertRaisesRegex(ValueError, 'XLSX row ceiling'):
+                self.build()
+
+    def test_failed_second_publish_move_restores_pair_and_removes_stage(self):
+        self.fixture()
+        self.build()
+        original = {p.name:p.read_bytes() for p in self.output.iterdir()}
+        self.fixture(mid_rows=[('0000000007','Changed')])
+        real_replace = size.os.replace
+        calls = []
+        def fail_second(src, dest):
+            calls.append((src, dest))
+            if len(calls) == 2:
+                raise OSError('simulated publish failure')
+            return real_replace(src, dest)
+        with patch.object(size.os, 'replace', side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, 'simulated publish failure'):
+                self.build()
+        self.assertEqual({p.name:p.read_bytes() for p in self.output.iterdir()}, original)
+        self.assertEqual({p.name for p in self.root.iterdir()},
+                         {'ftc.xlsx','dart.xlsx','mid.csv','sme.csv','base.json','selected.jsonl','directory','overlay'})
 
 
 if __name__ == '__main__': unittest.main()
