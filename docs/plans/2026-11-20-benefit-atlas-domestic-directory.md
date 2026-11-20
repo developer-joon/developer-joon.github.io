@@ -33,7 +33,7 @@
 
 ### Task 2a: Dated official size-evidence overlay (separate from directory generator)
 
-**Files:** Create `scripts/generate-domestic-size-evidence.py`, focused tests, and `community-app/public/data/company-benefits/domestic-directory-v1/size-evidence.json` or a separate versioned sibling; update the directory manifest/consumer only after its schema is frozen.
+**Files:** Create `scripts/generate-domestic-size-evidence.py`, focused tests, and `community-app/public/data/company-benefits/domestic-size-evidence-v1/{manifest,records}.json`; keep the separate directory and base manifests byte-identical. Update the client/verifier only after the overlay's versioned schema is frozen.
 
 1. RED: conflicting CRN in one official FTC sheet is quarantined; a different business ID or name-only match cannot inherit an affiliate label; exact base CRN and unambiguous private BID→CRN bridge can; zero source evidence remains `unclassified`. Test source dates, hash, count and attribution.
 2. Parse private pinned FTC workbook sheet `2-2. 기업집단별 소속회사 현황` SHA-256 `080238dc8e95bc7cff0100534854d317ed6948a25a291688f451fa5be23053fb`, public source [2026-11-18 release](https://www.ftc.go.kr/www/selectBbsNttView.do?bordCd=3&key=12&nttSn=48244) with 공공누리 제1유형 attribution. Use 2026-11-02 reference date, not release date. Quarantine all 16 CRNs with contradictory same-day group/name assignment; do not inflate membership to source row count. Write only exact-ID accepted labels and source/date/attribution, no executive names or copy.
