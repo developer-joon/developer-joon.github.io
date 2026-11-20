@@ -117,9 +117,8 @@ it('renders the Benefit Atlas evidence banner outside the explorer workspace wit
   expect(hero?.nextElementSibling).toBe(workspace)
   expect(workspace).not.toContainElement(hero)
   expect(hero).toHaveTextContent('공개 근거')
-  expect(hero).toHaveTextContent('데이터 company-benefits-2026-10-31-v1')
-  expect(hero).toHaveTextContent('2000개 기업')
-  expect(hero).toHaveTextContent('생성일 2026-10-31')
+  expect(hero).toHaveTextContent('기준 명부 2,000개 기업')
+  expect(hero).not.toHaveTextContent(/2026-10-31|생성일/)
 })
 
 it('labels research coverage without claiming approved benefits', () => {
