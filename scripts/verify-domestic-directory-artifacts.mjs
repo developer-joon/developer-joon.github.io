@@ -4,6 +4,22 @@ import { open, readdir } from 'node:fs/promises'
 import path from 'node:path'
 
 const baseHash = 'cd971b70d4fb0d9860a6c9f0903610cb20d9cc8f9d98757478a1592cf82ed99b'
+// Immutable v1 source epoch. A new acquisition requires a new schema version and pins.
+const v1 = Object.freeze({
+  recruitmentSha: '16756d002508995b70f158bd279a48fb825af6a79820eb82b0009efcbeb82365',
+  dartSha: '6dcf6031e8e9eecbcefc120a7461f9a7bd3ef97c88ba55d20d80f416285de1c3',
+  shards: 73,
+  totals: Object.freeze({
+    base_aliases: 174,
+    candidate_unique_bid: 36093,
+    excluded_last_day_name_conflict: 9,
+    invalid_date_rows: 0,
+    job_rows: 84860,
+    listing_records: 36084,
+    new_records: 35910,
+    valid_named_bid_before_date_filter: 36093,
+  }),
+})
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const hex = /^[a-f0-9]{64}$/
 const own = (value, keys, label) => {
@@ -96,10 +112,14 @@ export async function verifyDomesticDirectoryArtifacts(root) {
       text(source.license, 'license', 256)
       if (!hex.test(source.sha256) || typeof source.url !== 'string' || !/^https:\/\/[a-z0-9.-]+\/[a-zA-Z0-9_./-]+$/.test(source.url)) throw Error('directory source invalid')
     }
+    if (manifest.sources.recruitment.sha256 !== v1.recruitmentSha || manifest.sources.dart_bridge.sha256 !== v1.dartSha) throw Error('directory v1 source epoch mismatch')
     const totalKeys = ['base_aliases', 'candidate_unique_bid', 'excluded_last_day_name_conflict', 'invalid_date_rows', 'job_rows', 'listing_records', 'new_records', 'valid_named_bid_before_date_filter']
     own(manifest.totals, totalKeys, 'totals')
-    for (const key of totalKeys) integer(manifest.totals[key], key)
-    if (!Array.isArray(manifest.chunks) || !manifest.chunks.length || manifest.chunks.length > 400) throw Error('directory chunk count invalid')
+    for (const key of totalKeys) {
+      integer(manifest.totals[key], key)
+      if (manifest.totals[key] !== v1.totals[key]) throw Error(`directory v1 ${key} totals mismatch`)
+    }
+    if (!Array.isArray(manifest.chunks) || manifest.chunks.length !== v1.shards) throw Error('directory v1 chunk count mismatch')
     const rootInventory = (await readdir(`/proc/self/fd/${directory.handle.fd}`)).sort()
     if (rootInventory.join('\0') !== 'manifest.json\0shards') throw Error('directory root inventory mismatch')
     const shards = await child(directory.handle, 'shards', true)

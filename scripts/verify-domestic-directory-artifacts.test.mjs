@@ -37,6 +37,40 @@ test('tracked directory validates 73 shards and 36,084 unique identities', async
   assert.match(await verifyDomesticDirectoryArtifacts(root), /36084.*73/)
 }))
 
+test('rehashed deletion of one base alias with recomputed totals is rejected', async () => fixture(async (root, directory) => {
+  const manifestPath = path.join(directory, 'manifest.json')
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  let deleted = false
+  for (const chunk of manifest.chunks) {
+    const shardPath = path.join(directory, chunk.path)
+    const shard = JSON.parse(await readFile(shardPath, 'utf8'))
+    const index = shard.records.findIndex((row) => row.id.startsWith('KR-CRN-'))
+    if (index < 0) continue
+    shard.records.splice(index, 1)
+    const bytes = Buffer.from(JSON.stringify(shard) + '\n')
+    await writeFile(shardPath, bytes)
+    chunk.bytes = bytes.length
+    chunk.count = shard.records.length
+    chunk.sha256 = hash(bytes)
+    deleted = true
+    break
+  }
+  assert.ok(deleted, 'fixture has a base alias to remove')
+  manifest.totals.base_aliases -= 1
+  manifest.totals.listing_records -= 1
+  manifest.totals.excluded_last_day_name_conflict += 1
+  await writeFile(manifestPath, JSON.stringify(manifest) + '\n')
+  await assert.rejects(verifyDomesticDirectoryArtifacts(root), /directory.*(epoch|totals|alias)/i)
+}))
+
+test('source SHA replacement in self-consistent manifest is rejected', async () => fixture(async (root, directory) => {
+  const manifestPath = path.join(directory, 'manifest.json')
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  manifest.sources.recruitment.sha256 = '0'.repeat(64)
+  await writeFile(manifestPath, JSON.stringify(manifest) + '\n')
+  await assert.rejects(verifyDomesticDirectoryArtifacts(root), /directory.*(source|epoch)/i)
+}))
+
 test('self-consistently rehashed invalid identity, source, size, and duplicate are rejected', async () => fixture(async (root, directory) => {
   const original = await readFile(path.join(directory, 'shards/0000.json'))
   const manifest = await readFile(path.join(directory, 'manifest.json'))
