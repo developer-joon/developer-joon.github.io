@@ -382,18 +382,22 @@
 }
 .benefits-research-card {
   min-width: 0;
-  padding: 18px;
+  padding: 14px 16px;
   border: 1px solid #685840;
   border-top: 3px solid #d9ad69;
   background: #211f24;
   overflow-wrap: anywhere;
 }
-.benefits-research-card .benefits-specific-card__tier { color: #ffe1a8; }
-.benefits-research-card h4 { margin: 8px 0 14px; color: #f4f8fd; line-height: 1.45; }
+.benefits-research-card h4 { margin: 0 0 8px; color: #f4f8fd; font-size: 1.1rem; line-height: 1.45; }
+.benefits-research-card__excerpt { margin: 0 0 10px; color: #ffe1a8; font-size: 0.85rem; font-weight: 700; }
+.benefits-research-card__details { border-top: 1px solid #685840; padding-top: 9px; }
+.benefits-research-card__details summary { color: #a9d9fb; cursor: pointer; font-weight: 600; }
+.benefits-research-card__details summary:focus-visible { outline: 2px solid #a9d9fb; outline-offset: 3px; }
 .benefits-research-card__scope {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 5px 10px;
+  margin-top: 12px;
 }
 .benefits-research-card__scope dd { margin: 0; }
 .benefits-research-card__limits ul { padding-left: 22px; }

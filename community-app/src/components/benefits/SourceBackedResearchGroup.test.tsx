@@ -82,6 +82,15 @@ it('puts all real KET atomic research before approved-v2 context while retaining
   expect(document.querySelectorAll('#family')).toHaveLength(1)
 })
 
+it('places employer actions before correction requests and long evidence on company detail', () => {
+  vi.spyOn(benefitsClient, 'loadAtlasCompanyDetail').mockImplementation(() => new Promise(() => {}))
+  render(<BenefitsCompanyPage {...props([lead('통근버스를 운행한다', 'commute')])} />)
+  const action = screen.getByRole('heading', { name: /통근버스를 운행한다/ })
+  const correction = screen.getByRole('link', { name: '정보 수정 요청' })
+  expect(action.compareDocumentPosition(correction) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(screen.getByRole('heading', { name: '확인된 복지 혜택 (0건)' })).toBeVisible()
+})
+
 it('hides KET detail immediately on HMM route while HMM loads, then shows only HMM detail', async () => {
   const hmm = deferred()
   vi.spyOn(benefitsClient, 'loadAtlasCompanyDetail').mockImplementation((_atlas, id) => id === ketId ? Promise.resolve(routeDetail(ketId)) : hmm.promise)
@@ -154,6 +163,38 @@ it('distinguishes completed preview review from unapproved current benefits and 
   }
 })
 
+it('leads with an atomic action and compact category/status before collapsed source and all limitations', () => {
+  render(<SourceBackedResearchGroup leads={[lead('통근버스를 운행한다', 'commute')]} />)
+  const card = screen.getByRole('article', { name: /통근버스를 운행한다/ })
+  const heading = within(card).getByRole('heading', { name: /통근버스를 운행한다/ })
+  const disclosure = within(card).getByText('적용 범위·조사 한계·출처 보기')
+  expect(card.firstElementChild).toBe(heading)
+  expect(heading.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(card).toHaveTextContent('통근버스를 운행한다')
+  expect(card).toHaveTextContent('이동·통근 · 조사 중—확인된 혜택 아님')
+  const details = disclosure.closest('details')!
+  expect(details).not.toHaveAttribute('open')
+  expect(details).toContainElement(within(card).getByRole('link', { name: '회사 공식 출처 열기' }))
+  expect(details).toHaveTextContent(`법인 ${item.legal_name}`)
+  expect(details).toHaveTextContent('직군 engineer, designer')
+  expect(details).toHaveTextContent('고용형태 full-time')
+  expect(details).toHaveTextContent('재직 조건 1년')
+  expect(details).toHaveTextContent('대상 본인')
+  expect(details).toHaveTextContent('현재성 미확인')
+  expect(details).toHaveTextContent('2026-11-19')
+  expect(details).toHaveTextContent('2025년 보고서 기반; 현재 운영 여부 미확인')
+  expect(details).toHaveTextContent('법인별 적용 여부 독립 확인 필요')
+  fireEvent.click(disclosure)
+  expect(details).toHaveAttribute('open')
+})
+
+it('uses an unverified-public-information empty state, not a benefit-absence claim', () => {
+  render(<SourceBackedResearchGroup leads={[]} />)
+  expect(screen.getByText('공개 복지 정보 미확인')).toBeVisible()
+  expect(screen.queryByText(/복지 없음/)).not.toBeInTheDocument()
+  expect(screen.queryByRole('article')).not.toBeInTheDocument()
+})
+
 it('retains real KET research cards while legacy detail is pending or fails', async () => {
   const pending = new Promise<BenefitCompanyDetailView>(() => {})
   vi.spyOn(benefitsClient, 'loadAtlasCompanyDetail').mockReturnValue(pending)
@@ -192,7 +233,8 @@ it('renders separate atomic research cards by category with full scope and limit
   expect(family).toHaveTextContent('고용형태 정규직, 계약직')
   expect(family).toHaveTextContent('조건 명시되지 않음')
   for (const card of cards) {
-    expect(card).toHaveTextContent('회사 공식 출처에 기재 · 조사 중 / 확인된 혜택 아님')
+    expect(card).toHaveTextContent('조사 중—확인된 혜택 아님')
+    expect(card.querySelector('details')).not.toHaveAttribute('open')
     expect(card).toHaveTextContent('현재성 미확인')
     expect(card).toHaveTextContent('2025년 보고서 기반; 현재 운영 여부 미확인')
     expect(card).toHaveTextContent('법인별 적용 여부 독립 확인 필요')
@@ -205,10 +247,10 @@ it('renders separate atomic research cards by category with full scope and limit
 it('renders a nonabsence empty state without inventing a card when legacy detail fails', async () => {
   vi.spyOn(benefitsClient, 'loadAtlasCompanyDetail').mockRejectedValue(new Error('offline'))
   render(<BenefitsCompanyPage {...props([])} />)
-  expect(screen.getByText('공개된 구체 혜택 자료 미확인 · 복지 없음 아님')).toBeVisible()
+  expect(screen.getByText('공개 복지 정보 미확인')).toBeVisible()
   expect(screen.queryByRole('article', { name: /조사 중/ })).not.toBeInTheDocument()
   await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('상세 근거를 불러올 수 없습니다'))
-  expect(screen.getByText('공개된 구체 혜택 자료 미확인 · 복지 없음 아님')).toBeVisible()
+  expect(screen.getByText('공개 복지 정보 미확인')).toBeVisible()
 })
 
 it('shows the first 2025-report limitation on every actual KET research card', () => {
