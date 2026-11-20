@@ -46,7 +46,8 @@ class SizeTests(unittest.TestCase):
         self.directory.mkdir()
         (self.directory / 'shards').mkdir()
         self.output = self.root / 'overlay'
-        self.base.write_text('{"company_count":1}\n')
+        self.base.write_text(json.dumps({'company_shards': {
+            'KR-CRN-0000000000001': {'company_id': 'KR-CRN-0000000000001'}}}) + '\n')
         self.selected.write_text(json.dumps({'registry_id':'KR-CRN-0000000000001'})+'\n')
 
     def fixture(self, ftc_rows=None, bridges=None, mid_rows=None, sme_rows=None, listing=None):
@@ -96,6 +97,20 @@ class SizeTests(unittest.TestCase):
         self.assertIn('공공누리', manifest['sources']['ftc']['license'])
         self.assertEqual(self.build(check=True), manifest)
         self.assertNotIn('private person', (self.output/'records.json').read_text())
+
+    def test_selected_must_match_base_manifest_before_output_changes(self):
+        self.fixture()
+        self.build()
+        original = {p.name: p.read_bytes() for p in self.output.iterdir()}
+        base = {'registry_id': 'KR-CRN-0000000000001'}
+        foreign = {'registry_id': 'KR-CRN-0000000000006'}  # FTC-only affiliate
+        for rows in ([base, foreign], [foreign], [base, base]):
+            with self.subTest(rows=rows):
+                self.selected.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+                with self.assertRaisesRegex(ValueError, 'selected base membership mismatch') as error:
+                    self.build()
+                self.assertNotIn('0000000000006', str(error.exception))
+                self.assertEqual({p.name: p.read_bytes() for p in self.output.iterdir()}, original)
 
     def test_simultaneous_classes_quarantined_and_tampering_rejected(self):
         self.fixture(mid_rows=[('0000000009','SME')])

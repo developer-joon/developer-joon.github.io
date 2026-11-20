@@ -152,10 +152,12 @@ def build(ftc, dart, mid, sme, selected, base, directory, output,
             raise ValueError('private input digest mismatch')
     base_sha = digest(base)
     directory_sha = digest(directory / 'manifest.json')
-    base_ids = {json.loads(line)['registry_id'] for line in Path(selected).read_text().splitlines()
-                if line and json.loads(line)['registry_id'].startswith('KR-CRN-')}
-    if not base_ids:
-        raise ValueError('empty selected base')
+    base_ids = {ident for ident in json.loads(Path(base).read_bytes())['company_shards']
+                if re.fullmatch(r'KR-CRN-\d{13}', ident)}
+    selected_ids = [json.loads(line)['registry_id'] for line in Path(selected).read_text().splitlines() if line]
+    if (not base_ids or len(selected_ids) != len(base_ids) or
+            len(set(selected_ids)) != len(selected_ids) or set(selected_ids) != base_ids):
+        raise ValueError('selected base membership mismatch')
     directory_ids = accepted_directory(Path(directory), base_sha)
     directory_manifest = json.loads((Path(directory) / 'manifest.json').read_bytes())
     if (directory_manifest['sources']['recruitment']['sha256'] != JOB_SHA or
