@@ -171,6 +171,18 @@ test('rejects a missing domestic search route from an otherwise valid site', asy
   })
 })
 
+test('rejects a domestic directory canonical that appears only in a comment', async () => {
+  await withArtifact(async (root) => {
+    const route = path.join(root, 'community/benefits/directory/index.html')
+    const expected = '<link rel="canonical" href="https://www.breadlab.ai/community/benefits/directory/">'
+    const html = await readFile(route, 'utf8')
+    await writeFile(route, html.replace(expected, `<link rel="canonical" href="https://www.breadlab.ai/stale/">\n<!-- ${expected} -->`))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /community\/benefits\/directory\/index\.html is missing canonical URL/)
+  })
+})
+
 for (const [field, oldValue, expected] of [
   ['title', '국내 기업 검색 · Benefit Atlas', /community\/benefits\/directory\/index\.html has unexpected document title/],
   ['canonical', 'https://www.breadlab.ai/community/benefits/directory/', /community\/benefits\/directory\/index\.html is missing canonical URL/],

@@ -229,6 +229,7 @@ function skipRawTextElement(html, lowerHtml, position, name) {
 function extractDocumentTitle(html) {
   const lowerHtml = html.toLowerCase()
   const titles = []
+  const canonicalLinks = []
   let position = 0
   const inertStack = []
   let htmlStarts = 0
@@ -373,11 +374,16 @@ function extractDocumentTitle(html) {
     }
     if (tag.name === 'title') {
       const closingTag = findRawTextClosingTag(html, lowerHtml, tagEnd + 1, tag.name)
-      if (!closingTag || closingTag.invalid) return { error: 'unclosed-title', titles }
+      if (!closingTag || closingTag.invalid) return { error: 'unclosed-title', titles, canonicalLinks }
       titles.push(html.slice(tagEnd + 1, closingTag.start).trim())
       if (!inHead) error ??= 'title-outside-head'
       position = closingTag.end
       continue
+    }
+
+    if (tag.name === 'link' && inHead &&
+        (tag.attributes.get('rel') ?? '').toLowerCase().split(htmlWhitespaceSequence).includes('canonical')) {
+      canonicalLinks.push(tag.attributes.get('href'))
     }
 
     position = tagEnd + 1
@@ -385,7 +391,7 @@ function extractDocumentTitle(html) {
 
   if (htmlStarts !== 1 || htmlEnds !== 1 || inHtml) error ??= 'html'
   if (headStarts !== 1 || headEnds !== 1 || inHead) error ??= 'head'
-  return { error, titles }
+  return { error, titles, canonicalLinks }
 }
 
 function hasCommunityAjaxOptOut(html) {
@@ -649,7 +655,13 @@ async function main() {
     } else if (documentTitle.titles[0] !== expectedTitle) {
       fail(`${relativePath} has unexpected document title: ${JSON.stringify(documentTitle.titles[0])} (expected ${JSON.stringify(expectedTitle)})`)
     }
-    assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'canonical URL')
+    if (relativePath === 'community/benefits/directory/index.html') {
+      if (documentTitle.canonicalLinks.length !== 1 || documentTitle.canonicalLinks[0] !== canonical) {
+        fail(`${relativePath} is missing canonical URL in the document head`)
+      }
+    } else {
+      assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'canonical URL')
+    }
   }
   const home = await readText('index.html')
   if (!hasCommunityAjaxOptOut(home)) {
