@@ -1,6 +1,6 @@
 import { createHash, webcrypto } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DomesticSearchIndexClient } from './domesticSearchIndexClient'
 import { selectDomestic } from './domesticDirectoryClient'
 
@@ -13,6 +13,46 @@ const client = (bytes: Uint8Array, calls: string[]) => new DomesticSearchIndexCl
 }, webcrypto.subtle as SubtleCrypto)
 
 describe('one-request domestic search snapshot', () => {
+  afterEach(() => { vi.useRealTimers() })
+  it('settles a request that ignores abort at the end-to-end deadline', async () => {
+    vi.useFakeTimers()
+    const request = vi.fn((path: string, signal?: AbortSignal): Promise<Response> => { void path; void signal; return new Promise(() => {}) })
+    const load = new DomesticSearchIndexClient(request, webcrypto.subtle as SubtleCrypto).load()
+    const rejection = expect(load).rejects.toThrow(/시간 초과/)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await rejection
+    expect(request.mock.calls[0][1]?.aborted).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('settles a stalled stream at the same deadline and cancels its reader', async () => {
+    vi.useFakeTimers()
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>({ cancel })
+    const request = vi.fn(async () => new Response(body))
+    const load = new DomesticSearchIndexClient(request, webcrypto.subtle as SubtleCrypto).load()
+    const rejection = expect(load).rejects.toThrow(/시간 초과/)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await rejection
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('caller cancellation settles an uncooperative request before the deadline', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const request = vi.fn((path: string, signal?: AbortSignal): Promise<Response> => { void path; void signal; return new Promise(() => {}) })
+    const load = new DomesticSearchIndexClient(request, webcrypto.subtle as SubtleCrypto).load(controller.signal)
+    const rejection = expect(load).rejects.toThrow(/abort/i)
+    controller.abort()
+    await rejection
+    expect(request.mock.calls[0][1]?.aborted).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+  it('cleans the deadline after a successful snapshot', async () => {
+    vi.useFakeTimers()
+    const result = await client(original(), []).load()
+    expect(result.entries).toHaveLength(40053)
+    expect(vi.getTimerCount()).toBe(0)
+  })
   it('loads exactly 40,053 distinct identities with 174 base aliases and no Atlas requests', async () => {
     const calls: string[] = []
     const result = await client(original(), calls).load()

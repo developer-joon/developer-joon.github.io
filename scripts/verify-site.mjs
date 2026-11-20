@@ -34,6 +34,7 @@ const requiredFiles = [
   'community/benefits/index.html',
   'community/benefits/fit/index.html',
   'community/benefits/company/index.html',
+  'community/benefits/directory/index.html',
   'community/benefits/methodology/index.html',
   'community/benefits/correction/index.html',
   'community/benefits/my-corrections/index.html',
@@ -630,6 +631,7 @@ async function main() {
       'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm',
     ],
     ['404.html', 'Page Not Found – Ria & Seoa PaPa', 'https://www.breadlab.ai/404.html'],
+    ['community/benefits/directory/index.html', '국내 기업 검색 · Benefit Atlas', 'https://www.breadlab.ai/community/benefits/directory/'],
   ]
   for (const [relativePath, expectedTitle, canonical] of routeChecks) {
     const html = await readText(relativePath)

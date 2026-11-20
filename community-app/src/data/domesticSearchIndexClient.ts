@@ -9,15 +9,42 @@ export class DomesticSearchIndexClient {
   constructor(private request: (url: string, signal?: AbortSignal) => Promise<Response> = (path, signal) => fetch(path, { signal, credentials: 'omit', redirect: 'error' }), private subtle: SubtleCrypto = crypto.subtle) {}
   async load(signal?: AbortSignal) {
     signal?.throwIfAborted()
+    const controller = new AbortController()
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let rejectDeadline!: (error: unknown) => void
+    const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject })
+    const cancel = () => { void reader?.cancel().catch(() => {}) }
+    const abort = () => {
+      controller.abort(signal?.reason)
+      cancel()
+      rejectDeadline(signal?.reason)
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+    const timer = setTimeout(() => {
+      controller.abort()
+      cancel()
+      rejectDeadline(Error('snapshot 시간 초과'))
+    }, 30_000)
+    try {
+      return await Promise.race([this.readSnapshot(controller.signal, value => { reader = value }), deadline])
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+    }
+  }
+  private async readSnapshot(signal: AbortSignal, setReader: (reader: ReadableStreamDefaultReader<Uint8Array>) => void) {
     const response = await this.request(url, signal)
+    if (signal.aborted) {
+      void response.body?.cancel().catch(() => {})
+      signal.throwIfAborted()
+    }
     if (!response.ok) throw Error('국내 기업 snapshot 요청 실패')
     const declared = response.headers.get('content-length')
     if (declared && (!/^\d+$/.test(declared) || Number(declared) > maxBytes)) throw Error('snapshot 크기 초과')
     const reader = response.body?.getReader()
     if (!reader) throw Error('snapshot 본문 없음')
+    setReader(reader)
     const chunks: Uint8Array[] = []; let size = 0
-    const abort = () => { void reader.cancel().catch(() => {}) }
-    signal?.addEventListener('abort', abort, { once: true })
     try {
       while (true) {
         signal?.throwIfAborted()
@@ -29,7 +56,7 @@ export class DomesticSearchIndexClient {
       }
       signal?.throwIfAborted()
     } catch (error) { void reader.cancel().catch(() => {}); throw error }
-    finally { signal?.removeEventListener('abort', abort) }
+
     const bytes = new Uint8Array(size); let offset = 0
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
     if (await hex(bytes, this.subtle) !== pinnedSha256) throw Error('snapshot 지문 불일치')

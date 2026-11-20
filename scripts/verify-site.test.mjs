@@ -79,6 +79,7 @@ async function makeValidArtifact() {
   for (const [part,title] of [['','복지 현황'],['fit/','조건 탐색'],['company/','기업 근거 상세'],['methodology/','조사 기준·정정 이력']]) {
     await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
   }
+  await put(root, 'community/benefits/directory/index.html', '<!doctype html><html lang="ko"><head><title>국내 기업 검색 · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/directory/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
   await put(root, snapshotPath, `<title>Published snapshot example | Breadlab 커뮤니티</title><link rel="canonical" href="${snapshotUrl}"><meta property="og:type" content="article"><meta property="og:url" content="${snapshotUrl}"><script type="application/ld+json">{"@type":"BlogPosting"}</script>`)
   await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 Google OAuth 로그인은 Supabase Auth를 사용합니다. 안정적인 provider subject는 인증 계층에서만 사용하고 공개 프로필에는 개인정보가 아닌 결정적 로그인 이름, 최대 120자의 Google 표시 이름, 최대 2,048자의 HTTPS 프로필 이미지 URL, 사용자 ID와 로그인 세션 정보를 처리합니다. 이메일과 provider access token 또는 refresh token은 공개 프로필에 저장하지 않습니다. 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
@@ -160,6 +161,30 @@ test('accepts a minimal valid generated artifact', async () => {
     assert.equal(result.status, 0, result.stderr)
   })
 })
+
+test('rejects a missing domestic search route from an otherwise valid site', async () => {
+  await withArtifact(async (root) => {
+    await rm(path.join(root, 'community/benefits/directory/index.html'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /missing required artifact: community\/benefits\/directory\/index\.html/)
+  })
+})
+
+for (const [field, oldValue, expected] of [
+  ['title', '국내 기업 검색 · Benefit Atlas', /community\/benefits\/directory\/index\.html has unexpected document title/],
+  ['canonical', 'https://www.breadlab.ai/community/benefits/directory/', /community\/benefits\/directory\/index\.html is missing canonical URL/],
+]) {
+  test(`rejects a wrong domestic search ${field}`, async () => {
+    await withArtifact(async (root) => {
+      const route = path.join(root, 'community/benefits/directory/index.html')
+      await writeFile(route, (await readFile(route, 'utf8')).replace(oldValue, 'stale'))
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, expected)
+    })
+  })
+}
 
 for (const [relativePath, staleTitle] of [
   ['index.html', '<title>Ria & Seoa PaPa – 0 → 1</title>'],

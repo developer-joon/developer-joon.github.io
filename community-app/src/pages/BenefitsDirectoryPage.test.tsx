@@ -35,6 +35,18 @@ describe('Korean domestic search', () => {
       expect(atlas).not.toHaveBeenCalled()
     } finally { view.unmount(); load.mockRestore(); atlas.mockRestore(); push.mockRestore(); replace.mockRestore(); window.history.replaceState({}, '', '/') }
   })
+  it('shows the existing error state and retries after the snapshot deadline', async () => {
+    const load = vi.spyOn(domesticSearchIndexClient, 'load')
+      .mockRejectedValueOnce(Error('snapshot 시간 초과'))
+      .mockResolvedValueOnce({ entries, research, edition: '2026-03-06', totals: { records: 2, new_records: 1, base_aliases: 0, ftc_only: 0, research_companies: 1, research_leads: 3 }, approved: 0 })
+    const view = render(<BenefitsDirectoryPage search="" />)
+    try {
+      expect(await screen.findByRole('alert')).toHaveTextContent('일부 자료나 예시 자료로 대체하지 않습니다')
+      fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
+      expect(await screen.findByRole('searchbox', { name: '기업명 검색' })).toBeInTheDocument()
+      expect(load).toHaveBeenCalledTimes(2)
+    } finally { view.unmount(); load.mockRestore() }
+  })
   it('uses the canonical base name and adds missing base identities exactly once', () => {
     const merged = mergeDomesticEntries([entries[0], { ...entries[1], name: '채용 관측상의 다른 명칭', source_type: 'dated_recruitment_observation' }], [{ id: entries[1].id, name: '가상복지기업' }, { id: 'KR-CRN-9999999999999', name: '기본 명부 기업' }], new Map())
     expect(merged.map(x => x.name)).toEqual(['가상채용기업', '가상복지기업', '기본 명부 기업'])
