@@ -8,6 +8,19 @@ const pinnedSources = {
   mid: '962e10cb95b8b8ee274d420f4e89293dbc8da8e4ba9966178ef6af068fe6e040',
   sme: 'c8242d45872ffb1d35241b434b4dfce828a39697fc27bb6f9d8b565730bed4ba',
 } as const
+// Immutable v1 artifact epoch; changing it requires an explicit client contract update.
+const pinnedArtifacts = {
+  base: 'cd971b70d4fb0d9860a6c9f0903610cb20d9cc8f9d98757478a1592cf82ed99b',
+  directory: '3ffb2259bb618e70c820005aebea1be24422d831faea908121d4884406c7ea0b',
+  overlay: 'a75a6edb58e1c4258fd79451cb64efdc936fcd1cfaaccb0cd2391267b86adbd4',
+  records: 'e9f3eb2e877459815b1ce075fb4c4dc834d762accac6538d6c7c4aec31b6bd43',
+  shards: 73,
+  listing: 36084,
+  newRecords: 35910,
+  aliases: 174,
+  labels: 402,
+  ftcOnly: 3143,
+} as const
 const sha = z.string().regex(/^[0-9a-f]{64}$/)
 const date = z.iso.date()
 const text = z.string().min(1).max(120).refine(s => !/[<>]/.test(s) && [...s].every(c => c.charCodeAt(0) > 31 && c.charCodeAt(0) !== 127))
@@ -74,17 +87,22 @@ export class DomesticDirectoryClient {
   async load(baseIds: Set<string>, signal?: AbortSignal) {
     signal?.throwIfAborted()
     const baseBytes = await this.raw(`${prefix}manifest.json`, 12_000_000, signal)
+    assert(await digest(baseBytes, this.subtle) === pinnedArtifacts.base, '기본 manifest 지문')
     const base = z.object({ company_shards: z.record(z.string(), z.unknown()), company_count: z.literal(2000) }).parse(this.json(baseBytes))
     const canonicalIds = Object.keys(base.company_shards).filter(x => x.startsWith('KR-CRN-'))
     assert(canonicalIds.length === 1000 && canonicalIds.every(x => /^KR-CRN-[0-9]{13}$/.test(x)), '기본 기업 집합')
     assert(baseIds.size === 1000 && canonicalIds.every(x => baseIds.has(x)), '기본 기업 ID 불일치')
     const baseHash = await digest(baseBytes, this.subtle)
     const directoryBytes = await this.raw(`${prefix}domestic-directory-v1/manifest.json`, 100_000, signal)
+    assert(await digest(directoryBytes, this.subtle) === pinnedArtifacts.directory, 'directory manifest 지문')
     const directory = directorySchema.parse(this.json(directoryBytes))
+    assert(directory.chunks.length === pinnedArtifacts.shards && directory.totals.listing_records === pinnedArtifacts.listing && directory.totals.new_records === pinnedArtifacts.newRecords && directory.totals.base_aliases === pinnedArtifacts.aliases, 'directory 고정 합계')
     assert(directory.base_manifest_sha256 === baseHash, '기본 manifest 결합')
     assert(directory.sources.recruitment.sha256 === pinnedSources.recruitment && directory.sources.dart_bridge.sha256 === pinnedSources.dart_bridge, '채용/중복제외 원본 지문')
     const overlayBytes = await this.raw(`${prefix}domestic-size-evidence-v1/manifest.json`, 100_000, signal)
+    assert(await digest(overlayBytes, this.subtle) === pinnedArtifacts.overlay, '규모 manifest 지문')
     const overlay = overlaySchema.parse(this.json(overlayBytes))
+    assert(overlay.records.sha256 === pinnedArtifacts.records && overlay.records.labels === pinnedArtifacts.labels && overlay.records.ftc_only === pinnedArtifacts.ftcOnly && overlay.records.count === pinnedArtifacts.labels + pinnedArtifacts.ftcOnly && overlay.totals.labels === pinnedArtifacts.labels && overlay.totals.ftc_only === pinnedArtifacts.ftcOnly && overlay.totals.records === pinnedArtifacts.labels + pinnedArtifacts.ftcOnly, '규모 고정 합계')
     assert(overlay.base_manifest_sha256 === baseHash && overlay.directory_manifest_sha256 === await digest(directoryBytes, this.subtle), '규모 manifest 결합')
     assert(overlay.sources.ftc.sha256 === pinnedSources.ftc && overlay.sources.mid?.sha256 === pinnedSources.mid && overlay.sources.sme?.sha256 === pinnedSources.sme && overlay.sources.dart_bridge?.sha256 === pinnedSources.dart_bridge && overlay.sources.recruitment?.sha256 === pinnedSources.recruitment, '규모 원본 지문')
     assert(overlay.records.path === 'records.json' && overlay.records.bytes <= 1_000_000, '규모 records 경로/크기')
@@ -115,7 +133,9 @@ export class DomesticDirectoryClient {
         else { aliases++; assert(canonicalIds.includes(row.id), '기본 명부 밖 CRN') }
       }
       assert(records.length === directory.totals.listing_records && newCount === directory.totals.new_records && aliases === directory.totals.base_aliases, 'directory 합계')
+      assert(records.length === pinnedArtifacts.listing && newCount === pinnedArtifacts.newRecords && aliases === pinnedArtifacts.aliases, 'directory 고정 합계')
       const sizeDoc = z.strictObject({ labels: z.array(label).max(10000), ftc_only: z.array(affiliate).max(10000) }).parse(await this.checked(`${prefix}domestic-size-evidence-v1/records.json`, overlay.records, 1_000_000, controller.signal))
+      assert(sizeDoc.labels.length === pinnedArtifacts.labels && sizeDoc.ftc_only.length === pinnedArtifacts.ftcOnly, '규모 고정 합계')
       assert(sizeDoc.labels.length === overlay.records.labels && sizeDoc.ftc_only.length === overlay.records.ftc_only && sizeDoc.labels.length + sizeDoc.ftc_only.length === overlay.records.count && overlay.totals.labels === sizeDoc.labels.length && overlay.totals.ftc_only === sizeDoc.ftc_only.length && overlay.totals.records === overlay.records.count, '규모 건수')
       const allIds = new Set([...seen, ...canonicalIds]); const used = new Set<string>()
       for (const item of [...sizeDoc.labels, ...sizeDoc.ftc_only]) {
