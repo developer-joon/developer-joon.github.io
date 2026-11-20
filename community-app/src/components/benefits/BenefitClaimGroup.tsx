@@ -22,7 +22,7 @@ export function BenefitClaimGroup({ category, outcome, claims, sectionId = true,
   </section>
   const status = outcome.kind === 'evidenced' ? outcome.status : 'insufficient_evidence'
   return <section id={sectionId ? category : undefined} tabIndex={-1} aria-label={`${categoryLabels[category]} 근거`}><h3>{categoryLabels[category]} · {hideUnreviewedClaims ? '기존 조사 자료' : outcomeLabels[status]}</h3>
-    {outcome.kind === 'insufficient_evidence' ? <><p>{outcome.nonabsence_notice}</p><p>사유: {outcome.reason_code} · 조사일: {outcome.searched_at?.slice(0, 10) ?? '미조사'}</p></> : <p>{hideUnreviewedClaims ? '기존 조사 기록' : '확인된 claim'} {outcome.claim_count}건 · 적용 국가 {outcome.scope.countries.join(', ') || '명시되지 않음'} · 법인 {outcome.scope.legal_entities.join(', ') || '명시되지 않음'} · 직군 {outcome.scope.roles.join(', ') || '명시되지 않음'} · 고용형태 {outcome.scope.employment_types.join(', ') || '명시되지 않음'}</p>}
+    {outcome.kind === 'insufficient_evidence' ? <p>{outcome.nonabsence_notice}</p> : <p>{hideUnreviewedClaims ? '기존 조사 기록' : '확인된 claim'} {outcome.claim_count}건 · 적용 국가 {outcome.scope.countries.join(', ') || '명시되지 않음'} · 법인 {outcome.scope.legal_entities.join(', ') || '명시되지 않음'} · 직군 {outcome.scope.roles.join(', ') || '명시되지 않음'} · 고용형태 {outcome.scope.employment_types.join(', ') || '명시되지 않음'}</p>}
     {claimCards}
   </section>
 }

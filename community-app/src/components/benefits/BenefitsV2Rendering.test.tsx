@@ -7,7 +7,7 @@ import { BenefitClaimGroup } from './BenefitClaimGroup'
 import { BenefitV2EvidenceGroup, BenefitV2EvidenceSection } from './BenefitV2EvidenceGroup'
 import { CompanyCompareTray } from './CompanyCompareTray'
 import { FitResultList } from './FitResultList'
-import { categories, detailSchema, type BenefitCompanyView, type CategoryOutcome, type CompanyListing, type Detail } from '../../types/benefits'
+import { categories, categoryOutcomeSchema, detailSchema, type BenefitCompanyView, type CategoryOutcome, type CompanyListing, type Detail } from '../../types/benefits'
 import { parseQuery } from '../../lib/benefitsQueryState'
 const notice = '이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다.'
 const insufficient = (category_id: (typeof categories)[number]): CategoryOutcome => ({ kind: 'insufficient_evidence', category_id, reason_code: 'not_researched', nonabsence_notice: notice, searched_source_ids: [], searched_at: null })
@@ -69,6 +69,14 @@ it('keeps legacy raw benefit text out of the detail when a research-only project
   expect(screen.queryByText(/확인된 claim/)).not.toBeInTheDocument()
 })
 
+it('keeps the nonabsence notice without exposing raw reason codes or search dates', () => {
+  const outcome = categoryOutcomeSchema.parse({
+    ...insufficient('leave'), reason_code: 'searched_not_found', searched_at: '2026-11-20T00:00:00Z',
+  })
+  render(<BenefitClaimGroup category="leave" outcome={outcome} claims={[]} hideUnreviewedClaims />)
+  expect(screen.getByText(notice)).toBeVisible()
+  expect(screen.queryByText(/사유:|조사일:|searched_not_found|2026-11-20/)).not.toBeInTheDocument()
+})
 it('renders confirmed, bounded and insufficient outcomes with source-scope facts', () => {
   render(<BenefitsHeatmapTable companies={[company(1)]} selectedCategories={[]} compare={[]} toggle={() => undefined} link={() => '#'} />)
   expect(screen.getByText('확인됨')).toBeVisible(); expect(screen.getByText('범위 제한 확인')).toBeVisible(); expect(screen.getAllByText('근거 부족')).toHaveLength(8); expect(screen.getAllByText(/KR/).length).toBeGreaterThan(0)
