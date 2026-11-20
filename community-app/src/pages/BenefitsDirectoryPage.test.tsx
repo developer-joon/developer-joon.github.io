@@ -1,5 +1,8 @@
-import { render, screen, fireEvent } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { domesticSearchIndexClient } from '../data/domesticSearchIndexClient'
+import { benefitsClient } from '../data/benefitsArtifactClient'
+import { BenefitsDirectoryPage } from './BenefitsDirectoryPage'
 import { benefitsRoute } from '../benefitsRoutes'
 import { DirectoryResults, mergeDomesticEntries } from './BenefitsDirectoryPage'
 import type { DomesticEntry } from '../data/domesticDirectoryClient'
@@ -10,6 +13,28 @@ const entries: DomesticEntry[] = [
 ]
 const research = new Map([['KR-CRN-1234567890123', 3]])
 describe('Korean domestic search', () => {
+  it('loads only the snapshot and replaces URL on typing while pushState remains for explicit filters', async () => {
+    const load = vi.spyOn(domesticSearchIndexClient, 'load').mockResolvedValue({ entries, research, edition: '2026-03-06', totals: { records: 2, new_records: 1, base_aliases: 0, ftc_only: 0, research_companies: 1, research_leads: 3 }, approved: 0 })
+    const atlas = vi.spyOn(benefitsClient, 'loadAtlas')
+    const push = vi.spyOn(window.history, 'pushState')
+    const replace = vi.spyOn(window.history, 'replaceState')
+    const view = render(<BenefitsDirectoryPage search="" />)
+    try {
+      await waitFor(() => expect(screen.getByRole('searchbox', { name: '기업명 검색' })).toBeInTheDocument())
+      fireEvent.change(screen.getByRole('searchbox'), { target: { value: '가' } })
+      fireEvent.change(screen.getByRole('searchbox'), { target: { value: '가상' } })
+      expect(push).not.toHaveBeenCalled()
+      expect(replace).toHaveBeenCalledTimes(2)
+      expect(window.location.search).toContain('q=')
+      fireEvent.change(screen.getByRole('combobox', { name: '기업 규모 근거' }), { target: { value: 'sme' } })
+      expect(push).toHaveBeenCalledTimes(1)
+      window.history.replaceState({}, '', '/community/benefits/directory/?q=%EA%B0%80%EC%83%81%EC%B1%84%EC%9A%A9')
+      fireEvent.popState(window)
+      await waitFor(() => expect(screen.getByRole('searchbox')).toHaveValue('가상채용'))
+      expect(load).toHaveBeenCalledTimes(1)
+      expect(atlas).not.toHaveBeenCalled()
+    } finally { view.unmount(); load.mockRestore(); atlas.mockRestore(); push.mockRestore(); replace.mockRestore(); window.history.replaceState({}, '', '/') }
+  })
   it('uses the canonical base name and adds missing base identities exactly once', () => {
     const merged = mergeDomesticEntries([entries[0], { ...entries[1], name: '채용 관측상의 다른 명칭', source_type: 'dated_recruitment_observation' }], [{ id: entries[1].id, name: '가상복지기업' }, { id: 'KR-CRN-9999999999999', name: '기본 명부 기업' }], new Map())
     expect(merged.map(x => x.name)).toEqual(['가상채용기업', '가상복지기업', '기본 명부 기업'])

@@ -65,6 +65,10 @@
 2. Implement compact action-first card UI; source URL, observed time, scope and all limitations remain accessible in expandable details. The verified count remains zero unless a distinct independent approval passes.
 3. Review unpublished wave-5 candidates separately for legal owner and reuse rights. Only add eligible exact-claim paraphrases to `source-backed-benefits.jsonl`, regenerate research sibling, and run old verifier if the independent rights review yields concrete approved research-only rows. Do not pad counts from rejected/ambiguous candidates. Re-run focused UI tests.
 
+### Quality addendum: bounded first-paint index
+
+The dedicated route must not await Atlas plus 73 directory requests. Generate `domestic-search-index-v1/index.json` solely from already public, digest-verified base listings, recruitment shards, size records and research counts using `node scripts/generate-domestic-search-index.mjs`; run its real `--check` to compare all emitted bytes. Pin the raw SHA-256 and byte ceiling both in the browser and independent `verify-site` hook, retaining old source gates and exact named sibling inventory. The bounded 8,392,604-byte raw / 909,919-byte gzip artifact has 40,053 unique IDs, 174 nonduplicated base aliases, 128 research-only leads across 12 companies and zero approved benefits. A self-rehashed deletion, missing snapshot, or symlink must fail closed. The browser makes one data request for initial results; it caches normalized names, defers scans, replaces URL state during typing, pushes explicit controls, and restores deep links via popstate. No private acquisition input is needed to reproduce this join.
+
 ### Task 6: Revision-bound verification and one remote handoff
 
 **Files:** No source changes except fixes found by tests/review.

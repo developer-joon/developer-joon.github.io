@@ -33,9 +33,13 @@ export type DomesticEntry = { id: string; name: string; source_type: 'dated_recr
 export type SizeFilter = 'all' | 'large' | 'mid' | 'sme' | 'medium' | 'small' | 'unknown'
 export type DomesticState = { q: string; size: SizeFilter; benefits: boolean; page: number }
 
+const normalizedNames = new WeakMap<DomesticEntry[], string[]>()
 export function selectDomestic(entries: DomesticEntry[], state: DomesticState, research: Map<string, number>) {
-  const match = entries.filter(entry => {
-    if (!entry.name.normalize('NFKC').toLocaleLowerCase().includes(state.q.trim().normalize('NFKC').toLocaleLowerCase())) return false
+  let names = normalizedNames.get(entries)
+  if (!names) { names = entries.map(entry => entry.name.normalize('NFKC').toLocaleLowerCase()); normalizedNames.set(entries, names) }
+  const query = state.q.trim().normalize('NFKC').toLocaleLowerCase()
+  const match = entries.filter((entry, index) => {
+    if (!names[index].includes(query)) return false
     if (state.benefits && !(entry.id.startsWith('KR-CRN-') && research.has(entry.id))) return false
     const kind = entry.size_class
     return state.size === 'all' || (state.size === 'large' && kind === 'large_affiliate') || (state.size === 'mid' && kind === 'mid_history') || (state.size === 'sme' && ['sme_unspecified', 'medium', 'small'].includes(kind)) || (state.size === 'unknown' && kind === 'unclassified') || (state.size === 'medium' && kind === 'medium') || (state.size === 'small' && kind === 'small')

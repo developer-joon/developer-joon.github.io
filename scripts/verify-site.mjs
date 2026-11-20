@@ -4,6 +4,7 @@ import { verifyBenefitsArtifacts } from './verify-benefits-artifacts.mjs'
 import { verifyBenefitsResearchArtifacts } from './verify-benefits-research-artifacts.mjs'
 import { verifyDomesticDirectoryArtifacts } from './verify-domestic-directory-artifacts.mjs'
 import { verifyDomesticSizeArtifacts } from './verify-domestic-size-artifacts.mjs'
+import { verifyDomesticSearchIndex } from './verify-domestic-search-index.mjs'
 import { createReadStream } from 'node:fs'
 import { lstat, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
@@ -698,8 +699,9 @@ async function main() {
     try { console.log(await verifyBenefitsResearchArtifacts(siteRoot)) } catch (error) { fail(`research artifacts: ${error.message}`) }
     try { console.log(await verifyDomesticDirectoryArtifacts(siteRoot)) } catch (error) { fail(`directory artifacts: ${error.message}`) }
     try { console.log(await verifyDomesticSizeArtifacts(siteRoot)) } catch (error) { fail(`size artifacts: ${error.message}`) }
+    try { console.log(await verifyDomesticSearchIndex(siteRoot)) } catch (error) { fail(`search index artifacts: ${error.message}`) }
   }
-  try { console.log(await verifyBenefitsArtifacts(siteRoot, { allowResearchSibling: hasBase, allowDirectorySibling: hasBase, allowSizeSibling: hasBase })) } catch(error) { fail(`benefits artifacts: ${error.message}`) }
+  try { console.log(await verifyBenefitsArtifacts(siteRoot, { allowResearchSibling: hasBase, allowDirectorySibling: hasBase, allowSizeSibling: hasBase, allowSearchIndexSibling: hasBase })) } catch(error) { fail(`benefits artifacts: ${error.message}`) }
   const communityShells = [
     ['community/index.html', '<title>Community · Ria &amp; Seoa PaPa</title>'],
     ['community/write/index.html', '<title>글쓰기 · Ria &amp; Seoa PaPa</title>'],

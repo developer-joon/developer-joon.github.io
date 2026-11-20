@@ -266,6 +266,7 @@ async function assertExactReleaseRootInventoryBound(releaseRoot, manifest, optio
   if (options.allowResearchSibling === true) expected.set('research-leads-v1', 'directory')
   if (options.allowDirectorySibling === true) expected.set('domestic-directory-v1', 'directory')
   if (options.allowSizeSibling === true) expected.set('domestic-size-evidence-v1', 'directory')
+  if (options.allowSearchIndexSibling === true) expected.set('domestic-search-index-v1', 'directory')
   const entries = await readdir(descriptorPath(releaseRoot), { withFileTypes: true })
   if (entries.length !== expected.size || entries.some((entry) => !expected.has(entry.name))) throw Error('benefits release root inventory mismatch')
   for (const entry of entries) {
