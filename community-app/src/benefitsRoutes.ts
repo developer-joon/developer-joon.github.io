@@ -2,6 +2,7 @@ export function benefitsRoute(path: string): string | null {
   const normalized = path.replace(/\/+$/, '')
   const routes: Record<string, string> = {
     '/community/benefits': 'heatmap',
+    '/community/benefits/directory': 'directory',
     '/community/benefits/fit': 'fit',
     '/community/benefits/company': 'company',
     '/community/benefits/methodology': 'methodology',

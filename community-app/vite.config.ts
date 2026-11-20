@@ -12,6 +12,7 @@ export default defineConfig({
       input: {
         home: page('./index.html'),
         benefits: page('./benefits/index.html'),
+        benefitsDirectory: page('./benefits/directory/index.html'),
         benefitsFit: page('./benefits/fit/index.html'),
         benefitsCompany: page('./benefits/company/index.html'),
         benefitsMethodology: page('./benefits/methodology/index.html'),

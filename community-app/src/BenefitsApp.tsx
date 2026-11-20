@@ -13,6 +13,7 @@ const BenefitsExplorerPage = lazy(() =>
     default: module.BenefitsExplorerPage,
   })),
 )
+const BenefitsDirectoryPage = lazy(() => import('./pages/BenefitsDirectoryPage').then((module) => ({ default: module.BenefitsDirectoryPage })))
 
 function BenefitsFallback() {
   return (
@@ -37,7 +38,9 @@ export function BenefitsApp({
   if (!route) throw new Error('복지 탐색기 경로가 아닙니다.')
   return (
     <Suspense fallback={<BenefitsFallback />}>
-      {route === 'methodology' ? (
+      {route === 'directory' ? (
+        <BenefitsDirectoryPage search={search} />
+      ) : route === 'methodology' ? (
         <BenefitsMethodologyPage search={search} />
       ) : (
         <BenefitsExplorerPage route={route} search={search} />

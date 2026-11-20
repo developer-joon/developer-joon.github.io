@@ -13,6 +13,7 @@ import { CommunityActions } from './components/CommunityActions'
 
 const BenefitsMethodologyPage = lazy(() => import('./pages/BenefitsMethodologyPage').then(m => ({ default: m.BenefitsMethodologyPage })))
 const BenefitsExplorerPage = lazy(() => import('./pages/BenefitsExplorerPage').then(m => ({ default: m.BenefitsExplorerPage })))
+const BenefitsDirectoryPage = lazy(() => import('./pages/BenefitsDirectoryPage').then(m => ({ default: m.BenefitsDirectoryPage })))
 const BenefitCorrectionPage = lazy(() => import('./pages/BenefitCorrectionPage').then(m => ({ default: m.BenefitCorrectionPage })))
 const MyBenefitCorrectionsPage = lazy(() => import('./pages/MyBenefitCorrectionsPage').then(m => ({ default: m.MyBenefitCorrectionsPage })))
 
@@ -64,6 +65,7 @@ export function App({ pathname = window.location.pathname, search = window.locat
   const auth = useAuth()
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (benefitsRoute(pathname) === 'methodology') return <Suspense fallback={<LazyRouteFallback>조사 기준을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsMethodologyPage search={search} /></Suspense>
+  if (benefitsRoute(pathname) === 'directory') return <Suspense fallback={<LazyRouteFallback>국내 기업 검색을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsDirectoryPage search={search} /></Suspense>
   if (benefitsRoute(pathname)) return <Suspense fallback={<LazyRouteFallback>복지 탐색기를 준비하고 있습니다.</LazyRouteFallback>}><BenefitsExplorerPage route={benefitsRoute(pathname)!} search={search} /></Suspense>
   if (auth.loading) return <LazyRouteFallback>로그인 상태를 확인하고 있습니다.</LazyRouteFallback>
   if (normalizedPathname === '/community/benefits/correction') {
