@@ -151,6 +151,11 @@ function contrastRatio(foreground: string, background: string) {
   return (lighter + 0.05) / (darker + 0.05)
 }
 
+function resolvedColor(value: string) {
+  const token = value.match(/^var\(--([\w-]+)\)$/)?.[1]
+  return token ? tokenValue(token)! : value
+}
+
 const allowedSvgAttributes: Record<string, readonly string[]> = {
   svg: ['xmlns', 'viewBox', 'fill'],
   rect: ['width', 'height', 'rx', 'ry', 'fill'],
@@ -629,6 +634,21 @@ describe('shared shell contract', () => {
       expect(computed.background, `${classes.join('.')} background`).toBe(background)
       expect(computed.color, `${classes.join('.')} foreground`).toBe(foreground)
       expect(computed['border-color'], `${classes.join('.')} border`).toBe(borderColor)
+    }
+  })
+
+  it('keeps bright editorial card foregrounds at WCAG AA contrast after the cascade', () => {
+    const usages = [
+      ['research excerpt', ['benefits-research-card__excerpt'], 'p', ['benefits-research-card']],
+      ['research details summary', ['benefits-research-card__details'], 'summary', ['benefits-research-card']],
+      ['official tier', ['benefits-specific-card__tier'], 'p', ['benefits-specific-card']],
+      ['community tier', ['benefits-specific-card--community', 'benefits-specific-card__tier'], 'p', ['benefits-specific-card', 'benefits-specific-card--community']],
+    ] as const
+
+    for (const [usage, foregroundClasses, tag, backgroundClasses] of usages) {
+      const foreground = resolvedColor(computedBenefitDeclarations([...foregroundClasses], tag).color)
+      const background = resolvedColor(computedBenefitDeclarations([...backgroundClasses], 'article').background)
+      expect(contrastRatio(foreground, background), `${usage}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5)
     }
   })
 

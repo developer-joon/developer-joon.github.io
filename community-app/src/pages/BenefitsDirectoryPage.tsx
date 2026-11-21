@@ -7,10 +7,10 @@ import {
   serializeBenefitDirectoryQuery,
   type BenefitDirectoryQueryState,
 } from '../lib/benefitDirectoryQueryState'
+import { presentPublicDirectoryError } from '../lib/publicDirectoryErrorPresentation'
 import {
   BENEFIT_DIRECTORY_CATEGORIES,
   BENEFIT_DIRECTORY_SIZE_CLASSES,
-  type BenefitDirectoryError,
   type BenefitDirectoryCategory,
   type BenefitDirectoryPage,
   type BenefitDirectorySearchInput,
@@ -18,7 +18,7 @@ import {
 } from '../types/benefitDirectory'
 
 const PAGE_SIZE = 50
-const CONFIGURATION_ERROR_MESSAGE = '기업 데이터를 준비하고 있습니다. 잠시 후 다시 확인해 주세요.'
+
 const categoryLabels: Record<BenefitDirectoryCategory, string> = {
   leave: '휴가', family: '가족', health: '건강', growth: '성장', housing: '주거', commute: '통근',
   remote: '원격근무', retirement: '퇴직', meals: '식사', inclusion: '포용',
@@ -52,10 +52,6 @@ function mergeItems(current: BenefitDirectorySearchItem[], next: BenefitDirector
   const seen = new Set(current.map(item => item.companyId))
   return [...current, ...next.filter(item => !seen.has(item.companyId))]
 }
-function presentSearchError(error: BenefitDirectoryError) {
-  return error.code === 'configuration' ? CONFIGURATION_ERROR_MESSAGE : error.message
-}
-
 function DirectoryCard({ item }: { item: BenefitDirectorySearchItem }) {
   const facts = [item.industry, item.sizeLabel, item.region].filter(Boolean).join(' · ')
   return <article className="domestic-directory__record">
@@ -149,7 +145,7 @@ export function BenefitsDirectoryPage({
       if (controller.signal.aborted || generation.current !== currentGeneration || source.current.id !== currentSourceId) return
       if (!result.ok) {
         if (result.error.code === 'aborted') return
-        setRefreshError(presentSearchError(result.error))
+        setRefreshError(presentPublicDirectoryError(result.error).message)
         setPhase('error')
         return
       }
@@ -186,7 +182,7 @@ export function BenefitsDirectoryPage({
       if (controller.signal.aborted || generation.current !== currentGeneration || source.current.id !== sourceId) return
       setNextLoading(false)
       if (!result.ok) {
-        if (result.error.code !== 'aborted') setNextError(presentSearchError(result.error))
+        if (result.error.code !== 'aborted') setNextError(presentPublicDirectoryError(result.error).message)
         return
       }
       setVisible(current => current && current.queryKey === queryKey && current.sourceId === sourceId ? {

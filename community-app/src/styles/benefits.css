@@ -409,9 +409,9 @@
   overflow-wrap: anywhere;
 }
 .benefits-research-card h4 { margin: 0 0 8px; color: #f4f8fd; font-size: 1.1rem; line-height: 1.45; }
-.benefits-research-card__excerpt { margin: 0 0 10px; color: #ffe1a8; font-size: 0.85rem; font-weight: 700; }
+.benefits-research-card__excerpt { margin: 0 0 10px; color: #765015; font-size: 0.85rem; font-weight: 700; }
 .benefits-research-card__details { border-top: 1px solid #685840; padding-top: 9px; }
-.benefits-research-card__details summary { color: #a9d9fb; cursor: pointer; font-weight: 600; }
+.benefits-research-card__details summary { color: #285d86; cursor: pointer; font-weight: 600; }
 .benefits-research-card__details summary:focus-visible { outline: 2px solid #a9d9fb; outline-offset: 3px; }
 .benefits-research-card__scope {
   display: grid;
@@ -465,12 +465,12 @@
 }
 .benefits-specific-card__tier {
   margin: 0;
-  color: #9fdccc;
+  color: #17624f;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: .04em;
 }
-.benefits-specific-card--community .benefits-specific-card__tier { color: #ffe1a8; }
+.benefits-specific-card--community .benefits-specific-card__tier { color: #765015; }
 .benefits-specific-card__facts,
 .benefits-evidence__limitations {
   display: grid;

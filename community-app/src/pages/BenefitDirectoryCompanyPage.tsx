@@ -4,11 +4,13 @@ import { AppHeader } from '../components/AppHeader'
 import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
 import { benefitSubmissionHref } from '../benefitsRoutes'
 import { parseBenefitDirectoryQuery, serializeBenefitDirectoryQuery } from '../lib/benefitDirectoryQueryState'
+import { presentPublicDirectoryError } from '../lib/publicDirectoryErrorPresentation'
 import {
   BENEFIT_DIRECTORY_CATEGORIES,
   BENEFIT_DIRECTORY_CATEGORY_LABELS,
   type BenefitCompanyDetail,
   type BenefitDirectoryCategory,
+  type BenefitDirectoryError,
   type BenefitDirectoryErrorCode,
   type BenefitDirectoryPublication,
 } from '../types/benefitDirectory'
@@ -83,19 +85,18 @@ function groupPublications(publications: BenefitDirectoryPublication[]) {
   return groups
 }
 
-function safeError(code: BenefitDirectoryErrorCode) {
-  if (code === 'not_found') return '기업 정보를 찾을 수 없습니다.'
-  if (code === 'network') return '네트워크 연결을 확인한 뒤 다시 시도해 주세요.'
-  if (code === 'invalid_response') return '기업 정보를 표시할 수 없습니다.'
-  if (code === 'timeout') return '요청 시간이 초과되었습니다. 다시 시도해 주세요.'
-  if (code === 'rate_limited') return '요청이 많습니다. 잠시 후 다시 시도해 주세요.'
-  return '기업 복지 정보를 불러오지 못했습니다.'
+const detailErrorMessages: Partial<Record<BenefitDirectoryErrorCode, string>> = {
+  not_found: '기업 정보를 찾을 수 없습니다.',
+  network: '네트워크 연결을 확인한 뒤 다시 시도해 주세요.',
+  invalid_response: '기업 정보를 표시할 수 없습니다.',
+  timeout: '요청 시간이 초과되었습니다. 다시 시도해 주세요.',
+  rate_limited: '요청이 많습니다. 잠시 후 다시 시도해 주세요.',
 }
 
 type LoadState =
   | { key: string; phase: 'loading' }
   | { key: string; phase: 'ready'; detail: BenefitCompanyDetail }
-  | { key: string; phase: 'error'; code: BenefitDirectoryErrorCode }
+  | { key: string; phase: 'error'; error: BenefitDirectoryError }
 
 export function BenefitDirectoryCompanyPage({
   search,
@@ -132,13 +133,13 @@ export function BenefitDirectoryCompanyPage({
     void repository.detail(currentId, requestController.signal).then(result => {
       if (requestController.signal.aborted || generation.current !== currentGeneration || source.current.id !== currentSourceId) return
       if (!result.ok) {
-        if (result.error.code !== 'aborted') setState({ key, phase: 'error', code: result.error.code })
+        if (result.error.code !== 'aborted') setState({ key, phase: 'error', error: result.error })
         return
       }
       setState({ key, phase: 'ready', detail: result.data })
     }).catch(() => {
       if (!requestController.signal.aborted && generation.current === currentGeneration && source.current.id === currentSourceId) {
-        setState({ key, phase: 'error', code: 'network' })
+        setState({ key, phase: 'error', error: { code: 'network', message: '네트워크 연결을 확인한 뒤 다시 시도해 주세요.' } })
       }
     })
     return () => requestController.abort()
@@ -161,14 +162,21 @@ export function BenefitDirectoryCompanyPage({
     <p className="benefit-company-page__state" role="status">기업 복지 정보를 불러오고 있습니다.</p>
   </PageShell>
 
-  if (active.phase === 'error') return <PageShell>
+  if (active.phase === 'error') {
+    const presentation = presentPublicDirectoryError(active.error, {
+      messages: detailErrorMessages,
+      fallbackMessage: '기업 복지 정보를 불러오지 못했습니다.',
+      nonRetryableCodes: ['not_found', 'aborted'],
+    })
+    return <PageShell>
     <a className="benefit-company-page__back" href={backHref(parsed.directoryQuery)}>기업 검색으로 돌아가기</a>
     <h1>기업 복지 상세</h1>
     <div className="benefit-company-page__state benefit-company-page__state--error" role="alert">
-      <p>{safeError(active.code)}</p>
-      {active.code !== 'not_found' && <button type="button" onClick={() => setRetry(value => value + 1)}>다시 시도</button>}
+      <p>{presentation.message}</p>
+      {presentation.canRetry && <button type="button" onClick={() => setRetry(value => value + 1)}>다시 시도</button>}
     </div>
   </PageShell>
+  }
 
   const { company, publications } = active.detail
   const facts = [company.industry, company.sizeLabel, company.region].filter((value): value is string => value !== null)
