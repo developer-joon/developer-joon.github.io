@@ -295,7 +295,7 @@ function databaseEnvironment(databaseUrl) {
   if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname || !url.username || url.pathname.length < 2) throw Error('DATABASE_URL must identify a PostgreSQL database')
   const allowed = new Set(['sslmode'])
   for (const key of url.searchParams.keys()) if (!allowed.has(key)) throw Error(`DATABASE_URL query parameter is not allowed: ${key}`)
-  return {
+  const env = {
     ...process.env,
     PGHOST: url.hostname,
     PGPORT: url.port || '5432',
@@ -304,6 +304,8 @@ function databaseEnvironment(databaseUrl) {
     PGPASSWORD: decodeURIComponent(url.password),
     ...(url.searchParams.has('sslmode') ? { PGSSLMODE: url.searchParams.get('sslmode') } : {}),
   }
+  delete env.DATABASE_URL
+  return env
 }
 
 async function validateTempRoot(root) {
@@ -324,7 +326,21 @@ function makeTsv(rows) {
   return bytes
 }
 
-async function runPsql(executable, env, sqlFile) {
+function redactExact(text, sensitiveValues) {
+  let sanitized = String(text)
+  const values = [...new Set(sensitiveValues.filter(value => typeof value === 'string' && value.length > 0))]
+    .sort((a, b) => b.length - a.length)
+  for (const value of values) sanitized = sanitized.replaceAll(value, '<redacted>')
+  return sanitized
+}
+
+function renderChildFailure({ code, signal, stderr, sensitiveValues }) {
+  const classification = code === null ? `signal ${signal ?? 'unknown'}` : `exit ${code}`
+  const detail = redactExact(stderr, sensitiveValues).trim().slice(-12_000)
+  return Error(`psql seed import failed with ${classification}${detail ? `: ${detail}` : ''}`)
+}
+
+async function runPsql(executable, env, sqlFile, sensitiveValues) {
   await new Promise((resolve, reject) => {
     const child = spawn(executable, ['-X', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1', '--file', sqlFile], { env, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''; let stderr = ''
@@ -337,10 +353,10 @@ async function runPsql(executable, env, sqlFile) {
       signalHandlers.set(signal, handler); process.once(signal, handler)
     }
     child.once('error', reject)
-    child.once('close', code => {
+    child.once('close', (code, signal) => {
       for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler)
       if (code === 0) { if (stdout.trim()) console.log(stdout.trim()); resolve() }
-      else reject(Error(`psql seed import failed with exit ${code}: ${stderr.trim().slice(-12_000)}`))
+      else reject(renderChildFailure({ code, signal, stderr, sensitiveValues }))
     })
   })
 }
@@ -348,6 +364,16 @@ async function runPsql(executable, env, sqlFile) {
 export async function applySeed({ databaseUrl, bundleDir, sourceFile, dryRun = false, injectLateFailure = false } = {}) {
   const executable = await resolvePsql()
   const env = databaseEnvironment(databaseUrl)
+  const parsedDatabaseUrl = new URL(databaseUrl)
+  const decodedUser = decodeURIComponent(parsedDatabaseUrl.username)
+  const decodedPassword = decodeURIComponent(parsedDatabaseUrl.password)
+  const credentials = [
+    databaseUrl,
+    process.env.DATABASE_URL,
+    decodedPassword,
+    `${decodedUser}:${decodedPassword}`,
+    `${parsedDatabaseUrl.username}:${parsedDatabaseUrl.password}`,
+  ]
   const tempRoot = await validateTempRoot(tmpdir())
   const verified = await verifySeedBundle({ sourceFile, bundleDir })
   const directory = await mkdtemp(path.join(tempRoot, 'benefit-directory-import-'))
@@ -362,7 +388,7 @@ export async function applySeed({ databaseUrl, bundleDir, sourceFile, dryRun = f
     if (!tsvStat.isFile() || tsvStat.nlink !== 1 || (tsvStat.mode & 0o777) !== 0o600) throw Error('unsafe TSV file identity or mode')
     const sql = buildImportSql({ tsvPath, manifest: verified.manifest, bundleSha256: verified.bundleSha256, dryRun, injectLateFailure })
     await writeFile(sqlPath, sql, { mode: 0o600, flag: 'wx' })
-    await runPsql(executable, env, sqlPath)
+    await runPsql(executable, env, sqlPath, [directory, sqlPath, tsvPath, ...credentials])
     return { companyCount: verified.manifest.company_count, bundleSha256: verified.bundleSha256, dryRun }
   } finally { await rm(directory, { recursive: true, force: true }) }
 }

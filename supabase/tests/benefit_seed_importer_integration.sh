@@ -1,21 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+script_dir="${BASH_SOURCE[0]%/*}"
+repo="$(cd "$script_dir/../.." && pwd -P)"
 cli="$repo/community-app/node_modules/.bin/supabase"
 apply=(node "$repo/scripts/apply-benefit-directory-seed.mjs")
+log=''
+started=0
+
+fail() { printf 'benefit seed importer integration: %s\n' "$*" >&2; exit 1; }
+command -v psql >/dev/null 2>&1 || fail "psql executable is required on PATH"
 
 cleanup() {
   status=$?
-  trap - EXIT
+  trap - EXIT INT TERM
   set +e
-  "$cli" db reset --local --no-seed >/dev/null 2>&1
-  "$cli" stop >/dev/null 2>&1
+  cleanup_failed=0
+  cleanup_diagnostics=''
+  if [[ -n "$log" ]]; then
+    output="$(rm -f -- "$log" 2>&1)"
+    step_status=$?
+    if (( step_status != 0 )); then
+      cleanup_failed=1
+      cleanup_diagnostics+=$'log cleanup failed:\n'"$output"$'\n'
+    fi
+  fi
+  if (( started == 1 )); then
+    output="$("$cli" db reset --local --no-seed 2>&1)"
+    step_status=$?
+    if (( step_status != 0 )); then
+      cleanup_failed=1
+      cleanup_diagnostics+=$'database cleanup failed:\n'"$output"$'\n'
+    fi
+    output="$("$cli" stop 2>&1)"
+    step_status=$?
+    if (( step_status != 0 )); then
+      cleanup_failed=1
+      cleanup_diagnostics+=$'Supabase stop failed:\n'"$output"$'\n'
+    fi
+  fi
+  if (( cleanup_failed != 0 )); then
+    printf 'benefit seed importer integration cleanup: %s\n' "${cleanup_diagnostics: -4000}" >&2
+    (( status != 0 )) || status=1
+  fi
   exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-fail() { printf 'benefit seed importer integration: %s\n' "$*" >&2; exit 1; }
 psqlq() { psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -Atqc "$1"; }
 apply_must_fail() {
   if "${apply[@]}" "$@" >"$log" 2>&1; then
@@ -33,11 +66,11 @@ assert_preserved() {
 }
 
 "$cli" start >/dev/null
+started=1
 "$cli" db reset --local --no-seed >/dev/null
 eval "$("$cli" status -o env 2>/dev/null)"
 export DATABASE_URL="$DB_URL"
 log="$(mktemp "${TMPDIR:-$HOME}/benefit-seed-integration.XXXXXX")"
-trap 'rm -f "$log"; cleanup' EXIT
 
 psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 insert into public.benefit_companies(

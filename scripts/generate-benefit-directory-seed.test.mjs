@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -162,8 +162,8 @@ test('--check writes no tracked output and late failure preserves previous bundl
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('apply plan uses one locked transaction, exact COPY, receipt, dry-run rollback, and never touches publications', async () => {
-  const { buildImportSql } = await import('./apply-benefit-directory-seed.mjs')
+test('apply plan is exact and child failures are bounded without private paths or credentials', async () => {
+  const { applySeed, buildImportSql } = await import('./apply-benefit-directory-seed.mjs')
   const sql = buildImportSql({
     tsvPath: '/safe/import.tsv',
     manifest: {
@@ -187,6 +187,60 @@ test('apply plan uses one locked transaction, exact COPY, receipt, dry-run rollb
   assert.match(sql, /expected_company_sources[\s\S]*benefit_company_sources[\s\S]*EXCEPT ALL/)
   assert.match(sql, /ROLLBACK;/)
   assert.doesNotMatch(sql, /^(?:INSERT INTO|UPDATE|DELETE FROM) public\.benefit_publications/im)
+
+  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-psql-failure-'))
+  const fakeBin = path.join(root, 'bin')
+  const capture = path.join(root, 'sql-path.txt')
+  const databaseUrl = 'postgresql://seed_private_user:pa%24%24word@127.0.0.1:5432/seed_private_db'
+  const password = 'pa$$word'
+  const oldPath = process.env.PATH
+  const oldDatabaseUrl = process.env.DATABASE_URL
+  try {
+    await mkdir(fakeBin)
+    const fakePsql = path.join(fakeBin, 'psql')
+    await writeFile(fakePsql, `#!${process.execPath}\n` + String.raw`
+import { writeFileSync } from 'node:fs'
+import path from 'node:path'
+if (process.argv.includes('--version')) {
+  console.log('psql (PostgreSQL) 17.0')
+  process.exit(0)
+}
+const sqlPath = process.argv[process.argv.indexOf('--file') + 1]
+writeFileSync(process.env.SEED_TEST_CAPTURE, sqlPath)
+console.error('x'.repeat(20_000))
+console.error('injected psql failure at ' + sqlPath + ' under ' + path.dirname(sqlPath))
+console.error('DATABASE_URL=postgresql://seed_private_user:pa%24%24word@127.0.0.1:5432/seed_private_db')
+console.error('PGPASSWORD=pa$$word password=pa$$word credential=seed_private_user:pa$$word')
+process.exit(23)
+`)
+    await chmod(fakePsql, 0o700)
+    process.env.PATH = fakeBin
+    process.env.DATABASE_URL = databaseUrl
+    process.env.SEED_TEST_CAPTURE = capture
+    let failure
+    try {
+      await applySeed({
+        databaseUrl,
+        bundleDir: path.join(repo, 'supabase/fixtures/benefit-directory'),
+        sourceFile: realSource,
+      })
+    } catch (error) { failure = error }
+    assert.ok(failure, 'injected psql failure must reject')
+    const output = String(failure.stack ?? failure)
+    const privateSqlPath = await readFile(capture, 'utf8')
+    assert.match(output, /psql seed import failed with exit 23/)
+    assert.ok(output.length <= 13_000, `child failure output is unbounded: ${output.length}`)
+    for (const secret of [privateSqlPath, path.dirname(privateSqlPath), databaseUrl, password, 'seed_private_user:pa$$word']) {
+      assert.ok(!output.includes(secret), `child failure exposed ${secret}`)
+    }
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH
+    else process.env.PATH = oldPath
+    if (oldDatabaseUrl === undefined) delete process.env.DATABASE_URL
+    else process.env.DATABASE_URL = oldDatabaseUrl
+    delete process.env.SEED_TEST_CAPTURE
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 assert.equal(PINNED_SOURCE.sha256, 'b7e61860d69f289735f42a6ae275c8a5303cbde367036f77865c7b20de7b9594')
