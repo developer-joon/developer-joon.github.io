@@ -58,7 +58,7 @@ export function parseBenefitDirectoryQuery(search: string): BenefitDirectoryQuer
   const industry = rawIndustry.trim() && bounded(rawIndustry.trim(), 100, 400) && !rawIndustry.includes('\uFFFD')
     ? rawIndustry.trim()
     : ''
-  const selected = new Set(values('category').filter(value => (BENEFIT_DIRECTORY_CATEGORIES as readonly string[]).includes(value)))
+  const selected = new Set(values('categories').flatMap(value => value.split(',')).filter(value => (BENEFIT_DIRECTORY_CATEGORIES as readonly string[]).includes(value)))
   const categories = BENEFIT_DIRECTORY_CATEGORIES.filter(category => selected.has(category))
   const rawSize = first('size')
   const size = rawSize && (BENEFIT_DIRECTORY_SIZE_CLASSES as readonly string[]).includes(rawSize)
@@ -89,7 +89,7 @@ export function serializeBenefitDirectoryQuery(state: BenefitDirectoryQueryState
   const value = canonicalizeBenefitDirectoryQuery(state)
   const params = new URLSearchParams()
   if (value.q) params.set('q', value.q)
-  value.categories.forEach(category => params.append('category', category))
+  if (value.categories.length) params.set('categories', value.categories.join(','))
   if (value.industry) params.set('industry', value.industry)
   if (value.size) params.set('size', value.size)
   if (value.hasBenefitsOnly) params.set('hasBenefitsOnly', '1')
