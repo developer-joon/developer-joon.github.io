@@ -865,22 +865,49 @@ const MAX_MANIFEST_RECORDS = 4_096
 const MAX_MANIFEST_IMPORTS = 256
 const MAX_MANIFEST_STRING_LENGTH = 1_024
 const SAFE_EAGER_JS_PATH = /^assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.js$/
+const EAGER_BENEFITS_ROLES = new Map([
+  ['benefits-main', {
+    key: /^_benefits-main-([A-Za-z0-9_-]{8,})\.js$/,
+    file: /^assets\/benefits-main-([A-Za-z0-9_-]{8,})\.js$/,
+    imports: new Set(['benefits', 'react', 'jsx-runtime']),
+  }],
+  ['benefits', {
+    key: /^_benefits-([A-Za-z0-9_-]{8,})\.js$/,
+    file: /^assets\/benefits-([A-Za-z0-9_-]{8,})\.js$/,
+    imports: new Set(['react', 'jsx-runtime']),
+  }],
+  ['react', {
+    key: /^_react-([A-Za-z0-9_-]{8,})\.js$/,
+    file: /^assets\/react-([A-Za-z0-9_-]{8,})\.js$/,
+    imports: new Set(['jsx-runtime']),
+  }],
+  ['jsx-runtime', {
+    key: /^_jsx-runtime-([A-Za-z0-9_-]{8,})\.js$/,
+    file: /^assets\/jsx-runtime-([A-Za-z0-9_-]{8,})\.js$/,
+    imports: new Set(),
+  }],
+])
 
-function moduleIdentity(value) {
-  if (typeof value !== 'string') return ''
-  const leaf = value.split('/').at(-1) ?? ''
-  return leaf
-    .replace(/\.(?:[cm]?[jt]sx?)$/i, '')
-    .replace(/-[A-Za-z0-9_-]{8,}$/, '')
-    .replace(/^_/, '')
-    .toLowerCase()
+function assertEagerRoleRecord(key, record) {
+  const descriptor = EAGER_BENEFITS_ROLES.get(record.name)
+  if (!descriptor) {
+    throw new Error(`eager import record ${JSON.stringify(key)} does not match an allowed eager role descriptor`)
+  }
+  const keyMatch = descriptor.key.exec(key)
+  const fileMatch = typeof record.file === 'string' ? descriptor.file.exec(record.file) : null
+  if (!keyMatch || !fileMatch || keyMatch[1] !== fileMatch[1]) {
+    throw new Error(`eager import record ${JSON.stringify(key)} does not match the ${JSON.stringify(record.name)} role descriptor`)
+  }
+  for (const field of ['src', 'isEntry', 'isDynamicEntry']) {
+    if (Object.hasOwn(record, field)) {
+      throw new Error(`eager import record ${JSON.stringify(key)} has forbidden field ${field}`)
+    }
+  }
+  return descriptor
 }
 
-function isPrivateEagerRecord(key, record) {
-  const identities = [key, record.name, record.src].map(moduleIdentity).filter(Boolean)
-  const exactPrivateModules = new Set(['authprovider', 'communityapplication', 'main', 'supabase', 'env', 'uuid'])
-  return identities.some((identity) => exactPrivateModules.has(identity)
-    || /(?:admin|submission|correction|draft)/.test(identity))
+function sameSet(left, right) {
+  return left.size === right.size && [...left].every(value => right.has(value))
 }
 
 function preflightManifest(manifest, relativePath) {
@@ -920,6 +947,8 @@ async function verifyEagerBenefitsGraph(manifest, entryKey, relativePath) {
   const visiting = new Set()
   const visited = new Set()
   const fileOwners = new Map()
+  const roleOwners = new Map()
+  const roleDescriptors = new Map()
   const communityRoot = path.resolve(siteRoot, 'community')
 
   const visit = async (key) => {
@@ -936,9 +965,13 @@ async function verifyEagerBenefitsGraph(manifest, entryKey, relativePath) {
     if (!SAFE_EAGER_JS_PATH.test(record.file)) {
       throw new Error(`eager import record ${JSON.stringify(key)} has unsafe eager import file ${JSON.stringify(record.file)}`)
     }
-    if (isPrivateEagerRecord(key, record)) {
-      throw new Error(`private/authenticated module is not allowed in the public eager graph: ${JSON.stringify(key)}`)
+    const descriptor = assertEagerRoleRecord(key, record)
+    const priorRoleOwner = roleOwners.get(record.name)
+    if (priorRoleOwner !== undefined && priorRoleOwner !== key) {
+      throw new Error(`duplicate eager role ${JSON.stringify(record.name)} is claimed by ${JSON.stringify(priorRoleOwner)} and ${JSON.stringify(key)}`)
     }
+    roleOwners.set(record.name, key)
+    roleDescriptors.set(record.name, descriptor)
 
     const priorOwner = fileOwners.get(record.file)
     if (priorOwner !== undefined && priorOwner !== key) {
@@ -969,6 +1002,21 @@ async function verifyEagerBenefitsGraph(manifest, entryKey, relativePath) {
 
   try {
     await visit(entryKey)
+    const actualRoles = new Set(roleOwners.keys())
+    const expectedRoles = new Set(EAGER_BENEFITS_ROLES.keys())
+    if (!sameSet(actualRoles, expectedRoles)) {
+      const missing = [...expectedRoles].filter(role => !actualRoles.has(role))
+      const extra = [...actualRoles].filter(role => !expectedRoles.has(role))
+      throw new Error(`canonical eager closure roles differ (missing: ${missing.join(', ') || 'none'}; extra: ${extra.join(', ') || 'none'})`)
+    }
+    for (const [role, key] of roleOwners) {
+      const imports = manifest[key].imports ?? []
+      const importedRoles = new Set(imports.map(importKey => manifest[importKey].name))
+      const expectedImports = roleDescriptors.get(role).imports
+      if (!sameSet(importedRoles, expectedImports)) {
+        throw new Error(`canonical eager role graph has invalid direct imports for ${JSON.stringify(role)}`)
+      }
+    }
   } catch (error) {
     fail(`${relativePath} ${error.message}`)
   }
