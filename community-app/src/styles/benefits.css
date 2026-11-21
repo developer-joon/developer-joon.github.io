@@ -318,28 +318,28 @@
   text-decoration: none;
   min-width: 125px;
   padding: 8px;
-  color: #b7c4d7 !important;
-  background: #1d293a;
+  color: var(--text-medium);
+  background: var(--background-alt);
   border-left: 3px solid #7c8ba0;
 }
 .benefits-status.status-official_verified {
-  color: #88f0d3 !important;
-  background: #10362f;
-  border-color: #88f0d3;
+  color: #17624f;
+  background: #edf8f4;
+  border-color: #53bda8;
 }
 .benefits-status.status-reference {
-  color: #b1d9ff !important;
-  background: #153051;
+  color: #285d86;
+  background: #edf5fc;
   border-color: #89c3ff;
 }
 .benefits-status.status-community_report {
-  color: #ffe1a8 !important;
-  background: #3b3020;
-  border-color: #ffcf75;
+  color: #765015;
+  background: #fff7e8;
+  border-color: #d8a84f;
 }
 .benefits-status.status-no_public_info {
-  color: #c2cbd8 !important;
-  background: #252d39;
+  color: var(--text-medium);
+  background: var(--background-alt);
   border-color: #7c8ba0;
 }
 .benefits-badges {
@@ -358,17 +358,17 @@
   box-sizing: border-box;
   border: 1px solid currentColor;
   padding: 2px 7px;
-  color: #dce9f8;
-  background: #15243a;
+  color: var(--text-medium);
+  background: var(--background-alt);
   font-size: 11px;
   font-weight: 700;
   line-height: 1.25;
 }
-.benefits-badge.badge-official_verified { color: #88f0d3; background: #10362f; }
-.benefits-badge.badge-reference { color: #b1d9ff; background: #153051; }
-.benefits-badge.badge-community_report { color: #ffe1a8; background: #3b3020; }
-.benefits-badge.badge-no_public_info { color: #c2cbd8; background: #252d39; }
-.benefits-badge.badge-warning { color: #ffb6bf; background: #402534; }
+.benefits-badge.badge-official_verified { color: #17624f; background: #edf8f4; border-color: #53bda8; }
+.benefits-badge.badge-reference { color: #285d86; background: #edf5fc; border-color: #89c3ff; }
+.benefits-badge.badge-community_report { color: #765015; background: #fff7e8; border-color: #d8a84f; }
+.benefits-badge.badge-no_public_info { color: var(--text-medium); background: var(--background-alt); border-color: #7c8ba0; }
+.benefits-badge.badge-warning { color: #9f2f3e; background: #fff0f2; border-color: #d96675; }
 .benefits-lineage-badge,
 .benefits-lineage-pending {
   display: inline-flex;
@@ -376,15 +376,16 @@
   margin: 4px 6px 4px 0;
   padding: 3px 7px;
   border: 1px solid #53bda8;
-  color: #a9f3df;
-  background: #10362f;
+  border-color: #53bda8;
+  color: #17624f;
+  background: #edf8f4;
   font-size: 11px;
   font-weight: 700;
 }
 .benefits-lineage-pending {
   border-color: #7c8ba0;
-  color: #c2cbd8;
-  background: #252d39;
+  color: var(--text-medium);
+  background: var(--background-alt);
 }
 .benefits-research-section {
   margin-top: 28px;
@@ -521,25 +522,25 @@
   word-break: break-word;
 }
 .benefits-status.status-0 {
-  color: #88f0d3 !important;
-  background: #10362f;
-  border-color: #88f0d3;
+  color: #17624f;
+  background: #edf8f4;
+  border-color: #53bda8;
 }
 .benefits-status.status-1 {
-  color: #b1d9ff !important;
-  background: #153051;
+  color: #285d86;
+  background: #edf5fc;
   border-color: #89c3ff;
 }
 .benefits-status.status-2,
 .benefits-status.status-3 {
-  color: #ffdf9e !important;
-  background: #3b3020;
-  border-color: #ffcf75;
+  color: #765015;
+  background: #fff7e8;
+  border-color: #d8a84f;
 }
 .benefits-status.status-5 {
-  color: #ffb6bf !important;
-  background: #402534;
-  border-color: #ff9baa;
+  color: #9f2f3e;
+  background: #fff0f2;
+  border-color: #d96675;
 }
 .benefits-pagination {
   display: flex;
@@ -947,7 +948,7 @@
 .benefits-badge,
 .benefits-lineage-pending {
   background: var(--background-alt);
-  color: var(--text-medium) !important;
+  color: var(--text-medium);
 }
 .benefits-research-card h4,
 .benefits-specific-card h4,

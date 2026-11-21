@@ -106,9 +106,9 @@ function specificity(selector: string) {
   return (selector.match(/\.[\w-]+/g)?.length ?? 0) * 100 + (selector.match(/(?:^|\s)main\b/g)?.length ?? 0)
 }
 
-function computedDeclarations(classes: string[], tag: string, viewportWidth: number) {
+function computedDeclarationsFrom(rules: CssRule[], classes: string[], tag: string, viewportWidth: number) {
   const resolved: Record<string, { value: string; specificity: number; order: number }> = {}
-  for (const rule of cssRules) {
+  for (const rule of rules) {
     if (viewportWidth < rule.minWidth || viewportWidth > rule.maxWidth) continue
     for (const selector of rule.selectors) {
       const requiredClasses = [...selector.matchAll(/\.([\w-]+)/g)].map((match) => match[1])
@@ -124,6 +124,14 @@ function computedDeclarations(classes: string[], tag: string, viewportWidth: num
     }
   }
   return Object.fromEntries(Object.entries(resolved).map(([property, result]) => [property, result.value]))
+}
+
+function computedDeclarations(classes: string[], tag: string, viewportWidth: number) {
+  return computedDeclarationsFrom(cssRules, classes, tag, viewportWidth)
+}
+
+function computedBenefitDeclarations(classes: string[], tag = 'span') {
+  return computedDeclarationsFrom(benefitsRules, classes, tag, 1220)
 }
 
 function tokenValue(name: string) {
@@ -594,6 +602,34 @@ describe('shared shell contract', () => {
   it('keeps correction actions at the existing 56px touch target', () => {
     expect(benefitsCss).toMatch(/\.benefits-correction-link\s*\{[^}]*min-height:\s*56px;/)
     expect(benefitsCss).toMatch(/\.benefit-correction-form button,[\s\S]*\.benefit-corrections-list button\s*\{[^}]*min-height:\s*56px;/)
+  })
+
+  it('resolves every benefits state badge to a bright editorial palette after the cascade', () => {
+    const states = [
+      [['benefits-status', 'status-official_verified'], '#edf8f4', '#17624f', '#53bda8'],
+      [['benefits-status', 'status-reference'], '#edf5fc', '#285d86', '#89c3ff'],
+      [['benefits-status', 'status-community_report'], '#fff7e8', '#765015', '#d8a84f'],
+      [['benefits-status', 'status-no_public_info'], 'var(--background-alt)', 'var(--text-medium)', '#7c8ba0'],
+      [['benefits-status', 'status-0'], '#edf8f4', '#17624f', '#53bda8'],
+      [['benefits-status', 'status-1'], '#edf5fc', '#285d86', '#89c3ff'],
+      [['benefits-status', 'status-2'], '#fff7e8', '#765015', '#d8a84f'],
+      [['benefits-status', 'status-3'], '#fff7e8', '#765015', '#d8a84f'],
+      [['benefits-status', 'status-5'], '#fff0f2', '#9f2f3e', '#d96675'],
+      [['benefits-badge', 'badge-official_verified'], '#edf8f4', '#17624f', '#53bda8'],
+      [['benefits-badge', 'badge-reference'], '#edf5fc', '#285d86', '#89c3ff'],
+      [['benefits-badge', 'badge-community_report'], '#fff7e8', '#765015', '#d8a84f'],
+      [['benefits-badge', 'badge-no_public_info'], 'var(--background-alt)', 'var(--text-medium)', '#7c8ba0'],
+      [['benefits-badge', 'badge-warning'], '#fff0f2', '#9f2f3e', '#d96675'],
+      [['benefits-lineage-badge'], '#edf8f4', '#17624f', '#53bda8'],
+      [['benefits-lineage-pending'], 'var(--background-alt)', 'var(--text-medium)', '#7c8ba0'],
+    ] as const
+
+    for (const [classes, background, foreground, borderColor] of states) {
+      const computed = computedBenefitDeclarations([...classes])
+      expect(computed.background, `${classes.join('.')} background`).toBe(background)
+      expect(computed.color, `${classes.join('.')} foreground`).toBe(foreground)
+      expect(computed['border-color'], `${classes.join('.')} border`).toBe(borderColor)
+    }
   })
 
   it('uses the Benefit Atlas brand in every explorer document title', () => {

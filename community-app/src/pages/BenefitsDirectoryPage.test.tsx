@@ -326,6 +326,31 @@ describe('dynamic benefit directory search', () => {
     expect(signals.at(-1)?.aborted).toBe(true)
   })
 
+  it('sanitizes configuration failures while loading the next page, preserves cards, and retries', async () => {
+    const internalMessage = 'PGRST202 search_benefit_companies_v1 https://secret-project.supabase.co'
+    const second = { ...baseItem, companyId: 'KR-BIZ-1234567890', displayName: '두번째 기업' }
+    const search = vi.fn<BenefitDirectoryRepository['search']>()
+      .mockResolvedValueOnce(ok(page([baseItem], { total: 2, hasMore: true, nextCursor: 'opaque' })))
+      .mockResolvedValueOnce({ ok: false, error: { code: 'configuration', message: internalMessage } })
+      .mockResolvedValueOnce(ok(page([second], { total: 2 })))
+
+    render(<BenefitsDirectoryPage search="" repository={repository(search)} />)
+    expect(await screen.findByText('가나다 공식')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '더 불러오기' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('기업 데이터를 준비하고 있습니다. 잠시 후 다시 확인해 주세요.')
+    expect(alert).not.toHaveTextContent('PGRST202')
+    expect(alert).not.toHaveTextContent('search_benefit_companies_v1')
+    expect(alert).not.toHaveTextContent('secret-project')
+    expect(screen.getByText('가나다 공식')).toBeInTheDocument()
+
+    fireEvent.click(within(alert).getByRole('button', { name: '다시 시도' }))
+    expect(await screen.findByText('두번째 기업')).toBeInTheDocument()
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'opaque' }), expect.any(AbortSignal))
+  })
+
   it('renders only public summary fields, exact zero-evidence wording, and the existing detail-link contract', async () => {
     const zero = { ...baseItem, benefitCount: 0, officialCount: 0, communityCount: 0, categories: [], summary: null }
     render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([zero]))))} />)
