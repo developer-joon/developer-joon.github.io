@@ -27,7 +27,7 @@ node --test scripts/generate-benefit-directory-seed.test.mjs
 
 The apply CLI requires:
 
-1. migration `202611210001` applied, with `public.benefit_companies` and `public.benefit_publications` available;
+1. migrations `202611210001` and `202611210004` applied, with the exact public and private import schemas available;
 2. a real PostgreSQL `psql` executable on `PATH`;
 3. `DATABASE_URL` set to the intended PostgreSQL database;
 4. a private, owner-controlled `TMPDIR` (mode `0700`, not a symlink).
@@ -45,16 +45,24 @@ node scripts/apply-benefit-directory-seed.mjs
 The importer creates an owner-only mode-`0700` temporary directory and a mode-`0600`, single-link TSV. It loads the TSV with `psql` `\copy` into a temporary staging table. One transaction then:
 
 - obtains the advisory transaction lock `benefit-directory-seed-import-v1`;
-- verifies the required migration, exact row and identity counts, and the ordered ID-set digest;
+- verifies exact column order/types/nullability/default/generated state, PostgreSQL ownership, and RLS for all four tables before COPY;
+- takes a full logical publication snapshot after a `SHARE` table lock, rejecting snapshots over 100,000 rows or 256 MiB;
 - rejects a canonical identity-class mismatch;
 - upserts `public.benefit_companies` without deleting unrelated rows;
 - stores the minimal private binding in `private.benefit_company_sources`;
 - records `private.benefit_import_receipts`, keyed by the manifest-byte digest with a unique pinned-source import key;
-- verifies source rows, receipt, and unchanged publication count before finishing.
+- compares imported company and source rows field-for-field in both directions, compares the exact receipt, and compares every publication column in both directions before finishing.
 
 A replay of the same bundle is idempotent. A different bundle claiming the same pinned source import key is rejected. `--dry-run` executes the same COPY, validation, upsert, and receipt path and then rolls back. Temporary artifacts are removed after success, failure, `SIGINT`, or `SIGTERM`.
 
-For local rollback testing only, `BENEFIT_SEED_INJECT_LATE_FAILURE=1` raises after the upserts and before the receipt. The transaction must leave company/source/receipt/publication state unchanged.
+For local rollback testing only, `BENEFIT_SEED_INJECT_LATE_FAILURE=1` raises after the upserts and before the receipt. The transaction must leave company/source/receipt/publication state unchanged. The Docker-required regression is intentionally separate from frontend checks:
+
+```bash
+cd community-app
+npm run db:test:benefit-seed-importer
+```
+
+It resets and stops the local stack, reproduces unexpected company/source `BEFORE` trigger rewrites, mutates the schema contract, and verifies receipt conflict, late-failure, dry-run, normal apply, replay, and exact unrelated publication preservation.
 
 ## Read-back checks
 

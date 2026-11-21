@@ -34,48 +34,106 @@ BEGIN;
 SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-directory-seed-import-v1',0));
 DO $preflight$
 BEGIN
-  IF pg_catalog.to_regclass('public.benefit_companies') IS NULL
-     OR pg_catalog.to_regclass('public.benefit_publications') IS NULL
-     OR NOT EXISTS (SELECT 1 FROM supabase_migrations.schema_migrations WHERE version='202611210001') THEN
-    RAISE EXCEPTION 'required benefit directory migration 202611210001 is unavailable';
+  IF (SELECT pg_catalog.count(*) FROM supabase_migrations.schema_migrations
+      WHERE version IN ('202611210001','202611210004'))<>2 THEN
+    RAISE EXCEPTION 'required benefit directory migrations are unavailable';
   END IF;
+  IF EXISTS (
+    WITH expected(schema_name,table_name,ordinal,column_name,type_name,is_not_null,default_expr) AS (VALUES
+      ('public','benefit_companies',1,'company_id','text',true,NULL),
+      ('public','benefit_companies',2,'identity_class','text',true,NULL),
+      ('public','benefit_companies',3,'display_name','text',true,NULL),
+      ('public','benefit_companies',4,'normalized_name','text',true,NULL),
+      ('public','benefit_companies',5,'industry','text',false,NULL),
+      ('public','benefit_companies',6,'size_class','text',false,NULL),
+      ('public','benefit_companies',7,'region','text',false,NULL),
+      ('public','benefit_companies',8,'summary','text',false,NULL),
+      ('public','benefit_companies',9,'is_searchable','boolean',true,'true'),
+      ('public','benefit_companies',10,'source_edition','text',true,NULL),
+      ('public','benefit_companies',11,'provenance','jsonb',true,'''{}''::jsonb'),
+      ('public','benefit_companies',12,'created_at','timestamp with time zone',true,'clock_timestamp()'),
+      ('public','benefit_companies',13,'updated_at','timestamp with time zone',true,'clock_timestamp()'),
+      ('public','benefit_publications',1,'publication_id','uuid',true,'gen_random_uuid()'),
+      ('public','benefit_publications',2,'company_id','text',true,NULL),
+      ('public','benefit_publications',3,'category_id','text',true,NULL),
+      ('public','benefit_publications',4,'title','text',true,NULL),
+      ('public','benefit_publications',5,'description','text',true,NULL),
+      ('public','benefit_publications',6,'eligibility_text','text',false,NULL),
+      ('public','benefit_publications',7,'condition_text','text',false,NULL),
+      ('public','benefit_publications',8,'trust_tier','text',true,NULL),
+      ('public','benefit_publications',9,'status','text',true,'''active''::text'),
+      ('public','benefit_publications',10,'dedupe_key','text',true,NULL),
+      ('public','benefit_publications',11,'revision','integer',true,NULL),
+      ('public','benefit_publications',12,'supersedes_publication_id','uuid',false,NULL),
+      ('public','benefit_publications',13,'source_url','text',false,NULL),
+      ('public','benefit_publications',14,'source_type','text',true,NULL),
+      ('public','benefit_publications',15,'observed_at','timestamp with time zone',false,NULL),
+      ('public','benefit_publications',16,'verified_at','timestamp with time zone',false,NULL),
+      ('public','benefit_publications',17,'provenance','jsonb',true,'''{}''::jsonb'),
+      ('public','benefit_publications',18,'reviewer_id','text',false,NULL),
+      ('public','benefit_publications',19,'created_at','timestamp with time zone',true,'clock_timestamp()'),
+      ('public','benefit_publications',20,'updated_at','timestamp with time zone',true,'clock_timestamp()'),
+      ('private','benefit_company_sources',1,'company_id','text',true,NULL),
+      ('private','benefit_company_sources',2,'source_contract','text',true,NULL),
+      ('private','benefit_company_sources',3,'source_digest','text',true,NULL),
+      ('private','benefit_company_sources',4,'source_binding','jsonb',true,NULL),
+      ('private','benefit_company_sources',5,'bundle_digest','text',true,NULL),
+      ('private','benefit_company_sources',6,'created_at','timestamp with time zone',true,'clock_timestamp()'),
+      ('private','benefit_company_sources',7,'updated_at','timestamp with time zone',true,'clock_timestamp()'),
+      ('private','benefit_import_receipts',1,'bundle_digest','text',true,NULL),
+      ('private','benefit_import_receipts',2,'import_key','text',true,NULL),
+      ('private','benefit_import_receipts',3,'schema_version','text',true,NULL),
+      ('private','benefit_import_receipts',4,'source_digest','text',true,NULL),
+      ('private','benefit_import_receipts',5,'company_count','integer',true,NULL),
+      ('private','benefit_import_receipts',6,'identity_counts','jsonb',true,NULL),
+      ('private','benefit_import_receipts',7,'ordered_id_set_sha256','text',true,NULL),
+      ('private','benefit_import_receipts',8,'imported_at','timestamp with time zone',true,'clock_timestamp()')
+    ), actual AS (
+      SELECT n.nspname,c.relname,a.attnum,a.attname,
+        pg_catalog.format_type(a.atttypid,a.atttypmod),a.attnotnull,
+        pg_catalog.pg_get_expr(d.adbin,d.adrelid),a.attgenerated::text,a.attidentity::text
+      FROM pg_catalog.pg_attribute a
+      JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+      WHERE (n.nspname,c.relname) IN (
+        ('public','benefit_companies'),('public','benefit_publications'),
+        ('private','benefit_company_sources'),('private','benefit_import_receipts')
+      ) AND a.attnum>0 AND NOT a.attisdropped
+    )
+    (SELECT schema_name,table_name,ordinal,column_name,type_name,is_not_null,default_expr,''::text,''::text FROM expected
+     EXCEPT ALL SELECT * FROM actual)
+    UNION ALL
+    (SELECT * FROM actual
+     EXCEPT ALL SELECT schema_name,table_name,ordinal,column_name,type_name,is_not_null,default_expr,''::text,''::text FROM expected)
+  ) THEN
+    RAISE EXCEPTION 'benefit seed schema contract mismatch';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+    WHERE (n.nspname,c.relname) IN (
+      ('public','benefit_companies'),('public','benefit_publications'),
+      ('private','benefit_company_sources'),('private','benefit_import_receipts')
+    ) AND (pg_catalog.pg_get_userbyid(c.relowner)<>'postgres'
+      OR c.relrowsecurity<>(n.nspname='public'))
+  ) THEN RAISE EXCEPTION 'benefit seed ownership or RLS contract mismatch'; END IF;
 END $preflight$;
 
-CREATE TABLE IF NOT EXISTS private.benefit_company_sources (
-  company_id text PRIMARY KEY REFERENCES public.benefit_companies(company_id) ON DELETE RESTRICT,
-  source_contract text NOT NULL,
-  source_digest text NOT NULL CHECK (source_digest ~ '^[0-9a-f]{64}$'),
-  source_binding jsonb NOT NULL CHECK (pg_catalog.jsonb_typeof(source_binding)='object'),
-  bundle_digest text NOT NULL CHECK (bundle_digest ~ '^[0-9a-f]{64}$'),
-  created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(),
-  updated_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp(),
-  CHECK (updated_at>=created_at)
-);
-CREATE TABLE IF NOT EXISTS private.benefit_import_receipts (
-  bundle_digest text PRIMARY KEY CHECK (bundle_digest ~ '^[0-9a-f]{64}$'),
-  import_key text NOT NULL UNIQUE,
-  schema_version text NOT NULL,
-  source_digest text NOT NULL CHECK (source_digest ~ '^[0-9a-f]{64}$'),
-  company_count integer NOT NULL CHECK (company_count>=0),
-  identity_counts jsonb NOT NULL CHECK (pg_catalog.jsonb_typeof(identity_counts)='object'),
-  ordered_id_set_sha256 text NOT NULL CHECK (ordered_id_set_sha256 ~ '^[0-9a-f]{64}$'),
-  imported_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp()
-);
-CREATE OR REPLACE FUNCTION private.reject_benefit_import_receipt_change()
-RETURNS trigger LANGUAGE plpgsql SET search_path='' AS $$
+-- SHARE blocks concurrent publication INSERT/UPDATE/DELETE until verification and
+-- commit/rollback, so the bounded snapshot cannot race ordinary writers.
+LOCK TABLE public.benefit_publications IN SHARE MODE;
+DO $publication_bound$
 BEGIN
-  RAISE EXCEPTION 'benefit import receipts are immutable' USING errcode='23514';
-END $$;
-REVOKE ALL ON FUNCTION private.reject_benefit_import_receipt_change() FROM PUBLIC,anon,authenticated,service_role;
-DO $receipt_trigger$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger WHERE tgrelid='private.benefit_import_receipts'::pg_catalog.regclass AND tgname='benefit_import_receipts_immutable') THEN
-    CREATE TRIGGER benefit_import_receipts_immutable
-      BEFORE UPDATE OR DELETE ON private.benefit_import_receipts
-      FOR EACH ROW EXECUTE FUNCTION private.reject_benefit_import_receipt_change();
+  IF (SELECT pg_catalog.count(*) FROM public.benefit_publications)>100000
+     OR coalesce((SELECT pg_catalog.sum(pg_catalog.pg_column_size(p)) FROM public.benefit_publications p),0::bigint)>268435456 THEN
+    RAISE EXCEPTION 'benefit publication snapshot exceeds 100000 rows or 256 MiB';
   END IF;
-END $receipt_trigger$;
-REVOKE ALL ON TABLE private.benefit_company_sources,private.benefit_import_receipts FROM PUBLIC,anon,authenticated,service_role;
+END $publication_bound$;
+CREATE TEMP TABLE publication_snapshot ON COMMIT DROP AS
+SELECT publication_id,company_id,category_id,title,description,eligibility_text,condition_text,
+  trust_tier,status,dedupe_key,revision,supersedes_publication_id,source_url,source_type,
+  observed_at,verified_at,provenance,reviewer_id,created_at,updated_at
+FROM public.benefit_publications;
 
 CREATE TEMP TABLE seed_stage (
   company_id text PRIMARY KEY,
@@ -97,7 +155,6 @@ DECLARE
   v_recruitment bigint;
   v_ftc bigint;
   v_digest text;
-  v_publications bigint;
 BEGIN
   SELECT pg_catalog.count(*),
     pg_catalog.count(*) FILTER (WHERE source_binding->>'identity_kind'='base_legal_identity'),
@@ -118,9 +175,13 @@ BEGIN
     SELECT 1 FROM private.benefit_import_receipts
     WHERE import_key=${sqlLiteral(importKey)} AND bundle_digest<>${sqlLiteral(bundleSha256)}
   ) THEN RAISE EXCEPTION 'import receipt mismatch for pinned source contract'; END IF;
-  SELECT pg_catalog.count(*) INTO v_publications FROM public.benefit_publications;
-  PERFORM pg_catalog.set_config('benefit_seed.publication_count',v_publications::text,true);
 END $validate$;
+
+CREATE TEMP TABLE expected_company_sources ON COMMIT DROP AS
+SELECT company_id,${sqlLiteral(manifest.source_contract_version ?? 'domestic-search-index-v1')}::text source_contract,
+  ${sqlLiteral(manifest.source_artifact.sha256)}::text source_digest,source_binding,
+  ${sqlLiteral(bundleSha256)}::text bundle_digest
+FROM seed_stage;
 
 INSERT INTO public.benefit_companies(
   company_id,identity_class,display_name,normalized_name,industry,size_class,region,summary,is_searchable,source_edition,provenance
@@ -140,7 +201,7 @@ WHERE (benefit_companies.display_name,benefit_companies.normalized_name,benefit_
   IS DISTINCT FROM (excluded.display_name,excluded.normalized_name,excluded.industry,excluded.size_class,excluded.region,excluded.is_searchable,excluded.source_edition);
 
 INSERT INTO private.benefit_company_sources(company_id,source_contract,source_digest,source_binding,bundle_digest)
-SELECT company_id,${sqlLiteral(manifest.source_contract_version ?? 'domestic-search-index-v1')},${sqlLiteral(manifest.source_artifact.sha256)},source_binding,${sqlLiteral(bundleSha256)} FROM seed_stage
+SELECT company_id,source_contract,source_digest,source_binding,bundle_digest FROM expected_company_sources
 ON CONFLICT(company_id) DO UPDATE SET
   source_contract=excluded.source_contract,source_digest=excluded.source_digest,
   source_binding=excluded.source_binding,bundle_digest=excluded.bundle_digest,updated_at=pg_catalog.clock_timestamp()
@@ -155,13 +216,56 @@ ON CONFLICT(bundle_digest) DO NOTHING;
 DO $final$
 BEGIN
   IF (SELECT pg_catalog.count(*) FROM seed_stage)<>${manifest.company_count}
-     OR (SELECT pg_catalog.count(*) FROM private.benefit_company_sources s JOIN seed_stage t USING(company_id)
-         WHERE s.bundle_digest=${sqlLiteral(bundleSha256)})<>${manifest.company_count}
-     OR NOT EXISTS (SELECT 1 FROM private.benefit_import_receipts WHERE bundle_digest=${sqlLiteral(bundleSha256)}
-       AND company_count=${manifest.company_count} AND identity_counts=${sqlLiteral(expectedCounts)}::jsonb
-       AND ordered_id_set_sha256=${sqlLiteral(manifest.ordered_id_set_sha256)})
-     OR (SELECT pg_catalog.count(*) FROM public.benefit_publications)<>pg_catalog.current_setting('benefit_seed.publication_count')::bigint THEN
-    RAISE EXCEPTION 'late seed verification mismatch';
+     OR EXISTS (
+       (SELECT company_id,identity_class,display_name,normalized_name,industry,size_class,region,
+          NULL::text summary,true is_searchable,source_edition,'{}'::jsonb provenance
+        FROM seed_stage
+        EXCEPT ALL
+        SELECT c.company_id,c.identity_class,c.display_name,c.normalized_name,c.industry,c.size_class,c.region,
+          c.summary,c.is_searchable,c.source_edition,c.provenance
+        FROM public.benefit_companies c JOIN seed_stage s USING(company_id))
+       UNION ALL
+       (SELECT c.company_id,c.identity_class,c.display_name,c.normalized_name,c.industry,c.size_class,c.region,
+          c.summary,c.is_searchable,c.source_edition,c.provenance
+        FROM public.benefit_companies c JOIN seed_stage s USING(company_id)
+        EXCEPT ALL
+        SELECT company_id,identity_class,display_name,normalized_name,industry,size_class,region,
+          NULL::text,true,source_edition,'{}'::jsonb FROM seed_stage)
+     )
+     OR EXISTS (
+       (SELECT * FROM expected_company_sources
+        EXCEPT ALL
+        SELECT company_id,source_contract,source_digest,source_binding,bundle_digest
+        FROM private.benefit_company_sources WHERE bundle_digest=${sqlLiteral(bundleSha256)})
+       UNION ALL
+       (SELECT company_id,source_contract,source_digest,source_binding,bundle_digest
+        FROM private.benefit_company_sources WHERE bundle_digest=${sqlLiteral(bundleSha256)}
+        EXCEPT ALL SELECT * FROM expected_company_sources)
+     )
+     OR NOT EXISTS (
+       SELECT 1 FROM private.benefit_import_receipts
+       WHERE bundle_digest=${sqlLiteral(bundleSha256)}
+         AND import_key=${sqlLiteral(importKey)}
+         AND schema_version=${sqlLiteral(manifest.schema_version)}
+         AND source_digest=${sqlLiteral(manifest.source_artifact.sha256)}
+         AND company_count=${manifest.company_count}
+         AND identity_counts=${sqlLiteral(expectedCounts)}::jsonb
+         AND ordered_id_set_sha256=${sqlLiteral(manifest.ordered_id_set_sha256)}
+     )
+     OR (SELECT pg_catalog.count(*) FROM publication_snapshot)<>(SELECT pg_catalog.count(*) FROM public.benefit_publications)
+     OR EXISTS (
+       (SELECT * FROM publication_snapshot EXCEPT ALL SELECT
+          publication_id,company_id,category_id,title,description,eligibility_text,condition_text,
+          trust_tier,status,dedupe_key,revision,supersedes_publication_id,source_url,source_type,
+          observed_at,verified_at,provenance,reviewer_id,created_at,updated_at
+        FROM public.benefit_publications)
+       UNION ALL
+       (SELECT publication_id,company_id,category_id,title,description,eligibility_text,condition_text,
+          trust_tier,status,dedupe_key,revision,supersedes_publication_id,source_url,source_type,
+          observed_at,verified_at,provenance,reviewer_id,created_at,updated_at
+        FROM public.benefit_publications EXCEPT ALL SELECT * FROM publication_snapshot)
+     ) THEN
+    RAISE EXCEPTION 'late seed exact-state verification mismatch';
   END IF;
 END $final$;
 \echo benefit-directory-seed validated companies=${manifest.company_count} base=${manifest.identity_counts.base_legal_identity} recruitment=${manifest.identity_counts.recruitment_observation} ftc=${manifest.identity_counts.ftc_affiliate}
@@ -236,7 +340,7 @@ async function runPsql(executable, env, sqlFile) {
     child.once('close', code => {
       for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler)
       if (code === 0) { if (stdout.trim()) console.log(stdout.trim()); resolve() }
-      else reject(Error(`psql seed import failed with exit ${code}: ${stderr.trim().slice(-4000)}`))
+      else reject(Error(`psql seed import failed with exit ${code}: ${stderr.trim().slice(-12_000)}`))
     })
   })
 }

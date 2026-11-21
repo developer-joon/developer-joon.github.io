@@ -20,6 +20,7 @@
     "db:test:oauth-profile-upgrade": "bash ../supabase/tests/oauth_profile_upgrade.sh",
     "db:test:benefit-title-upgrade": "bash ../supabase/tests/benefit_title_upgrade.sh",
     "db:test:benefit-title-upgrade-isolation": "bash ../supabase/tests/benefit_title_upgrade_isolation_test.sh",
+    "db:test:benefit-seed-importer": "bash ../supabase/tests/benefit_seed_importer_integration.sh",
     "db:lint": "supabase db lint --level error",
     "db:stop": "supabase stop",
     "benefit-seed:generate": "node ../scripts/generate-benefit-directory-seed.mjs",
