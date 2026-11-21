@@ -74,6 +74,36 @@ describe('admin benefit submission repository', () => {
     expect(cursorValue.rpc).toHaveBeenCalledWith('list_benefit_submission_queue_v1',expect.objectContaining({p_cursor_created_at:high.created_at}),undefined)
   })
 
+  it('canonicalizes an uppercase request cursor and rejects the same lowercase boundary row', async () => {
+    const boundaryId='a0000000-0000-4000-8000-000000000001'
+    const value=setup({items:[{...submitted,id:boundaryId}],has_more:false,next_cursor:null})
+    await expect(value.repository.listQueue({status:'all',limit:2,cursor:{createdAt,id:boundaryId.toUpperCase()}})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+    expect(value.rpc).toHaveBeenCalledWith('list_benefit_submission_queue_v1',expect.objectContaining({p_cursor_created_at:createdAt,p_cursor_id:boundaryId}),undefined)
+  })
+
+  it.each([
+    ['a0000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001'],
+    ['2000000a-0000-4000-8000-000000000001','20000009-0000-4000-8000-000000000001'],
+  ])('uses deterministic UUID hex ordering for %s above %s',async(highId,lowId)=>{
+    const value=setup({items:[{...submitted,id:highId.toUpperCase()},{...submitted,id:lowId}],has_more:false,next_cursor:null})
+    await expect(value.repository.listQueue({status:'all',limit:2})).resolves.toMatchObject({ok:true,data:{items:[{id:highId},{id:lowId}]}})
+  })
+
+  it('canonicalizes submission, publication, and client UUIDs for equality and RPC arguments', async () => {
+    const clientKey='a0000000-0000-4000-8000-000000000001'
+    const value=setup(approved)
+    const input={submissionId:id.toUpperCase(),expectedStatus:'reviewing' as const,action:'approve' as const,adminResponse:'승인',clientKey:clientKey.toUpperCase(),publicTitle:'휴가 20일',publicDescription:'유급 휴가 20일',publicEligibility:null,publicCondition:null,existingPublicationId:publicationId.toUpperCase()}
+    await expect(value.repository.review(input)).resolves.toMatchObject({ok:true,data:{id,publicationId}})
+    expect(value.rpc).toHaveBeenCalledWith('review_benefit_submission_v1',expect.objectContaining({p_submission_id:id,p_client_key:clientKey,p_existing_publication_id:publicationId}),undefined)
+    expect(adminBenefitSubmissionReviewFingerprint(input)).toBe(adminBenefitSubmissionReviewFingerprint({...input,submissionId:id,clientKey,existingPublicationId:publicationId}))
+  })
+
+  it.each(['not-a-uuid','20000000-0000-4000-8000-00000000000','20000000_0000-4000-8000-000000000001'])('continues to reject malformed cursor UUID %s',async malformedId=>{
+    const value=setup({items:[],has_more:false,next_cursor:null})
+    await expect(value.repository.listQueue({status:'all',limit:2,cursor:{createdAt,id:malformedId}})).resolves.toMatchObject({ok:false,error:{code:'invalid_argument'}})
+    expect(value.rpc).not.toHaveBeenCalled()
+  })
+
   it.each(['2026-02-29T00:00:00Z','2024-01-01T00:00:00+24:00','2024-01-01T00:00:00.0000001Z'])('rejects invalid PostgreSQL timestamp %s',async created_at=>{
     const value=setup({items:[{...submitted,created_at,updated_at:created_at}],has_more:false,next_cursor:null})
     await expect(value.repository.listQueue({status:'all',limit:2})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
