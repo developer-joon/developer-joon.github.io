@@ -19,10 +19,8 @@ export function BenefitsExplorerShell({ route, query, manifest, researchSummary,
       </section>
       <div className="benefits-workspace community-wrap">
         <nav className="benefits-tabs" aria-label="복지 탐색 화면">
-          <a aria-current={route === 'directory' ? 'page' : undefined} href="/benefits/">국내 기업 검색</a>
-          <a aria-current={route === 'heatmap' ? 'page' : undefined} href={`/community/benefits/${query}`}>복지 현황</a>
-          <a aria-current={route === 'fit' ? 'page' : undefined} href={`/community/benefits/fit/${query}`}>조건 탐색</a>
-          <a aria-current={route === 'methodology' ? 'page' : undefined} href={`/community/benefits/methodology/${query}`}>조사 기준·정정 이력</a>
+          <a aria-current={route === 'directory' ? 'page' : undefined} href="/benefits/">기업 검색</a>
+          <a aria-current={route === 'methodology' ? 'page' : undefined} href={`/community/benefits/methodology/${query}`}>조사 기준</a>
         </nav>
         {children}
       </div>

@@ -144,7 +144,9 @@ export function BenefitsDirectoryPage({
       if (controller.signal.aborted || generation.current !== currentGeneration || source.current.id !== currentSourceId) return
       if (!result.ok) {
         if (result.error.code === 'aborted') return
-        setRefreshError(result.error.message)
+        setRefreshError(result.error.code === 'configuration'
+          ? '기업 데이터를 준비하고 있습니다. 잠시 후 다시 확인해 주세요.'
+          : result.error.message)
         setPhase('error')
         return
       }

@@ -2,11 +2,11 @@
   overflow-x: clip;
 }
 .community-page.benefits-page main {
-  max-width: 1600px;
+  max-width: 1100px;
   padding: 32px clamp(16px, 3vw, 48px);
   margin: 24px auto;
-  background: #0c1525;
-  color: #e4edf8;
+  background: var(--background);
+  color: var(--text-dark);
   min-height: 70vh;
   font-size: 14px;
   line-height: 1.6;
@@ -79,8 +79,19 @@
 }
 .benefits-main > .benefits-workspace {
   box-sizing: border-box;
+  width: 100%;
+  max-width: 500px;
   min-width: 0;
   padding-block: 32px 56px;
+}
+@media (min-width: 768px) {
+  .benefits-main > .benefits-workspace { max-width: 680px; }
+}
+@media (min-width: 1024px) {
+  .benefits-main > .benefits-workspace { max-width: 900px; }
+}
+@media (min-width: 1220px) {
+  .benefits-main > .benefits-workspace { max-width: 1100px; }
 }
 .fixture-badge {
   position: fixed;
@@ -103,19 +114,25 @@
 .benefits-tabs {
   display: flex;
   gap: 0;
-  border-bottom: 1px solid #3a4c66;
+  border: 1px solid var(--border);
+  background: var(--background);
   overflow: auto;
 }
 .benefits-tabs a {
-  padding: 14px 20px;
-  color: #b9cbe0;
+  display: inline-flex;
+  box-sizing: border-box;
+  min-height: 44px;
+  align-items: center;
+  padding: 10px 20px;
+  color: var(--text-medium);
   white-space: nowrap;
   text-decoration: none;
 }
 .benefits-tabs a[aria-current] {
-  color: #7ee8ce;
-  border-bottom: 3px solid #7ee8ce;
-  background: #152b36;
+  color: var(--accent);
+  border-bottom: 3px solid var(--accent);
+  background: var(--background-alt);
+  font-weight: 700;
 }
 .benefits-version,
 .benefits-muted {
@@ -691,13 +708,12 @@
   overflow: visible;
 }
 
-/* Dynamic benefit directory: restrained, search-first editorial controls. */
 .benefits-page .domestic-directory {
   min-width: 0;
   padding: clamp(16px, 3vw, 40px);
-  border: 1px solid #d7d1bd;
-  background: #f7f4ec;
-  color: #18302c;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--text-dark);
 }
 .benefits-page .domestic-directory__search { margin: 0 0 20px; }
 .benefits-page .domestic-directory__search label { display: grid; gap: 8px; color: #17372e; font-size: 16px; font-weight: 800; }
@@ -778,7 +794,7 @@
 .benefits-page .domestic-directory__results-status p { margin: 0 0 12px; overflow-wrap: anywhere; }
 .benefits-page .domestic-directory__result-section h2 { margin: 24px 0 0; color: #17372e; font-size: 16px; letter-spacing: -.01em; }
 .benefits-page .domestic-directory__list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; min-width: 0; }
-.benefits-page .domestic-directory__record { min-width: 0; padding: 20px 0; border-bottom: 1px solid #d4d0c2; overflow-wrap: anywhere; }
+.benefits-page .domestic-directory__record { min-width: 0; padding: 20px 0; border: 0; border-bottom: 1px solid var(--border); box-shadow: none; overflow-wrap: anywhere; }
 .benefits-page .domestic-directory__identity { margin: 0 0 7px; color: #746850; font-size: 12px; font-weight: 800; }
 .benefits-page .domestic-directory__status { color: #70440e; font-size: 12px; font-weight: 800; }
 .benefits-page .domestic-directory__record h3 { margin: 0 0 8px; color: #17372e; font-size: 20px; letter-spacing: -.02em; overflow-wrap: anywhere; }
@@ -841,4 +857,129 @@
   .benefit-company-page h1,
   .benefit-company-page__card,
   .benefit-company-page__trust { max-width: 100%; overflow-wrap: anywhere; }
+}
+
+/* Blog editorial parity: keep every post-hero surface light. */
+.benefits-workspace {
+  color: var(--text-dark);
+}
+.benefits-version,
+.benefits-muted,
+.benefits-results h2 small,
+.benefits-workspace caption,
+.benefits-field-help,
+.benefit-correction-field-help,
+.benefits-specific-section__intro,
+.benefits-research-section > p {
+  color: var(--text-medium);
+}
+.benefits-workspace a,
+.benefits-research-card a,
+.benefits-evidence a {
+  color: var(--accent);
+}
+.benefits-filters,
+.benefits-correction-action,
+.benefit-correction-panel,
+.benefit-correction-gate,
+.benefit-corrections-list,
+.benefits-evidence,
+.benefits-result,
+.benefits-specific-card,
+.benefits-research-card,
+.benefits-filter-drawer {
+  border-color: var(--border);
+  background: var(--background);
+  color: var(--text-dark);
+  box-shadow: 0 8px 24px rgb(42 47 54 / 6%);
+}
+.benefits-disclosure,
+.benefit-correction-warning,
+.benefit-correction-review-note,
+.benefit-correction-card,
+.benefits-official-only-notice,
+.benefits-result-evidence section {
+  border-color: var(--border);
+  background: var(--background-alt);
+  color: var(--text-dark);
+}
+.benefits-workspace input:not([type='checkbox']),
+.benefits-workspace select,
+.benefit-correction-form input,
+.benefit-correction-form select,
+.benefit-correction-form textarea {
+  border-color: var(--border);
+  background: var(--background);
+  color: var(--text-dark);
+}
+.benefits-workspace input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+.benefits-workspace fieldset,
+.benefits-workspace th,
+.benefits-workspace td,
+.benefits-table-scroll,
+.benefits-summary {
+  border-color: var(--border);
+}
+.benefits-workspace button {
+  min-height: 44px;
+  border-color: var(--border);
+  background: var(--background);
+  color: var(--text-dark);
+}
+.benefits-workspace :focus-visible {
+  outline-color: var(--accent);
+}
+.benefits-correction-link {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.benefits-table-scroll {
+  background: var(--background);
+}
+.benefits-workspace th,
+.benefits-heatmap th:first-child {
+  background: var(--background-alt);
+  color: var(--text-dark);
+}
+.benefits-status,
+.benefits-badge,
+.benefits-lineage-pending {
+  background: var(--background-alt);
+  color: var(--text-medium) !important;
+}
+.benefits-research-card h4,
+.benefits-specific-card h4,
+.benefits-specific-card blockquote,
+.benefits-workspace h3 {
+  color: var(--text-dark);
+}
+.benefits-legacy-links {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.benefits-legacy-links h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+.benefits-legacy-links ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.benefits-legacy-links a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
 }

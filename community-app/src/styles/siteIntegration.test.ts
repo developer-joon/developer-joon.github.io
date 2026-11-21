@@ -526,6 +526,42 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('uses the Blog editorial surface, responsive wrap, bordered tabs, and touch targets', () => {
+    const pageMain = benefitRule('.community-page.benefits-page main')?.declarations
+    const workspace = benefitRule('.benefits-main > .benefits-workspace')?.declarations
+    const tabs = benefitRule('.benefits-tabs')?.declarations
+    const tabLink = benefitRule('.benefits-tabs a')?.declarations
+    const currentTab = benefitRule('.benefits-tabs a[aria-current]')?.declarations
+    const directory = benefitRule('.benefits-page .domestic-directory')?.declarations
+    const record = benefitRule('.benefits-page .domestic-directory__record')?.declarations
+
+    expect(pageMain?.background).toBe('var(--background)')
+    expect(pageMain?.color).toBe('var(--text-dark)')
+    expect(workspace?.['max-width']).toBe('500px')
+    expect(benefitsRules.find(rule => rule.selectors.includes('.benefits-main > .benefits-workspace') && rule.minWidth === 768)?.declarations['max-width']).toBe('680px')
+    expect(benefitsRules.find(rule => rule.selectors.includes('.benefits-main > .benefits-workspace') && rule.minWidth === 1024)?.declarations['max-width']).toBe('900px')
+    expect(benefitsRules.find(rule => rule.selectors.includes('.benefits-main > .benefits-workspace') && rule.minWidth === 1220)?.declarations['max-width']).toBe('1100px')
+    expect(tabs?.background).toBe('var(--background)')
+    expect(tabs?.border).toBeDefined()
+    expect(tabLink?.['min-height']).toBe('44px')
+    expect(currentTab?.['border-bottom']).toBeDefined()
+    expect(directory?.background).toBe('var(--background)')
+    expect(directory?.border).toBeDefined()
+    expect(record?.border).toBeDefined()
+    expect(record?.['box-shadow'] ?? 'none').not.toMatch(/(?:0\s+\d{2,}px|\d{2,}px\s+\d{2,}px)/)
+
+    for (const [viewportWidth, maxWidth, paddingInline] of [
+      [767, '500px', '20px'],
+      [768, '680px', '0'],
+      [1024, '900px', '0'],
+      [1220, '1100px', '0'],
+    ] as const) {
+      const wrap = computedDeclarations(['community-wrap', 'benefits-workspace'], 'div', viewportWidth)
+      expect(wrap['max-width'], `benefits wrap at ${viewportWidth}px`).toBe(maxWidth)
+      expect(wrap['padding-inline'], `benefits gutter at ${viewportWidth}px`).toBe(paddingInline)
+    }
+  })
+
   it('keeps the benefits discovery mobile contract scoped and accessible', () => {
     const summarySelector = '.benefits-page .domestic-directory__filter-details > summary'
     const openSummarySelector = '.benefits-page .domestic-directory__filter-details[open] > summary'

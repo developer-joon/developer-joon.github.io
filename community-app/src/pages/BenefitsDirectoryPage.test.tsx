@@ -276,6 +276,26 @@ describe('dynamic benefit directory search', () => {
     expect(await screen.findByText('활성 요청')).toBeInTheDocument()
   })
 
+  it('shows a sanitized preparing-data alert for configuration failures and retries', async () => {
+    const internalMessage = 'PGRST202 search_benefit_companies_v1 https://secret-project.supabase.co'
+    const search = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: { code: 'configuration', message: internalMessage } } satisfies Result<BenefitDirectoryPage>)
+      .mockResolvedValueOnce(ok(page()))
+
+    render(<BenefitsDirectoryPage search="" repository={repository(search)} />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('기업 데이터를 준비하고 있습니다. 잠시 후 다시 확인해 주세요.')
+    expect(alert).not.toHaveTextContent('PGRST202')
+    expect(alert).not.toHaveTextContent('search_benefit_companies_v1')
+    expect(alert).not.toHaveTextContent('secret-project')
+    expect(screen.queryByText('조건에 맞는 기업을 찾지 못했습니다')).not.toBeInTheDocument()
+
+    fireEvent.click(within(alert).getByRole('button', { name: '다시 시도' }))
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('가나다 공식')).toBeInTheDocument()
+  })
+
   it('distinguishes first failure and honest empty state', async () => {
     const search = vi.fn().mockResolvedValueOnce(fail()).mockResolvedValueOnce(ok(page([])))
     render(<BenefitsDirectoryPage search="" repository={repository(search)} />)
