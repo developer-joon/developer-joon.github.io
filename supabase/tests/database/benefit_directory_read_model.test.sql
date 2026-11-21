@@ -10,7 +10,9 @@ select ok((select bool_and(relrowsecurity) from pg_class where oid=any(array['pu
 select ok((select bool_and(not has_table_privilege('public',oid,'SELECT,INSERT,UPDATE,DELETE') and not has_table_privilege('anon',oid,'SELECT,INSERT,UPDATE,DELETE') and not has_table_privilege('authenticated',oid,'SELECT,INSERT,UPDATE,DELETE')) from pg_class where oid=any(array['public.benefit_companies'::regclass,'public.benefit_publications'::regclass])),'public and browser roles have no direct table rights');
 select ok((select bool_and(p.prosecdef and p.proconfig @> array['search_path=""'] and pg_get_userbyid(p.proowner)='postgres') from pg_proc p where p.oid=any(array['public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)'::regprocedure,'public.get_benefit_company_v1(text)'::regprocedure])),'public RPCs are fixed-owner SECURITY DEFINER with empty search_path');
 select ok(not has_function_privilege('public','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE') and has_function_privilege('anon','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE') and has_function_privilege('authenticated','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE'),'search grants are browser-only');
-select ok(not has_function_privilege('public','public.get_benefit_company_v1(text)','EXECUTE') and has_function_privilege('anon','public.get_benefit_company_v1(text)','EXECUTE') and has_function_privilege('authenticated','public.get_benefit_company_v1(text)','EXECUTE'),'detail grants are browser-only');
+select ok(not has_function_privilege('public','public.get_benefit_company_v1(text)','EXECUTE') and not has_function_privilege('service_role','public.get_benefit_company_v1(text)','EXECUTE') and has_function_privilege('anon','public.get_benefit_company_v1(text)','EXECUTE') and has_function_privilege('authenticated','public.get_benefit_company_v1(text)','EXECUTE'),'detail grants are browser-only and exclude PUBLIC/service_role');
+select ok(pg_catalog.pg_get_functiondef('public.get_benefit_company_v1(text)'::regprocedure) ~ 'order by bp.category_id,bp.title,bp.publication_id[[:space:]]+limit 201' and pg_catalog.pg_get_functiondef('public.get_benefit_company_v1(text)'::regprocedure) ~ 'limit 200','detail checks a canonical 201-row lookahead before its bounded aggregate');
+select ok((select exists(select 1 from pg_catalog.pg_class c join pg_catalog.pg_index i on i.indexrelid=c.oid where c.oid='public.benefit_publications_active_company_idx'::regclass and i.indpred is not null and pg_catalog.pg_get_expr(i.indpred,i.indrelid) like '%status%active%')),'detail company/status predicate has a partial active-publication index');
 select ok((select coalesce(bool_and(not i.indisunique),false) from pg_catalog.pg_class c join pg_catalog.pg_index i on i.indexrelid=c.oid where c.relnamespace='public'::regnamespace and c.relname='benefit_publications_active_lineage_idx'),'active lineage lookup index is non-unique so either transaction write order is possible');
 select ok((select coalesce(bool_and(t.tgdeferrable and t.tginitdeferred),false) from pg_catalog.pg_trigger t where t.tgrelid='public.benefit_publications'::regclass and t.tgname='benefit_publications_unique_active_lineage_check'),'active lineage uniqueness is checked by a deferred constraint trigger');
 
@@ -240,6 +242,31 @@ select throws_ok($$select public.search_benefit_companies_v1(null,null,null,'gia
 select throws_ok($$select public.search_benefit_companies_v1(null,null,null,null,null,false,10,'{}')$$,'22023','invalid cursor','incomplete cursor shape is rejected');
 select throws_ok($$select public.search_benefit_companies_v1(null,null,null,null,null,false,10,'{"normalized_name":"x","company_id":"KR-BIZ-1234567890","extra":true}')$$,'22023','invalid cursor','cursor extra keys are rejected');
 reset role;
+
+-- Detail payloads are bounded on both sides of the RPC contract.
+insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values
+  ('KR-BIZ-8800000200','registered_business','Bound 200','bound 200',true,'bound-fixture-v1','{}'),
+  ('KR-BIZ-8800000201','registered_business','Bound 201','bound 201',true,'bound-fixture-v1','{}');
+insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance)
+select ('a2000000-0000-0000-0000-'||pg_catalog.lpad(n::text,12,'0'))::uuid,'KR-BIZ-8800000200',
+  case when n%2=0 then 'health' else 'leave' end,'Benefit '||pg_catalog.lpad(n::text,3,'0'),'bounded','official_verified','active','bound-200-'||n,1,'official_ledger','{}'::jsonb
+from pg_catalog.generate_series(1,200) n;
+insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance)
+select ('a2010000-0000-0000-0000-'||pg_catalog.lpad(n::text,12,'0'))::uuid,'KR-BIZ-8800000201',
+  case when n%2=0 then 'health' else 'leave' end,'Benefit '||pg_catalog.lpad(n::text,3,'0'),'bounded','official_verified','active','bound-201-'||n,1,'official_ledger','{}'::jsonb
+from pg_catalog.generate_series(1,201) n;
+set local role anon;
+select is(pg_catalog.jsonb_array_length(public.get_benefit_company_v1('KR-BIZ-8800000200')->'publications'),200,'detail returns exactly 200 active publications');
+select ok((select pg_catalog.bool_and((select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(item))=8) from pg_catalog.jsonb_array_elements(public.get_benefit_company_v1('KR-BIZ-8800000200')->'publications') item),'every bounded detail publication preserves the exact public key set');
+select is(
+  (select pg_catalog.array_agg(item->>'title' order by ordinal) from pg_catalog.jsonb_array_elements(public.get_benefit_company_v1('KR-BIZ-8800000200')->'publications') with ordinality rows(item,ordinal)),
+  (select pg_catalog.array_agg('Benefit '||pg_catalog.lpad(n::text,3,'0') order by case when n%2=0 then 'health' else 'leave' end,'Benefit '||pg_catalog.lpad(n::text,3,'0')) from pg_catalog.generate_series(1,200) n),
+  'bounded detail publications retain canonical category-title-id order'
+);
+select throws_ok($$select public.get_benefit_company_v1('KR-BIZ-8800000201')$$,'P0001','benefit publication limit exceeded','detail fails closed at 201 active publications');
+reset role;
+delete from public.benefit_publications where company_id in ('KR-BIZ-8800000200','KR-BIZ-8800000201');
+delete from public.benefit_companies where company_id in ('KR-BIZ-8800000200','KR-BIZ-8800000201');
 
 -- Keep the representative corpus in this transaction so rollback cleans it up.
 insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance)

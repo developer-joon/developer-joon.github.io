@@ -12,7 +12,7 @@ vi.mock('../config/env', () => ({
 import { getAnonymousSupabaseClient } from './supabase'
 
 describe('anonymous Supabase client', () => {
-  it('is cached without persisting or refreshing sessions', () => {
+  it('is cached without persisting or refreshing sessions', async () => {
     const anonymousClient = { kind: 'anonymous' }
     createClient.mockReturnValue(anonymousClient)
 
@@ -26,9 +26,10 @@ describe('anonymous Supabase client', () => {
     expect(createClient).toHaveBeenCalledWith(
       'https://abcdefghijklmnopqrst.supabase.co',
       'sb_publishable_test',
-      { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storage: expect.any(Object) } },
+      { accessToken: expect.any(Function), auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storage: expect.any(Object) } },
     )
     const options = createClient.mock.calls[0][2]
+    await expect(options.accessToken()).resolves.toBeNull()
     expect(options.auth.storage.getItem('session')).toBeNull()
     expect(options.auth.storage.setItem('session', 'private')).toBeUndefined()
     expect(options.auth.storage.removeItem('session')).toBeUndefined()

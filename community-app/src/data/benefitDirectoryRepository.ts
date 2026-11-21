@@ -29,6 +29,7 @@ const companyKeys = ['company_id', 'display_name', 'identity_label', 'industry',
 const publicationKeys = ['publication_id', 'category_id', 'title', 'description', 'eligibility_text', 'condition_text', 'trust_label', 'revision'] as const
 const searchInputKeys = ['query', 'categories', 'industry', 'size', 'region', 'hasBenefitsOnly', 'pageSize', 'cursor'] as const
 const companyIdPattern = /^(?:KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10})$/
+export const MAX_BENEFIT_DETAIL_PUBLICATIONS = 200
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -131,7 +132,8 @@ function decodePublication(value: unknown): BenefitDirectoryPublication {
 }
 
 function decodeDetail(value: unknown, requestedCompanyId: string): BenefitCompanyDetail {
-  if (!isRecord(value) || !hasExactKeys(value, detailKeys) || !Array.isArray(value.publications)) throw new Error('invalid detail projection')
+  if (!isRecord(value) || !hasExactKeys(value, detailKeys) || !Array.isArray(value.publications)
+    || value.publications.length > MAX_BENEFIT_DETAIL_PUBLICATIONS) throw new Error('invalid detail projection')
   const company = decodeCompany(value.company)
   const publications = value.publications.map(decodePublication)
   if (company.companyId !== requestedCompanyId
@@ -160,6 +162,29 @@ function responseStatus(status: unknown) {
   return Number.isInteger(status) && (status as number) >= 100 && (status as number) <= 599
     ? status as number
     : undefined
+}
+function hasOwn(value: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(value, key)
+}
+function validStatusText(value: unknown): value is string {
+  return typeof value === 'string' && byteLength(value) <= 800
+    && !Array.from(value).some(character => {
+      const code = character.charCodeAt(0)
+      return code <= 31 || code === 127
+    })
+}
+function validTransportError(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false
+  try {
+    const encoded = JSON.stringify(value)
+    if (encoded === undefined || byteLength(encoded) > 8192) return false
+  } catch {
+    return false
+  }
+  return typeof value.code === 'string' && byteLength(value.code) <= 100
+    && typeof value.message === 'string' && byteLength(value.message) <= 4000
+    && (value.details === undefined || value.details === null || (typeof value.details === 'string' && byteLength(value.details) <= 4000))
+    && (value.hint === undefined || value.hint === null || (typeof value.hint === 'string' && byteLength(value.hint) <= 4000))
 }
 function mapTransportError<T>(
   transport: { error: unknown; status?: unknown; statusText?: unknown },
@@ -220,12 +245,23 @@ export function createBenefitDirectoryRepository(): BenefitDirectoryRepository {
       const request = client.rpc(name, args as never)
       const response = signal ? await request.abortSignal(signal) : await request
       if (signal?.aborted) return aborted()
-      if (!isRecord(response) || !('data' in response) || !('error' in response)) {
+      if (!isRecord(response)
+        || !['data', 'error', 'status', 'statusText'].every(key => hasOwn(response, key))
+        || (hasOwn(response, 'count') && response.count !== null && !nonnegativeInteger(response.count))
+        || responseStatus(response.status) === undefined || !validStatusText(response.statusText)) {
         return failure('invalid_response', '서버 응답을 확인할 수 없습니다.')
       }
-      if (response.error) return mapTransportError({
+      const status = response.status as number
+      if (response.error === null) {
+        if (status < 200 || status > 299 || status === 204) {
+          return failure('invalid_response', '서버 응답을 확인할 수 없습니다.')
+        }
+      } else if (status >= 200 && status <= 299
+        || !validTransportError(response.error) || response.data !== null) {
+        return failure('invalid_response', '서버 응답을 확인할 수 없습니다.')
+      } else return mapTransportError({
         error: response.error,
-        status: response.status,
+        status,
         statusText: response.statusText,
       }, name)
       try { return { ok: true, data: decode(response.data) } }

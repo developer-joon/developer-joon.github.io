@@ -21,6 +21,7 @@ const page = { items: [searchItem], has_more: false, next_cursor: null, total: 1
 const detail = { company, publications: [publication] }
 
 type Response = { data: unknown; error: unknown; status?: unknown; statusText?: unknown }
+const success = (data: unknown, status = 200): Response => ({ data, error: null, status, statusText: status === 200 ? 'OK' : 'No Content' })
 function rpcClient(response: Response | Promise<Response>) {
   const resolved = Promise.resolve(response)
   const abortSignal = vi.fn(() => resolved)
@@ -33,7 +34,7 @@ beforeEach(() => vi.clearAllMocks())
 
 describe('benefit directory repository', () => {
   it('calls only the public search RPC with the exact server arguments and forwards AbortSignal', async () => {
-    const transport = rpcClient({ data: page, error: null })
+    const transport = rpcClient(success(page))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
     const signal = new AbortController().signal
 
@@ -68,7 +69,7 @@ describe('benefit directory repository', () => {
   })
 
   it('calls the public detail RPC and preserves PostgreSQL UUID text without version restrictions', async () => {
-    const transport = rpcClient({ data: detail, error: null })
+    const transport = rpcClient(success(detail))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
     const result = await createBenefitDirectoryRepository().detail(company.company_id)
     expect(result).toEqual({ ok: true, data: {
@@ -83,7 +84,7 @@ describe('benefit directory repository', () => {
     [{ ...page, items: [{ ...searchItem, verified_at: '2026-01-01T00:00:00Z' }] }, 'search item'],
   ])('rejects an unknown/private key at the %s object level', async (wire, level) => {
     void level
-    const transport = rpcClient({ data: wire, error: null }); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().search({ pageSize: 20 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
@@ -95,7 +96,7 @@ describe('benefit directory repository', () => {
     [{ ...detail, publications: [{ ...publication, verified_at: '2026-01-01T00:00:00Z' }] }, 'publication timestamp'],
   ])('rejects an unknown/private detail key at the %s object level', async (wire, level) => {
     void level
-    const transport = rpcClient({ data: wire, error: null }); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
@@ -112,7 +113,7 @@ describe('benefit directory repository', () => {
     { ...page, has_more: false, next_cursor: 'unexpected' },
     { ...page, items: [searchItem, searchItem], total: 2 },
   ])('rejects malformed or inconsistent search wire data', async (wire) => {
-    const transport = rpcClient({ data: wire, error: null }); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().search({ pageSize: 50 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
@@ -124,8 +125,32 @@ describe('benefit directory repository', () => {
     { ...detail, publications: [publication, publication] },
     { ...detail, publications: null },
   ])('rejects malformed detail wire data', async (wire) => {
-    const transport = rpcClient({ data: wire, error: null }); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects detail projections above the server publication limit before decoding entries', async () => {
+    const publications = Array.from({ length: 201 }, (_, index) => ({
+      ...publication,
+      publication_id: `b1000000-0000-0000-0000-${index.toString(16).padStart(12, '0')}`,
+    }))
+    const transport = rpcClient(success({ company, publications }))
+    getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it.each([
+    [{ data: page, error: null, status: 503, statusText: 'Service Unavailable' }, 'valid data with non-success status'],
+    [{ data: page, error: null, statusText: 'OK' }, 'missing status'],
+    [{ data: page, error: undefined, status: 200, statusText: 'OK' }, 'undefined error'],
+    [{ data: page, error: false, status: 200, statusText: 'OK' }, 'false error'],
+    [{ data: page, error: 'failed', status: 500, statusText: 'Error' }, 'string error'],
+    [{ data: page, error: null, status: 204, statusText: 'No Content' }, 'data on a no-content response'],
+  ])('fails closed for a malformed response envelope: %s', async (wire, description) => {
+    void description
+    const transport = rpcClient(wire as Response)
+    getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    expect(await createBenefitDirectoryRepository().search({ pageSize: 20 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
   it.each([
@@ -158,7 +183,6 @@ describe('benefit directory repository', () => {
   })
 
   it.each([
-    [{ error: new TypeError('Failed to fetch SQL select secret') }, 'network'],
     [{ status: 504, error: { code: 'PGRST504', message: 'statement timeout: private SQL' } }, 'timeout'],
     [{ status: 429, error: { code: 'PGRST429', message: 'private rate detail' } }, 'rate_limited'],
     [{ status: 400, error: { code: '22023', message: 'internal invalid query' } }, 'invalid_argument'],
@@ -168,6 +192,14 @@ describe('benefit directory repository', () => {
     const result = await createBenefitDirectoryRepository().search({ pageSize: 20 })
     expect(result).toMatchObject({ ok: false, error: { code } })
     expect(JSON.stringify(result)).not.toMatch(/SQL|select|secret|private|stack/i)
+  })
+
+  it('maps a thrown fetch failure as a network error', async () => {
+    const transport = rpcClient(Promise.reject(new TypeError('Failed to fetch SQL select secret')))
+    getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const result = await createBenefitDirectoryRepository().search({ pageSize: 20 })
+    expect(result).toMatchObject({ ok: false, error: { code: 'network' } })
+    expect(JSON.stringify(result)).not.toMatch(/SQL|select|secret/i)
   })
 
   it.each([
@@ -198,12 +230,10 @@ describe('benefit directory repository', () => {
   })
 
   it.each([
-    [{ status: 503, error: new DOMException('private abort', 'AbortError') }, 'aborted'],
-    [{ status: 503, error: new TypeError('Failed to fetch private SQL') }, 'network'],
     [{ status: 503, error: { code: '57014', message: 'private timeout' } }, 'timeout'],
     [{ status: 503, error: { code: '22023', message: 'private invalid argument' } }, 'invalid_argument'],
     [{ status: 429, error: { code: 'PGRST504', message: 'private timeout' } }, 'timeout'],
-    [{ status: 200, error: { code: 'PGRST429', message: 'private rate limit' } }, 'rate_limited'],
+    [{ status: 200, error: { code: 'PGRST429', message: 'private rate limit' } }, 'invalid_response'],
   ])('gives bounded domain codes precedence over top-level status: %j', async (wire, code) => {
     const transport = rpcClient({ data: null, statusText: 'Error', ...wire })
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
@@ -213,8 +243,8 @@ describe('benefit directory repository', () => {
   it('ignores nested status-like fields in error payloads', async () => {
     const transport = rpcClient({
       data: null,
-      error: { code: 'XX000', message: '{"status":429}', details: { status: 503 }, status: 429 },
-      status: '429',
+      error: { code: 'XX000', message: '{"status":429}', details: '{"status":503}', hint: null, status: 429 },
+      status: 418,
       statusText: 'Too Many Requests',
     })
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
@@ -255,7 +285,7 @@ describe('benefit directory repository', () => {
   })
 
   it('returns not_found for the public detail null sentinel', async () => {
-    const transport = rpcClient({ data: null, error: null }); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const transport = rpcClient(success(null)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toEqual({ ok: false, error: { code: 'not_found', message: '기업 정보를 찾을 수 없습니다.' } })
   })
 })

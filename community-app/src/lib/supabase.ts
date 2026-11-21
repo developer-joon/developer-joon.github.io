@@ -29,13 +29,14 @@ export function getSupabaseClient(): SupabaseClient<Database> {
   return browserClient
 }
 
-export function getAnonymousSupabaseClient(): SupabaseClient<Database> {
-  if (anonymousBrowserClient) {
-    return anonymousBrowserClient
-  }
-
-  const env = parseEnv(import.meta.env)
-  anonymousBrowserClient = createClient<Database>(env.supabaseUrl, env.supabasePublishableKey, {
+export function createAnonymousSupabaseClient(
+  supabaseUrl: string,
+  supabasePublishableKey: string,
+): SupabaseClient<Database> {
+  return createClient<Database>(supabaseUrl, supabasePublishableKey, {
+    // The SDK gives this callback precedence over every mutable auth session.
+    // Returning null makes fetchWithAuth fall back to the public API key.
+    accessToken: async () => null,
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -43,5 +44,14 @@ export function getAnonymousSupabaseClient(): SupabaseClient<Database> {
       storage: anonymousAuthStorage,
     },
   })
+}
+
+export function getAnonymousSupabaseClient(): SupabaseClient<Database> {
+  if (anonymousBrowserClient) {
+    return anonymousBrowserClient
+  }
+
+  const env = parseEnv(import.meta.env)
+  anonymousBrowserClient = createAnonymousSupabaseClient(env.supabaseUrl, env.supabasePublishableKey)
   return anonymousBrowserClient
 }
