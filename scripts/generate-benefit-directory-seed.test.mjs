@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -162,6 +163,205 @@ test('--check writes no tracked output and late failure preserves previous bundl
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('a pre-existing legacy backup collision never removes the published bundle', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-backup-collision-'))
+  try {
+    const output = path.join(root, 'output')
+    await generateSeedBundle({ sourceFile: realSource, outputDir: output })
+    const beforeManifest = await readFile(path.join(output, 'manifest.json'))
+    const beforeRows = await readFile(path.join(output, 'companies.ndjson'))
+    const collision = `${output}.previous-${process.pid}`
+    await mkdir(collision)
+    await writeFile(path.join(collision, 'occupied'), 'do not replace')
+
+    await assert.rejects(generateSeedBundle({
+      sourceFile: realSource, outputDir: output,
+      testOnly: { injectBeforeInstall: () => { throw Error('injected install failure') } },
+    }), /injected install failure/i)
+    assert.deepEqual(await readFile(path.join(output, 'manifest.json')), beforeManifest)
+    assert.deepEqual(await readFile(path.join(output, 'companies.ndjson')), beforeRows)
+    assert.equal(await readFile(path.join(collision, 'occupied'), 'utf8'), 'do not replace')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('concurrent generators serialize without mixing the published bundle', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-concurrent-'))
+  try {
+    const output = path.join(root, 'output')
+    await generateSeedBundle({ sourceFile: realSource, outputDir: output })
+    let release
+    const hold = new Promise(resolve => { release = resolve })
+    let announceLocked
+    const locked = new Promise(resolve => { announceLocked = resolve })
+    const first = generateSeedBundle({
+      sourceFile: realSource, outputDir: output,
+      injectBeforeCommit: async () => { announceLocked(); await hold },
+    })
+    await locked
+    await assert.rejects(generateSeedBundle({ sourceFile: realSource, outputDir: output }), /generation lock is already held/i)
+    release()
+    await first
+    const verified = await verifySeedBundle({ sourceFile: realSource, bundleDir: output })
+    assert.equal(verified.manifest.company_count, 40053)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('post-commit backup cleanup failure warns but keeps the installed bundle valid', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-cleanup-warning-'))
+  const warnings = []
+  const originalWarn = console.warn
+  try {
+    const output = path.join(root, 'output')
+    await generateSeedBundle({ sourceFile: realSource, outputDir: output })
+    console.warn = message => warnings.push(String(message))
+    await generateSeedBundle({
+      sourceFile: realSource, outputDir: output,
+      testOnly: { injectBackupCleanupFailure: () => { throw Error('cleanup unavailable') } },
+    })
+    assert.match(warnings.join('\n'), /committed; stale backup remains/)
+    await verifySeedBundle({ sourceFile: realSource, bundleDir: output })
+  } finally {
+    console.warn = originalWarn
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('row integrity digest distinguishes UTF-8, null, empty, and field boundaries', async () => {
+  const { computeRowDigest } = await import('./apply-benefit-directory-seed.mjs')
+  assert.equal(typeof computeRowDigest, 'function')
+  const base = ['KR-BIZ-0000000001', 'legal_corporation', '한글 회사', '한글 회사', null, 'unclassified', '', 'fixture-edition', '{}']
+  const digests = [
+    computeRowDigest(base),
+    computeRowDigest(base.with(4, '')),
+    computeRowDigest(base.with(2, '한글회사')),
+    computeRowDigest(base.with(2, 'a').with(3, 'bc')),
+    computeRowDigest(base.with(2, 'ab').with(3, 'c')),
+  ]
+  assert.equal(new Set(digests).size, digests.length)
+  for (const digest of digests) assert.match(digest, /^[0-9a-f]{64}$/)
+})
+
+test('PSQL_BIN is absolute and the version probe receives no database credentials', async () => {
+  const { applySeed } = await import('./apply-benefit-directory-seed.mjs')
+  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-psql-probe-'))
+  const fakePsql = path.join(root, 'psql')
+  const capture = path.join(root, 'probe.json')
+  const databaseUrl = 'postgresql://private_user:private_password@127.0.0.1:5432/private_db'
+  const previous = Object.fromEntries(['PATH', 'PSQL_BIN', 'DATABASE_URL', 'PGPASSWORD', 'PGCLIENTENCODING', 'PGOPTIONS'].map(key => [key, process.env[key]]))
+  try {
+    process.env.PSQL_BIN = 'psql'
+    process.env.PATH = root
+    await assert.rejects(applySeed({ databaseUrl, bundleDir: path.join(repo, 'supabase/fixtures/benefit-directory'), sourceFile: realSource }), /PSQL_BIN.*absolute/i)
+
+    await writeFile(fakePsql, `#!${process.execPath}\n` + `
+import { writeFileSync } from 'node:fs'
+if (process.argv.includes('--version')) {
+  writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.env))
+  console.log('psql (PostgreSQL) 17.0')
+  process.exit(0)
+}
+process.exit(19)
+`)
+    await chmod(fakePsql, 0o700)
+    process.env.PSQL_BIN = fakePsql
+    process.env.DATABASE_URL = databaseUrl
+    process.env.PGPASSWORD = 'inherited-password'
+    process.env.PGCLIENTENCODING = 'LATIN1'
+    process.env.PGOPTIONS = '-c evil=1'
+    await assert.rejects(applySeed({ databaseUrl, bundleDir: path.join(repo, 'supabase/fixtures/benefit-directory'), sourceFile: realSource }), /exit 19/)
+    const probeEnv = JSON.parse(await readFile(capture, 'utf8'))
+    assert.equal(probeEnv.DATABASE_URL, undefined)
+    assert.equal(probeEnv.PGPASSWORD, undefined)
+    assert.equal(probeEnv.PGCLIENTENCODING, undefined)
+    assert.equal(probeEnv.PGOPTIONS, undefined)
+    assert.ok(Object.keys(probeEnv).every(key => !key.startsWith('PG')))
+  } finally {
+    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : process.env[key] = value
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('hung psql is killed, reaped, and its private temp directory is removed within the bound', async () => {
+  const { applySeed } = await import('./apply-benefit-directory-seed.mjs')
+  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-psql-timeout-'))
+  const tempRoot = path.join(root, 'tmp')
+  const fakePsql = path.join(root, 'psql')
+  const pidFile = path.join(root, 'pid')
+  const previous = Object.fromEntries(['TMPDIR', 'PSQL_BIN'].map(key => [key, process.env[key]]))
+  try {
+    await mkdir(tempRoot, { mode: 0o700 })
+    await writeFile(fakePsql, `#!${process.execPath}\n` + `
+import { writeFileSync } from 'node:fs'
+if (process.argv.includes('--version')) { console.log('psql (PostgreSQL) 17.0'); process.exit(0) }
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid) + '\\n' + String(Date.now()))
+process.on('SIGTERM', () => {})
+setTimeout(() => process.exit(42), 2000)
+`)
+    await chmod(fakePsql, 0o700)
+    process.env.TMPDIR = tempRoot
+    process.env.PSQL_BIN = fakePsql
+    await assert.rejects(applySeed({
+      databaseUrl: 'postgresql://user:password@127.0.0.1:5432/db',
+      bundleDir: path.join(repo, 'supabase/fixtures/benefit-directory'), sourceFile: realSource,
+      timeoutMs: 100, testOnly: { allowUnsafeTimeout: true, termGraceMs: 50 },
+    }), /timed out|SIGKILL|exit 42/i)
+    const [pidText, childStartedText] = (await readFile(pidFile, 'utf8')).split('\n')
+    assert.ok(Date.now() - Number(childStartedText) < 1000, 'timeout did not bound the TERM-ignoring child')
+    const pid = Number(pidText)
+    assert.throws(() => process.kill(pid, 0), error => error?.code === 'ESRCH')
+    assert.deepEqual((await readdir(tempRoot)).filter(name => name.startsWith('benefit-directory-import-')), [])
+  } finally {
+    for (const [key, value] of Object.entries(previous)) value === undefined ? delete process.env[key] : process.env[key] = value
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('SIGTERM waits for child group reap before importer temp cleanup', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-psql-signal-'))
+  const tempRoot = path.join(root, 'tmp')
+  const fakePsql = path.join(root, 'psql')
+  const pidFile = path.join(root, 'pid')
+  try {
+    await mkdir(tempRoot, { mode: 0o700 })
+    await writeFile(fakePsql, `#!${process.execPath}\n` + `
+import { writeFileSync } from 'node:fs'
+if (process.argv.includes('--version')) { console.log('psql (PostgreSQL) 17.0'); process.exit(0) }
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid) + '\\n' + String(Date.now()))
+process.on('SIGTERM', () => {})
+setInterval(() => {}, 1000)
+`)
+    await chmod(fakePsql, 0o700)
+    const importer = spawn(process.execPath, [path.join(repo, 'scripts/apply-benefit-directory-seed.mjs')], {
+      cwd: repo,
+      env: {
+        ...process.env, TMPDIR: tempRoot, PSQL_BIN: fakePsql,
+        DATABASE_URL: 'postgresql://user:password@127.0.0.1:5432/db',
+        BENEFIT_SEED_TIMEOUT_MS: '30000', PGCLIENTENCODING: 'LATIN1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stderr = ''
+    importer.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16_384) })
+    for (let attempt = 0; attempt < 400; attempt++) {
+      try { await readFile(pidFile); break } catch {
+        if (attempt === 399) throw Error('fake psql did not start')
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+    }
+    importer.kill('SIGTERM')
+    const closed = await Promise.race([
+      new Promise(resolve => importer.once('close', (code, signal) => resolve({ code, signal }))),
+      new Promise((_, reject) => setTimeout(() => reject(Error('signalled importer did not exit')), 5000)),
+    ])
+    assert.notEqual(closed.code, 0)
+    assert.match(stderr, /interrupted by SIGTERM/)
+    const [pidText, childStartedText] = (await readFile(pidFile, 'utf8')).split('\n')
+    assert.ok(Date.now() - Number(childStartedText) < 4000, 'signal cleanup exceeded TERM-to-KILL grace')
+    assert.throws(() => process.kill(Number(pidText), 0), error => error?.code === 'ESRCH')
+    assert.deepEqual((await readdir(tempRoot)).filter(name => name.startsWith('benefit-directory-import-')), [])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('apply plan is exact and child failures are bounded without private paths or credentials', async () => {
   const { applySeed, buildImportSql } = await import('./apply-benefit-directory-seed.mjs')
   const sql = buildImportSql({
@@ -194,6 +394,7 @@ test('apply plan is exact and child failures are bounded without private paths o
   const databaseUrl = 'postgresql://seed_private_user:pa%24%24word@127.0.0.1:5432/seed_private_db'
   const password = 'pa$$word'
   const oldPath = process.env.PATH
+  const oldPsqlBin = process.env.PSQL_BIN
   const oldDatabaseUrl = process.env.DATABASE_URL
   try {
     await mkdir(fakeBin)
@@ -206,7 +407,7 @@ if (process.argv.includes('--version')) {
   process.exit(0)
 }
 const sqlPath = process.argv[process.argv.indexOf('--file') + 1]
-writeFileSync(process.env.SEED_TEST_CAPTURE, sqlPath)
+writeFileSync(${JSON.stringify(capture)}, sqlPath)
 console.error('x'.repeat(20_000))
 console.error('injected psql failure at ' + sqlPath + ' under ' + path.dirname(sqlPath))
 console.error('DATABASE_URL=postgresql://seed_private_user:pa%24%24word@127.0.0.1:5432/seed_private_db')
@@ -215,8 +416,8 @@ process.exit(23)
 `)
     await chmod(fakePsql, 0o700)
     process.env.PATH = fakeBin
+    process.env.PSQL_BIN = fakePsql
     process.env.DATABASE_URL = databaseUrl
-    process.env.SEED_TEST_CAPTURE = capture
     let failure
     try {
       await applySeed({
@@ -236,9 +437,11 @@ process.exit(23)
   } finally {
     if (oldPath === undefined) delete process.env.PATH
     else process.env.PATH = oldPath
+    if (oldPsqlBin === undefined) delete process.env.PSQL_BIN
+    else process.env.PSQL_BIN = oldPsqlBin
     if (oldDatabaseUrl === undefined) delete process.env.DATABASE_URL
     else process.env.DATABASE_URL = oldDatabaseUrl
-    delete process.env.SEED_TEST_CAPTURE
+
     await rm(root, { recursive: true, force: true })
   }
 })

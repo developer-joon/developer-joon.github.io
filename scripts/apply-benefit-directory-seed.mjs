@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, chmod, lstat, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -11,6 +12,21 @@ import { verifySeedBundle } from './generate-benefit-directory-seed.mjs'
 const sqlLiteral = value => `'${String(value).replaceAll("'", "''")}'`
 const assertHex = (value, label) => { if (!/^[0-9a-f]{64}$/.test(value ?? '')) throw Error(`${label} must be sha256`) }
 const assertInt = (value, label) => { if (!Number.isSafeInteger(value) || value < 0) throw Error(`${label} must be a nonnegative integer`) }
+const ROW_DIGEST_DOMAIN = Buffer.from('benefit-seed-row-v1\0', 'utf8')
+
+export function computeRowDigest(fields) {
+  if (!Array.isArray(fields) || fields.length !== 9) throw Error('row digest requires exactly nine fields')
+  const framed = [ROW_DIGEST_DOMAIN]
+  for (const value of fields) {
+    if (value === null) { framed.push(Buffer.from([0])); continue }
+    if (typeof value !== 'string') throw Error('row digest fields must be text or null')
+    const bytes = Buffer.from(value, 'utf8')
+    const length = Buffer.alloc(8)
+    length.writeBigUInt64BE(BigInt(bytes.length))
+    framed.push(Buffer.from([1]), length, bytes)
+  }
+  return createHash('sha256').update(Buffer.concat(framed)).digest('hex')
+}
 
 function safeField(value) {
   if (value === null) return '\\N'
@@ -135,18 +151,48 @@ SELECT publication_id,company_id,category_id,title,description,eligibility_text,
   observed_at,verified_at,provenance,reviewer_id,created_at,updated_at
 FROM public.benefit_publications;
 
-CREATE TEMP TABLE seed_stage (
-  company_id text PRIMARY KEY,
-  identity_class text NOT NULL,
-  display_name text NOT NULL,
-  normalized_name text NOT NULL,
+CREATE TEMP TABLE seed_stage_raw (
+  company_id text,
+  identity_class text,
+  display_name text,
+  normalized_name text,
   industry text,
-  size_class text NOT NULL,
+  size_class text,
   region text,
-  source_edition text NOT NULL,
-  source_binding jsonb NOT NULL
+  source_edition text,
+  source_binding_text text,
+  client_digest text NOT NULL
 ) ON COMMIT DROP;
-\copy seed_stage(company_id,identity_class,display_name,normalized_name,industry,size_class,region,source_edition,source_binding) FROM ${sqlLiteral(tsvPath)} WITH (FORMAT csv, DELIMITER E'\t', NULL '\N', QUOTE '"')
+\copy seed_stage_raw(company_id,identity_class,display_name,normalized_name,industry,size_class,region,source_edition,source_binding_text,client_digest) FROM ${sqlLiteral(tsvPath)} WITH (FORMAT csv, DELIMITER E'\t', NULL '\N', QUOTE '"')
+
+CREATE FUNCTION pg_temp.seed_text_frame(value text) RETURNS bytea
+LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path='' AS $$
+  SELECT CASE WHEN value IS NULL THEN pg_catalog.decode('00','hex')
+    ELSE pg_catalog.decode('01','hex') || pg_catalog.int8send(pg_catalog.octet_length(pg_catalog.convert_to(value,'UTF8'))::bigint) || pg_catalog.convert_to(value,'UTF8') END
+$$;
+DO $encoding_integrity$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM seed_stage_raw
+    WHERE client_digest !~ '^[0-9a-f]{64}$'
+       OR client_digest <> pg_catalog.encode(extensions.digest(
+         pg_catalog.convert_to('benefit-seed-row-v1','UTF8') || pg_catalog.decode('00','hex')
+         || pg_temp.seed_text_frame(company_id) || pg_temp.seed_text_frame(identity_class)
+         || pg_temp.seed_text_frame(display_name) || pg_temp.seed_text_frame(normalized_name)
+         || pg_temp.seed_text_frame(industry) || pg_temp.seed_text_frame(size_class)
+         || pg_temp.seed_text_frame(region) || pg_temp.seed_text_frame(source_edition)
+         || pg_temp.seed_text_frame(source_binding_text), 'sha256'), 'hex')
+  ) THEN RAISE EXCEPTION 'client/server UTF-8 row digest mismatch'; END IF;
+END $encoding_integrity$;
+
+CREATE TEMP TABLE seed_stage ON COMMIT DROP AS
+SELECT company_id,identity_class,display_name,normalized_name,industry,size_class,region,
+  source_edition,source_binding_text::jsonb AS source_binding
+FROM seed_stage_raw;
+ALTER TABLE seed_stage ALTER company_id SET NOT NULL, ALTER identity_class SET NOT NULL,
+  ALTER display_name SET NOT NULL, ALTER normalized_name SET NOT NULL, ALTER size_class SET NOT NULL,
+  ALTER source_edition SET NOT NULL, ALTER source_binding SET NOT NULL;
+CREATE UNIQUE INDEX seed_stage_company_id_key ON seed_stage(company_id);
 
 DO $validate$
 DECLARE
@@ -273,39 +319,53 @@ ${finish}
 `
 }
 
-async function resolvePsql() {
-  for (const directory of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
-    const candidate = path.resolve(directory, 'psql')
-    try {
-      await access(candidate, constants.X_OK)
-      const canonical = await realpath(candidate)
-      const stat = await lstat(canonical)
-      if (!stat.isFile()) continue
-      const probe = spawnSync(canonical, ['--version'], { encoding: 'utf8', timeout: 10_000 })
-      if (probe.status === 0 && /^psql \(PostgreSQL\)/.test(probe.stdout)) return canonical
-    } catch {}
-  }
-  throw Error('a real psql executable is required on PATH')
+async function resolvePsql(psqlBin) {
+  if (typeof psqlBin !== 'string' || !path.isAbsolute(psqlBin) || /[\r\n\u0000]/u.test(psqlBin)) throw Error('PSQL_BIN is required and must be an absolute path')
+  let canonical
+  try { canonical = await realpath(psqlBin) } catch (error) { throw Error('PSQL_BIN does not resolve to an executable', { cause: error }) }
+  const stat = await lstat(canonical)
+  if (!stat.isFile() || ![0, process.getuid()].includes(stat.uid) || (stat.mode & 0o022) !== 0) throw Error('PSQL_BIN must be a trusted regular file owned by root or the current user and not group/world-writable')
+  try { await access(canonical, constants.X_OK) } catch (error) { throw Error('PSQL_BIN is not executable', { cause: error }) }
+  const probe = spawnSync(canonical, ['--version'], {
+    encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024,
+    env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' },
+  })
+  if (probe.error || probe.signal || probe.status !== 0 || !/^psql \(PostgreSQL\) \d+/u.test(probe.stdout ?? '')) throw Error('PSQL_BIN failed the PostgreSQL psql version contract')
+  return canonical
 }
 
-function databaseEnvironment(databaseUrl) {
+function boundedTimeout(value, allowUnsafe = false) {
+  const parsed = value === undefined ? 1_200_000 : Number(value)
+  const minimum = allowUnsafe ? 25 : 30_000
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > 1_800_000) throw Error(`BENEFIT_SEED_TIMEOUT_MS must be an integer from ${minimum} to 1800000`)
+  return parsed
+}
+
+function databaseEnvironment(databaseUrl, timeoutMs) {
   if (typeof databaseUrl !== 'string' || /[\r\n\u0000]/u.test(databaseUrl)) throw Error('DATABASE_URL is required')
   let url
   try { url = new URL(databaseUrl) } catch { throw Error('DATABASE_URL must be a valid PostgreSQL URL') }
   if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname || !url.username || url.pathname.length < 2) throw Error('DATABASE_URL must identify a PostgreSQL database')
   const allowed = new Set(['sslmode'])
-  for (const key of url.searchParams.keys()) if (!allowed.has(key)) throw Error(`DATABASE_URL query parameter is not allowed: ${key}`)
-  const env = {
-    ...process.env,
-    PGHOST: url.hostname,
-    PGPORT: url.port || '5432',
-    PGDATABASE: decodeURIComponent(url.pathname.slice(1)),
-    PGUSER: decodeURIComponent(url.username),
-    PGPASSWORD: decodeURIComponent(url.password),
-    ...(url.searchParams.has('sslmode') ? { PGSSLMODE: url.searchParams.get('sslmode') } : {}),
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.has(key)) throw Error(`DATABASE_URL query parameter is not allowed: ${key}`)
+    if (url.searchParams.getAll(key).length !== 1) throw Error(`DATABASE_URL query parameter must occur once: ${key}`)
   }
-  delete env.DATABASE_URL
-  return env
+  const sslmode = url.searchParams.get('sslmode')
+  if (sslmode !== null && !['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'].includes(sslmode)) throw Error('DATABASE_URL sslmode is not supported')
+  let database; let user; let password
+  try {
+    database = decodeURIComponent(url.pathname.slice(1)); user = decodeURIComponent(url.username); password = decodeURIComponent(url.password)
+  } catch { throw Error('DATABASE_URL contains invalid percent encoding') }
+  if (!database || !user || [database, user, password].some(value => /[\r\n\u0000]/u.test(value))) throw Error('DATABASE_URL contains an invalid connection field')
+  const statementTimeout = Math.max(1_000, timeoutMs - 5_000)
+  return {
+    PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
+    PGHOST: url.hostname, PGPORT: url.port || '5432', PGDATABASE: database, PGUSER: user, PGPASSWORD: password,
+    PGCLIENTENCODING: 'UTF8', PGCONNECT_TIMEOUT: String(Math.min(60, Math.max(2, Math.ceil(timeoutMs / 1000)))),
+    PGOPTIONS: `-c search_path=pg_catalog -c statement_timeout=${statementTimeout} -c lock_timeout=30000 -c idle_in_transaction_session_timeout=${statementTimeout}`,
+    ...(sslmode === null ? {} : { PGSSLMODE: sslmode }),
+  }
 }
 
 async function validateTempRoot(root) {
@@ -318,10 +378,13 @@ async function validateTempRoot(root) {
 }
 
 function makeTsv(rows) {
-  const bytes = Buffer.from(rows.map(row => [
-    row.company_id, row.identity_class, row.display_name, row.normalized_name, row.industry,
-    row.size_class, row.region, row.source_edition, row.source_binding,
-  ].map(safeField).join('\t')).join('\n') + '\n')
+  const bytes = Buffer.from(rows.map(row => {
+    const fields = [
+      row.company_id, row.identity_class, row.display_name, row.normalized_name, row.industry,
+      row.size_class, row.region, row.source_edition, JSON.stringify(row.source_binding),
+    ]
+    return [...fields, computeRowDigest(fields)].map(safeField).join('\t')
+  }).join('\n') + '\n')
   if (bytes.length > 30_000_000) throw Error('TSV byte cap exceeded')
   return bytes
 }
@@ -340,30 +403,68 @@ function renderChildFailure({ code, signal, stderr, sensitiveValues }) {
   return Error(`psql seed import failed with ${classification}${detail ? `: ${detail}` : ''}`)
 }
 
-async function runPsql(executable, env, sqlFile, sensitiveValues) {
-  await new Promise((resolve, reject) => {
-    const child = spawn(executable, ['-X', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1', '--file', sqlFile], { env, stdio: ['ignore', 'pipe', 'pipe'] })
-    let stdout = ''; let stderr = ''
-    const append = (current, chunk) => (current + chunk.toString('utf8')).slice(-16_384)
-    child.stdout.on('data', chunk => { stdout = append(stdout, chunk) })
-    child.stderr.on('data', chunk => { stderr = append(stderr, chunk) })
-    const signalHandlers = new Map()
-    for (const signal of ['SIGINT', 'SIGTERM']) {
-      const handler = () => child.kill(signal)
-      signalHandlers.set(signal, handler); process.once(signal, handler)
-    }
-    child.once('error', reject)
-    child.once('close', (code, signal) => {
-      for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler)
-      if (code === 0) { if (stdout.trim()) console.log(stdout.trim()); resolve() }
-      else reject(renderChildFailure({ code, signal, stderr, sensitiveValues }))
-    })
+async function runPsql(executable, env, sqlFile, sensitiveValues, { timeoutMs, termGraceMs }) {
+  const outputLimit = 1_048_576
+  const child = spawn(executable, ['-X', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1', '--file', sqlFile], {
+    env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
   })
+  let stdout = ''; let stderr = ''; let stdoutBytes = 0; let stderrBytes = 0
+  let terminationReason = null; let spawnError = null; let killTimer = null
+  const append = (current, chunk) => (current + chunk.toString('utf8')).slice(-16_384)
+  const killTree = signal => {
+    if (!child.pid) return
+    try {
+      if (process.platform === 'win32') child.kill(signal)
+      else process.kill(-child.pid, signal)
+    } catch (error) { if (error?.code !== 'ESRCH') throw error }
+  }
+  const terminate = (reason, signal = 'SIGTERM') => {
+    if (terminationReason !== null) return
+    terminationReason = reason
+    killTree(signal)
+    killTimer = setTimeout(() => killTree('SIGKILL'), termGraceMs)
+    killTimer.unref()
+  }
+  child.stdout.on('data', chunk => {
+    stdoutBytes += chunk.length; stdout = append(stdout, chunk)
+    if (stdoutBytes > outputLimit) terminate('stdout exceeded the 1048576-byte bound')
+  })
+  child.stderr.on('data', chunk => {
+    stderrBytes += chunk.length; stderr = append(stderr, chunk)
+    if (stderrBytes > outputLimit) terminate('stderr exceeded the 1048576-byte bound')
+  })
+  const signalHandlers = new Map()
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    const handler = () => terminate(`interrupted by ${signal}`, signal)
+    signalHandlers.set(signal, handler); process.once(signal, handler)
+  }
+  child.once('error', error => { spawnError = error })
+  const timeout = setTimeout(() => terminate(`timed out after ${timeoutMs}ms`), timeoutMs)
+  timeout.unref()
+  const { code, signal } = await new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))
+  clearTimeout(timeout); if (killTimer !== null) clearTimeout(killTimer)
+  for (const [name, handler] of signalHandlers) process.removeListener(name, handler)
+  if (spawnError) throw Error(`unable to start trusted psql: ${redactExact(spawnError.message, sensitiveValues)}`, { cause: spawnError })
+  if (terminationReason !== null) {
+    const classification = code === null ? `signal ${signal ?? 'unknown'}` : `exit ${code}`
+    const detail = redactExact(stderr, sensitiveValues).trim().slice(-12_000)
+    throw Error(`psql seed import ${terminationReason} (${classification})${detail ? `: ${detail}` : ''}`)
+  }
+  if (code === 0) { if (stdout.trim()) console.log(stdout.trim()); return }
+  throw renderChildFailure({ code, signal, stderr, sensitiveValues })
 }
 
-export async function applySeed({ databaseUrl, bundleDir, sourceFile, dryRun = false, injectLateFailure = false } = {}) {
-  const executable = await resolvePsql()
-  const env = databaseEnvironment(databaseUrl)
+export async function applySeed({
+  databaseUrl, bundleDir, sourceFile, dryRun = false, injectLateFailure = false,
+  psqlBin = process.env.PSQL_BIN, timeoutMs = process.env.BENEFIT_SEED_TIMEOUT_MS,
+  testOnly,
+} = {}) {
+  const allowUnsafeTimeout = testOnly?.allowUnsafeTimeout === true
+  const bounded = boundedTimeout(timeoutMs, allowUnsafeTimeout)
+  const termGraceMs = allowUnsafeTimeout && Number.isSafeInteger(testOnly?.termGraceMs) ? testOnly.termGraceMs : 2_000
+  if (termGraceMs < 10 || termGraceMs > 10_000) throw Error('psql termination grace is out of bounds')
+  const executable = await resolvePsql(psqlBin)
+  const env = databaseEnvironment(databaseUrl, bounded)
   const parsedDatabaseUrl = new URL(databaseUrl)
   const decodedUser = decodeURIComponent(parsedDatabaseUrl.username)
   const decodedPassword = decodeURIComponent(parsedDatabaseUrl.password)
@@ -388,7 +489,7 @@ export async function applySeed({ databaseUrl, bundleDir, sourceFile, dryRun = f
     if (!tsvStat.isFile() || tsvStat.nlink !== 1 || (tsvStat.mode & 0o777) !== 0o600) throw Error('unsafe TSV file identity or mode')
     const sql = buildImportSql({ tsvPath, manifest: verified.manifest, bundleSha256: verified.bundleSha256, dryRun, injectLateFailure })
     await writeFile(sqlPath, sql, { mode: 0o600, flag: 'wx' })
-    await runPsql(executable, env, sqlPath, [directory, sqlPath, tsvPath, ...credentials])
+    await runPsql(executable, env, sqlPath, [directory, sqlPath, tsvPath, ...credentials], { timeoutMs: bounded, termGraceMs })
     return { companyCount: verified.manifest.company_count, bundleSha256: verified.bundleSha256, dryRun }
   } finally { await rm(directory, { recursive: true, force: true }) }
 }

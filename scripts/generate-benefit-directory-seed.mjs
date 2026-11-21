@@ -247,41 +247,93 @@ export async function verifySeedBundle({ sourceFile, bundleDir }) {
   return { manifest, rows, manifestBytes, ndjson, bundleSha256: sha256(manifestBytes) }
 }
 
-export async function generateSeedBundle({ sourceFile, outputDir, check = false, injectBeforeCommit } = {}) {
+export async function generateSeedBundle({ sourceFile, outputDir, check = false, injectBeforeCommit, testOnly } = {}) {
   if (!sourceFile || !outputDir) throw Error('sourceFile and outputDir are required')
   const { bytes, doc } = await loadSource(sourceFile)
   const built = buildSeedFromDocument(doc, bytes)
-  const parent = path.dirname(path.resolve(outputDir))
+  const destination = path.resolve(outputDir)
+  const parent = path.dirname(destination)
   await mkdir(parent, { recursive: true })
-  const stage = await mkdtemp(path.join(parent, '.benefit-directory-seed-stage-'))
-  await chmod(stage, 0o700)
-  try {
-    await writeFile(path.join(stage, 'companies.ndjson'), built.ndjson, { mode: 0o600 })
-    await writeFile(path.join(stage, 'manifest.json'), built.manifestBytes, { mode: 0o600 })
-    await verifySeedBundle({ sourceFile, bundleDir: stage })
-    if (check) {
+
+  if (check) {
+    const stage = await mkdtemp(path.join(parent, '.benefit-directory-seed-check-'))
+    await chmod(stage, 0o700)
+    try {
+      await writeFile(path.join(stage, 'companies.ndjson'), built.ndjson, { mode: 0o600 })
+      await writeFile(path.join(stage, 'manifest.json'), built.manifestBytes, { mode: 0o600 })
+      await verifySeedBundle({ sourceFile, bundleDir: stage })
       const [actualManifest, actualRows] = await Promise.all([
         readNoFollowBounded(path.join(outputDir, 'manifest.json'), MAX_MANIFEST_BYTES, 'tracked manifest'),
         readNoFollowBounded(path.join(outputDir, 'companies.ndjson'), MAX_NDJSON_BYTES, 'tracked companies'),
       ])
       if (!actualManifest.equals(built.manifestBytes) || !actualRows.equals(built.ndjson)) throw Error('tracked benefit directory seed differs: output drift')
       return built
-    }
+    } finally { await rm(stage, { recursive: true, force: true }) }
+  }
+
+  const lockPath = `${destination}.generate.lock`
+  let lock
+  try {
+    lock = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw Error('benefit seed generation lock is already held')
+    throw error
+  }
+  let stage = null
+  let backupContainer = null
+  let preserveBackup = false
+  try {
+    const lockStat = await lock.stat()
+    if (!lockStat.isFile() || lockStat.uid !== process.getuid() || lockStat.nlink !== 1 || (lockStat.mode & 0o777) !== 0o600) throw Error('unsafe benefit seed generation lock')
+    stage = await mkdtemp(path.join(parent, '.benefit-directory-seed-stage-'))
+    await chmod(stage, 0o700)
+    await writeFile(path.join(stage, 'companies.ndjson'), built.ndjson, { mode: 0o600 })
+    await writeFile(path.join(stage, 'manifest.json'), built.manifestBytes, { mode: 0o600 })
+    await verifySeedBundle({ sourceFile, bundleDir: stage })
     if (injectBeforeCommit) await injectBeforeCommit()
-    const destination = path.resolve(outputDir)
-    const backup = `${destination}.previous-${process.pid}`
-    let movedPrevious = false
+
+    backupContainer = await mkdtemp(path.join(parent, `.${path.basename(destination)}.previous-`))
+    await chmod(backupContainer, 0o700)
+    const backup = path.join(backupContainer, 'bundle')
+    let oldMoved = false
+    let stageInstalled = false
     try {
-      try { await rename(destination, backup); movedPrevious = true } catch (error) { if (error.code !== 'ENOENT') throw error }
+      try { await rename(destination, backup); oldMoved = true } catch (error) { if (error.code !== 'ENOENT') throw error }
+      if (testOnly?.injectBeforeInstall) await testOnly.injectBeforeInstall()
       await rename(stage, destination)
-      if (movedPrevious) await rm(backup, { recursive: true, force: true })
+      stageInstalled = true
+      stage = null
     } catch (error) {
-      await rm(destination, { recursive: true, force: true })
-      if (movedPrevious) await rename(backup, destination)
+      if (oldMoved && !stageInstalled) {
+        try {
+          if (testOnly?.injectRestoreFailure) await testOnly.injectRestoreFailure()
+          await rename(backup, destination)
+          oldMoved = false
+        } catch (restoreError) {
+          preserveBackup = true
+          throw Error(`${error.message}; automatic restore failed; preserved prior bundle at ${path.basename(backupContainer)}/bundle`, { cause: restoreError })
+        }
+      }
       throw error
     }
+
+    if (oldMoved || backupContainer) {
+      try {
+        if (testOnly?.injectBackupCleanupFailure) await testOnly.injectBackupCleanupFailure()
+        await rm(backupContainer, { recursive: true, force: true })
+        backupContainer = null
+      } catch {
+        preserveBackup = true
+        console.warn(`benefit seed committed; stale backup remains at ${path.basename(backupContainer)}/bundle and may be removed after verification`)
+      }
+    }
     return built
-  } finally { await rm(stage, { recursive: true, force: true }) }
+  } finally {
+    if (stage !== null) await rm(stage, { recursive: true, force: true })
+    if (backupContainer !== null && !preserveBackup) await rm(backupContainer, { recursive: true, force: true })
+    await lock.close()
+    await rm(lockPath, { force: true })
+  }
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
