@@ -11,7 +11,6 @@ import {
   type BenefitCompanyDetail,
   type BenefitDirectoryCategory,
   type BenefitDirectoryError,
-  type BenefitDirectoryErrorCode,
   type BenefitDirectoryPublication,
 } from '../types/benefitDirectory'
 
@@ -85,14 +84,6 @@ function groupPublications(publications: BenefitDirectoryPublication[]) {
   return groups
 }
 
-const detailErrorMessages: Partial<Record<BenefitDirectoryErrorCode, string>> = {
-  not_found: '기업 정보를 찾을 수 없습니다.',
-  network: '네트워크 연결을 확인한 뒤 다시 시도해 주세요.',
-  invalid_response: '기업 정보를 표시할 수 없습니다.',
-  timeout: '요청 시간이 초과되었습니다. 다시 시도해 주세요.',
-  rate_limited: '요청이 많습니다. 잠시 후 다시 시도해 주세요.',
-}
-
 type LoadState =
   | { key: string; phase: 'loading' }
   | { key: string; phase: 'ready'; detail: BenefitCompanyDetail }
@@ -163,11 +154,7 @@ export function BenefitDirectoryCompanyPage({
   </PageShell>
 
   if (active.phase === 'error') {
-    const presentation = presentPublicDirectoryError(active.error, {
-      messages: detailErrorMessages,
-      fallbackMessage: '기업 복지 정보를 불러오지 못했습니다.',
-      nonRetryableCodes: ['not_found', 'aborted'],
-    })
+    const presentation = presentPublicDirectoryError(active.error, 'detail')
     return <PageShell>
     <a className="benefit-company-page__back" href={backHref(parsed.directoryQuery)}>기업 검색으로 돌아가기</a>
     <h1>기업 복지 상세</h1>

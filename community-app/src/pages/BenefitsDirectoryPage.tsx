@@ -145,7 +145,7 @@ export function BenefitsDirectoryPage({
       if (controller.signal.aborted || generation.current !== currentGeneration || source.current.id !== currentSourceId) return
       if (!result.ok) {
         if (result.error.code === 'aborted') return
-        setRefreshError(presentPublicDirectoryError(result.error).message)
+        setRefreshError(presentPublicDirectoryError(result.error, 'search').message)
         setPhase('error')
         return
       }
@@ -182,7 +182,7 @@ export function BenefitsDirectoryPage({
       if (controller.signal.aborted || generation.current !== currentGeneration || source.current.id !== sourceId) return
       setNextLoading(false)
       if (!result.ok) {
-        if (result.error.code !== 'aborted') setNextError(presentPublicDirectoryError(result.error).message)
+        if (result.error.code !== 'aborted') setNextError(presentPublicDirectoryError(result.error, 'search').message)
         return
       }
       setVisible(current => current && current.queryKey === queryKey && current.sourceId === sourceId ? {

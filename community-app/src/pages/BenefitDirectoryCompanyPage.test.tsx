@@ -3,7 +3,7 @@ import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BenefitsApp } from '../BenefitsApp'
 import type { BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
-import type { BenefitCompanyDetail, Result } from '../types/benefitDirectory'
+import type { BenefitCompanyDetail, BenefitDirectoryErrorCode, Result } from '../types/benefitDirectory'
 import { BenefitDirectoryCompanyPage } from './BenefitDirectoryCompanyPage'
 
 const CRN_A = 'KR-CRN-1101111111111'
@@ -33,7 +33,7 @@ const detail = (id = CRN_A, publications: BenefitCompanyDetail['publications'] =
   publications,
 })
 const ok = (value: BenefitCompanyDetail): Result<BenefitCompanyDetail> => ({ ok: true, data: value })
-const failure = (code: 'network' | 'invalid_response' | 'not_found' | 'configuration', message = 'raw internal message'): Result<BenefitCompanyDetail> => ({ ok: false, error: { code, message } })
+const failure = (code: BenefitDirectoryErrorCode, message = 'raw internal message'): Result<BenefitCompanyDetail> => ({ ok: false, error: { code, message } })
 function repository(load: BenefitDirectoryRepository['detail']): BenefitDirectoryRepository {
   return { search: vi.fn(), detail: load }
 }
@@ -135,6 +135,7 @@ describe('BenefitDirectoryCompanyPage', () => {
     ['not_found', '기업 정보를 찾을 수 없습니다.', false],
     ['invalid_response', '기업 정보를 표시할 수 없습니다.', true],
     ['network', '네트워크 연결을 확인한 뒤 다시 시도해 주세요.', true],
+    ['unknown', '기업 복지 정보를 불러오지 못했습니다.', true],
   ] as const)('keeps %s distinct and only retries recoverable failures', async (code, copy, canRetry) => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>().mockResolvedValue(failure(code))
     render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(load)} />)
