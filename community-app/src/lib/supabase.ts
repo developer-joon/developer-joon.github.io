@@ -5,6 +5,13 @@ import type { Database } from '../types/database'
 let browserClient: SupabaseClient<Database> | undefined
 let anonymousBrowserClient: SupabaseClient<Database> | undefined
 
+// Keep public RPC traffic entirely separate from browser auth persistence.
+const anonymousAuthStorage = {
+  getItem: (key: string) => { void key; return null },
+  setItem: (key: string, value: string) => { void key; void value },
+  removeItem: (key: string) => { void key },
+}
+
 export function getSupabaseClient(): SupabaseClient<Database> {
   if (browserClient) {
     return browserClient
@@ -33,6 +40,7 @@ export function getAnonymousSupabaseClient(): SupabaseClient<Database> {
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
+      storage: anonymousAuthStorage,
     },
   })
   return anonymousBrowserClient

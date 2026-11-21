@@ -16,13 +16,24 @@ describe('anonymous Supabase client', () => {
     const anonymousClient = { kind: 'anonymous' }
     createClient.mockReturnValue(anonymousClient)
 
+    const localGet = vi.spyOn(Storage.prototype, 'getItem')
+    const localSet = vi.spyOn(Storage.prototype, 'setItem')
+    const localRemove = vi.spyOn(Storage.prototype, 'removeItem')
+
     expect(getAnonymousSupabaseClient()).toBe(anonymousClient)
     expect(getAnonymousSupabaseClient()).toBe(anonymousClient)
     expect(createClient).toHaveBeenCalledOnce()
     expect(createClient).toHaveBeenCalledWith(
       'https://abcdefghijklmnopqrst.supabase.co',
       'sb_publishable_test',
-      { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } },
+      { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storage: expect.any(Object) } },
     )
+    const options = createClient.mock.calls[0][2]
+    expect(options.auth.storage.getItem('session')).toBeNull()
+    expect(options.auth.storage.setItem('session', 'private')).toBeUndefined()
+    expect(options.auth.storage.removeItem('session')).toBeUndefined()
+    expect(localGet).not.toHaveBeenCalled()
+    expect(localSet).not.toHaveBeenCalled()
+    expect(localRemove).not.toHaveBeenCalled()
   })
 })
