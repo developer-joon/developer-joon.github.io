@@ -12,6 +12,7 @@ import process from 'node:process'
 
 const siteRoot = path.resolve(process.argv[2] ?? '_site')
 const errors = []
+let artifactInventorySafe = true
 
 const requiredFiles = [
   'index.html',
@@ -594,12 +595,30 @@ function isContentHashedAsset(assetPath) {
   return /^.+-[A-Za-z0-9_-]{8,}\.[^./]+$/i.test(path.posix.basename(assetPath))
 }
 
-async function walk(relativeDirectory = '') {
+const MAX_ARTIFACT_ENTRIES = 100_000
+const MAX_ARTIFACT_DEPTH = 64
+
+function artifactEntryType(entryStat) {
+  if (entryStat.isSymbolicLink()) return 'symbolic link'
+  if (entryStat.isFIFO()) return 'FIFO'
+  if (entryStat.isSocket()) return 'socket'
+  if (entryStat.isBlockDevice()) return 'block device'
+  if (entryStat.isCharacterDevice()) return 'character device'
+  return 'unknown nonregular type'
+}
+
+async function walk(relativeDirectory = '', traversal = { entries: 0 }, depth = 0) {
+  if (depth > MAX_ARTIFACT_DEPTH) {
+    artifactInventorySafe = false
+    fail(`artifact traversal exceeds maximum depth at: ${relativeDirectory}`)
+    return []
+  }
   const absoluteDirectory = path.join(siteRoot, relativeDirectory)
   let entries
   try {
     entries = await readdir(absoluteDirectory, { withFileTypes: true })
   } catch (error) {
+    artifactInventorySafe = false
     fail(`cannot inspect artifact directory ${relativeDirectory || '.'}: ${error.message}`)
     return []
   }
@@ -607,9 +626,28 @@ async function walk(relativeDirectory = '') {
   const files = []
   for (const entry of entries) {
     const relativePath = path.posix.join(relativeDirectory, entry.name)
-    const entryStat = await lstat(path.join(siteRoot, relativePath))
-    if (entryStat.isSymbolicLink()) {
-      fail(`symbolic link is not allowed: ${relativePath}`)
+    traversal.entries += 1
+    if (traversal.entries > MAX_ARTIFACT_ENTRIES) {
+      artifactInventorySafe = false
+      fail(`artifact traversal exceeds ${MAX_ARTIFACT_ENTRIES} entries at: ${relativePath}`)
+      return files
+    }
+    let entryStat
+    try {
+      entryStat = await lstat(path.join(siteRoot, relativePath))
+    } catch (error) {
+      artifactInventorySafe = false
+      fail(`cannot inspect artifact entry ${relativePath}: ${error.message}`)
+      continue
+    }
+    if (!entryStat.isDirectory() && !entryStat.isFile()) {
+      artifactInventorySafe = false
+      const entryType = artifactEntryType(entryStat)
+      if (entryType === 'symbolic link') {
+        fail(`symbolic link is not allowed: ${relativePath} (${entryType})`)
+      } else {
+        fail(`special artifact entry is not allowed: ${relativePath} (${entryType})`)
+      }
       continue
     }
 
@@ -631,8 +669,8 @@ async function walk(relativeDirectory = '') {
     }
 
     if (entryStat.isDirectory()) {
-      files.push(...await walk(relativePath))
-    } else if (entryStat.isFile()) {
+      files.push(...await walk(relativePath, traversal, depth + 1))
+    } else {
       files.push(relativePath)
     }
   }
@@ -823,6 +861,119 @@ async function readBoundedRegularFile(relativePath, maximumBytes) {
   }
 }
 
+const MAX_MANIFEST_RECORDS = 4_096
+const MAX_MANIFEST_IMPORTS = 256
+const MAX_MANIFEST_STRING_LENGTH = 1_024
+const SAFE_EAGER_JS_PATH = /^assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.js$/
+
+function moduleIdentity(value) {
+  if (typeof value !== 'string') return ''
+  const leaf = value.split('/').at(-1) ?? ''
+  return leaf
+    .replace(/\.(?:[cm]?[jt]sx?)$/i, '')
+    .replace(/-[A-Za-z0-9_-]{8,}$/, '')
+    .replace(/^_/, '')
+    .toLowerCase()
+}
+
+function isPrivateEagerRecord(key, record) {
+  const identities = [key, record.name, record.src].map(moduleIdentity).filter(Boolean)
+  const exactPrivateModules = new Set(['authprovider', 'communityapplication', 'main', 'supabase', 'env', 'uuid'])
+  return identities.some((identity) => exactPrivateModules.has(identity)
+    || /(?:admin|submission|correction|draft)/.test(identity))
+}
+
+function preflightManifest(manifest, relativePath) {
+  const keys = Object.keys(manifest)
+  if (keys.length > MAX_MANIFEST_RECORDS) {
+    throw new Error(`has too many records (maximum ${MAX_MANIFEST_RECORDS})`)
+  }
+  for (const key of keys) {
+    if (key.length < 1 || key.length > MAX_MANIFEST_STRING_LENGTH) {
+      throw new Error('manifest key is not a bounded nonempty string')
+    }
+    const record = manifest[key]
+    if (!record || typeof record !== 'object' || Array.isArray(record)) continue
+    for (const field of ['file', 'name', 'src']) {
+      if (record[field] !== undefined
+          && (typeof record[field] !== 'string' || record[field].length < 1 || record[field].length > MAX_MANIFEST_STRING_LENGTH)) {
+        throw new Error(`${key} ${field} must be a bounded nonempty string`)
+      }
+    }
+    for (const field of ['imports', 'dynamicImports']) {
+      const imports = record[field]
+      if (imports === undefined) continue
+      if (!Array.isArray(imports) || imports.length > MAX_MANIFEST_IMPORTS) {
+        throw new Error(`${key} ${field} must be a bounded array (maximum ${MAX_MANIFEST_IMPORTS})`)
+      }
+      if (imports.some((importKey) => typeof importKey !== 'string'
+          || importKey.length < 1
+          || importKey.length > MAX_MANIFEST_STRING_LENGTH)) {
+        throw new Error(`${key} ${field} must contain bounded nonempty string keys`)
+      }
+    }
+  }
+  return keys
+}
+
+async function verifyEagerBenefitsGraph(manifest, entryKey, relativePath) {
+  const visiting = new Set()
+  const visited = new Set()
+  const fileOwners = new Map()
+  const communityRoot = path.resolve(siteRoot, 'community')
+
+  const visit = async (key) => {
+    if (visiting.has(key)) throw new Error(`contains an eager import cycle at ${JSON.stringify(key)}`)
+    if (visited.has(key)) return
+    if (!Object.hasOwn(manifest, key)) throw new Error(`references missing eager import record ${JSON.stringify(key)}`)
+    const record = manifest[key]
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      throw new Error(`eager import record ${JSON.stringify(key)} must be an object`)
+    }
+    if (typeof record.file !== 'string') {
+      throw new Error(`eager import record ${JSON.stringify(key)} is missing a file`)
+    }
+    if (!SAFE_EAGER_JS_PATH.test(record.file)) {
+      throw new Error(`eager import record ${JSON.stringify(key)} has unsafe eager import file ${JSON.stringify(record.file)}`)
+    }
+    if (isPrivateEagerRecord(key, record)) {
+      throw new Error(`private/authenticated module is not allowed in the public eager graph: ${JSON.stringify(key)}`)
+    }
+
+    const priorOwner = fileOwners.get(record.file)
+    if (priorOwner !== undefined && priorOwner !== key) {
+      throw new Error(`conflicting eager records ${JSON.stringify(priorOwner)} and ${JSON.stringify(key)} claim file ${JSON.stringify(record.file)}`)
+    }
+    fileOwners.set(record.file, key)
+
+    const assembledPath = path.resolve(communityRoot, record.file)
+    if (!assembledPath.startsWith(`${communityRoot}${path.sep}`)) {
+      throw new Error(`eager import file escapes community/: ${JSON.stringify(record.file)}`)
+    }
+    try {
+      const fileStat = await lstat(assembledPath)
+      if (!fileStat.isFile() || fileStat.isSymbolicLink()) throw new Error('not regular')
+    } catch {
+      throw new Error(`eager import file must be present as a regular non-symlink file: community/${record.file}`)
+    }
+
+    const imports = record.imports ?? []
+    if (new Set(imports).size !== imports.length) {
+      throw new Error(`record ${JSON.stringify(key)} contains a duplicate eager import`)
+    }
+    visiting.add(key)
+    for (const importKey of imports) await visit(importKey)
+    visiting.delete(key)
+    visited.add(key)
+  }
+
+  try {
+    await visit(entryKey)
+  } catch (error) {
+    fail(`${relativePath} ${error.message}`)
+  }
+}
+
 async function verifyCanonicalBenefitsManifest(canonicalEntries) {
   const relativePath = 'community/.vite/manifest.json'
   let manifestText
@@ -849,20 +1000,26 @@ async function verifyCanonicalBenefitsManifest(canonicalEntries) {
     fail(`${relativePath} must contain a Vite manifest object`)
     return
   }
-  const matches = Object.entries(manifest).filter(([, value]) => value
-    && typeof value === 'object'
-    && !Array.isArray(value)
-    && value.name === 'benefits-main')
+  let manifestKeys
+  try {
+    manifestKeys = preflightManifest(manifest, relativePath)
+  } catch (error) {
+    fail(`${relativePath} ${error.message}`)
+    return
+  }
+  const matches = manifestKeys.filter((key) => {
+    const value = manifest[key]
+    return value && typeof value === 'object' && !Array.isArray(value) && value.name === 'benefits-main'
+  })
   if (matches.length !== 1) {
     fail(`${relativePath} must contain exactly one Vite record named benefits-main`)
     return
   }
-  const record = matches[0][1]
+  const entryKey = matches[0]
+  const record = manifest[entryKey]
   if (typeof record.name !== 'string'
       || typeof record.file !== 'string'
-      || !/^assets\/benefits-main-[A-Za-z0-9_-]{8,}\.js$/.test(record.file)
-      || (record.imports !== undefined
-        && (!Array.isArray(record.imports) || record.imports.some((key) => typeof key !== 'string')))) {
+      || !/^assets\/benefits-main-[A-Za-z0-9_-]{8,}\.js$/.test(record.file)) {
     fail(`${relativePath} benefits-main record has invalid required fields or unsafe file path`)
     return
   }
@@ -870,11 +1027,13 @@ async function verifyCanonicalBenefitsManifest(canonicalEntries) {
   if (canonicalEntries.some(({ entry }) => entry !== manifestEntry)) {
     fail(`${relativePath} benefits-main record must bind both canonical public entry scripts exactly`)
   }
+  await verifyEagerBenefitsGraph(manifest, entryKey, relativePath)
 }
 
 async function main() {
   const rootStat = await stat('')
   if (!rootStat?.isDirectory()) {
+    artifactInventorySafe = false
     fail(`site artifact is not a directory: ${siteRoot}`)
   }
 
@@ -888,6 +1047,12 @@ async function main() {
   }
 
   const files = rootStat?.isDirectory() ? await walk() : []
+  if (!artifactInventorySafe) {
+    console.error(`Site verification failed with ${errors.length} error(s):`)
+    for (const error of errors) console.error(`- ${error}`)
+    process.exitCode = 1
+    return
+  }
   for (const relativePath of files) {
     if (/^community\/assets\/.+\.(?:js|css)$/i.test(relativePath) && !isContentHashedAsset(relativePath)) {
       fail(`community JS/CSS asset lacks a Vite-style content-hashed filename: ${relativePath}`)

@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, writeFile, readFile, cp, symlink } from 'node:fs/promises'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -134,6 +135,13 @@ function verify(root) {
   return spawnSync(process.execPath, [verifier, root], { encoding: 'utf8' })
 }
 
+async function mutateManifest(root, mutate) {
+  const manifestPath = path.join(root, 'community/.vite/manifest.json')
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  await mutate(manifest, root)
+  await writeFile(manifestPath, JSON.stringify(manifest))
+}
+
 async function withArtifact(run) {
   const root = await makeValidArtifact()
   try {
@@ -182,6 +190,45 @@ test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects a FIFO artifact without opening or hanging on it', { skip: process.platform === 'win32' }, async () => {
+  await withArtifact(async (root) => {
+    const fifo = path.join(root, 'CNAME')
+    await rm(fifo)
+    const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8' })
+    assert.equal(created.status, 0, created.stderr)
+    const result = spawnSync(process.execPath, [verifier, root], { encoding: 'utf8', timeout: 5_000 })
+    assert.notEqual(result.error?.code, 'ETIMEDOUT', 'verifier opened and blocked on the FIFO')
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /CNAME.*(?:FIFO|named pipe|nonregular)/i)
+  })
+})
+
+test('rejects a Unix socket artifact without opening it', { skip: process.platform === 'win32' }, async () => {
+  await withArtifact(async (root) => {
+    const socketPath = path.join(root, 'generated.sock')
+    const server = createServer()
+    await new Promise((resolve, reject) => server.listen(socketPath, resolve).once('error', reject))
+    try {
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /generated\.sock.*socket/i)
+    } finally {
+      await new Promise(resolve => server.close(resolve))
+    }
+  })
+})
+
+test('rejects a symbolic-link artifact while accepting ordinary files and directories', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'ordinary/directory/file.txt', 'ordinary')
+    assert.equal(verify(root).status, 0)
+    await symlink('ordinary/directory/file.txt', path.join(root, 'linked-artifact'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /symbolic link.*linked-artifact/)
   })
 })
 
@@ -234,17 +281,17 @@ test('rejects a duplicate community benefits-root tree', async () => {
   })
 })
 
-for (const [kind, createDuplicate] of [
-  ['empty directory', (root) => mkdir(path.join(root, 'community/benefits-root'), { recursive: true })],
-  ['regular file', (root) => put(root, 'community/benefits-root', 'duplicate')],
-  ['symbolic link', async (root) => symlink('../assets', path.join(root, 'community/benefits-root'))],
+for (const [kind, createDuplicate, expected] of [
+  ['empty directory', (root) => mkdir(path.join(root, 'community/benefits-root'), { recursive: true }), /community\/benefits-root duplicate path must be absent/],
+  ['regular file', (root) => put(root, 'community/benefits-root', 'duplicate'), /community\/benefits-root duplicate path must be absent/],
+  ['symbolic link', async (root) => symlink('../assets', path.join(root, 'community/benefits-root')), /symbolic link.*community\/benefits-root/],
 ]) {
   test(`rejects a duplicate community benefits-root ${kind}`, async () => {
     await withArtifact(async (root) => {
       await createDuplicate(root)
       const result = verify(root)
       assert.notEqual(result.status, 0)
-      assert.match(result.stderr, /community\/benefits-root duplicate path must be absent/)
+      assert.match(result.stderr, expected)
     })
   })
 }
@@ -296,7 +343,7 @@ test('rejects a canonical entry whose JavaScript path is a symlink', async () =>
     await symlink('logo-Xy12Za34.png', entry)
     const result = verify(root)
     assert.notEqual(result.status, 0)
-    assert.match(result.stderr, /canonical benefits entry is not a regular non-symlink file/)
+    assert.match(result.stderr, /symbolic link.*community\/assets\/benefits-main-Ab12Cd34\.js/)
   })
 })
 
@@ -317,6 +364,89 @@ test('accepts the production-shaped Vite manifest benefits-main binding', async 
     assert.equal(accepted.status, 0, accepted.stderr)
   })
 })
+
+test('accepts a shared eager dependency reached through two branches', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/assets/left-Ab12Cd34.js')
+    await put(root, 'community/assets/right-Ab12Cd34.js')
+    await put(root, 'community/assets/shared-Ab12Cd34.js')
+    await mutateManifest(root, (manifest) => {
+      manifest['_benefits-main-Ab12Cd34.js'].imports = ['left', 'right']
+      manifest.left = { file: 'assets/left-Ab12Cd34.js', name: 'left', imports: ['shared'] }
+      manifest.right = { file: 'assets/right-Ab12Cd34.js', name: 'right', imports: ['shared'] }
+      manifest.shared = { file: 'assets/shared-Ab12Cd34.js', name: 'shared' }
+    })
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('does not traverse valid dynamic imports as eager dependencies', async () => {
+  await withArtifact(async (root) => {
+    await mutateManifest(root, (manifest) => {
+      manifest['_benefits-main-Ab12Cd34.js'].dynamicImports = ['missing-private-dynamic-record']
+    })
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+for (const [description, mutate, expected] of [
+  ['missing eager import key', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = ['missing'] }, /missing eager import record/i],
+  ['nonobject eager import record', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = ['bad']; manifest.bad = null }, /eager import record.*object/i],
+  ['eager import record without file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = ['bad']; manifest.bad = { name: 'public-shell' } }, /eager import record.*file/i],
+  ['unsafe traversing eager import file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = ['bad']; manifest.bad = { file: 'assets/../bad-Ab12Cd34.js', name: 'public-shell' } }, /unsafe eager import file/i],
+  ['absolute eager import file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = ['bad']; manifest.bad = { file: '/assets/bad-Ab12Cd34.js', name: 'public-shell' } }, /unsafe eager import file/i],
+  ['backslash eager import file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = ['bad']; manifest.bad = { file: 'assets\\bad-Ab12Cd34.js', name: 'public-shell' } }, /unsafe eager import file/i],
+  ['query-bearing eager import file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = ['bad']; manifest.bad = { file: 'assets/bad-Ab12Cd34.js?v=1', name: 'public-shell' } }, /unsafe eager import file/i],
+  ['duplicate eager imports', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = ['_react-Zy98Xw76.js', '_react-Zy98Xw76.js'] }, /duplicate eager import/i],
+  ['eager import cycle', (manifest) => { manifest['_react-Zy98Xw76.js'].imports = ['_benefits-main-Ab12Cd34.js'] }, /eager import cycle/i],
+  ['oversized eager imports', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = Array.from({ length: 257 }, (_, index) => `missing-${index}`) }, /imports.*bounded|too many imports/i],
+  ['oversized dynamic imports', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].dynamicImports = Array.from({ length: 257 }, (_, index) => `dynamic-${index}`) }, /dynamicImports.*bounded|too many dynamic imports/i],
+  ['oversized manifest key', (manifest) => { manifest['x'.repeat(1025)] = { file: 'assets/unused-Ab12Cd34.js' } }, /manifest key.*bounded/i],
+  ['conflicting eager records for one file', (manifest) => {
+    manifest['_benefits-main-Ab12Cd34.js'].imports = ['left', 'right']
+    manifest.left = { file: 'assets/react-Zy98Xw76.js', name: 'left' }
+    manifest.right = { file: 'assets/react-Zy98Xw76.js', name: 'right' }
+  }, /conflicting eager.*file/i],
+  ['auth provider in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].name = 'AuthProvider' }, /private.*eager/i],
+  ['authenticated CommunityApplication entry in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].src = 'src/CommunityApplication.tsx' }, /private.*eager/i],
+  ['authenticated main entry in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].name = 'main' }, /private.*eager/i],
+  ['Supabase module in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].name = 'supabase' }, /private.*eager/i],
+  ['environment module in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].name = 'env' }, /private.*eager/i],
+  ['UUID module in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].name = 'uuid' }, /private.*eager/i],
+  ['submission module in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].src = 'src/data/benefitSubmissionRepository.ts' }, /private.*eager/i],
+  ['correction module in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].name = 'BenefitsCorrectionLink' }, /private.*eager/i],
+  ['admin module in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].src = 'src/pages/AdminReportsPage.tsx' }, /private.*eager/i],
+  ['draft module in eager graph', (manifest) => { manifest['_react-Zy98Xw76.js'].name = 'draftStore' }, /private.*eager/i],
+]) {
+  test(`rejects ${description} in the eager benefits manifest graph`, async () => {
+    await withArtifact(async (root) => {
+      await mutateManifest(root, mutate)
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${description}`)
+      assert.match(result.stderr, expected)
+    })
+  })
+}
+
+for (const [description, setup, expected] of [
+  ['missing eager JavaScript', async (root) => rm(path.join(root, 'community/assets/react-Zy98Xw76.js')), /eager import file.*regular non-symlink/i],
+  ['symlink eager JavaScript', async (root) => {
+    const imported = path.join(root, 'community/assets/react-Zy98Xw76.js')
+    await rm(imported)
+    await symlink('logo-Xy12Za34.png', imported)
+  }, /symbolic link.*community\/assets\/react-Zy98Xw76\.js/i],
+]) {
+  test(`rejects ${description}`, async () => {
+    await withArtifact(async (root) => {
+      await setup(root)
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, expected)
+    })
+  })
+}
 
 test('rejects canonical benefits shells when the assembled Vite manifest is missing', async () => {
   await withArtifact(async (root) => {
