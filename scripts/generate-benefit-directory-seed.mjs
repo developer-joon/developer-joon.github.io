@@ -237,7 +237,7 @@ export async function verifySeedBundle({ sourceFile, bundleDir }) {
   const { bytes, doc } = await loadSource(sourceFile)
   const expected = buildSeedFromDocument(doc, bytes)
   if (!manifestBytes.equals(expected.manifestBytes) || !ndjson.equals(expected.ndjson)) throw Error('bundle drift from pinned source authority')
-  return { manifest, rows, manifestBytes, ndjson, bundleSha256: sha256(manifestBytes) }
+  return { manifest, rows, manifestBytes, ndjson, sourceBytes: bytes, bundleSha256: sha256(manifestBytes) }
 }
 
 export async function generateSeedBundle({ sourceFile, outputDir, check = false, injectBeforeCommit, testOnly } = {}) {

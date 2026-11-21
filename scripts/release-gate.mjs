@@ -16,6 +16,8 @@ const HOSTED_BODY_LIMIT = 64 * 1024
 const MANIFEST_INPUT_LIMIT = 1024 * 1024
 const readinessInputBindings = new WeakMap()
 const DATABASE_TEST_STEPS = new Set([
+  'test-benefit-title-upgrade',
+  'test-benefit-seed-importer',
   'test-storage-upgrade',
   'test-public-listing-upgrade',
   'test-community-snapshot-upgrade',
@@ -543,19 +545,26 @@ function localCoreSteps(workspace) {
   const { siteA, siteB, manifests } = workspace
   return [
     step('repository-preflight', 'git', ['status', '--porcelain']),
+    step('check-benefit-seed-generation', 'node', ['scripts/generate-benefit-directory-seed.mjs', '--check']),
+    step('verify-benefit-seed', 'node', ['scripts/verify-benefit-directory-seed.mjs']),
     step('start-local-supabase', 'npm', ['--prefix', 'community-app', 'run', 'db:start']),
     step('reset-local-database', 'npm', ['--prefix', 'community-app', 'run', 'db:reset']),
+    step('test-benefit-title-upgrade', 'npm', ['--prefix', 'community-app', 'run', 'db:test:benefit-title-upgrade']),
+    step('test-benefit-seed-importer', 'npm', ['--prefix', 'community-app', 'run', 'db:test:benefit-seed-importer']),
     step('test-storage-upgrade', 'npm', ['--prefix', 'community-app', 'run', 'db:test:storage-upgrade']),
     step('test-public-listing-upgrade', 'npm', ['--prefix', 'community-app', 'run', 'db:test:public-listing-upgrade']),
     step('test-community-snapshot-upgrade', 'npm', ['--prefix', 'community-app', 'run', 'db:test:community-snapshot-upgrade']),
     step('test-public-attachment-integration', 'npm', ['--prefix', 'community-app', 'run', 'db:test:public-attachment-integration']),
     step('test-database', 'npm', ['--prefix', 'community-app', 'run', 'db:test']),
     step('lint-database', 'npm', ['--prefix', 'community-app', 'run', 'db:lint']),
+    step('frontend-check', 'npm', ['--prefix', 'community-app', 'run', 'check']),
+    step('frontend-build', 'npm', ['--prefix', 'community-app', 'run', 'build']),
     step('test-node-scripts', 'node', [
       '--test',
       'scripts/build-definition.test.mjs',
       'scripts/check-benefits-browser.test.mjs',
       'scripts/community-snapshots.test.mjs',
+      'scripts/verify-benefit-directory-seed.test.mjs',
       'scripts/verify-site.test.mjs',
     ]),
     step('build-site-a', './scripts/build-site-docker.sh', [siteA]),

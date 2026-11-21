@@ -26,14 +26,20 @@ const DEVELOPMENT_URL = `https://${DEVELOPMENT_REF}.supabase.co`
 const PRODUCTION_URL = `https://${PRODUCTION_REF}.supabase.co`
 const LOCAL_STEP_NAMES = [
   'repository-preflight',
+  'check-benefit-seed-generation',
+  'verify-benefit-seed',
   'start-local-supabase',
   'reset-local-database',
+  'test-benefit-title-upgrade',
+  'test-benefit-seed-importer',
   'test-storage-upgrade',
   'test-public-listing-upgrade',
   'test-community-snapshot-upgrade',
   'test-public-attachment-integration',
   'test-database',
   'lint-database',
+  'frontend-check',
+  'frontend-build',
   'test-node-scripts',
   'build-site-a',
   'build-site-b',
@@ -112,6 +118,47 @@ test('defaults to local mode and builds the exact ordered local plan', () => {
   const options = parse()
   assert.equal(options.mode, 'local')
   assert.deepEqual(buildReleasePlan(options).steps.map(({ name }) => name), LOCAL_STEP_NAMES)
+})
+
+test('dynamic benefits seed, DB projection, and frontend boundary commands are mandatory and fixed', () => {
+  const steps = buildReleasePlan(parse()).steps
+  const byName = Object.fromEntries(steps.map(item => [item.name, item]))
+  assert.deepEqual(byName['check-benefit-seed-generation'], {
+    name: 'check-benefit-seed-generation', command: 'node',
+    args: ['scripts/generate-benefit-directory-seed.mjs', '--check'], environment: {},
+  })
+  assert.deepEqual(byName['verify-benefit-seed'], {
+    name: 'verify-benefit-seed', command: 'node',
+    args: ['scripts/verify-benefit-directory-seed.mjs'], environment: {},
+  })
+  assert.deepEqual(byName['test-benefit-title-upgrade'].args, ['--prefix', 'community-app', 'run', 'db:test:benefit-title-upgrade'])
+  assert.deepEqual(byName['test-benefit-seed-importer'].args, ['--prefix', 'community-app', 'run', 'db:test:benefit-seed-importer'])
+  assert.deepEqual(byName['frontend-check'].args, ['--prefix', 'community-app', 'run', 'check'])
+  assert.deepEqual(byName['frontend-build'].args, ['--prefix', 'community-app', 'run', 'build'])
+  assert.ok(byName['test-node-scripts'].args.includes('scripts/verify-benefit-directory-seed.test.mjs'))
+  assert.ok(steps.indexOf(byName['frontend-check']) < steps.indexOf(byName['build-site-a']))
+  assert.ok(steps.indexOf(byName['frontend-build']) < steps.indexOf(byName['build-site-a']))
+})
+
+test('automatic release plans contain no hosted mutation or deployment command in any mode', () => {
+  const modes = [
+    parse(),
+    parse(['--mode', 'development', '--evidence', '$EVIDENCE'], {
+      DEVELOPMENT_SUPABASE_URL: DEVELOPMENT_URL,
+      ALLOW_DEVELOPMENT_CLOUD_READS: '1',
+    }),
+    parse(['--mode', 'production-readiness', '--evidence', '$EVIDENCE'], productionEnv()),
+  ]
+  const forbidden = /(?:db\s+push|project-ref|functions?\s+deploy|pages\s+deploy|canary|apply-benefit-directory-seed|database_url|psql_bin)/i
+  for (const options of modes) {
+    for (const releaseStep of buildReleasePlan(options).steps) {
+      const serialized = [releaseStep.name, releaseStep.command, ...(releaseStep.args ?? []), ...Object.keys(releaseStep.environment ?? {})].join(' ')
+      assert.doesNotMatch(serialized, forbidden, `${options.mode}: ${releaseStep.name}`)
+    }
+  }
+  assert.deepEqual(buildReleasePlan(modes[2]).steps, [
+    { name: 'validate-production-readiness-evidence', kind: 'internal' },
+  ])
 })
 
 test('local release plan executes real benefits browser acceptance against the built site', () => {
