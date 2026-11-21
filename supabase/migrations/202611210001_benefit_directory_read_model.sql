@@ -78,6 +78,80 @@ create index benefit_publications_active_company_idx
   on public.benefit_publications(company_id,trust_tier,category_id,publication_id) where status='active';
 create index benefit_publications_active_category_company_idx
   on public.benefit_publications(category_id,company_id) where status='active';
+create index benefit_publications_supersedes_idx
+  on public.benefit_publications(supersedes_publication_id) where supersedes_publication_id is not null;
+
+-- A successor may have any publication status, but its predecessor must finish as
+-- superseded or withdrawn in the same transaction. Deferral permits either write order.
+create function private.enforce_benefit_publication_lineage()
+returns trigger
+language plpgsql
+set search_path=''
+as $$
+declare
+  v_publication public.benefit_publications%rowtype;
+  v_predecessor public.benefit_publications%rowtype;
+begin
+  select * into v_publication
+  from public.benefit_publications
+  where publication_id=new.publication_id;
+
+  if not found then
+    return null;
+  end if;
+
+  if v_publication.supersedes_publication_id is not null then
+    select * into v_predecessor
+    from public.benefit_publications
+    where publication_id=v_publication.supersedes_publication_id
+    for no key update;
+
+    if not found then
+      raise exception 'benefit publication predecessor does not exist' using errcode='23503';
+    end if;
+    if v_predecessor.company_id<>v_publication.company_id
+       or v_predecessor.dedupe_key<>v_publication.dedupe_key then
+      raise exception 'benefit publication predecessor must have the same company and dedupe key' using errcode='23514';
+    end if;
+    if v_predecessor.revision>=v_publication.revision then
+      raise exception 'benefit publication predecessor revision must be lower' using errcode='23514';
+    end if;
+    if v_predecessor.status not in ('superseded','withdrawn') then
+      raise exception 'benefit publication predecessor must be superseded or withdrawn' using errcode='23514';
+    end if;
+  end if;
+
+  if exists(
+    select 1 from public.benefit_publications successor
+    where successor.supersedes_publication_id=v_publication.publication_id
+      and (successor.company_id<>v_publication.company_id or successor.dedupe_key<>v_publication.dedupe_key)
+  ) then
+    raise exception 'benefit publication predecessor must have the same company and dedupe key' using errcode='23514';
+  end if;
+  if exists(
+    select 1 from public.benefit_publications successor
+    where successor.supersedes_publication_id=v_publication.publication_id
+      and successor.revision<=v_publication.revision
+  ) then
+    raise exception 'benefit publication predecessor revision must be lower' using errcode='23514';
+  end if;
+  if v_publication.status not in ('superseded','withdrawn') and exists(
+    select 1 from public.benefit_publications successor
+    where successor.supersedes_publication_id=v_publication.publication_id
+  ) then
+    raise exception 'benefit publication predecessor must be superseded or withdrawn' using errcode='23514';
+  end if;
+
+  return null;
+end $$;
+
+alter function private.enforce_benefit_publication_lineage() owner to postgres;
+revoke all on function private.enforce_benefit_publication_lineage() from public,anon,authenticated,service_role;
+
+create constraint trigger benefit_publications_lineage_check
+  after insert or update on public.benefit_publications
+  deferrable initially deferred
+  for each row execute function private.enforce_benefit_publication_lineage();
 
 alter table public.benefit_companies enable row level security;
 alter table public.benefit_publications enable row level security;
