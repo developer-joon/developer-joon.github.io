@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AppFooter } from '../components/AppFooter'
 import { AppHeader } from '../components/AppHeader'
 import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
+import { benefitSubmissionHref } from '../benefitsRoutes'
 import { parseBenefitDirectoryQuery, serializeBenefitDirectoryQuery } from '../lib/benefitDirectoryQueryState'
 import {
   BENEFIT_DIRECTORY_CATEGORIES,
@@ -29,7 +30,7 @@ function decodeQueryPart(value: string) {
 function parseCompanyQuery(search: string): ParsedCompanyQuery {
   if (search.length > MAX_SEARCH_LENGTH) return { id: null, directoryQuery: '' }
   const source = search.startsWith('?') ? search.slice(1) : search
-  const entries: Array<{ key: string; value: string; rawValue: string }> = []
+  const entries: Array<{ key: string; rawKey: string; value: string; rawValue: string; separators: number }> = []
   if (source) for (const pair of source.split('&')) {
     const separator = pair.indexOf('=')
     const rawKey = separator < 0 ? pair : pair.slice(0, separator)
@@ -37,10 +38,11 @@ function parseCompanyQuery(search: string): ParsedCompanyQuery {
     const key = decodeQueryPart(rawKey)
     const value = decodeQueryPart(rawValue)
     if (key === null || value === null || key.includes('\uFFFD') || value.includes('\uFFFD')) return { id: null, directoryQuery: '' }
-    entries.push({ key, value, rawValue })
+    entries.push({ key, rawKey, value, rawValue, separators: pair.split('=').length - 1 })
   }
-  const ids = entries.filter(entry => entry.key === 'id')
-  if (ids.length !== 1 || ids[0].rawValue !== ids[0].value || !COMPANY_ID.test(ids[0].value)) return { id: null, directoryQuery: '' }
+  const idLike = entries.filter(entry => entry.key.toLowerCase() === 'id')
+  const ids = entries.filter(entry => entry.rawKey === 'id')
+  if (idLike.length !== 1 || ids.length !== 1 || ids[0].separators !== 1 || ids[0].rawValue !== ids[0].value || !COMPANY_ID.test(ids[0].value)) return { id: null, directoryQuery: '' }
 
   const returnEntries = entries.filter(entry => entry.key !== 'id')
   if (returnEntries.length === 0) return { id: ids[0].value, directoryQuery: '' }
@@ -183,7 +185,7 @@ export function BenefitDirectoryCompanyPage({
     {publications.length === 0 ? <section className="benefit-company-page__empty" aria-labelledby="company-empty-heading">
       <h2 id="company-empty-heading">게시 가능한 공개 복지 근거 미확인</h2>
       <p>공개 근거가 아직 게시되지 않은 상태입니다. 게시 여부만 나타내며 실제 제도 유무를 단정하지 않습니다.</p>
-      <a className="benefit-company-page__submit" href={`/community/benefits/submit/?company=${company.companyId}`}>새 혜택 제보</a>
+      <a className="benefit-company-page__submit" href={benefitSubmissionHref(company.companyId)}>새 혜택 제보</a>
     </section> : <div className="benefit-company-page__groups">
       {BENEFIT_DIRECTORY_CATEGORIES.flatMap(category => {
         const items = groups.get(category)

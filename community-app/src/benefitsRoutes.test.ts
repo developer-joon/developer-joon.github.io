@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { benefitsRoute } from './benefitsRoutes'
+import { benefitSubmissionHref, benefitsRoute } from './benefitsRoutes'
+
+describe('Task 7 benefit submission route contract', () => {
+  it('builds the canonical company-prefilled submission URL', () => {
+    expect(benefitSubmissionHref('KR-BIZ-1234567890')).toBe('/community/benefits/submit/?companyId=KR-BIZ-1234567890')
+  })
+
+  it.each(['', 'KR-BIZ-123', 'kr-biz-1234567890', 'KR-BIZ-1234567890&admin=true'])(
+    'rejects non-canonical company ID %s',
+    companyId => expect(() => benefitSubmissionHref(companyId)).toThrow('Invalid canonical company ID'),
+  )
+})
 
 describe('non-ranking benefits routes', () => {
   it.each([

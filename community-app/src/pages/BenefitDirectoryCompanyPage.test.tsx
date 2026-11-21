@@ -56,6 +56,10 @@ describe('BenefitDirectoryCompanyPage', () => {
     '?id=KR-CRN-123',
     '?id=kr-crn-1101111111111',
     '?id=%4BR-CRN-1101111111111',
+    `?%69d=${BIZ}`,
+    `?i%64=${BIZ}`,
+    `?ID=${BIZ}`,
+    `?id=${BIZ}&%69d=${BIZ}`,
     '?id=%ZZ',
   ])('rejects an invalid literal company link without an RPC: %s', search => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>()
@@ -105,13 +109,13 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(publicText).not.toContain('9')
   })
 
-  it('shows the honest zero-publication state and canonical company-prefilled submission CTA', async () => {
+  it('binds the honest zero-publication CTA to the Task 7 submission route contract', async () => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>().mockResolvedValue(ok(detail(CRN_A, [])))
     render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(load)} />)
     expect(await screen.findByText('게시 가능한 공개 복지 근거 미확인')).toBeVisible()
     expect(screen.getByText(/게시 여부만 나타내며 실제 제도 유무를 단정하지 않습니다/)).toBeVisible()
     expect(screen.queryByText(/복지 없음/)).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '새 혜택 제보' })).toHaveAttribute('href', `/community/benefits/submit/?company=${CRN_A}`)
+    expect(screen.getByRole('link', { name: '새 혜택 제보' })).toHaveAttribute('href', `/community/benefits/submit/?companyId=${CRN_A}`)
     expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/community/benefits/directory/')
   })
 
