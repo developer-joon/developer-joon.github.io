@@ -15,13 +15,20 @@ select ok((select coalesce(bool_and(not i.indisunique),false) from pg_catalog.pg
 select ok((select coalesce(bool_and(t.tgdeferrable and t.tginitdeferred),false) from pg_catalog.pg_trigger t where t.tgrelid='public.benefit_publications'::regclass and t.tgname='benefit_publications_unique_active_lineage_check'),'active lineage uniqueness is checked by a deferred constraint trigger');
 
 insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,industry,size_class,region,summary,is_searchable,source_edition,provenance) values
- ('KR-CRN-1101111111111','base_legal_identity','가나다 공식','가나다 공식','software','large','서울','공식 기업',true,'fixture-v1','{"private":"company-secret"}'),
+ ('KR-CRN-1101111111111','legal_corporation','가나다 공식','가나다 공식','software','large','서울','공식 기업',true,'fixture-v1','{"private":"company-secret"}'),
  ('KR-BIZ-1234567890','recruitment_observation','나다라 커뮤니티','나다라 커뮤니티','software','small','부산',null,true,'fixture-v1','{"private":"company-secret"}'),
- ('KR-CRN-2202222222222','ftc_affiliate','다라마 제로','다라마 제로','finance','large_affiliate','서울',null,true,'fixture-v1','{"private":"company-secret"}'),
- ('KR-CRN-3303333333333','base_legal_identity','숨김 기업','숨김 기업',null,null,null,null,false,'fixture-v1','{}'),
- ('KR-BIZ-1000000003','base_legal_identity','Tie Company C','tie company',null,null,null,null,true,'fixture-v1','{}'),
- ('KR-BIZ-1000000001','base_legal_identity','Tie Company A','tie company',null,null,null,null,true,'fixture-v1','{}'),
- ('KR-BIZ-1000000002','base_legal_identity','Tie Company B','tie company',null,null,null,null,true,'fixture-v1','{}');
+ ('KR-CRN-2202222222222','group_affiliate','다라마 제로','다라마 제로','finance','large_affiliate','서울',null,true,'fixture-v1','{"private":"company-secret"}'),
+ ('KR-CRN-3303333333333','legal_corporation','숨김 기업','숨김 기업',null,null,null,null,false,'fixture-v1','{}'),
+ ('KR-BIZ-1000000003','registered_business','Tie Company C','tie company',null,null,null,null,true,'fixture-v1','{}'),
+ ('KR-BIZ-1000000001','registered_business','Tie Company A','tie company',null,null,null,null,true,'fixture-v1','{}'),
+ ('KR-BIZ-1000000002','registered_business','Tie Company B','tie company',null,null,null,null,true,'fixture-v1','{}');
+
+select lives_ok($$insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values
+  ('KR-CRN-4404444444444','legal_corporation','Legal class fixture','legal class fixture',false,'identity-fixture-v1','{}'),
+  ('KR-BIZ-4404444444','registered_business','Registered class fixture','registered class fixture',false,'identity-fixture-v1','{}'),
+  ('KR-BIZ-5505555555','recruitment_observation','Recruitment class fixture','recruitment class fixture',false,'identity-fixture-v1','{}'),
+  ('KR-CRN-5505555555555','group_affiliate','Affiliate class fixture','affiliate class fixture',false,'identity-fixture-v1','{}')$$,
+  'all four canonical public identity classes can be inserted');
 
 insert into public.benefit_publications(publication_id,company_id,category_id,title,description,eligibility_text,condition_text,trust_tier,status,dedupe_key,revision,source_url,source_type,observed_at,verified_at,provenance,reviewer_id) values
  ('b1000000-0000-0000-0000-000000000001','KR-CRN-1101111111111','health','건강검진','연 1회 건강검진','재직자','회사 기준','official_verified','active','health-check',1,'https://private.example/official','official_ledger','2026-10-01','2026-10-02','{"ledger":"secret"}','reviewer-secret'),
@@ -190,6 +197,7 @@ select is((select (item->>'benefit_count')::integer from benefit_results,jsonb_a
 select is((select (item->>'official_count')::integer from benefit_results,jsonb_array_elements(payload->'items') item where name='all' and item->>'company_id'='KR-CRN-1101111111111'),1,'official active count is correct');
 select is((select (item->>'community_count')::integer from benefit_results,jsonb_array_elements(payload->'items') item where name='all' and item->>'company_id'='KR-BIZ-1234567890'),1,'community active count is correct');
 select is((select (item->>'benefit_count')::integer from benefit_results,jsonb_array_elements(payload->'items') item where name='all' and item->>'company_id'='KR-CRN-2202222222222'),0,'zero-benefit company has zero count');
+select is((select jsonb_object_agg(item->>'company_id',item->>'identity_label') from benefit_results,jsonb_array_elements(payload->'items') item where name='all' and item->>'company_id'=any(array['KR-CRN-1101111111111','KR-BIZ-1000000001','KR-BIZ-1234567890','KR-CRN-2202222222222'])),'{"KR-BIZ-1000000001":"등록 사업자","KR-BIZ-1234567890":"채용 관찰 사업자","KR-CRN-1101111111111":"법인","KR-CRN-2202222222222":"공시대상기업집단 소속 법인"}'::jsonb,'search exposes the exact public label for every canonical identity class');
 select ok((select payload::text not like '%source_url%' and payload::text not like '%source_type%' and payload::text not like '%verified_at%' and payload::text not like '%provenance%' and payload::text not like '%reviewer%' and payload::text not like '%private.example%' from benefit_results where name='all'),'search exposes no private provenance fields or values');
 
 insert into benefit_results values ('benefits-only',public.search_benefit_companies_v1(null,null,null,null,null,true,50,null));
@@ -219,6 +227,7 @@ select is((select jsonb_object_agg(key,true order by key) from benefit_results,j
 select is((select jsonb_array_length(payload->'publications') from benefit_results where name='detail'),1,'detail returns active publications only');
 select is((select jsonb_object_agg(key,true order by key) from benefit_results,jsonb_object_keys(payload->'publications'->0) key where name='detail'),'{"category_id":true,"condition_text":true,"description":true,"eligibility_text":true,"publication_id":true,"revision":true,"title":true,"trust_label":true}'::jsonb,'detail publication has exact public keys and trust label');
 select is((select payload->'publications'->0->>'trust_label' from benefit_results where name='detail'),'사용자 제보','community trust has the bounded public label');
+select is((select jsonb_object_agg(company_id,public.get_benefit_company_v1(company_id)->'company'->>'identity_label') from unnest(array['KR-CRN-1101111111111','KR-BIZ-1000000001','KR-BIZ-1234567890','KR-CRN-2202222222222']) company_id),'{"KR-BIZ-1000000001":"등록 사업자","KR-BIZ-1234567890":"채용 관찰 사업자","KR-CRN-1101111111111":"법인","KR-CRN-2202222222222":"공시대상기업집단 소속 법인"}'::jsonb,'detail exposes the exact public label for every canonical identity class');
 select ok((select payload::text not like '%source_url%' and payload::text not like '%source_type%' and payload::text not like '%verified_at%' and payload::text not like '%provenance%' and payload::text not like '%reviewer%' and payload::text not like '%private.example%' from benefit_results where name='detail'),'detail exposes no private provenance fields or values');
 select is(public.get_benefit_company_v1('KR-CRN-3303333333333'),'null'::jsonb,'non-searchable company is not disclosed');
 
@@ -316,7 +325,8 @@ begin
 end
 $test$
 $lineage$,'23514','benefit publication lineage may have at most one active publication','duplicate active lineage is rejected at the deferred constraint boundary');
-select throws_ok($$insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values ('KR-BIZ-9999999999','group_affiliate','invalid','invalid',true,'fixture','{}')$$,'23514',null,'identity classes are explicit and stable');
+select throws_ok($$insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values ('KR-BIZ-9999999998','base_legal_identity','invalid','invalid',true,'fixture','{}')$$,'23514',null,'legacy base identity class is rejected');
+select throws_ok($$insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values ('KR-BIZ-9999999999','ftc_affiliate','invalid','invalid',true,'fixture','{}')$$,'23514',null,'legacy affiliate identity class is rejected');
 select throws_ok($$insert into public.benefit_publications(company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance) values ('KR-CRN-2202222222222','health','bad trust','bad','admin_approved','active','bad',1,'submission','{}')$$,'23514',null,'public trust claims are bounded to two tiers');
 
 select * from finish();

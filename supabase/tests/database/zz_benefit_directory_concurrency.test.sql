@@ -38,7 +38,7 @@ select extensions.dblink_exec('bd_setup',$cleanup$
 $cleanup$);
 select extensions.dblink_exec('bd_setup',$setup$
   insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance)
-  values ('KR-BIZ-9900000001','base_legal_identity','Benefit Directory Race','benefit directory race',false,'race-fixture','{}');
+  values ('KR-BIZ-9900000001','registered_business','Benefit Directory Race','benefit directory race',false,'race-fixture','{}');
   insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance)
   values ('b9000000-0000-0000-0000-000000000001','KR-BIZ-9900000001','health','Race predecessor','race fixture','official_verified','active','race-lineage',1,'official_ledger','{}')
 $setup$);

@@ -16,7 +16,7 @@ create table public.benefit_companies (
   created_at timestamptz not null default pg_catalog.clock_timestamp(),
   updated_at timestamptz not null default pg_catalog.clock_timestamp(),
   constraint benefit_companies_id_check check (company_id ~ '^(KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10})$'),
-  constraint benefit_companies_identity_check check (identity_class in ('base_legal_identity','recruitment_observation','ftc_affiliate')),
+  constraint benefit_companies_identity_check check (identity_class in ('legal_corporation','registered_business','recruitment_observation','group_affiliate')),
   constraint benefit_companies_display_name_check check (char_length(display_name) between 1 and 200 and display_name=btrim(display_name)),
   constraint benefit_companies_normalized_name_check check (char_length(normalized_name) between 1 and 200 and normalized_name=btrim(normalized_name) and normalized_name=lower(normalized_name)),
   constraint benefit_companies_industry_check check (industry is null or (char_length(industry) between 1 and 100 and industry=btrim(industry))),
@@ -385,7 +385,7 @@ begin
       pg_catalog.jsonb_build_object(
         'company_id',c.company_id,
         'display_name',c.display_name,
-        'identity_label',case c.identity_class when 'base_legal_identity' then '법인' when 'recruitment_observation' then '채용 관찰 사업자' else '공시대상기업집단 소속 법인' end,
+        'identity_label',case c.identity_class when 'legal_corporation' then '법인' when 'registered_business' then '등록 사업자' when 'recruitment_observation' then '채용 관찰 사업자' when 'group_affiliate' then '공시대상기업집단 소속 법인' end,
         'industry',c.industry,
         'size_label',case c.size_class when 'large' then '대기업' when 'medium' then '중견기업' when 'small' then '중소기업' when 'large_affiliate' then '대규모기업집단 소속' else '분류 미확인' end,
         'region',c.region,
@@ -428,7 +428,7 @@ begin
     'company',pg_catalog.jsonb_build_object(
       'company_id',c.company_id,
       'display_name',c.display_name,
-      'identity_label',case c.identity_class when 'base_legal_identity' then '법인' when 'recruitment_observation' then '채용 관찰 사업자' else '공시대상기업집단 소속 법인' end,
+      'identity_label',case c.identity_class when 'legal_corporation' then '법인' when 'registered_business' then '등록 사업자' when 'recruitment_observation' then '채용 관찰 사업자' when 'group_affiliate' then '공시대상기업집단 소속 법인' end,
       'industry',c.industry,
       'size_label',case c.size_class when 'large' then '대기업' when 'medium' then '중견기업' when 'small' then '중소기업' when 'large_affiliate' then '대규모기업집단 소속' else '분류 미확인' end,
       'region',c.region,
