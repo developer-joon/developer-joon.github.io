@@ -11,6 +11,8 @@ select ok((select bool_and(not has_table_privilege('public',oid,'SELECT,INSERT,U
 select ok((select bool_and(p.prosecdef and p.proconfig @> array['search_path=""'] and pg_get_userbyid(p.proowner)='postgres') from pg_proc p where p.oid=any(array['public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)'::regprocedure,'public.get_benefit_company_v1(text)'::regprocedure])),'public RPCs are fixed-owner SECURITY DEFINER with empty search_path');
 select ok(not has_function_privilege('public','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE') and has_function_privilege('anon','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE') and has_function_privilege('authenticated','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE'),'search grants are browser-only');
 select ok(not has_function_privilege('public','public.get_benefit_company_v1(text)','EXECUTE') and has_function_privilege('anon','public.get_benefit_company_v1(text)','EXECUTE') and has_function_privilege('authenticated','public.get_benefit_company_v1(text)','EXECUTE'),'detail grants are browser-only');
+select ok((select coalesce(bool_and(not i.indisunique),false) from pg_catalog.pg_class c join pg_catalog.pg_index i on i.indexrelid=c.oid where c.relnamespace='public'::regnamespace and c.relname='benefit_publications_active_lineage_idx'),'active lineage lookup index is non-unique so either transaction write order is possible');
+select ok((select coalesce(bool_and(t.tgdeferrable and t.tginitdeferred),false) from pg_catalog.pg_trigger t where t.tgrelid='public.benefit_publications'::regclass and t.tgname='benefit_publications_unique_active_lineage_check'),'active lineage uniqueness is checked by a deferred constraint trigger');
 
 insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,industry,size_class,region,summary,is_searchable,source_edition,provenance) values
  ('KR-CRN-1101111111111','base_legal_identity','가나다 공식','가나다 공식','software','large','서울','공식 기업',true,'fixture-v1','{"private":"company-secret"}'),
@@ -35,23 +37,72 @@ begin
   set status='superseded'
   where publication_id='b1000000-0000-0000-0000-000000000001';
   insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,supersedes_publication_id,source_type,provenance)
-  values ('b1000000-0000-0000-0000-000000000010','KR-CRN-1101111111111','health','새 건강검진','새 revision','official_verified','withdrawn','health-check',2,'b1000000-0000-0000-0000-000000000001','official_ledger','{}');
+  values ('b1000000-0000-0000-0000-000000000010','KR-CRN-1101111111111','health','새 건강검진','새 revision','official_verified','active','health-check',2,'b1000000-0000-0000-0000-000000000001','official_ledger','{}');
   set constraints all immediate;
   set constraints all deferred;
 end
 $test$
-$lineage$,'a transaction may supersede the predecessor before inserting its successor');
+$lineage$,'a transaction may supersede the predecessor before inserting an active successor');
 select lives_ok($lineage$
 do $test$
 begin
   insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,supersedes_publication_id,source_type,provenance)
-  values ('b1000000-0000-0000-0000-000000000015','KR-CRN-3303333333333','health','숨김 후속','lineage fixture','official_verified','superseded','hidden-lineage',2,'b1000000-0000-0000-0000-000000000005','official_ledger','{}');
-  update public.benefit_publications set status='withdrawn' where publication_id='b1000000-0000-0000-0000-000000000005';
+  values ('b1000000-0000-0000-0000-000000000015','KR-CRN-3303333333333','health','숨김 후속','lineage fixture','official_verified','active','hidden-lineage',2,'b1000000-0000-0000-0000-000000000005','official_ledger','{}');
+  update public.benefit_publications set status='superseded' where publication_id='b1000000-0000-0000-0000-000000000005';
   set constraints all immediate;
   set constraints all deferred;
 end
 $test$
-$lineage$,'a transaction may insert a superseded successor before withdrawing its predecessor');
+$lineage$,'a transaction may insert an active successor before superseding its predecessor');
+select is((select count(*) from public.benefit_publications where company_id='KR-CRN-3303333333333' and dedupe_key='hidden-lineage' and status='active'),1::bigint,'active-successor-first leaves exactly one active publication');
+
+select throws_ok($lineage$
+do $test$
+begin
+  insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance)
+  values ('b1000000-0000-0000-0000-000000000018','KR-BIZ-1234567890','leave','두 번째 active','invalid','community_reviewed','active','refresh-leave',3,'submission','{}');
+  set constraints all immediate;
+end
+$test$
+$lineage$,'23514','benefit publication lineage may have at most one active publication','two active rows left at the constraint boundary are rejected');
+select throws_ok($lineage$
+do $test$
+begin
+  insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance) values
+    ('b1000000-0000-0000-0000-000000000020','KR-CRN-2202222222222','health','높은 revision 먼저','invalid','official_verified','active','reverse-two-active',2,'official_ledger','{}'),
+    ('b1000000-0000-0000-0000-000000000021','KR-CRN-2202222222222','health','낮은 revision 나중','invalid','official_verified','active','reverse-two-active',1,'official_ledger','{}');
+  set constraints all immediate;
+end
+$test$
+$lineage$,'23514','benefit publication lineage may have at most one active publication','two active rows are rejected when the higher revision is inserted first');
+select throws_ok($lineage$
+do $test$
+begin
+  insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance)
+  values ('b1000000-0000-0000-0000-000000000022','KR-CRN-2202222222222','health','이동 source','invalid','official_verified','active','move-source',1,'official_ledger','{}');
+  update public.benefit_publications
+  set company_id='KR-BIZ-1234567890',dedupe_key='refresh-leave',revision=4
+  where publication_id='b1000000-0000-0000-0000-000000000022';
+  set constraints all immediate;
+end
+$test$
+$lineage$,'23514','benefit publication lineage may have at most one active publication','moving an active row into an occupied lineage is rejected');
+
+select lives_ok($lineage$
+do $test$
+begin
+  insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance)
+  values ('b1000000-0000-0000-0000-000000000019','KR-BIZ-1234567890','health','이동 후 삭제','lineage fixture','official_verified','active','move-delete-lineage',1,'official_ledger','{}');
+  update public.benefit_publications
+  set company_id='KR-CRN-2202222222222',dedupe_key='moved-active'
+  where publication_id='b1000000-0000-0000-0000-000000000019';
+  delete from public.benefit_publications
+  where publication_id='b1000000-0000-0000-0000-000000000019';
+  set constraints all immediate;
+  set constraints all deferred;
+end
+$test$
+$lineage$,'active-row lineage moves and deletes preserve the invariant on old and new keys');
 select throws_ok($lineage$
 do $test$
 begin
@@ -256,7 +307,15 @@ select is(
   'representative-volume first page uses deterministic normalized-name and company-id order'
 );
 
-select throws_ok($$insert into public.benefit_publications(company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance) values ('KR-CRN-1101111111111','health','중복','중복 active','official_verified','active','health-check',2,'official_ledger','{}')$$,'23505',null,'duplicate active lineage is rejected');
+select throws_ok($lineage$
+do $test$
+begin
+  insert into public.benefit_publications(company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance)
+  values ('KR-CRN-1101111111111','health','중복','중복 active','official_verified','active','health-check',3,'official_ledger','{}');
+  set constraints all immediate;
+end
+$test$
+$lineage$,'23514','benefit publication lineage may have at most one active publication','duplicate active lineage is rejected at the deferred constraint boundary');
 select throws_ok($$insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values ('KR-BIZ-9999999999','group_affiliate','invalid','invalid',true,'fixture','{}')$$,'23514',null,'identity classes are explicit and stable');
 select throws_ok($$insert into public.benefit_publications(company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance) values ('KR-CRN-2202222222222','health','bad trust','bad','admin_approved','active','bad',1,'submission','{}')$$,'23514',null,'public trust claims are bounded to two tiers');
 

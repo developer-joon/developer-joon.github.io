@@ -68,7 +68,7 @@ create table public.benefit_publications (
   constraint benefit_publications_supersedes_self_check check (supersedes_publication_id is null or supersedes_publication_id<>publication_id)
 );
 
-create unique index benefit_publications_one_active_lineage_idx
+create index benefit_publications_active_lineage_idx
   on public.benefit_publications(company_id,dedupe_key) where status='active';
 create index benefit_companies_search_order_idx
   on public.benefit_companies(normalized_name,company_id) where is_searchable;
@@ -152,6 +152,69 @@ create constraint trigger benefit_publications_lineage_check
   after insert or update on public.benefit_publications
   deferrable initially deferred
   for each row execute function private.enforce_benefit_publication_lineage();
+
+-- Active-lineage uniqueness must be checked at the transaction boundary so an
+-- active successor can be written before or after its predecessor is retired.
+-- The transaction advisory lock serializes READ COMMITTED writers that affect
+-- the same lineage; old and new keys are locked in lexical order for moves.
+create function private.enforce_benefit_publication_active_lineage()
+returns trigger
+language plpgsql
+set search_path=''
+as $$
+declare
+  v_lineages jsonb:='[]'::jsonb;
+  v_lineage record;
+begin
+  if tg_op<>'INSERT' then
+    v_lineages:=v_lineages||pg_catalog.jsonb_build_array(
+      pg_catalog.jsonb_build_object('company_id',old.company_id,'dedupe_key',old.dedupe_key)
+    );
+  end if;
+  if tg_op<>'DELETE' then
+    v_lineages:=v_lineages||pg_catalog.jsonb_build_array(
+      pg_catalog.jsonb_build_object('company_id',new.company_id,'dedupe_key',new.dedupe_key)
+    );
+  end if;
+
+  for v_lineage in
+    select distinct value->>'company_id' company_id,value->>'dedupe_key' dedupe_key
+    from pg_catalog.jsonb_array_elements(v_lineages)
+    order by company_id,dedupe_key
+  loop
+    perform pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended(
+        'benefit-publication-active-lineage:'||pg_catalog.jsonb_build_array(v_lineage.company_id,v_lineage.dedupe_key)::text,
+        0
+      )
+    );
+  end loop;
+
+  for v_lineage in
+    select distinct value->>'company_id' company_id,value->>'dedupe_key' dedupe_key
+    from pg_catalog.jsonb_array_elements(v_lineages)
+    order by company_id,dedupe_key
+  loop
+    if (select pg_catalog.count(*)
+        from public.benefit_publications publication
+        where publication.company_id=v_lineage.company_id
+          and publication.dedupe_key=v_lineage.dedupe_key
+          and publication.status='active')>1 then
+      raise exception 'benefit publication lineage may have at most one active publication'
+        using errcode='23514';
+    end if;
+  end loop;
+
+  return null;
+end $$;
+
+alter function private.enforce_benefit_publication_active_lineage() owner to postgres;
+revoke all on function private.enforce_benefit_publication_active_lineage() from public,anon,authenticated,service_role;
+
+create constraint trigger benefit_publications_unique_active_lineage_check
+  after insert or update or delete on public.benefit_publications
+  deferrable initially deferred
+  for each row execute function private.enforce_benefit_publication_active_lineage();
 
 alter table public.benefit_companies enable row level security;
 alter table public.benefit_publications enable row level security;
