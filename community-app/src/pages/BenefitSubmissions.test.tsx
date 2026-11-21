@@ -4,13 +4,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import type { BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
 import type { BenefitSubmissionRepository } from '../data/benefitSubmissionRepository'
-import type { BenefitSubmissionLockAdapter } from '../lib/benefitSubmissionDraftStore'
+import { benefitSubmissionDraftKey, createBenefitSubmissionDraft, markBenefitSubmissionLoginIntent, saveBenefitSubmissionDraft, type BenefitSubmissionLockAdapter } from '../lib/benefitSubmissionDraftStore'
 import { BenefitSubmissionPage } from './BenefitSubmissionPage'
 import { MyBenefitSubmissionsPage } from './MyBenefitSubmissionsPage'
 
 const actor='11111111-1111-4111-8111-111111111111'
 const scope='a'.repeat(64) as never
 const company={companyId:'KR-BIZ-1234567890',displayName:'테스트 기업',identityLabel:'사업자등록번호' as const,industry:null,sizeLabel:'정보 없음' as const,region:null,summary:null,benefitCount:0,officialCount:0,communityCount:0,categories:[]}
+const companyB={...company,companyId:'KR-BIZ-9876543210',displayName:'새 선택 기업'}
 function auth(id:string|null):AuthContextValue{return {loading:false,pending:false,session:id?{} as never:null,user:id?{id} as User:null,error:null,signIn:vi.fn(),signOut:vi.fn(),invalidateStaleSession:vi.fn(()=>true)}}
 function storage(){const values=new Map<string,string>();return {values,getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>void values.set(key,value),removeItem:(key:string)=>void values.delete(key)}}
 function locks():BenefitSubmissionLockAdapter{const tails=new Map<string,Promise<void>>();return {request:<T,>(name:string,callback:()=>Promise<T>|T)=>{const tail=tails.get(name)??Promise.resolve();const next=tail.then(callback,callback);tails.set(name,next.then(()=>undefined,()=>undefined));return next}}}
@@ -87,6 +88,64 @@ describe('BenefitSubmissionPage',()=>{
     const first=auth(actor),second=auth('33333333-3333-4333-8333-333333333333'),view=wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={companies} storage={storage()} sessionStorage={storage()} lockAdapter={locks()} search={`?companyId=${company.companyId}`} />,first)
     await screen.findByLabelText('기업 검색');view.rerender(<AuthContext.Provider value={second}><BenefitSubmissionPage repository={submissions()} directoryRepository={companies} storage={storage()} sessionStorage={storage()} lockAdapter={locks()} search={`?companyId=${company.companyId}`} /></AuthContext.Provider>)
     expect(await screen.findByText('테스트 기업')).toBeVisible();resolveA({ok:true,data:{company:{...company,displayName:'이전 계정 기업'},publications:[]}});await Promise.resolve();expect(screen.queryByText('이전 계정 기업')).not.toBeInTheDocument()
+  })
+
+  it.each(['resolve','reject'] as const)('keeps manual company B when initial detail A later %s',async outcome=>{
+    let resolveA!:(value:unknown)=>void,rejectA!:(reason?:unknown)=>void
+    const lateA=new Promise((resolve,reject)=>{resolveA=resolve;rejectA=reject}),companies=directory()
+    ;(companies.detail as ReturnType<typeof vi.fn>).mockReset().mockReturnValueOnce(lateA)
+    ;(companies.search as ReturnType<typeof vi.fn>).mockResolvedValue({ok:true,data:{items:[companyB],hasMore:false,nextCursor:null,total:1}})
+    const repo=submissions({createSubmission:vi.fn().mockResolvedValue({ok:true,data:{...item,companyId:companyB.companyId}})})
+    wrap(<BenefitSubmissionPage repository={repo} directoryRepository={companies} storage={storage()} sessionStorage={storage()} lockAdapter={locks()} search={`?companyId=${company.companyId}`} />,auth(actor))
+    const input=await screen.findByLabelText('기업 검색');fireEvent.change(input,{target:{value:'새 선택'}})
+    fireEvent.click(await screen.findByRole('button',{name:/새 선택 기업/}))
+    if(outcome==='resolve')resolveA({ok:true,data:{company,publications:[]}});else rejectA(new Error('late A'))
+    await Promise.resolve();expect(screen.getByText('새 선택 기업')).toBeVisible();expect(screen.queryByText(/^테스트 기업$/)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('복지 분야'),{target:{value:'leave'}});fireEvent.change(screen.getByLabelText('복지 내용'),{target:{value:'B 복지'}})
+    await waitFor(()=>expect(screen.getByRole('button',{name:'복지 제보 제출'})).toBeEnabled())
+    fireEvent.click(screen.getByRole('button',{name:'복지 제보 제출'}));await waitFor(()=>expect(repo.createSubmission).toHaveBeenCalledWith(expect.objectContaining({companyId:companyB.companyId}),expect.any(AbortSignal)))
+  })
+
+  it('shows partial success and retries only conditional local cleanup',async()=>{
+    const local=storage(),repo=submissions();let blockRemove=false
+    const remove=local.removeItem;local.removeItem=(key:string)=>{if(!blockRemove)remove(key)}
+    wrap(<BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    const input=await screen.findByLabelText('기업 검색');fireEvent.change(input,{target:{value:'테스트'}});fireEvent.click(await screen.findByRole('button',{name:/테스트 기업/}))
+    fireEvent.change(screen.getByLabelText('복지 분야'),{target:{value:'leave'}});fireEvent.change(screen.getByLabelText('복지 내용'),{target:{value:'가족 돌봄 휴가'}})
+    await waitFor(()=>expect(screen.getByRole('button',{name:'복지 제보 제출'})).toBeEnabled());blockRemove=true;fireEvent.click(screen.getByRole('button',{name:'복지 제보 제출'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('서버에는 접수되었지만 로컬 저장 초안이 남아 있습니다')
+    expect(screen.queryByText('제보가 접수되었습니다. 내 제보에서')).not.toBeInTheDocument();expect(repo.createSubmission).toHaveBeenCalledTimes(1)
+    blockRemove=false;fireEvent.click(screen.getByRole('button',{name:'로컬 초안 정리 다시 시도'}))
+    expect(await screen.findByText('제보가 접수되었습니다. 내 제보에서 검토 상태를 확인할 수 있습니다.')).toBeVisible();expect(repo.createSubmission).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves a newer local draft during partial-success cleanup retry',async()=>{
+    const local=storage(),repo=submissions();let blockRemove=false
+    const remove=local.removeItem;local.removeItem=(key:string)=>{if(!blockRemove)remove(key)}
+    wrap(<BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    fireEvent.change(await screen.findByLabelText('기업 검색'),{target:{value:'테스트'}});fireEvent.click(await screen.findByRole('button',{name:/테스트 기업/}));fireEvent.change(screen.getByLabelText('복지 분야'),{target:{value:'leave'}});fireEvent.change(screen.getByLabelText('복지 내용'),{target:{value:'가족 돌봄 휴가'}})
+    await waitFor(()=>expect(screen.getByRole('button',{name:'복지 제보 제출'})).toBeEnabled());blockRemove=true;fireEvent.click(screen.getByRole('button',{name:'복지 제보 제출'}));await screen.findByRole('alert')
+    const key=benefitSubmissionDraftKey(scope),current=local.getItem(key);if(!current)throw new Error('draft missing');const newer={...JSON.parse(current),benefitText:'더 새로운 로컬 편집',updatedAt:new Date().toISOString()};local.setItem(key,JSON.stringify(newer));blockRemove=false
+    fireEvent.click(screen.getByRole('button',{name:'로컬 초안 정리 다시 시도'}));expect(await screen.findByRole('alert')).toHaveTextContent('더 새로운 로컬 초안을 발견해 삭제하지 않았습니다');expect(local.getItem(key)).toContain('더 새로운 로컬 편집');expect(repo.createSubmission).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders repository failures exactly rather than as draft storage errors',async()=>{
+    const repo=submissions({createSubmission:vi.fn().mockResolvedValue({ok:false,error:{code:'auth_required',message:'다시 로그인해 주세요.'}})})
+    wrap(<BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={storage()} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    fireEvent.change(await screen.findByLabelText('기업 검색'),{target:{value:'테스트'}});fireEvent.click(await screen.findByRole('button',{name:/테스트 기업/}));fireEvent.change(screen.getByLabelText('복지 분야'),{target:{value:'leave'}});fireEvent.change(screen.getByLabelText('복지 내용'),{target:{value:'복지'}})
+    await waitFor(()=>expect(screen.getByRole('button',{name:'복지 제보 제출'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'복지 제보 제출'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('다시 로그인해 주세요.');expect(screen.getByRole('alert')).not.toHaveTextContent('저장된 초안')
+  })
+
+  it('offers an explicit discard action when OAuth intent conflicts with an account draft',async()=>{
+    const local=storage(),session=storage(),lock=locks(),account=createBenefitSubmissionDraft(scope),preauth=createBenefitSubmissionDraft('preauth')
+    const accountSaved=await saveBenefitSubmissionDraft(scope,{...account,benefitText:'계정 초안'},local,lock);if(!accountSaved.ok)throw new Error('save')
+    const preauthSaved=await saveBenefitSubmissionDraft('preauth',{...preauth,benefitText:'로그인 초안'},local,lock);if(!preauthSaved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(preauthSaved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} />,auth(actor))
+    expect(await screen.findByRole('alert')).toHaveTextContent('두 개의 초안')
+    fireEvent.click(screen.getByRole('button',{name:'로그인 전 초안 버리기'}))
+    expect(await screen.findByLabelText('복지 내용')).toHaveValue('계정 초안');expect(local.getItem(benefitSubmissionDraftKey(scope))).toBe(accountSaved.snapshot)
   })
 })
 
