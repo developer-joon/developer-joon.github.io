@@ -15,6 +15,7 @@ const BenefitsExplorerPage = lazy(() =>
   })),
 )
 const BenefitsDirectoryPage = lazy(() => import('./pages/BenefitsDirectoryPage').then((module) => ({ default: module.BenefitsDirectoryPage })))
+const BenefitDirectoryCompanyPage = lazy(() => import('./pages/BenefitDirectoryCompanyPage').then((module) => ({ default: module.BenefitDirectoryCompanyPage })))
 
 function BenefitsFallback() {
   return (
@@ -43,6 +44,8 @@ export function BenefitsApp({
     <Suspense fallback={<BenefitsFallback />}>
       {route === 'directory' ? (
         <BenefitsDirectoryPage search={search} repository={benefitDirectoryRepository} />
+      ) : route === 'company' ? (
+        <BenefitDirectoryCompanyPage search={search} repository={benefitDirectoryRepository} />
       ) : route === 'methodology' ? (
         <BenefitsMethodologyPage search={search} />
       ) : (

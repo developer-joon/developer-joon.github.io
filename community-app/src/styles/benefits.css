@@ -740,3 +740,40 @@
   .benefits-page .domestic-directory__list { grid-template-columns: 1fr; }
   .benefits-page .domestic-directory__filters > label { width: 100%; }
 }
+
+/* Public dynamic company detail: source-safe publication cards. */
+.benefits-page main.benefit-company-page {
+  box-sizing: border-box;
+  width: min(100% - 32px, 1040px);
+  min-height: 70vh;
+  margin: 24px auto;
+  padding: clamp(24px, 5vw, 56px);
+  border: 1px solid #d7d1bd;
+  background: #f7f4ec;
+  color: #18302c;
+}
+.benefit-company-page__back { display: inline-block; margin-bottom: 28px; color: #125545 !important; font-weight: 700; text-underline-offset: 3px; }
+.benefit-company-page h1 { max-width: 18ch; margin: 10px 0; color: #17372e; font-size: clamp(32px, 6vw, 54px); line-height: 1.08; letter-spacing: -.04em; word-break: keep-all; }
+.benefit-company-page__header { padding-block: 6px 28px; border-block: 4px solid #1c493c; }
+.benefit-company-page__identity { color: #4b6258; }
+.benefit-company-page__identity strong { display: inline-block; padding: 3px 8px; border: 1px solid #647b70; background: #e6eee8; color: #17372e; }
+.benefit-company-page__facts { color: #365449; font-weight: 700; }
+.benefit-company-page__summary { max-width: 68ch; font-size: 16px; }
+.benefit-company-page__state, .benefit-company-page__empty { margin-top: 24px; padding: 22px; border: 1px solid #9bab9f; background: #fffefa; }
+.benefit-company-page__state--error { border-color: #9a513c; background: #fff1e9; }
+.benefit-company-page__state button { min-height: 44px; border: 1px solid #526b5b; background: #fffefa; color: #18302c; }
+.benefit-company-page__groups { display: grid; gap: 36px; margin-top: 36px; }
+.benefit-company-page__group h2, .benefit-company-page__empty h2 { margin: 0 0 16px; color: #17372e; font-size: clamp(22px, 3vw, 30px); }
+.benefit-company-page__cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.benefit-company-page__card { padding: 22px; border: 1px solid #c9c3b2; background: #fffefa; overflow-wrap: anywhere; }
+.benefit-company-page__card h3 { margin: 0 0 10px; color: #17372e; font-size: 20px; }
+.benefit-company-page__card dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 18px 0; }
+.benefit-company-page__card dt { color: #4b6258; font-weight: 800; }
+.benefit-company-page__card dd { margin: 0; }
+.benefit-company-page__trust { width: fit-content; margin: 18px 0 0; padding: 4px 9px; border: 1px solid #526b5b; background: #e6eee8; color: #17372e; font-size: 12px; font-weight: 800; }
+.benefit-company-page__trust span { font-size: 9px; }
+.benefit-company-page__submit { display: inline-flex; min-height: 44px; align-items: center; margin-top: 8px; padding: 5px 14px; border: 1px solid #1c493c; background: #1c493c; color: #fffefa !important; font-weight: 800; text-decoration: none; }
+@media (max-width: 700px) {
+  .benefit-company-page__cards { grid-template-columns: 1fr; }
+  .benefits-page main.benefit-company-page { width: min(100% - 20px, 1040px); padding: 22px 18px; }
+}

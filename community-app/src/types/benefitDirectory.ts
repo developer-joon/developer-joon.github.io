@@ -2,6 +2,10 @@ export const BENEFIT_DIRECTORY_CATEGORIES = [
   'leave', 'family', 'health', 'growth', 'housing', 'commute', 'remote', 'retirement', 'meals', 'inclusion',
 ] as const
 export type BenefitDirectoryCategory = (typeof BENEFIT_DIRECTORY_CATEGORIES)[number]
+export const BENEFIT_DIRECTORY_CATEGORY_LABELS: Record<BenefitDirectoryCategory, string> = {
+  leave: '휴가·근무시간', family: '육아·가족', health: '건강·보험', growth: '교육·성장', housing: '주거·금융',
+  commute: '이동·통근', remote: '유연근무·원격근무', retirement: '퇴직·장기근속', meals: '식사·생활편의', inclusion: '포용·접근성',
+}
 
 export const BENEFIT_DIRECTORY_SIZE_CLASSES = ['large', 'medium', 'small', 'large_affiliate', 'unclassified'] as const
 export type BenefitDirectorySizeClass = (typeof BENEFIT_DIRECTORY_SIZE_CLASSES)[number]

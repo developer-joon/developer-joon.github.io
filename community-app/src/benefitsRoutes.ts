@@ -5,6 +5,7 @@ export function benefitsRoute(path: string): string | null {
     '/community/benefits/directory': 'directory',
     '/community/benefits/fit': 'fit',
     '/community/benefits/company': 'company',
+    '/benefits/company': 'company',
     '/community/benefits/methodology': 'methodology',
   }
   return routes[normalized] ?? null
