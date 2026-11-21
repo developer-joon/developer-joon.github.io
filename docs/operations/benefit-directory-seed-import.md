@@ -21,7 +21,7 @@ node scripts/generate-benefit-directory-seed.mjs --check
 node --test scripts/generate-benefit-directory-seed.test.mjs
 ```
 
-`--check` generates and independently validates a private staging bundle, then byte-compares both tracked files without writing them. A source symlink, source digest change, row deletion, duplicate ID, identity mutation, malformed row, or tracked output drift fails closed.
+`--check` computes and independently validates the canonical manifest and NDJSON bytes in memory, then reads and byte-compares both tracked files. It performs no filesystem mutation: it creates no parent, staging, lock, or backup path and does not write, rename, chmod, or remove anything. A missing output directory or file, source symlink, source digest change, row deletion, duplicate ID, identity mutation, malformed row, or tracked output drift fails closed.
 
 ## Prerequisites
 
@@ -58,7 +58,7 @@ The importer probes `PSQL_BIN --version` with a minimal credential-free environm
 
 A replay of the same bundle is idempotent. A different bundle claiming the same pinned source import key is rejected. `--dry-run` executes the same COPY, validation, upsert, and receipt path and then rolls back. The child runs in its own process group with a total timeout, bounded drained output, and TERM-to-KILL escalation. The parent always waits for child close before removing temporary artifacts after success, failure, timeout, `SIGINT`, or `SIGTERM`.
 
-Bundle publication is serialized by an owner-only sibling `*.generate.lock` created before staging. A collision-safe private backup container receives the old directory before the staged directory is installed. Pre-commit failure restores the old directory without deleting the destination; failure to restore preserves the backup and reports its relative recovery location. The staged-directory rename is the commit boundary. Failure to delete an old backup after that point emits a warning but does not turn a successful publication into a failure. A crash before commit can leave the lock, staging directory, or a `.benefit-directory.previous-*` backup; after confirming no generator is running, restore the backup's `bundle` entry if the destination is absent, then remove stale artifacts and the lock. `--check` does not acquire the publication lock and never writes the tracked destination.
+Bundle publication is serialized by an owner-only sibling `*.generate.lock` created before staging. A collision-safe private backup container receives the old directory before the staged directory is installed. Pre-commit failure restores the old directory without deleting the destination; failure to restore preserves the backup and reports its relative recovery location. The staged-directory rename is the commit boundary. Failure to delete an old backup after that point emits a warning but does not turn a successful publication into a failure. A crash before commit can leave the lock, staging directory, or a `.benefit-directory.previous-*` backup; after confirming no generator is running, restore the backup's `bundle` entry if the destination is absent, then remove stale artifacts and the lock. `--check` does not acquire or remove the publication lock, clean stale backups, or make any other filesystem change.
 
 For local rollback testing only, `BENEFIT_SEED_INJECT_LATE_FAILURE=1` raises after the upserts and before the receipt. The transaction must leave company/source/receipt/publication state unchanged. The Docker-required regression is intentionally separate from frontend checks:
 

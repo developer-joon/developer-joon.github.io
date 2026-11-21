@@ -3,10 +3,9 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { chmod, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { verifyDomesticSearchIndex } from './verify-domestic-search-index.mjs'
+import { verifyDomesticSearchIndexBytes } from './verify-domestic-search-index.mjs'
 
 export const PINNED_SOURCE = Object.freeze({
   schemaVersion: 'domestic-search-index-v1',
@@ -173,22 +172,11 @@ export function buildSeedFromDocument(doc, sourceBytes, contract = {
   return { manifest, rows, ndjson, manifestBytes: Buffer.from(JSON.stringify(manifest) + '\n') }
 }
 
-async function invokePinnedVerifier(sourceBytes) {
-  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-source-verify-'))
-  try {
-    await chmod(root, 0o700)
-    const directory = path.join(root, 'community/data/company-benefits/domestic-search-index-v1')
-    await mkdir(directory, { recursive: true, mode: 0o700 })
-    await writeFile(path.join(directory, 'index.json'), sourceBytes, { mode: 0o600 })
-    await verifyDomesticSearchIndex(root)
-  } finally { await rm(root, { recursive: true, force: true }) }
-}
-
 async function loadSource(sourceFile, contract) {
   const bytes = await readNoFollowBounded(sourceFile, MAX_SOURCE_BYTES, 'source artifact')
   if (contract === undefined) {
     if (bytes.length !== PINNED_SOURCE.byteCount || sha256(bytes) !== PINNED_SOURCE.sha256) throw Error('source artifact does not match pinned integrity contract')
-    await invokePinnedVerifier(bytes)
+    verifyDomesticSearchIndexBytes(bytes)
   }
   const doc = parseJson(bytes, 'source artifact')
   return { bytes, doc }
@@ -217,13 +205,7 @@ function validateManifest(manifest) {
   if (manifest.schema_version !== 'benefit-directory-seed-v1' || manifest.source_contract_version !== PINNED_SOURCE.schemaVersion || manifest.companies.path !== 'companies.ndjson') throw Error('manifest contract version invalid')
 }
 
-export async function verifySeedBundle({ sourceFile, bundleDir }) {
-  const inventory = await readdir(bundleDir)
-  if (inventory.length !== 2 || !inventory.includes('manifest.json') || !inventory.includes('companies.ndjson')) throw Error('bundle inventory mismatch')
-  const [manifestBytes, ndjson] = await Promise.all([
-    readNoFollowBounded(path.join(bundleDir, 'manifest.json'), MAX_MANIFEST_BYTES, 'bundle manifest'),
-    readNoFollowBounded(path.join(bundleDir, 'companies.ndjson'), MAX_NDJSON_BYTES, 'bundle companies'),
-  ])
+function validateSeedBytes(manifestBytes, ndjson) {
   const manifest = parseJson(manifestBytes, 'bundle manifest')
   validateManifest(manifest)
   if (manifest.companies.byte_count !== ndjson.length || manifest.companies.sha256 !== sha256(ndjson)) throw Error('bundle companies byte/hash drift')
@@ -241,6 +223,17 @@ export async function verifySeedBundle({ sourceFile, bundleDir }) {
   const counts = { base_legal_identity: 0, recruitment_observation: 0, ftc_affiliate: 0 }
   for (const row of rows) counts[row.source_binding.identity_kind]++
   if (Object.keys(counts).some(key => counts[key] !== manifest.identity_counts[key])) throw Error('bundle identity count mismatch')
+  return { manifest, rows }
+}
+
+export async function verifySeedBundle({ sourceFile, bundleDir }) {
+  const inventory = await readdir(bundleDir)
+  if (inventory.length !== 2 || !inventory.includes('manifest.json') || !inventory.includes('companies.ndjson')) throw Error('bundle inventory mismatch')
+  const [manifestBytes, ndjson] = await Promise.all([
+    readNoFollowBounded(path.join(bundleDir, 'manifest.json'), MAX_MANIFEST_BYTES, 'bundle manifest'),
+    readNoFollowBounded(path.join(bundleDir, 'companies.ndjson'), MAX_NDJSON_BYTES, 'bundle companies'),
+  ])
+  const { manifest, rows } = validateSeedBytes(manifestBytes, ndjson)
   const { bytes, doc } = await loadSource(sourceFile)
   const expected = buildSeedFromDocument(doc, bytes)
   if (!manifestBytes.equals(expected.manifestBytes) || !ndjson.equals(expected.ndjson)) throw Error('bundle drift from pinned source authority')
@@ -253,24 +246,18 @@ export async function generateSeedBundle({ sourceFile, outputDir, check = false,
   const built = buildSeedFromDocument(doc, bytes)
   const destination = path.resolve(outputDir)
   const parent = path.dirname(destination)
-  await mkdir(parent, { recursive: true })
 
   if (check) {
-    const stage = await mkdtemp(path.join(parent, '.benefit-directory-seed-check-'))
-    await chmod(stage, 0o700)
-    try {
-      await writeFile(path.join(stage, 'companies.ndjson'), built.ndjson, { mode: 0o600 })
-      await writeFile(path.join(stage, 'manifest.json'), built.manifestBytes, { mode: 0o600 })
-      await verifySeedBundle({ sourceFile, bundleDir: stage })
-      const [actualManifest, actualRows] = await Promise.all([
-        readNoFollowBounded(path.join(outputDir, 'manifest.json'), MAX_MANIFEST_BYTES, 'tracked manifest'),
-        readNoFollowBounded(path.join(outputDir, 'companies.ndjson'), MAX_NDJSON_BYTES, 'tracked companies'),
-      ])
-      if (!actualManifest.equals(built.manifestBytes) || !actualRows.equals(built.ndjson)) throw Error('tracked benefit directory seed differs: output drift')
-      return built
-    } finally { await rm(stage, { recursive: true, force: true }) }
+    validateSeedBytes(built.manifestBytes, built.ndjson)
+    const [actualManifest, actualRows] = await Promise.all([
+      readNoFollowBounded(path.join(destination, 'manifest.json'), MAX_MANIFEST_BYTES, 'tracked manifest'),
+      readNoFollowBounded(path.join(destination, 'companies.ndjson'), MAX_NDJSON_BYTES, 'tracked companies'),
+    ])
+    if (!actualManifest.equals(built.manifestBytes) || !actualRows.equals(built.ndjson)) throw Error('tracked benefit directory seed differs: output drift')
+    return built
   }
 
+  await mkdir(parent, { recursive: true })
   const lockPath = `${destination}.generate.lock`
   let lock
   try {

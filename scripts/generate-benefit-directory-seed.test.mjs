@@ -146,6 +146,20 @@ test('bundle verification rejects self-consistent deletion, duplicate ID, displa
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('--check is filesystem-write-free when the output parent is absent', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-check-read-only-'))
+  try {
+    const absentParent = path.join(root, 'absent-parent')
+    const output = path.join(absentParent, 'output')
+    await assert.rejects(
+      generateSeedBundle({ sourceFile: realSource, outputDir: output, check: true }),
+      /ENOENT|no such file|tracked manifest/i,
+    )
+    await assert.rejects(readdir(absentParent), error => error?.code === 'ENOENT')
+    assert.deepEqual(await readdir(root), [])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('--check writes no tracked output and late failure preserves previous bundle', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'benefit-seed-atomic-'))
   try {
