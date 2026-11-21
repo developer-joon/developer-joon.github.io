@@ -11,12 +11,14 @@ const ENVELOPE_MAX=45_000
 const keys=['version','accountScope','clientKey','companyId','companyName','categoryId','benefitText','eligibilityText','conditionText','sourceUrl','updatedAt'] as const
 export type BenefitSubmissionDraftStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'>
 export interface BenefitSubmissionLockAdapter { request<T>(name:string,callback:()=>Promise<T>|T):Promise<T> }
-export type DraftLoadResult={state:'missing'}|{state:'invalid'}|{state:'unreadable'}|{state:'unavailable'}|{state:'denied'}|{state:'present';draft:BenefitSubmissionDraft;snapshot:string}
+export type InvalidDraftKind='invalid'|'future_version'
+export type DraftLoadResult={state:'missing'}|{state:'invalid';kind:InvalidDraftKind;snapshotId:string}|{state:'unreadable'}|{state:'unavailable'}|{state:'denied'}|{state:'present';draft:BenefitSubmissionDraft;snapshot:string}
 export type DraftSaveResult={ok:true;snapshot:string}|{ok:false;reason:'invalid'|'unavailable'}
-export type DraftClaimResult=DraftLoadResult
+export type DraftClaimResult={state:'missing'}|{state:'invalid'}|{state:'unreadable'}|{state:'unavailable'}|{state:'denied'}|{state:'present';draft:BenefitSubmissionDraft;snapshot:string}
   |{state:'cleanup_failed';draft:BenefitSubmissionDraft;snapshot:string}
   |{state:'conflict';accountDraft:BenefitSubmissionDraft;accountSnapshot:string;preauthDraft:BenefitSubmissionDraft;preauthSnapshot:string}
 export type ConditionalClearResult={state:'cleared'}|{state:'changed'}|{state:'invalid'}|{state:'unavailable'}
+export type InvalidDraftResetResult={state:'reset';draft:BenefitSubmissionDraft;snapshot:string}|{state:'changed'}|{state:'unavailable'}
 export type VerifiedMutationResult<T>={state:'mutation_not_dispatched';reason:'invalid'|'unavailable'|'changed'}|{state:'mutation_failed';error:unknown}|{state:'mutation_succeeded_cleared';value:T}|{state:'mutation_succeeded_cleanup_failed';value:T;snapshot:string}
 export type MutationDispatchResult<T>={ok:true;value:T}|{ok:false;error:unknown}
 type LoginIntentEnvelope={version:2;state:'pending';nonce:string;draft:string}|{version:2;state:'claimed';nonce:string;draft:string;actorScope:BenefitSubmissionAccountScope}
@@ -42,7 +44,14 @@ async function locked<T>(adapter:BenefitSubmissionLockAdapter|undefined,name:str
   try{return {ok:true,value:await adapter.request(name,()=>{callbackStarted=true;return callback()})}}
   catch(error){if(callbackStarted)throw error;return {ok:false}}
 }
-function loadUnlocked(accountScope:BenefitSubmissionAccountScope|'preauth',storage:BenefitSubmissionDraftStorage):DraftLoadResult{let raw:string|null;try{raw=storage.getItem(benefitSubmissionDraftKey(accountScope))}catch{return {state:'unreadable'}}if(raw===null)return {state:'missing'};const draft=parseRaw(accountScope,raw);return draft?{state:'present',draft,snapshot:raw}:{state:'invalid'}}
+async function snapshotIdentity(accountScope:BenefitSubmissionAccountScope|'preauth',raw:string){
+  const subtle=globalThis.crypto?.subtle
+  if(!subtle)throw new Error('cryptographic digest unavailable')
+  const digest=await subtle.digest('SHA-256',new TextEncoder().encode(`${accountScope}\0${raw}`))
+  return [...new Uint8Array(digest)].map(value=>value.toString(16).padStart(2,'0')).join('')
+}
+function invalidKind(raw:string):InvalidDraftKind{try{const value:unknown=JSON.parse(raw);return record(value)&&typeof value.version==='number'&&value.version>1?'future_version':'invalid'}catch{return 'invalid'}}
+async function loadUnlocked(accountScope:BenefitSubmissionAccountScope|'preauth',storage:BenefitSubmissionDraftStorage):Promise<DraftLoadResult>{let raw:string|null;try{raw=storage.getItem(benefitSubmissionDraftKey(accountScope))}catch{return {state:'unreadable'}}if(raw===null)return {state:'missing'};const draft=parseRaw(accountScope,raw);if(draft)return {state:'present',draft,snapshot:raw};try{return {state:'invalid',kind:invalidKind(raw),snapshotId:await snapshotIdentity(accountScope,raw)}}catch{return {state:'unavailable'}}}
 function saveRawUnlocked(accountScope:BenefitSubmissionAccountScope|'preauth',raw:string,storage:BenefitSubmissionDraftStorage):DraftSaveResult{if(!parseRaw(accountScope,raw))return {ok:false,reason:'invalid'};try{const key=benefitSubmissionDraftKey(accountScope);storage.setItem(key,raw);if(storage.getItem(key)!==raw)return {ok:false,reason:'unavailable'};return {ok:true,snapshot:raw}}catch{return {ok:false,reason:'unavailable'}}}
 function parseEnvelope(raw:string|null):LoginIntentEnvelope|null{if(raw===null||raw.length>ENVELOPE_MAX)return null;try{const value:unknown=JSON.parse(raw);if(!record(value)||value.version!==2||!isStrictUuid(value.nonce)||typeof value.draft!=='string'||!parseRaw('preauth',value.draft))return null;if(value.state==='pending'&&exact(value,['version','state','nonce','draft']))return value as LoginIntentEnvelope;if(value.state==='claimed'&&exact(value,['version','state','nonce','draft','actorScope'])&&scope(value.actorScope)&&value.actorScope!=='preauth')return value as LoginIntentEnvelope;return null}catch{return null}}
 function writeEnvelope(storage:BenefitSubmissionDraftStorage,envelope:LoginIntentEnvelope){const raw=JSON.stringify(envelope);if(raw.length>ENVELOPE_MAX)return false;try{storage.setItem(LOGIN_INTENT_KEY,raw);return storage.getItem(LOGIN_INTENT_KEY)===raw}catch{return false}}
@@ -63,7 +72,51 @@ export async function clearBenefitSubmissionDraftIfSnapshot(accountScope:Benefit
   const result=await locked(adapter,accountLock(accountScope),()=>{const removed=removeExact(storage,benefitSubmissionDraftKey(accountScope),snapshot);return removed==='removed'?{state:'cleared' as const}:removed==='changed'?{state:'changed' as const}:{state:'unavailable' as const}})
   return result.ok?result.value:{state:'unavailable'}
 }
-export async function markBenefitSubmissionLoginIntent(preauthSnapshot:string,sessionStorage?:BenefitSubmissionDraftStorage,adapter?:BenefitSubmissionLockAdapter,uuid:()=>string=randomUuid):Promise<{ok:true;nonce:string}|{ok:false;reason:'invalid'|'unavailable'}>{if(!sessionStorage||!adapter||typeof preauthSnapshot!=='string'||!parseRaw('preauth',preauthSnapshot))return {ok:false,reason:parseRaw('preauth',preauthSnapshot)?'unavailable':'invalid'};let nonce:string;try{nonce=uuid()}catch{return {ok:false,reason:'unavailable'}}if(!isStrictUuid(nonce))return {ok:false,reason:'invalid'};const envelope:LoginIntentEnvelope={version:2,state:'pending',nonce:nonce.toLowerCase(),draft:preauthSnapshot};const result=await locked(adapter,intentLock(),()=>writeEnvelope(sessionStorage,envelope));return result.ok&&result.value?{ok:true,nonce:envelope.nonce}:{ok:false,reason:'unavailable'}}
+export async function markBenefitSubmissionLoginIntent(preauthSnapshot:string,sessionStorage?:BenefitSubmissionDraftStorage,adapter?:BenefitSubmissionLockAdapter,uuid:()=>string=randomUuid):Promise<{ok:true;nonce:string}|{ok:false;reason:'invalid'|'unavailable'}>{
+  if(!sessionStorage||!adapter)return {ok:false,reason:'unavailable'}
+  const result=await locked(adapter,intentLock(),():{ok:true;nonce:string}|{ok:false;reason:'invalid'|'unavailable'}=>{
+    let raw:string|null
+    try{raw=sessionStorage.getItem(LOGIN_INTENT_KEY)}catch{return {ok:false,reason:'unavailable'}}
+    if(raw!==null){
+      const existing=parseEnvelope(raw)
+      if(!existing)return {ok:false,reason:'invalid'}
+      if(existing.state==='claimed')return {ok:true,nonce:existing.nonce}
+      if(typeof preauthSnapshot!=='string'||!parseRaw('preauth',preauthSnapshot))return {ok:false,reason:'invalid'}
+      if(existing.draft===preauthSnapshot)return {ok:true,nonce:existing.nonce}
+      const updated:LoginIntentEnvelope={...existing,draft:preauthSnapshot}
+      return writeEnvelope(sessionStorage,updated)?{ok:true,nonce:updated.nonce}:{ok:false,reason:'unavailable'}
+    }
+    if(typeof preauthSnapshot!=='string'||!parseRaw('preauth',preauthSnapshot))return {ok:false,reason:'invalid'}
+    let nonce:string
+    try{nonce=uuid()}catch{return {ok:false,reason:'unavailable'}}
+    if(!isStrictUuid(nonce))return {ok:false,reason:'invalid'}
+    const envelope:LoginIntentEnvelope={version:2,state:'pending',nonce:nonce.toLowerCase(),draft:preauthSnapshot}
+    return writeEnvelope(sessionStorage,envelope)?{ok:true,nonce:envelope.nonce}:{ok:false,reason:'unavailable'}
+  })
+  return result.ok?result.value:{ok:false,reason:'unavailable'}
+}
+
+export async function resetInvalidBenefitSubmissionDraft(accountScope:BenefitSubmissionAccountScope|'preauth',expectedSnapshotId:string,storage?:BenefitSubmissionDraftStorage,adapter?:BenefitSubmissionLockAdapter,uuid:()=>string=randomUuid,now:()=>string=()=>new Date().toISOString()):Promise<InvalidDraftResetResult>{
+  if(!storage||!adapter||!scope(accountScope)||!/^[0-9a-f]{64}$/.test(expectedSnapshotId))return {state:'unavailable'}
+  const result=await locked(adapter,accountLock(accountScope),async():Promise<InvalidDraftResetResult>=>{
+    const key=benefitSubmissionDraftKey(accountScope)
+    let raw:string|null
+    try{raw=storage.getItem(key)}catch{return {state:'unavailable'}}
+    if(raw===null||parseRaw(accountScope,raw))return {state:'changed'}
+    let currentId:string
+    try{currentId=await snapshotIdentity(accountScope,raw)}catch{return {state:'unavailable'}}
+    if(currentId!==expectedSnapshotId)return {state:'changed'}
+    let fresh:BenefitSubmissionDraft,freshRaw:string|null
+    try{fresh=createBenefitSubmissionDraft(accountScope,uuid,now);freshRaw=serialize(accountScope,fresh)}catch{return {state:'unavailable'}}
+    if(!freshRaw)return {state:'unavailable'}
+    if(removeExact(storage,key,raw)!=='removed')return {state:'unavailable'}
+    const saved=saveRawUnlocked(accountScope,freshRaw,storage)
+    if(saved.ok)return {state:'reset',draft:fresh,snapshot:saved.snapshot}
+    try{storage.setItem(key,raw)}catch{/* best-effort restoration of the invalid draft */}
+    return {state:'unavailable'}
+  })
+  return result.ok?result.value:{state:'unavailable'}
+}
 export async function claimPreAuthBenefitSubmissionDraft(accountScope:BenefitSubmissionAccountScope,nonce:string,storage?:BenefitSubmissionDraftStorage,sessionStorage?:BenefitSubmissionDraftStorage,adapter?:BenefitSubmissionLockAdapter,now:()=>string=()=>new Date().toISOString()):Promise<DraftClaimResult>{
   if(!storage||!sessionStorage||!adapter)return {state:'unavailable'}
   if(!scope(accountScope)||accountScope==='preauth'||!isStrictUuid(nonce))return {state:'missing'}

@@ -6,6 +6,7 @@ import {
   createBenefitSubmissionDraft,
   loadBenefitSubmissionDraft,
   markBenefitSubmissionLoginIntent,
+  resetInvalidBenefitSubmissionDraft,
   saveBenefitSubmissionDraft,
   withVerifiedBenefitSubmissionDraft,
   type BenefitSubmissionLockAdapter,
@@ -33,7 +34,7 @@ describe('benefit submission draft store', () => {
   it('distinguishes missing, invalid, unreadable, and unavailable locking without leaking content', async () => {
     expect(await loadBenefitSubmissionDraft(scope,memory(),locks())).toEqual({state:'missing'})
     const invalid=memory(); invalid.values.set(benefitSubmissionDraftKey(scope),'{}')
-    expect(await loadBenefitSubmissionDraft(scope,invalid,locks())).toEqual({state:'invalid'})
+    expect(await loadBenefitSubmissionDraft(scope,invalid,locks())).toMatchObject({state:'invalid',kind:'invalid'})
     const unreadable={getItem(){throw new Error('secret draft')},setItem(){},removeItem(){}}
     expect(await loadBenefitSubmissionDraft(scope,unreadable,locks())).toEqual({state:'unreadable'})
     expect(await loadBenefitSubmissionDraft(scope,memory())).toEqual({state:'unavailable'})
@@ -104,6 +105,80 @@ describe('benefit submission draft store', () => {
     const session=memory();session.setItem=vi.fn()
     const raw=JSON.stringify(createBenefitSubmissionDraft('preauth'))
     await expect(markBenefitSubmissionLoginIntent(raw,session,locks())).resolves.toEqual({ok:false,reason:'unavailable'})
+  })
+
+  it.each(['throw','noop'] as const)('keeps a claimed OAuth binding immutable when account persistence %s fails and later resumes only for A', async failure => {
+    const lock=locks(),local=memory(),session=memory(),actorB='b'.repeat(64) as BenefitSubmissionAccountScope
+    const draft=createBenefitSubmissionDraft('preauth',()=> '11111111-1111-4111-8111-111111111111')
+    const saved=await saveBenefitSubmissionDraft('preauth',{...draft,benefitText:'정확히 보존할 초안'},local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    const realSet=local.setItem
+    local.setItem=vi.fn((key:string,value:string)=>{if(key===benefitSubmissionDraftKey(scope)){if(failure==='throw')throw new Error('account storage blocked');return}realSet(key,value)})
+    await expect(claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock)).resolves.toEqual({state:'unreadable'})
+    expect(local.getItem(benefitSubmissionDraftKey('preauth'))).toBe(saved.snapshot)
+    session.setItem.mockClear()
+    await expect(markBenefitSubmissionLoginIntent('{invalid current draft',session,lock,()=> '55555555-5555-4555-8555-555555555555')).resolves.toEqual({ok:true,nonce:marked.nonce})
+    expect(session.setItem).not.toHaveBeenCalled()
+    await expect(claimPreAuthBenefitSubmissionDraft(actorB,marked.nonce,local,session,lock)).resolves.toEqual({state:'denied'})
+    expect(local.getItem(benefitSubmissionDraftKey('preauth'))).toBe(saved.snapshot)
+    local.setItem=realSet
+    await expect(claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock)).resolves.toMatchObject({state:'present',draft:{benefitText:'정확히 보존할 초안'}})
+  })
+
+  it('reuses a pending OAuth nonce and updates only its draft snapshot under the intent lock', async () => {
+    const lock=locks(),local=memory(),session=memory(),draft=createBenefitSubmissionDraft('preauth')
+    const first=await saveBenefitSubmissionDraft('preauth',draft,local,lock);if(!first.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(first.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    const second=await saveBenefitSubmissionDraft('preauth',{...draft,benefitText:'로그인 직전 수정',updatedAt:new Date().toISOString()},local,lock);if(!second.ok)throw new Error('save')
+    await expect(markBenefitSubmissionLoginIntent(second.snapshot,session,lock,()=> '55555555-5555-4555-8555-555555555555')).resolves.toEqual({ok:true,nonce:marked.nonce})
+    await expect(claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock)).resolves.toMatchObject({state:'present',draft:{benefitText:'로그인 직전 수정'}})
+  })
+
+  it('fails closed without overwriting an invalid login envelope', async () => {
+    const session=memory(),raw='{"version":2,"state":"claimed","draft":"secret"}'
+    session.values.set('breadlab:benefit-submission:login-intent:v2',raw)
+    const draft=JSON.stringify(createBenefitSubmissionDraft('preauth'))
+    await expect(markBenefitSubmissionLoginIntent(draft,session,locks())).resolves.toEqual({ok:false,reason:'invalid'})
+    expect(session.getItem('breadlab:benefit-submission:login-intent:v2')).toBe(raw)
+    expect(session.setItem).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['malformed','{"version":1'],
+    ['extra key',JSON.stringify({...createBenefitSubmissionDraft(scope),extra:'do not erase'})],
+    ['future version',JSON.stringify({...createBenefitSubmissionDraft(scope),version:2})],
+  ])('preserves %s draft bytes and returns only an opaque snapshot identity', async (label,raw) => {
+    const local=memory(),key=benefitSubmissionDraftKey(scope);local.values.set(key,raw)
+    const loaded=await loadBenefitSubmissionDraft(scope,local,locks())
+    expect(loaded).toMatchObject({state:'invalid',kind:label==='future version'?'future_version':'invalid'})
+    if(loaded.state!=='invalid')throw new Error('expected invalid')
+    expect(loaded.snapshotId).toMatch(/^[0-9a-f]{64}$/)
+    expect(JSON.stringify(loaded)).not.toContain(raw)
+    expect(local.getItem(key)).toBe(raw)
+    expect(local.setItem).not.toHaveBeenCalled();expect(local.removeItem).not.toHaveBeenCalled()
+  })
+
+  it('resets only the exact invalid snapshot and persists a fresh canonical draft', async () => {
+    const local=memory(),lock=locks(),key=benefitSubmissionDraftKey(scope),raw='{bad json'
+    local.values.set(key,raw)
+    const loaded=await loadBenefitSubmissionDraft(scope,local,lock);if(loaded.state!=='invalid')throw new Error('expected invalid')
+    const reset=await resetInvalidBenefitSubmissionDraft(scope,loaded.snapshotId,local,lock,()=> '66666666-6666-4666-8666-666666666666',()=> '2026-11-21T00:00:00.000Z')
+    expect(reset).toMatchObject({state:'reset',draft:{clientKey:'66666666-6666-4666-8666-666666666666',accountScope:scope}})
+    expect(local.getItem(key)).toBe(reset.state==='reset'?reset.snapshot:null)
+  })
+
+  it('preserves an interleaved replacement and stays blocked when invalid removal throws or is a no-op', async () => {
+    const lock=locks(),key=benefitSubmissionDraftKey(scope)
+    const changed=memory();changed.values.set(key,'{old');const old=await loadBenefitSubmissionDraft(scope,changed,lock);if(old.state!=='invalid')throw new Error('invalid')
+    changed.values.set(key,'{replacement')
+    await expect(resetInvalidBenefitSubmissionDraft(scope,old.snapshotId,changed,lock)).resolves.toEqual({state:'changed'})
+    expect(changed.getItem(key)).toBe('{replacement')
+    for(const failure of ['throw','noop'] as const){
+      const local=memory();local.values.set(key,'{blocked');const loaded=await loadBenefitSubmissionDraft(scope,local,lock);if(loaded.state!=='invalid')throw new Error('invalid')
+      local.removeItem=failure==='throw'?vi.fn(()=>{throw new Error('blocked')}):vi.fn()
+      await expect(resetInvalidBenefitSubmissionDraft(scope,loaded.snapshotId,local,lock)).resolves.toEqual({state:'unavailable'})
+      expect(local.getItem(key)).toBe('{blocked')
+    }
   })
 
   it('holds the account lock across verified remote mutation and exact cleanup', async () => {

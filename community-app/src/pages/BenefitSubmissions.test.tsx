@@ -13,7 +13,7 @@ const scope='a'.repeat(64) as never
 const company={companyId:'KR-BIZ-1234567890',displayName:'테스트 기업',identityLabel:'사업자등록번호' as const,industry:null,sizeLabel:'정보 없음' as const,region:null,summary:null,benefitCount:0,officialCount:0,communityCount:0,categories:[]}
 const companyB={...company,companyId:'KR-BIZ-9876543210',displayName:'새 선택 기업'}
 function auth(id:string|null):AuthContextValue{return {loading:false,pending:false,session:id?{} as never:null,user:id?{id} as User:null,error:null,signIn:vi.fn(),signOut:vi.fn(),invalidateStaleSession:vi.fn(()=>true)}}
-function storage(){const values=new Map<string,string>();return {values,getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>void values.set(key,value),removeItem:(key:string)=>void values.delete(key)}}
+function storage(){const values=new Map<string,string>();return {values,getItem:vi.fn((key:string)=>values.get(key)??null),setItem:vi.fn((key:string,value:string)=>void values.set(key,value)),removeItem:vi.fn((key:string)=>void values.delete(key))}}
 function locks():BenefitSubmissionLockAdapter{const tails=new Map<string,Promise<void>>();return {request:<T,>(name:string,callback:()=>Promise<T>|T)=>{const tail=tails.get(name)??Promise.resolve();const next=tail.then(callback,callback);tails.set(name,next.then(()=>undefined,()=>undefined));return next}}}
 function directory():BenefitDirectoryRepository{return {search:vi.fn().mockResolvedValue({ok:true,data:{items:[company],hasMore:false,nextCursor:null,total:1}}),detail:vi.fn().mockResolvedValue({ok:true,data:{company,publications:[]}})} as never}
 const item={id:'22222222-2222-4222-8222-222222222222',companyId:company.companyId,categoryId:'leave' as const,benefitText:'가족 돌봄 휴가',eligibilityText:null,conditionText:null,sourceUrl:null,status:'submitted' as const,adminResponse:null,publicationId:null,reviewedAt:null,createdAt:'2026-11-21T00:00:00Z',updatedAt:'2026-11-21T00:00:00Z'}
@@ -106,9 +106,72 @@ describe('BenefitSubmissionPage',()=>{
     fireEvent.click(screen.getByRole('button',{name:'복지 제보 제출'}));await waitFor(()=>expect(repo.createSubmission).toHaveBeenCalledWith(expect.objectContaining({companyId:companyB.companyId}),expect.any(AbortSignal)))
   })
 
+  it.each([
+    ['malformed','{"version":1'],
+    ['extra key',JSON.stringify({...createBenefitSubmissionDraft(scope),extra:'preserve'})],
+    ['future version',JSON.stringify({...createBenefitSubmissionDraft(scope),version:2})],
+  ])('blocks the form and preserves exact %s draft bytes until explicit recovery',async(_label,raw)=>{
+    const local=storage(),key=benefitSubmissionDraftKey(scope);local.values.set(key,raw);local.setItem.mockClear();local.removeItem.mockClear()
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    expect(await screen.findByRole('alert')).toHaveTextContent('읽을 수 없습니다')
+    expect(screen.getByRole('button',{name:'저장된 초안 초기화'})).toBeVisible()
+    expect(screen.getByRole('button',{name:'다시 불러오기'})).toBeVisible()
+    expect(screen.queryByLabelText('복지 내용')).not.toBeInTheDocument()
+    expect(local.getItem(key)).toBe(raw);expect(local.setItem).not.toHaveBeenCalled();expect(local.removeItem).not.toHaveBeenCalled()
+  })
+
+  it('resets the exact blocked draft only after the destructive action',async()=>{
+    const local=storage(),key=benefitSubmissionDraftKey(scope);local.values.set(key,'{bad json');local.setItem.mockClear();local.removeItem.mockClear()
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    fireEvent.click(await screen.findByRole('button',{name:'저장된 초안 초기화'}))
+    expect(await screen.findByLabelText('복지 내용')).toHaveValue('')
+    expect(local.removeItem).toHaveBeenCalledWith(key)
+    const fresh=local.getItem(key);expect(fresh).not.toBeNull();expect(JSON.parse(fresh!).accountScope).toBe(scope)
+  })
+
+  it('preserves a replacement that arrives before blocked-draft reset and asks for reload',async()=>{
+    const local=storage(),key=benefitSubmissionDraftKey(scope);local.values.set(key,'{old invalid')
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    await screen.findByRole('button',{name:'저장된 초안 초기화'});local.values.set(key,'{new invalid')
+    fireEvent.click(screen.getByRole('button',{name:'저장된 초안 초기화'}))
+    await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('변경되었습니다. 다시 불러와'))
+    expect(local.getItem(key)).toBe('{new invalid')
+  })
+
+  it.each(['throw','noop'] as const)('keeps recovery blocked when reset removal is a %s',async failure=>{
+    const local=storage(),key=benefitSubmissionDraftKey(scope);local.values.set(key,'{blocked')
+    local.removeItem=failure==='throw'?vi.fn(()=>{throw new Error('blocked')}):vi.fn()
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    fireEvent.click(await screen.findByRole('button',{name:'저장된 초안 초기화'}))
+    await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('초안을 초기화하지 못했습니다'))
+    expect(screen.queryByLabelText('복지 내용')).not.toBeInTheDocument();expect(local.getItem(key)).toBe('{blocked')
+  })
+
+  it('does not show or reset account A invalid bytes after switching to account B',async()=>{
+    const scopeB='b'.repeat(64) as never,local=storage(),keyA=benefitSubmissionDraftKey(scope),rawA='{account A only'
+    local.values.set(keyA,rawA)
+    const repo=submissions();(repo.getCurrentAccountScope as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ok:true,data:scope}).mockResolvedValue({ok:true,data:scopeB})
+    const view=wrap(<BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    await screen.findByRole('button',{name:'저장된 초안 초기화'})
+    view.rerender(<AuthContext.Provider value={auth('33333333-3333-4333-8333-333333333333')}><BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} /></AuthContext.Provider>)
+    expect(await screen.findByLabelText('복지 내용')).toBeVisible()
+    expect(screen.queryByRole('button',{name:'저장된 초안 초기화'})).not.toBeInTheDocument();expect(local.getItem(keyA)).toBe(rawA)
+  })
+
+  it('shows same-account guidance without mounting a draft when another actor follows a claimed intent',async()=>{
+    const local=storage(),session=storage(),lock=locks(),preauth=createBenefitSubmissionDraft('preauth')
+    const saved=await saveBenefitSubmissionDraft('preauth',{...preauth,benefitText:'A 전용 초안'},local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    local.setItem=vi.fn((key:string,value:string)=>{if(key===benefitSubmissionDraftKey(scope))throw new Error('blocked');local.values.set(key,value)})
+    await import('../lib/benefitSubmissionDraftStore').then(({claimPreAuthBenefitSubmissionDraft})=>claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock))
+    wrap(<BenefitSubmissionPage repository={submissions({getCurrentAccountScope:vi.fn().mockResolvedValue({ok:true,data:'b'.repeat(64)})})} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} />,auth('33333333-3333-4333-8333-333333333333'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('같은 계정으로 로그인')
+    expect(screen.queryByLabelText('복지 내용')).not.toBeInTheDocument();expect(local.getItem(benefitSubmissionDraftKey('preauth'))).toBe(saved.snapshot)
+  })
+
   it('shows partial success and retries only conditional local cleanup',async()=>{
     const local=storage(),repo=submissions();let blockRemove=false
-    const remove=local.removeItem;local.removeItem=(key:string)=>{if(!blockRemove)remove(key)}
+    const remove=local.removeItem;local.removeItem=vi.fn((key:string)=>{if(!blockRemove)remove(key)})
     wrap(<BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
     const input=await screen.findByLabelText('기업 검색');fireEvent.change(input,{target:{value:'테스트'}});fireEvent.click(await screen.findByRole('button',{name:/테스트 기업/}))
     fireEvent.change(screen.getByLabelText('복지 분야'),{target:{value:'leave'}});fireEvent.change(screen.getByLabelText('복지 내용'),{target:{value:'가족 돌봄 휴가'}})
@@ -121,7 +184,7 @@ describe('BenefitSubmissionPage',()=>{
 
   it('preserves a newer local draft during partial-success cleanup retry',async()=>{
     const local=storage(),repo=submissions();let blockRemove=false
-    const remove=local.removeItem;local.removeItem=(key:string)=>{if(!blockRemove)remove(key)}
+    const remove=local.removeItem;local.removeItem=vi.fn((key:string)=>{if(!blockRemove)remove(key)})
     wrap(<BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
     fireEvent.change(await screen.findByLabelText('기업 검색'),{target:{value:'테스트'}});fireEvent.click(await screen.findByRole('button',{name:/테스트 기업/}));fireEvent.change(screen.getByLabelText('복지 분야'),{target:{value:'leave'}});fireEvent.change(screen.getByLabelText('복지 내용'),{target:{value:'가족 돌봄 휴가'}})
     await waitFor(()=>expect(screen.getByRole('button',{name:'복지 제보 제출'})).toBeEnabled());blockRemove=true;fireEvent.click(screen.getByRole('button',{name:'복지 제보 제출'}));await screen.findByRole('alert')
