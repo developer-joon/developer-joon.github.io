@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { benefitsRoute } from './benefitsRoutes'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
+import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
 
 const BenefitsMethodologyPage = lazy(() =>
   import('./pages/BenefitsMethodologyPage').then((module) => ({
@@ -30,16 +31,18 @@ function BenefitsFallback() {
 export function BenefitsApp({
   pathname = window.location.pathname,
   search = window.location.search,
+  benefitDirectoryRepository = getBenefitDirectoryRepository(),
 }: {
   pathname?: string
   search?: string
+  benefitDirectoryRepository?: BenefitDirectoryRepository
 }) {
   const route = benefitsRoute(pathname)
   if (!route) throw new Error('복지 탐색기 경로가 아닙니다.')
   return (
     <Suspense fallback={<BenefitsFallback />}>
       {route === 'directory' ? (
-        <BenefitsDirectoryPage search={search} />
+        <BenefitsDirectoryPage search={search} repository={benefitDirectoryRepository} />
       ) : route === 'methodology' ? (
         <BenefitsMethodologyPage search={search} />
       ) : (

@@ -7,6 +7,7 @@ import { AuthCallbackPage } from './pages/AuthCallbackPage'
 import { useAuth, type AuthClient } from './auth/AuthProvider'
 import { getUploadRepository, type UploadRepository } from './data/uploadRepository'
 import { getBenefitCorrectionRepository, type BenefitCorrectionRepository } from './data/benefitCorrectionRepository'
+import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
 import { CommunityActions } from './components/CommunityActions'
@@ -48,6 +49,7 @@ interface AppProps {
   onAuthCallbackNavigate?: (path: string) => void
   uploadRepository?: UploadRepository
   benefitCorrectionRepository?: BenefitCorrectionRepository
+  benefitDirectoryRepository?: BenefitDirectoryRepository
 }
 
 function LazyRouteFallback({ children }: { children: React.ReactNode }) {
@@ -61,11 +63,11 @@ function LazyRouteFallback({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, benefitCorrectionRepository, authClient, onAuthCallbackNavigate }: AppProps) {
+export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, benefitCorrectionRepository, benefitDirectoryRepository, authClient, onAuthCallbackNavigate }: AppProps) {
   const auth = useAuth()
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (benefitsRoute(pathname) === 'methodology') return <Suspense fallback={<LazyRouteFallback>조사 기준을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsMethodologyPage search={search} /></Suspense>
-  if (benefitsRoute(pathname) === 'directory') return <Suspense fallback={<LazyRouteFallback>국내 기업 검색을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsDirectoryPage search={search} /></Suspense>
+  if (benefitsRoute(pathname) === 'directory') return <Suspense fallback={<LazyRouteFallback>국내 기업 검색을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsDirectoryPage search={search} repository={benefitDirectoryRepository ?? getBenefitDirectoryRepository()} /></Suspense>
   if (benefitsRoute(pathname)) return <Suspense fallback={<LazyRouteFallback>복지 탐색기를 준비하고 있습니다.</LazyRouteFallback>}><BenefitsExplorerPage route={benefitsRoute(pathname)!} search={search} /></Suspense>
   if (auth.loading) return <LazyRouteFallback>로그인 상태를 확인하고 있습니다.</LazyRouteFallback>
   if (normalizedPathname === '/community/benefits/correction') {
