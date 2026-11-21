@@ -133,12 +133,12 @@ select is((select count(*)::integer from extensions.dblink((select connection_st
 select extensions.dblink_exec('bs_one','begin');
 select extensions.dblink_exec('bs_one','set local role authenticated');
 select extensions.dblink_exec('bs_one',format('set local request.jwt.claim.sub=%L',admin_one_id)) from submission_race_fixture;
-select * from submission_race_fixture f cross join lateral extensions.dblink('bs_one',format($q$select public.review_benefit_submission_v1(%L,'reviewing','approve','Approved',gen_random_uuid(),'Equivalent Title','Equivalent Description',null,null,null)::text$q$,f.equiv_one_id)) r(value text);
+select * from submission_race_fixture f cross join lateral extensions.dblink('bs_one',format($q$select public.review_benefit_submission_v1(%L,'reviewing','approve','Approved',gen_random_uuid(),'Health','Equivalent Description',null,null,null)::text$q$,f.equiv_one_id)) r(value text);
 select extensions.dblink_exec('bs_two','begin');
 select extensions.dblink_exec('bs_two','set local role authenticated');
 select extensions.dblink_exec('bs_two',format('set local request.jwt.claim.sub=%L',admin_two_id)) from submission_race_fixture;
 update submission_race_fixture set second_pid=(select pid from extensions.dblink('bs_two','select pg_backend_pid()') r(pid integer));
-select extensions.dblink_send_query('bs_two',format('select pg_temp.try_approve(%L,gen_random_uuid(),''Equivalent Title'')',equiv_two_id)) from submission_race_fixture;
+select extensions.dblink_send_query('bs_two',format($q$select pg_temp.try_approve(%L,gen_random_uuid(),E'\t Health\r\n')$q$,equiv_two_id)) from submission_race_fixture;
 select ok((select pg_temp.wait_for_lock(second_pid) from submission_race_fixture),'equivalent approvals serialize on active publication lineage');
 select extensions.dblink_exec('bs_one','set constraints all immediate');
 select extensions.dblink_exec('bs_one','commit');
@@ -148,6 +148,7 @@ select count(*) from extensions.dblink_get_result('bs_two') r(value text);
 select extensions.dblink_exec('bs_two','commit');
 select ok((select value in ('23505','23514') from equivalent_loser),'equivalent concurrent approval loser fails uniqueness or active-lineage invariant');
 select is((select count(*)::integer from extensions.dblink((select connection_string from submission_race_fixture),$$select publication_id from public.benefit_publications where company_id='KR-BIZ-9980000002' and category_id='leave' and status='active'$$) r(publication_id uuid)),1,'equivalent approvals leave one active publication');
+select is((select title from extensions.dblink((select connection_string from submission_race_fixture),$$select title from public.benefit_publications where company_id='KR-BIZ-9980000002' and category_id='leave' and status='active'$$) r(title text)),'Health','equivalent concurrent approval stores the canonical title');
 select is((select count(*)::integer from extensions.dblink((select connection_string from submission_race_fixture),format('select id from public.benefit_submission_events where submission_id in (%L,%L) and action=''approved''',(select equiv_one_id from submission_race_fixture),(select equiv_two_id from submission_race_fixture))) r(id uuid)),1,'equivalent approvals leave one approval event');
 
 select extensions.dblink_exec('bs_setup',$cleanup$

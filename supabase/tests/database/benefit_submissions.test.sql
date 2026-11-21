@@ -28,6 +28,13 @@ select has_function('public','list_my_benefit_submissions_v1',array['integer','t
 select has_function('public','list_benefit_submission_queue_v1',array['text','integer','timestamp with time zone','uuid'],'admin queue RPC exists');
 select has_function('public','list_benefit_submission_audit_v1',array['uuid','integer','timestamp with time zone','uuid'],'admin audit RPC exists');
 select has_function('public','review_benefit_submission_v1',array['uuid','text','text','text','uuid','text','text','text','text','uuid'],'review RPC exists');
+select has_function('private','canonical_benefit_publication_title',array['text'],'private canonical public-title function exists');
+select ok((select p.provolatile='i' and p.proconfig @> array['search_path=""'] and pg_get_userbyid(p.proowner)='postgres' from pg_proc p where p.oid='private.canonical_benefit_publication_title(text)'::regprocedure),'canonical public-title function is immutable, fixed-path, and postgres-owned');
+select ok(not has_function_privilege('public','private.canonical_benefit_publication_title(text)','EXECUTE') and not has_function_privilege('anon','private.canonical_benefit_publication_title(text)','EXECUTE') and not has_function_privilege('authenticated','private.canonical_benefit_publication_title(text)','EXECUTE') and not has_function_privilege('service_role','private.canonical_benefit_publication_title(text)','EXECUTE'),'canonical public-title function is private');
+select is(private.canonical_benefit_publication_title(E'\t Health\r\n  Plan \v'),'Health Plan','canonical public-title function normalizes only enumerated ASCII whitespace');
+select is(private.canonical_benefit_publication_title('Health'||chr(160)||'  Plan'),'Health'||chr(160)||' Plan','canonical public-title function preserves non-ASCII whitespace');
+select throws_ok($$select private.canonical_benefit_publication_title(repeat('가',201))$$,'22023','invalid public title','canonical public title length uses Unicode characters');
+select throws_ok($$insert into public.benefit_publications(company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type) values ('KR-BIZ-9980000001','health','Not  canonical','Description','community_reviewed','withdrawn','invalid-title-fixture',1,'test')$$,'23514','new row for relation "benefit_publications" violates check constraint "benefit_publications_title_check"','publication table rejects noncanonical titles from every writer');
 select ok((select bool_and(p.prosecdef and p.proconfig @> array['search_path=""'] and pg_get_userbyid(p.proowner)='postgres') from pg_proc p where p.oid=any(array[
  'public.create_benefit_submission_v1(uuid,text,text,text,text,text,text)'::regprocedure,
  'public.list_my_benefit_submissions_v1(integer,timestamptz,uuid)'::regprocedure,
@@ -51,6 +58,17 @@ set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000001';
 create temporary table submission_results(name text primary key,payload jsonb);
 insert into submission_results values ('created',public.create_benefit_submission_v1(
  'e2000000-0000-0000-0000-000000000001',' KR-BIZ-9980000001 ',' health ',' Health benefit ',null,' Employees only ',null));
+reset role;
+insert into public.benefit_submissions(id,submitter_id,client_key,payload_fingerprint,company_id,category_id,benefit_text) values
+ ('e2100000-0000-0000-0000-000000000002','e1000000-0000-0000-0000-000000000001','e2000000-0000-0000-0000-000000000002',repeat('b',64),'KR-BIZ-9980000001','growth','Blank title fixture'),
+ ('e2100000-0000-0000-0000-000000000003','e1000000-0000-0000-0000-000000000001','e2000000-0000-0000-0000-000000000003',repeat('c',64),'KR-BIZ-9980000001','family','Canonical title fixture'),
+ ('e2100000-0000-0000-0000-000000000004','e1000000-0000-0000-0000-000000000001','e2000000-0000-0000-0000-000000000004',repeat('d',64),'KR-BIZ-9980000001','family','Equivalent title fixture');
+insert into submission_results values
+ ('title-blank-create',pg_catalog.jsonb_build_object('id','e2100000-0000-0000-0000-000000000002')),
+ ('title-canonical-create',pg_catalog.jsonb_build_object('id','e2100000-0000-0000-0000-000000000003')),
+ ('title-equivalent-create',pg_catalog.jsonb_build_object('id','e2100000-0000-0000-0000-000000000004'));
+set local role authenticated;
+set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000001';
 select is(public.create_benefit_submission_v1('e2000000-0000-0000-0000-000000000001','KR-BIZ-9980000001','health','Health benefit',null,'Employees only',null)->>'id',(select payload->>'id' from submission_results where name='created'),'same key and payload replays');
 select throws_ok($$select public.create_benefit_submission_v1('e2000000-0000-0000-0000-000000000001','KR-BIZ-9980000001','health','Changed',null,'Employees only',null)$$,'22023','client key reused with different payload','same key changed payload is rejected');
 select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'http://example.com')$$,'22023','invalid public source URL','non-HTTPS source is rejected');
@@ -62,7 +80,7 @@ select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),
 select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'https://0x7f000001/private')$$,'22023','invalid public source URL','single hexadecimal numeric source is rejected');
 select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health',repeat('x',5001),null,null,null)$$,'22023','invalid benefit text','benefit text is bounded');
 insert into submission_results values ('mine',public.list_my_benefit_submissions_v1(20));
-select is(jsonb_array_length((select payload->'items' from submission_results where name='mine')),1,'owner sees own submission');
+select is(jsonb_array_length((select payload->'items' from submission_results where name='mine')),4,'owner sees own submissions');
 select is((select jsonb_object_agg(key,true order by key) from submission_results,jsonb_object_keys(payload->'items'->0) key where name='mine'),'{"admin_response":true,"benefit_text":true,"category_id":true,"company_id":true,"condition_text":true,"created_at":true,"eligibility_text":true,"id":true,"publication_id":true,"reviewed_at":true,"source_url":true,"status":true,"updated_at":true}'::jsonb,'owner projection has exact safe keys');
 select ok((select payload::text not like '%reviewer%' and payload::text not like '%submitter%' and payload::text not like '%fingerprint%' and payload::text not like '%example.test%' from submission_results where name='mine'),'owner projection excludes internal identities and fingerprint');
 select throws_ok($$select public.list_my_benefit_submissions_v1(0)$$,'22023','invalid page limit','owner list is bounded');
@@ -71,7 +89,7 @@ select is(private.benefit_submission_source_url('https://0x7f.example.com/eviden
 
 select ok((select submitter_id='e1000000-0000-0000-0000-000000000001' and source_url is null and payload_fingerprint ~ '^[0-9a-f]{64}$' from public.benefit_submissions where id=((select payload->>'id' from submission_results where name='created')::uuid)),'actor derived and nullable source stored');
 select is((select count(*)::integer from public.benefit_submission_events where submission_id=((select payload->>'id' from submission_results where name='created')::uuid) and action='submitted'),1,'create emits one event');
-select is((select count(*)::integer from public.rate_limit_events where user_id='e1000000-0000-0000-0000-000000000001' and action='benefit_submission.create'),1,'replay consumes one rate slot');
+select is((select count(*)::integer from public.rate_limit_events where user_id='e1000000-0000-0000-0000-000000000001' and action='benefit_submission.create'),1,'replay consumes no extra rate slot');
 
 set local role authenticated;
 set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000002';
@@ -95,6 +113,24 @@ select ok((select payload::text not like '%submitter%' and payload::text not lik
 select is(public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='created')::uuid),'submitted','start_review','Reviewing','e3000000-0000-0000-0000-000000000001',null,null,null,null,null)->>'status','reviewing','submitted starts review');
 select is(public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='created')::uuid),'submitted','start_review','Reviewing','e3000000-0000-0000-0000-000000000001',null,null,null,null,null)->>'status','reviewing','review replay ignores stale expected status');
 select is(public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='created')::uuid),'reviewing','additional_material_requested','More evidence','e3000000-0000-0000-0000-000000000002',null,null,null,null,null)->>'status','reviewing','additional material stays reviewing');
+select public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='title-blank-create')::uuid),'submitted','start_review','Reviewing','e3000000-0000-0000-0000-000000000040',null,null,null,null,null);
+select public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='title-canonical-create')::uuid),'submitted','start_review','Reviewing','e3000000-0000-0000-0000-000000000041',null,null,null,null,null);
+select public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='title-equivalent-create')::uuid),'submitted','start_review','Reviewing','e3000000-0000-0000-0000-000000000042',null,null,null,null,null);
+select throws_ok(format($q$select public.review_benefit_submission_v1(%L,'reviewing','approve','Approved','e3000000-0000-0000-0000-000000000043',E'\t\n\v\f\r ','Description',null,null,null)$q$,(select payload->>'id' from submission_results where name='title-blank-create')),'22023','invalid public title','ASCII whitespace-only public title is rejected');
+insert into submission_results values ('title-canonical-approved',public.review_benefit_submission_v1(
+ ((select payload->>'id' from submission_results where name='title-canonical-create')::uuid),'reviewing','approve','Approved','e3000000-0000-0000-0000-000000000044',E'\t Health\r\n  Plan \v',E'Line one\nLine two',E'Eligible one\nEligible two',E'Condition one\nCondition two',null));
+reset role;
+select is((select title from public.benefit_publications where publication_id=((select payload->>'publication_id' from submission_results where name='title-canonical-approved')::uuid)),'Health Plan','public title canonicalizes leading, trailing, and repeated ASCII whitespace');
+select is((select description from public.benefit_publications where publication_id=((select payload->>'publication_id' from submission_results where name='title-canonical-approved')::uuid)),E'Line one\nLine two','public description preserves line breaks');
+select is((select eligibility_text from public.benefit_publications where publication_id=((select payload->>'publication_id' from submission_results where name='title-canonical-approved')::uuid)),E'Eligible one\nEligible two','public eligibility preserves line breaks');
+select is((select condition_text from public.benefit_publications where publication_id=((select payload->>'publication_id' from submission_results where name='title-canonical-approved')::uuid)),E'Condition one\nCondition two','public condition preserves line breaks');
+set local role authenticated;
+set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000003';
+select throws_ok(format($q$select public.review_benefit_submission_v1(%L,'reviewing','approve','Approved','e3000000-0000-0000-0000-000000000045','Health Plan','Equivalent description',null,null,null)$q$,(select payload->>'id' from submission_results where name='title-equivalent-create')),'23505','duplicate key value violates unique constraint "benefit_publications_company_id_dedupe_key_revision_key"','equivalent canonical title resolves to the same deterministic dedupe lineage');
+reset role;
+select is((select count(*)::integer from public.benefit_publications where company_id='KR-BIZ-9980000001' and category_id='family' and status='active'),1,'equivalent canonical titles leave one active publication');
+set local role authenticated;
+set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000003';
 select throws_ok(format('select public.review_benefit_submission_v1(%L,''submitted'',''approve'',''stale'',gen_random_uuid(),''Title'',''Description'',null,null,null)',(select payload->>'id' from submission_results where name='created')),'40001','benefit submission state changed','CAS mismatch fails');
 select throws_ok(format('select public.review_benefit_submission_v1(%L,''reviewing'',''start_review'',''cycle'',gen_random_uuid(),null,null,null,null,null)',(select payload->>'id' from submission_results where name='created')),'22023','benefit submission review action not allowed','invalid transition rejected');
 insert into submission_results values ('approved',public.review_benefit_submission_v1(
