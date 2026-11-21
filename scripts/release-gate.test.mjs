@@ -24,6 +24,11 @@ const DEVELOPMENT_REF = 'abcdefghijklmnopqrst'
 const PRODUCTION_REF = 'zyxwvutsrqponmlkjihg'
 const DEVELOPMENT_URL = `https://${DEVELOPMENT_REF}.supabase.co`
 const PRODUCTION_URL = `https://${PRODUCTION_REF}.supabase.co`
+const MANDATORY_DATABASE_COUNTS = [
+  { name: 'test-benefit-title-upgrade', count: 4 },
+  { name: 'test-benefit-seed-importer', count: 7 },
+  { name: 'test-database', count: 1146 },
+]
 const LOCAL_STEP_NAMES = [
   'repository-preflight',
   'check-benefit-seed-generation',
@@ -428,7 +433,7 @@ test('release execution passes the preflight-resolved browser path explicitly', 
   try {
     const browser = path.join(state.root, 'resolved-chromium')
     const seen = []
-    state.dependencies.plan = compactPlan('local', state.evidence, [
+    state.dependencies.plan = passingPlan('local', state.evidence, [
       'repository-preflight',
       'test-benefits-browser',
     ])
@@ -579,8 +584,8 @@ test('output publication replaces swapped symlink and hardlink entries without m
 
       await runReleaseGate(options, {
         revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
-        plan: compactPlan('local', options.evidencePath, []),
-        runner: async () => ({ code: 0 }),
+        plan: passingPlan('local', options.evidencePath, []),
+        runner: async ({ name }) => passingResult(name),
       })
 
       assert.equal(readFileSync(victim, 'utf8'), victimContents, alias)
@@ -883,10 +888,10 @@ function executionFixture(mode = 'local') {
   const writes = new Map()
   const renames = []
   let milliseconds = 0
+  let runnerImplementation = async ({ name }) => passingResult(name)
   const dependencies = {
     revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
     clock: () => new Date(Date.UTC(2026, 9, 3, 0, 0, 0, milliseconds++)),
-    runner: async () => ({ code: 0, stdout: '', stderr: '' }),
     filesystem: {
       writeFile: async (file, contents) => writes.set(file, contents),
       rename: async (from, to) => {
@@ -897,6 +902,14 @@ function executionFixture(mode = 'local') {
       rm: async () => {},
     },
   }
+  Object.defineProperty(dependencies, 'runner', {
+    configurable: true,
+    enumerable: true,
+    get: () => async (step, ...args) => step.fixtureDatabaseCount === undefined
+      ? runnerImplementation(step, ...args)
+      : passingResult(step.name),
+    set: implementation => { runnerImplementation = implementation },
+  })
   const options = {
     mode,
     evidencePath: state.evidence,
@@ -936,6 +949,37 @@ function compactPlan(mode, evidencePath, names) {
     },
     steps: names.map((name) => ({ name, command: 'node', args: [`${name}.mjs`], environment: {} })),
   }
+}
+
+function passingPlan(mode, evidencePath, names) {
+  const plan = compactPlan(mode, evidencePath, [
+    ...names,
+    ...MANDATORY_DATABASE_COUNTS.map(({ name }) => name).filter((name) => !names.includes(name)),
+  ])
+  for (const step of plan.steps) {
+    if (!names.includes(step.name)) {
+      step.fixtureDatabaseCount = MANDATORY_DATABASE_COUNTS.find(({ name }) => name === step.name).count
+    }
+  }
+  return plan
+}
+
+function passingResult(name, overrides = {}) {
+  const count = MANDATORY_DATABASE_COUNTS.find((item) => item.name === name)?.count
+  return {
+    code: 0,
+    stdout: count === undefined ? '' : `Tests=${count}\n`,
+    stderr: '',
+    ...overrides,
+  }
+}
+
+function expectedDatabaseEvidence(first = []) {
+  const steps = [
+    ...first,
+    ...MANDATORY_DATABASE_COUNTS.filter(({ name }) => !first.some(item => item.name === name)),
+  ]
+  return { steps, total: steps.reduce((total, { count }) => total + count, 0) }
 }
 
 function readinessInputs(state, overrides = {}) {
@@ -1101,7 +1145,7 @@ test('executes steps serially in exact order', async () => {
   try {
     const events = []
     let active = 0
-    state.dependencies.plan = compactPlan('local', state.evidence, ['first', 'second', 'third'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['first', 'second', 'third'])
     state.dependencies.runner = async ({ name }) => {
       assert.equal(active, 0, 'a later step started before the prior step completed')
       active += 1
@@ -1129,10 +1173,11 @@ test('repository preflight rejects dirty state and performs executable discovery
     try {
       const calls = []
       state.dependencies.plan = {
-        ...compactPlan('local', state.options.evidencePath, ['repository-preflight', 'later']),
+        ...passingPlan('local', state.options.evidencePath, ['repository-preflight', 'later']),
         steps: [
           { name: 'repository-preflight', command: 'git', args: ['status', '--porcelain'], environment: {} },
           { name: 'later', command: 'node', args: ['later.mjs'], environment: {} },
+          ...passingPlan('local', state.options.evidencePath, []).steps,
         ],
       }
       state.dependencies.runner = async ({ name }) => {
@@ -1142,12 +1187,9 @@ test('repository preflight rejects dirty state and performs executable discovery
       state.dependencies.executablePreflight = async () => calls.push('executable-preflight')
       if (dirty) await assert.rejects(runReleaseGate(state.options, state.dependencies), /clean Git working tree/i)
       else await runReleaseGate(state.options, state.dependencies)
-      assert.deepEqual(
-        calls,
-        dirty
-          ? ['repository-preflight', 'cleanup-local-supabase']
-          : ['repository-preflight', 'executable-preflight', 'later', 'cleanup-local-supabase'],
-      )
+      assert.deepEqual(calls, dirty
+        ? ['repository-preflight', 'cleanup-local-supabase']
+        : ['repository-preflight', 'executable-preflight', 'later', 'cleanup-local-supabase'])
     } finally {
       state.close()
     }
@@ -1160,7 +1202,7 @@ test('default executable preflight rejects a missing plan command before later c
     const calls = []
     state.dependencies.repoRoot = state.repoRoot
     state.dependencies.plan = {
-      ...compactPlan('local', state.options.evidencePath, ['repository-preflight', 'later']),
+      ...passingPlan('local', state.options.evidencePath, ['repository-preflight', 'later']),
       steps: [
         { name: 'repository-preflight', command: 'git', args: ['status', '--porcelain'], environment: {} },
         { name: 'later', command: './scripts/does-not-exist', args: [], environment: {} },
@@ -1196,7 +1238,7 @@ test('default preflight resolves immutable absolute executable identities and pi
     }
     process.env.PATH = `${firstBin}${path.delimiter}${originalPath}`
     const spawned = []
-    const fakeSpawn = (command) => {
+    const fakeSpawn = (command, args) => {
       spawned.push(command)
       const child = new EventEmitter()
       child.pid = 123456789
@@ -1205,6 +1247,8 @@ test('default preflight resolves immutable absolute executable identities and pi
       child.kill = () => true
       queueMicrotask(() => {
         if (spawned.length === 2) process.env.PATH = `${secondBin}${path.delimiter}${originalPath}`
+        const count = MANDATORY_DATABASE_COUNTS.find(({ name }) => args?.[0] === `${name}.mjs`)?.count
+        if (count !== undefined) child.stdout.emit('data', Buffer.from(`Tests=${count}\n`))
         child.emit('close', 0, null)
       })
       return child
@@ -1213,12 +1257,12 @@ test('default preflight resolves immutable absolute executable identities and pi
     delete state.dependencies.runner
     state.dependencies.spawn = fakeSpawn
     state.dependencies.plan = {
-      mode: 'local',
-      evidencePath: state.evidence,
+      ...passingPlan('local', state.evidence, []),
       steps: [
         { name: 'repository-preflight', command: 'git', args: ['status', '--porcelain'], environment: {} },
         { name: 'node-check', command: 'node', args: ['check.mjs'], environment: {} },
         { name: 'tool-check', command: 'tool', args: [], environment: {} },
+        ...passingPlan('local', state.evidence, []).steps,
       ],
     }
 
@@ -1228,6 +1272,9 @@ test('default preflight resolves immutable absolute executable identities and pi
       path.join(firstBin, 'git'),
       process.execPath,
       path.join(firstBin, 'tool'),
+      process.execPath,
+      process.execPath,
+      process.execPath,
       path.join(firstBin, 'npm'),
     ])
   } finally {
@@ -1241,7 +1288,7 @@ test('first command failure prevents later checks and preserves the original fai
   const state = executionFixture()
   try {
     const calls = []
-    state.dependencies.plan = compactPlan('local', state.evidence, ['first', 'broken', 'never'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['first', 'broken', 'never'])
     state.dependencies.runner = async ({ name }) => {
       calls.push(name)
       if (name === 'broken') return { code: 7, stderr: 'sensitive diagnostic' }
@@ -1264,7 +1311,7 @@ test('cleanup runs after success, command failure, sentinel failure, and signal 
       const calls = []
       const controller = new AbortController()
       state.dependencies.signal = controller.signal
-      state.dependencies.plan = compactPlan('local', state.evidence, ['check', 'local-e2e'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['check', 'local-e2e'])
       state.dependencies.runner = async ({ name }) => {
         calls.push(name)
         if (scenario === 'command' && name === 'check') return { code: 2 }
@@ -1302,7 +1349,7 @@ test('CLI signal handlers abort through cleanup, preserve the first signal, and 
         },
       }
       const calls = []
-      state.dependencies.plan = compactPlan('local', state.evidence, ['check', 'never'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['check', 'never'])
       state.dependencies.runner = async ({ name }) => {
         calls.push(name)
         if (name === 'check') {
@@ -1535,7 +1582,7 @@ test('cleanup failure changes success to failure without hiding an original fail
   for (const failMain of [false, true]) {
     const state = executionFixture()
     try {
-      state.dependencies.plan = compactPlan('local', state.evidence, ['check'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['check'])
       state.dependencies.runner = async ({ name }) => ({
         code: name === 'cleanup-local-supabase' ? 8 : failMain ? 3 : 0,
       })
@@ -1554,7 +1601,7 @@ test('cleanup targets only this repository local Supabase project', async () => 
   const state = executionFixture()
   try {
     const calls = []
-    state.dependencies.plan = compactPlan('local', state.evidence, [])
+    state.dependencies.plan = passingPlan('local', state.evidence, [])
     state.dependencies.runner = async (step) => {
       calls.push(step)
       return { code: 0 }
@@ -1598,8 +1645,8 @@ test('development uses explicit read-only probes and never falls back to another
   const state = executionFixture('development')
   try {
     const requests = []
-    state.dependencies.plan = compactPlan('development', state.evidence, ['development-read-only-health', 'development-integration'])
-    state.dependencies.plan.steps.at(-1).args[0] = 'scripts/development-integration-sentinel.mjs'
+    state.dependencies.plan = passingPlan('development', state.evidence, ['development-read-only-health', 'development-integration'])
+    state.dependencies.plan.steps.find(({ name }) => name === 'development-integration').args[0] = 'scripts/development-integration-sentinel.mjs'
     state.dependencies.developmentUrl = DEVELOPMENT_URL
     state.dependencies.fetch = async (url, init) => {
       requests.push({ url, init })
@@ -1628,7 +1675,7 @@ test('development 5xx, timeout, and paused-project responses fail with resume gu
     const state = executionFixture('development')
     try {
       const urls = []
-      state.dependencies.plan = compactPlan('development', state.evidence, ['development-read-only-health', 'development-integration'])
+      state.dependencies.plan = passingPlan('development', state.evidence, ['development-read-only-health', 'development-integration'])
       state.dependencies.developmentUrl = DEVELOPMENT_URL
       state.dependencies.fetch = async (...args) => {
         urls.push(args[0])
@@ -1656,7 +1703,7 @@ test('evidence schema rejects missing, unknown, and malformed keys', () => {
     developmentProjectFingerprint: null,
     productionProjectFingerprint: null,
     artifactManifest: { sha256: 'a'.repeat(64), fileCount: 2 },
-    databaseTests: { steps: [{ name: 'test-database', count: 7 }], total: 7 },
+    databaseTests: { steps: MANDATORY_DATABASE_COUNTS, total: 1157 },
     readinessEvidence: null,
     steps: [{ name: 'check', status: 'passed', startedAt: '2026-10-03T00:00:00.000Z', finishedAt: '2026-10-03T00:00:01.000Z', durationMs: 1000 }],
     failure: null,
@@ -1677,7 +1724,7 @@ test('evidence schema rejects missing, unknown, and malformed keys', () => {
 test('evidence has revision, mode, UTC timing, step durations, artifact and database metadata, and project fingerprint only', async () => {
   const state = executionFixture('development')
   try {
-    state.dependencies.plan = compactPlan('development', state.evidence, ['check'])
+    state.dependencies.plan = passingPlan('development', state.evidence, ['check'])
     await runReleaseGate(state.options, state.dependencies)
     const evidence = state.evidence()
     assert.deepEqual(Object.keys(evidence).sort(), [
@@ -1691,7 +1738,7 @@ test('evidence has revision, mode, UTC timing, step durations, artifact and data
     assert.ok(evidence.startedAt.endsWith('Z') && evidence.finishedAt.endsWith('Z'))
     assert.ok(evidence.steps.every((step) => Number.isInteger(step.durationMs)))
     assert.equal(evidence.artifactManifest, null)
-    assert.equal(evidence.databaseTests, null)
+    assert.deepEqual(evidence.databaseTests, { steps: MANDATORY_DATABASE_COUNTS, total: 1157 })
     assert.equal(evidence.readinessEvidence, null)
   } finally {
     state.close()
@@ -1709,7 +1756,7 @@ test('evidence excludes diagnostics, URLs, bodies, credentials, Markdown, and us
       'sb_publishable_do-not-store',
       '# markdown heading',
     ]
-    state.dependencies.plan = compactPlan('development', state.evidence, ['broken'])
+    state.dependencies.plan = passingPlan('development', state.evidence, ['broken'])
     state.dependencies.runner = async ({ name }) => name === 'broken'
       ? { code: 1, stdout: forbidden.join(' '), stderr: forbidden.join(' ') }
       : { code: 0 }
@@ -1767,7 +1814,7 @@ test('evidence is written to a temporary sibling and atomically renamed', async 
       writePaths.push(file)
       return baseWrite(file, contents)
     }
-    state.dependencies.plan = compactPlan('local', state.evidence, [])
+    state.dependencies.plan = passingPlan('local', state.evidence, [])
     await runReleaseGate(state.options, state.dependencies)
     assert.equal(state.renames.length, 2)
     assert.deepEqual(writePaths, state.renames.map(([temporary]) => temporary))
@@ -1789,7 +1836,7 @@ test('evidence is written to a temporary sibling and atomically renamed', async 
 test('failure evidence is unambiguously not successful release proof', async () => {
   const state = executionFixture()
   try {
-    state.dependencies.plan = compactPlan('local', state.evidence, ['broken'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['broken'])
     state.dependencies.runner = async ({ name }) => ({ code: name === 'broken' ? 1 : 0 })
     await assert.rejects(runReleaseGate(state.options, state.dependencies))
     const evidence = state.evidence()
@@ -1833,7 +1880,7 @@ test('binds passed reproducibility evidence to identical manifest bytes and exac
   try {
     const manifest = `${'a'.repeat(64)}  ./assets/app.js\n${'b'.repeat(64)}  ./index.html\n`
     const reads = []
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database', 'verify-site-reproducibility'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-database', 'verify-site-reproducibility'])
     const manifestPaths = [
       path.join(state.dependencies.plan.workspace.manifests, 'build-1.sha256'),
       path.join(state.dependencies.plan.workspace.manifests, 'build-2.sha256'),
@@ -1853,10 +1900,7 @@ test('binds passed reproducibility evidence to identical manifest bytes and exac
       sha256: createHash('sha256').update(Buffer.from(manifest)).digest('hex'),
       fileCount: 2,
     })
-    assert.deepEqual(evidence.databaseTests, {
-      steps: [{ name: 'test-database', count: 7 }],
-      total: 7,
-    })
+    assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: 'test-database', count: 7 }]))
     const serialized = JSON.stringify(evidence)
     assert.equal(serialized.includes('build-1.sha256'), false)
     assert.equal(serialized.includes('index.html'), false)
@@ -1870,7 +1914,7 @@ test('fails closed when passed reproducibility manifests are missing, mismatched
   for (const scenario of ['missing', 'mismatched', 'empty']) {
     const state = executionFixture()
     try {
-      state.dependencies.plan = compactPlan('local', state.evidence, ['verify-site-reproducibility'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['verify-site-reproducibility'])
       state.dependencies.filesystem.readFile = async (file) => {
         if (scenario === 'missing' && file.endsWith('build-2.sha256')) throw new Error('missing private path')
         if (scenario === 'empty') return Buffer.from('')
@@ -1899,7 +1943,7 @@ test('readiness inputs and reproducibility manifests enforce bounded reads throu
         let closed = false
         state.dependencies.plan = kind === 'readiness'
           ? compactPlan('production-readiness', state.evidence, ['validate-production-readiness-evidence'])
-          : compactPlan('local', state.evidence, ['verify-site-reproducibility'])
+          : passingPlan('local', state.evidence, ['verify-site-reproducibility'])
         state.dependencies.plan.steps[0].kind = kind === 'readiness' ? 'internal' : undefined
         state.dependencies.filesystem.readFile = async () => { throw new Error(`${secret} unbounded read`) }
         state.dependencies.filesystem.open = async () => ({
@@ -1940,7 +1984,7 @@ test('reproducibility manifests require canonical sha256sum records, safe unique
   for (const [scenario, manifest] of Object.entries(cases)) {
     const state = executionFixture()
     try {
-      state.dependencies.plan = compactPlan('local', state.evidence, ['verify-site-reproducibility'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['verify-site-reproducibility'])
       state.dependencies.filesystem.readFile = async () => Buffer.from(manifest)
 
       await assert.rejects(runReleaseGate(state.options, state.dependencies), /manifest/i, scenario)
@@ -1957,7 +2001,7 @@ test('database helpers may omit summaries, stderr summaries are counted, and the
   try {
     const calls = []
     const rawDetail = 'private-storage-upgrade-detail@example.com'
-    state.dependencies.plan = compactPlan('local', state.evidence, [
+    state.dependencies.plan = passingPlan('local', state.evidence, [
       'test-storage-upgrade',
       'test-public-listing-upgrade',
       'test-database',
@@ -1980,17 +2024,121 @@ test('database helpers may omit summaries, stderr summaries are counted, and the
       'after-database',
       'cleanup-local-supabase',
     ])
-    assert.deepEqual(evidence.databaseTests, {
-      steps: [
-        { name: 'test-public-listing-upgrade', count: 3 },
-        { name: 'test-database', count: 7 },
-      ],
-      total: 10,
-    })
+    assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([
+      { name: 'test-public-listing-upgrade', count: 3 },
+      { name: 'test-database', count: 7 },
+    ]))
     assert.equal(JSON.stringify(evidence).includes(rawDetail), false)
   } finally {
     state.close()
   }
+})
+
+test('new benefit database suites expose one final standalone positive count only after their success prose', () => {
+  const contracts = [
+    [
+      path.join(import.meta.dirname, '../supabase/tests/benefit_title_upgrade.sh'),
+      'benefit title upgrade, lock race, invalid-title rollback, and canonical collision rollback fixtures passed',
+      4,
+    ],
+    [
+      path.join(import.meta.dirname, '../supabase/tests/benefit_seed_importer_integration.sh'),
+      'benefit seed importer integration PASS: trigger rewrites rolled back; schema, dry-run, receipt, late-failure, apply, replay verified',
+      7,
+    ],
+  ]
+  for (const [file, successProse, count] of contracts) {
+    const source = readFileSync(file, 'utf8')
+    assert.equal((source.match(/^printf 'Tests=\d+\\n'$/gm) ?? []).length, 1, file)
+    assert.ok(source.endsWith(`printf '${successProse}\\n'\n` + `printf 'Tests=${count}\\n'\n`), file)
+  }
+})
+
+test('mandatory database suites reject missing, zero, and duplicate summaries and accept real success output shapes', async () => {
+  const realSuccess = {
+    'test-benefit-title-upgrade': 'upgrade fixture passed\nlock race passed\ninvalid-title rollback passed\ncanonical collision rollback passed\nTests=4\n',
+    'test-benefit-seed-importer': 'trigger rewrites rolled back\nschema, dry-run, receipt, late-failure, apply, replay verified\nTests=7\n',
+    'test-database': CANONICAL_PROVE_OUTPUT,
+  }
+  for (const suite of ['test-benefit-title-upgrade', 'test-benefit-seed-importer']) {
+    for (const [label, output] of [
+      ['missing', realSuccess[suite].replace(/^Tests=.*\n$/m, '')],
+      ['zero', realSuccess[suite].replace(/^Tests=.*$/m, 'Tests=0')],
+      ['duplicate', `${realSuccess[suite]}Tests=${suite === 'test-benefit-title-upgrade' ? 4 : 7}\n`],
+    ]) {
+      const state = executionFixture()
+      try {
+        state.dependencies.plan = compactPlan('local', state.evidence, [suite, 'never'])
+        state.dependencies.runner = async ({ name }) => ({ code: 0, stdout: name === suite ? output : '' })
+        await assert.rejects(runReleaseGate(state.options, state.dependencies), new RegExp(`${suite}.*(?:Tests|summary|positive|duplicate)`, 'i'), `${suite}/${label}`)
+        assert.equal(state.evidence().databaseTests, null, `${suite}/${label}`)
+      } finally {
+        state.close()
+      }
+    }
+  }
+
+  const state = executionFixture()
+  try {
+    state.dependencies.plan = passingPlan('local', state.evidence, MANDATORY_DATABASE_COUNTS.map(({ name }) => name))
+    state.dependencies.runner = async ({ name }) => ({ code: 0, stdout: realSuccess[name] ?? '' })
+    const evidence = await runReleaseGate(state.options, state.dependencies)
+    assert.deepEqual(evidence.databaseTests, {
+      steps: MANDATORY_DATABASE_COUNTS,
+      total: 1157,
+    })
+  } finally {
+    state.close()
+  }
+})
+
+test('passed local and development evidence requires each mandatory database count exactly once', () => {
+  const base = {
+    schemaVersion: 2,
+    runId: '123e4567-e89b-42d3-a456-426614174000',
+    revision: '7212072813f97d8c21266f5ec72a2b2bb6754967',
+    mode: 'local',
+    status: 'passed',
+    startedAt: '2026-10-03T00:00:00.000Z',
+    finishedAt: '2026-10-03T00:00:01.000Z',
+    durationMs: 1000,
+    developmentProjectFingerprint: null,
+    productionProjectFingerprint: null,
+    artifactManifest: null,
+    databaseTests: { steps: MANDATORY_DATABASE_COUNTS, total: 1157 },
+    readinessEvidence: null,
+    steps: [],
+    failure: null,
+  }
+  assert.doesNotThrow(() => validateEvidence(base))
+  assert.doesNotThrow(() => validateEvidence({
+    ...base,
+    databaseTests: {
+      steps: [...MANDATORY_DATABASE_COUNTS, { name: 'test-storage-upgrade', count: 0 }],
+      total: 1157,
+    },
+  }))
+  for (const databaseTests of [
+    null,
+    { steps: MANDATORY_DATABASE_COUNTS.slice(1), total: 1153 },
+    { steps: [...MANDATORY_DATABASE_COUNTS, MANDATORY_DATABASE_COUNTS[0]], total: 1161 },
+    { steps: MANDATORY_DATABASE_COUNTS.map(item => item.name === 'test-benefit-title-upgrade' ? { ...item, count: 0 } : item), total: 1153 },
+    { steps: [...MANDATORY_DATABASE_COUNTS, { name: 'test-storage-upgrade', count: 1 }, { name: 'test-storage-upgrade', count: 1 }], total: 1159 },
+  ]) assert.throws(() => validateEvidence({ ...base, databaseTests }), /database/i)
+
+  const production = {
+    ...base,
+    mode: 'production-readiness',
+    developmentProjectFingerprint: 'a'.repeat(64),
+    productionProjectFingerprint: 'b'.repeat(64),
+    databaseTests: null,
+    readinessEvidence: {
+      localE2e: { revision: base.revision, finishedAt: base.finishedAt },
+      developmentIntegration: { revision: base.revision, finishedAt: base.finishedAt, projectFingerprint: 'a'.repeat(64) },
+      productionBackup: { revision: base.revision, finishedAt: base.finishedAt, projectFingerprint: 'b'.repeat(64), backupChecksum: 'c'.repeat(64) },
+    },
+  }
+  assert.doesNotThrow(() => validateEvidence(production))
 })
 
 test('canonical test-database accepts the real prove aggregate summary', async () => {
@@ -2002,7 +2150,7 @@ test('canonical test-database accepts the real prove aggregate summary', async (
       'Result: PASS',
       '',
     ].join('\n')
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database' ? proveOutput : '',
@@ -2011,10 +2159,7 @@ test('canonical test-database accepts the real prove aggregate summary', async (
 
     const evidence = await runReleaseGate(state.options, state.dependencies)
 
-    assert.deepEqual(evidence.databaseTests, {
-      steps: [{ name: 'test-database', count: 1146 }],
-      total: 1146,
-    })
+    assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: 'test-database', count: 1146 }]))
     assert.equal(JSON.stringify(evidence).includes('All tests successful'), false)
   } finally {
     state.close()
@@ -2039,7 +2184,7 @@ test('default runner rejects a failure hidden before truncated stdout or stderr'
         'x'.repeat(RUNNER_OUTPUT_LIMIT),
         `\n${CANONICAL_PROVE_OUTPUT}`,
       ]
-      state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
       delete state.dependencies.runner
       state.dependencies.executablePreflight = async () => undefined
       state.dependencies.spawn = (_command, args) => {
@@ -2080,7 +2225,7 @@ test('database protocol rejects explicit per-stream truncation metadata, includi
     const state = executionFixture()
     try {
       const rawSecret = `private-explicit-${stepName}-${stream}@example.com`
-      state.dependencies.plan = compactPlan('local', state.evidence, [stepName])
+      state.dependencies.plan = passingPlan('local', state.evidence, [stepName])
       state.dependencies.runner = async ({ name }) => {
         if (name !== stepName) return { code: 0, stdout: '', stderr: '' }
         const output = stepName === 'test-database' ? CANONICAL_PROVE_OUTPUT : `optional helper detail\n${rawSecret}\n`
@@ -2115,10 +2260,10 @@ test('database protocol accepts exactly 16 KiB but rejects oversized injected ou
 
   const accepted = executionFixture()
   try {
-    accepted.dependencies.plan = compactPlan('local', accepted.evidence, ['test-database'])
+    accepted.dependencies.plan = passingPlan('local', accepted.evidence, ['test-database'])
     accepted.dependencies.runner = async () => ({ code: 0, stdout: exact, stderr: '' })
     const evidence = await runReleaseGate(accepted.options, accepted.dependencies)
-    assert.deepEqual(evidence.databaseTests, { steps: [{ name: 'test-database', count: 7 }], total: 7 })
+    assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: 'test-database', count: 7 }]))
   } finally {
     accepted.close()
   }
@@ -2126,7 +2271,7 @@ test('database protocol accepts exactly 16 KiB but rejects oversized injected ou
   const oversized = executionFixture()
   try {
     const rawSecret = 'private-oversized-database-output@example.com'
-    oversized.dependencies.plan = compactPlan('local', oversized.evidence, ['test-database'])
+    oversized.dependencies.plan = passingPlan('local', oversized.evidence, ['test-database'])
     oversized.dependencies.runner = async () => ({
       code: 0,
       stdout: `Result: FAIL\n${rawSecret}\n${'x'.repeat(RUNNER_OUTPUT_LIMIT)}\n${CANONICAL_PROVE_OUTPUT}`,
@@ -2154,7 +2299,7 @@ test('database protocol rejects ANSI and control-decorated failure markers witho
     try {
       const rawSecret = `private-control-attack-${index}@example.com`
       const stream = index === 1 ? 'stderr' : 'stdout'
-      state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
       state.dependencies.runner = async ({ name }) => ({
         code: 0,
         stdout: name === 'test-database' && stream === 'stdout'
@@ -2184,7 +2329,7 @@ test('optional database helpers cannot bypass control validation when omitting a
   const state = executionFixture()
   try {
     const rawSecret = 'private-helper-control@example.com'
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-storage-upgrade'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-storage-upgrade'])
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-storage-upgrade' ? `helper detail\x1b[2K\n${rawSecret}\n` : '',
@@ -2220,7 +2365,7 @@ test('database protocol rejects bare CR and invisible Unicode format or separato
       try {
         const rawSecret = `private-invisible-${index}-${stream}@example.com`
         const output = `${attack}\n${rawSecret}\n${CANONICAL_PROVE_OUTPUT}`
-        state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+        state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
         state.dependencies.runner = async ({ name }) => ({
           code: 0,
           stdout: name === 'test-database' && stream === 'stdout' ? output : '',
@@ -2253,7 +2398,7 @@ test('optional database helpers reject invisible Unicode without a summary', asy
     const state = executionFixture()
     try {
       const rawSecret = `private-helper-invisible-${stream}@example.com`
-      state.dependencies.plan = compactPlan('local', state.evidence, ['test-storage-upgrade'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['test-storage-upgrade'])
       state.dependencies.runner = async ({ name }) => ({
         code: 0,
         stdout: name === 'test-storage-upgrade' && stream === 'stdout' ? `${attack}\n${rawSecret}\n` : '',
@@ -2290,15 +2435,12 @@ test('realistic 1.8 KiB Supabase prove output with CRLF and tabs remains accepte
       '',
     ].join('\r\n')
     assert.ok(Buffer.byteLength(output) >= 1_800 && Buffer.byteLength(output) < 2_000)
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
     state.dependencies.runner = async () => ({ code: 0, stdout: output, stderr: '' })
 
     const evidence = await runReleaseGate(state.options, state.dependencies)
 
-    assert.deepEqual(evidence.databaseTests, {
-      steps: [{ name: 'test-database', count: 1146 }],
-      total: 1146,
-    })
+    assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: 'test-database', count: 1146 }]))
   } finally {
     state.close()
   }
@@ -2319,7 +2461,7 @@ test('test-database rejects a canonical prove PASS mixed with failure or ambiguo
     const state = executionFixture()
     try {
       const rawSecret = `private-${label.replaceAll(' ', '-')}@example.com`
-      state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
       state.dependencies.runner = async ({ name }) => ({
         code: 0,
         stdout: name === 'test-database' ? `${output}${rawSecret}\n` : '',
@@ -2344,7 +2486,7 @@ test('test-database never synthesizes a prove PASS block across stdout and stder
   const state = executionFixture()
   try {
     const rawSecret = 'private-cross-stream-summary@example.com'
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database'
@@ -2368,7 +2510,7 @@ test('standalone database summaries cannot override prove failure markers', asyn
   const state = executionFixture()
   try {
     const rawSecret = 'private-standalone-failure@example.com'
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database' ? `Tests=7\nResult: FAIL\n${rawSecret}\n` : '',
@@ -2389,7 +2531,7 @@ test('standalone database summaries cannot override prove failure markers', asyn
 test('ordinary prose containing failure words does not override a standalone database summary', async () => {
   const state = executionFixture()
   try {
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database'
@@ -2400,10 +2542,7 @@ test('ordinary prose containing failure words does not override a standalone dat
 
     const evidence = await runReleaseGate(state.options, state.dependencies)
 
-    assert.deepEqual(evidence.databaseTests, {
-      steps: [{ name: 'test-database', count: 7 }],
-      total: 7,
-    })
+    assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: 'test-database', count: 7 }]))
   } finally {
     state.close()
   }
@@ -2420,7 +2559,7 @@ test('prove summaries fail closed when malformed or unsafe', async () => {
     const state = executionFixture()
     try {
       const rawSecret = `private-${label.replaceAll(' ', '-')}@example.com`
-      state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
       state.dependencies.runner = async ({ name }) => ({
         code: 0,
         stdout: name === 'test-database'
@@ -2441,7 +2580,7 @@ test('prove summaries fail closed when malformed or unsafe', async () => {
   }
 })
 
-test('standalone and prove summaries must agree while identical prove duplicates are accepted', async () => {
+test('mandatory database summaries reject conflicting and identical duplicates', async () => {
   const prove = [
     'All tests successful.',
     'Files=2, Tests=7,  1 wallclock secs ( 0.01 usr  0.02 sys +  0.03 cusr  0.04 csys =  0.10 CPU)',
@@ -2450,12 +2589,12 @@ test('standalone and prove summaries must agree while identical prove duplicates
 
   const conflict = executionFixture()
   try {
-    conflict.dependencies.plan = compactPlan('local', conflict.evidence, ['test-database'])
+    conflict.dependencies.plan = passingPlan('local', conflict.evidence, ['test-database'])
     conflict.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database' ? `Tests=8\n${prove}\n` : '',
     })
-    await assert.rejects(runReleaseGate(conflict.options, conflict.dependencies), /conflicting Tests=<integer> summaries/i)
+    await assert.rejects(runReleaseGate(conflict.options, conflict.dependencies), /exactly one Tests=<integer> summary/i)
     assert.equal(conflict.evidence().databaseTests, null)
   } finally {
     conflict.close()
@@ -2463,16 +2602,13 @@ test('standalone and prove summaries must agree while identical prove duplicates
 
   const duplicate = executionFixture()
   try {
-    duplicate.dependencies.plan = compactPlan('local', duplicate.evidence, ['test-database'])
+    duplicate.dependencies.plan = passingPlan('local', duplicate.evidence, ['test-database'])
     duplicate.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database' ? `${prove}\n${prove}\n` : '',
     })
-    const evidence = await runReleaseGate(duplicate.options, duplicate.dependencies)
-    assert.deepEqual(evidence.databaseTests, {
-      steps: [{ name: 'test-database', count: 7 }],
-      total: 7,
-    })
+    await assert.rejects(runReleaseGate(duplicate.options, duplicate.dependencies), /exactly one Tests=<integer> summary/i)
+    assert.equal(duplicate.evidence().databaseTests, null)
   } finally {
     duplicate.close()
   }
@@ -2482,7 +2618,7 @@ test('embedded prove-like user output is not treated as a database summary or re
   const state = executionFixture()
   try {
     const rawOutput = 'private user text: Files=13, Tests=1146,  9 wallclock secs ( 0.18 usr  0.04 sys +  0.21 cusr  0.11 csys =  0.54 CPU)'
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-database'])
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database' ? `${rawOutput}\nResult: PASS\n` : '',
@@ -2506,7 +2642,7 @@ test('database helper summaries fail closed when explicitly malformed or unsafe'
   ]) {
     const state = executionFixture()
     try {
-      state.dependencies.plan = compactPlan('local', state.evidence, ['test-storage-upgrade', 'never'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['test-storage-upgrade', 'never'])
       state.dependencies.runner = async ({ name }) => ({
         code: 0,
         stdout: name === 'test-storage-upgrade' ? summary : '',
@@ -2529,7 +2665,7 @@ test('database test counts are null before tests and malformed or unsafe summari
   ]) {
     const state = executionFixture()
     try {
-      state.dependencies.plan = compactPlan('local', state.evidence, ['before', 'test-database'])
+      state.dependencies.plan = passingPlan('local', state.evidence, ['before', 'test-database'])
       state.dependencies.runner = async ({ name }) => ({ code: 0, stdout: name === 'test-database' ? stdout : '' })
       await assert.rejects(runReleaseGate(state.options, state.dependencies), expected)
       assert.equal(state.evidence().databaseTests, null)
@@ -2539,7 +2675,7 @@ test('database test counts are null before tests and malformed or unsafe summari
   }
   const state = executionFixture()
   try {
-    state.dependencies.plan = compactPlan('local', state.evidence, ['broken', 'test-database'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['broken', 'test-database'])
     state.dependencies.runner = async ({ name }) => ({ code: name === 'broken' ? 1 : 0, stdout: 'Tests=99\n' })
     await assert.rejects(runReleaseGate(state.options, state.dependencies))
     assert.equal(state.evidence().databaseTests, null)
@@ -2551,7 +2687,7 @@ test('database test counts are null before tests and malformed or unsafe summari
 test('canonical test-database zero count fails the gate and evidence schema', async () => {
   const state = executionFixture()
   try {
-    state.dependencies.plan = compactPlan('local', state.evidence, ['test-database', 'never'])
+    state.dependencies.plan = passingPlan('local', state.evidence, ['test-database', 'never'])
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === 'test-database' ? 'Tests=0\n' : '',
@@ -2580,7 +2716,7 @@ test('development body timeout uses resume guidance without fallback or body per
     const controller = new AbortController()
     let bodyRead = false
     const started = Date.now()
-    state.dependencies.plan = compactPlan('development', state.evidence, ['development-read-only-health'])
+    state.dependencies.plan = passingPlan('development', state.evidence, ['development-read-only-health'])
     state.dependencies.developmentUrl = DEVELOPMENT_URL
     state.dependencies.probeSignal = () => controller.signal
     state.dependencies.fetch = async (url) => {
@@ -2616,7 +2752,7 @@ test('development probes reject declared and streamed oversized bodies without r
         pull(controller) { controller.enqueue(Buffer.alloc(40 * 1024, 'a')) },
         cancel() { cancelled = true },
       })
-      state.dependencies.plan = compactPlan('development', state.evidence, ['development-read-only-health'])
+      state.dependencies.plan = passingPlan('development', state.evidence, ['development-read-only-health'])
       state.dependencies.developmentUrl = DEVELOPMENT_URL
       state.dependencies.fetch = async () => ({
         ok: true,
@@ -2645,7 +2781,7 @@ test('tombstones stale success before removal and runs no steps when removal fai
     const calls = []
     const staleSuccess = JSON.stringify({ status: 'passed', stale: true })
     state.writes.set(state.options.evidencePath, staleSuccess)
-    state.dependencies.plan = compactPlan('local', state.options.evidencePath, ['never'])
+    state.dependencies.plan = passingPlan('local', state.options.evidencePath, ['never'])
     state.dependencies.filesystem.rm = async (file) => {
       if (file === state.options.evidencePath) throw new Error('cannot invalidate output')
     }
@@ -2671,7 +2807,7 @@ test('runs no steps and removes only the temporary sibling when stale evidence c
     const removals = []
     const staleSuccess = JSON.stringify({ status: 'passed', stale: true })
     state.writes.set(state.options.evidencePath, staleSuccess)
-    state.dependencies.plan = compactPlan('local', state.options.evidencePath, ['never'])
+    state.dependencies.plan = passingPlan('local', state.options.evidencePath, ['never'])
     state.dependencies.filesystem.writeFile = async (file) => {
       if (file === state.options.evidencePath) throw new Error('target is not writable')
       throw new Error('unexpected publication write')
@@ -2700,7 +2836,7 @@ test('publication write or rename failure cannot leave pre-existing success evid
     try {
       const secret = `private-${scenario}@example.com`
       state.writes.set(state.options.evidencePath, JSON.stringify({ status: 'passed', stale: true, secret }))
-      state.dependencies.plan = compactPlan('local', state.options.evidencePath, [])
+      state.dependencies.plan = passingPlan('local', state.options.evidencePath, [])
       const baseWrite = state.dependencies.filesystem.writeFile
       const baseRename = state.dependencies.filesystem.rename
       let writes = 0
@@ -2753,13 +2889,19 @@ test('default runner suppresses raw child stdout and stderr from terminal and ev
     import { runReleaseGate } from './scripts/release-gate.mjs'
     const writes = new Map()
     const evidencePath = '/tmp/release-gate-secret-output-test.json'
-    const fakeSpawn = () => {
+    const fakeSpawn = (_command, args) => {
       const child = new EventEmitter()
       child.stdout = new EventEmitter()
       child.stderr = new EventEmitter()
       child.kill = () => true
       setImmediate(() => {
-        child.stdout.emit('data', Buffer.from(${JSON.stringify(childOutput)}))
+        const counts = {
+          'test-benefit-title-upgrade.mjs': 4,
+          'test-benefit-seed-importer.mjs': 7,
+          'test-database.mjs': 1146,
+        }
+        const summary = counts[args?.[0]] === undefined ? '' : '\\nTests=' + counts[args[0]] + '\\n'
+        child.stdout.emit('data', Buffer.from(${JSON.stringify(childOutput)} + summary))
         child.stderr.emit('data', Buffer.from(${JSON.stringify(childOutput)}))
         child.emit('close', 0, null)
       })
@@ -2772,7 +2914,12 @@ test('default runner suppresses raw child stdout and stderr from terminal and ev
         plan: {
           mode: 'local',
           evidencePath,
-          steps: [{ name: 'check', command: 'node', args: ['check.mjs'], environment: {} }],
+          steps: [
+            { name: 'check', command: 'node', args: ['check.mjs'], environment: {} },
+            { name: 'test-benefit-title-upgrade', command: 'node', args: ['test-benefit-title-upgrade.mjs'], environment: {} },
+            { name: 'test-benefit-seed-importer', command: 'node', args: ['test-benefit-seed-importer.mjs'], environment: {} },
+            { name: 'test-database', command: 'node', args: ['test-database.mjs'], environment: {} },
+          ],
         },
         spawn: fakeSpawn,
         filesystem: {

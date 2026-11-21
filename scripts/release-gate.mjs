@@ -24,6 +24,11 @@ const DATABASE_TEST_STEPS = new Set([
   'test-public-attachment-integration',
   'test-database',
 ])
+const MANDATORY_DATABASE_TEST_STEPS = new Set([
+  'test-benefit-title-upgrade',
+  'test-benefit-seed-importer',
+  'test-database',
+])
 const HOSTED_LOCAL_ENV = [
   'SUPABASE_URL',
   'SUPABASE_PUBLISHABLE_KEY',
@@ -692,18 +697,32 @@ export function validateEvidence(evidence) {
       throw new Error('release evidence databaseTests steps are invalid')
     }
     let total = 0
+    const names = new Set()
     for (const item of evidence.databaseTests.steps) {
       exactKeys(item, DATABASE_TEST_KEYS, 'database test')
       if (!DATABASE_TEST_STEPS.has(item.name) || !Number.isSafeInteger(item.count) || item.count < 0) {
         throw new Error('release evidence database test count is invalid')
       }
-      if (item.name === 'test-database' && item.count === 0) {
-        throw new Error('release evidence canonical database test count must be greater than zero')
+      if (names.has(item.name)) throw new Error('release evidence database test names must be unique')
+      names.add(item.name)
+      if (MANDATORY_DATABASE_TEST_STEPS.has(item.name) && item.count === 0) {
+        throw new Error('release evidence mandatory database test counts must be greater than zero')
       }
       total += item.count
       if (!Number.isSafeInteger(total)) throw new Error('release evidence database test total is invalid')
     }
     if (evidence.databaseTests.total !== total) throw new Error('release evidence databaseTests total is invalid')
+  }
+  if (evidence.status === 'passed' && evidence.mode !== 'production-readiness') {
+    if (evidence.databaseTests === null) {
+      throw new Error('passed local or development release evidence requires databaseTests')
+    }
+    const names = evidence.databaseTests.steps.map(({ name }) => name)
+    for (const required of MANDATORY_DATABASE_TEST_STEPS) {
+      if (names.filter((name) => name === required).length !== 1) {
+        throw new Error(`passed local or development release evidence requires database test ${required} exactly once`)
+      }
+    }
   }
   if (evidence.mode !== 'production-readiness') {
     if (evidence.readinessEvidence !== null) throw new Error('non-production release readinessEvidence must be null')
@@ -976,10 +995,13 @@ function databaseTestCount(stepName, result) {
 
   const summaries = [...standaloneSummaries.map((summary) => summary[1]), ...proveSummaries]
   if (summaries.length === 0) {
-    if (stepName === 'test-database') {
-      throw new ReleaseFailure(stepName, 'evidence', 'test-database must emit a Tests=<integer> summary or valid prove aggregate summary')
+    if (MANDATORY_DATABASE_TEST_STEPS.has(stepName)) {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} must emit exactly one Tests=<integer> summary or valid prove aggregate summary`)
     }
     return undefined
+  }
+  if (MANDATORY_DATABASE_TEST_STEPS.has(stepName) && summaries.length !== 1) {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} must emit exactly one Tests=<integer> summary`)
   }
   const counts = summaries.map((summary) => {
     if (!/^\d+$/.test(summary)) {
@@ -994,8 +1016,8 @@ function databaseTestCount(stepName, result) {
   if (new Set(counts).size !== 1) {
     throw new ReleaseFailure(stepName, 'evidence', `${stepName} emitted conflicting Tests=<integer> summaries`)
   }
-  if (stepName === 'test-database' && counts[0] === 0) {
-    throw new ReleaseFailure(stepName, 'evidence', 'test-database Tests count must be greater than zero')
+  if (MANDATORY_DATABASE_TEST_STEPS.has(stepName) && counts[0] === 0) {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} Tests count must be greater than zero`)
   }
   return counts[0]
 }

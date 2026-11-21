@@ -177,3 +177,4 @@ fixture_fingerprint="${baseline%%:*}"
 [[ "$(psqlq "select count(*)||':'||(select count(*) from private.benefit_company_sources)||':'||(select count(*) from private.benefit_import_receipts) from public.benefit_companies where company_id<>'KR-BIZ-9999999999'")" == "$first_counts" ]] || fail "replay changed exact counts"
 
 printf 'benefit seed importer integration PASS: trigger rewrites rolled back; schema, dry-run, receipt, late-failure, apply, replay verified\n'
+printf 'Tests=7\n'

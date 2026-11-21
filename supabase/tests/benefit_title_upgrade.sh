@@ -420,3 +420,4 @@ fi
 printf 'canonical collision rollback preserved rows=%s constraint and RPC fingerprints\n' "$collision_rows_before"
 
 printf 'benefit title upgrade, lock race, invalid-title rollback, and canonical collision rollback fixtures passed\n'
+printf 'Tests=4\n'
