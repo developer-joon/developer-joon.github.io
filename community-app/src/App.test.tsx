@@ -4,6 +4,7 @@ import { App, ConfigurationErrorScreen } from './App'
 import type { AuthClient } from './auth/AuthProvider'
 import type { CommunityRepository } from './data/communityRepository'
 import type { BenefitCorrectionRepository } from './data/benefitCorrectionRepository'
+import type { AdminBenefitSubmissionRepository } from './data/adminBenefitSubmissionRepository'
 import type { UploadRepository } from './data/uploadRepository'
 import { AuthContext, type AuthContextValue } from './auth/AuthProvider'
 
@@ -165,6 +166,24 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: '복지 정정 검토 데스크' })).toBeInTheDocument()
     expect(repository.isAdmin).toHaveBeenCalledTimes(1)
     expect(correctionRepository.listAdminQueue).toHaveBeenCalledWith({ status: 'active', limit: 50 }, expect.any(AbortSignal))
+  })
+
+  it('routes the admin benefit submission static shell to its lazy authenticated desk', async () => {
+    const repository = { isAdmin: vi.fn().mockResolvedValue({ ok: true, data: true }) } as unknown as CommunityRepository
+    const submissionRepository = {
+      listQueue: vi.fn().mockResolvedValue({ ok: true, data: { items: [], hasMore: false, nextCursor: null } }),
+      review: vi.fn(),
+    } as unknown as AdminBenefitSubmissionRepository
+    const auth = {
+      loading: false, pending: false, session: {} as never, user: { id: '56000000-0000-4000-8000-000000000030' } as never,
+      error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => false),
+    } satisfies AuthContextValue
+
+    render(<AuthContext.Provider value={auth}><App pathname="/community/admin/benefit-submissions/" repository={repository} adminBenefitSubmissionRepository={submissionRepository} /></AuthContext.Provider>)
+
+    expect(await screen.findByRole('heading', { name: '복지 제보 검토 데스크' })).toBeInTheDocument()
+    expect(repository.isAdmin).toHaveBeenCalledOnce()
+    expect(submissionRepository.listQueue).toHaveBeenCalledWith({ status: 'active', limit: 50 }, expect.any(AbortSignal))
   })
 
   it('renders a friendly Korean configuration error', () => {

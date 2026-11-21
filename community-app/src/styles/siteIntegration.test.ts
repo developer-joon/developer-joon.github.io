@@ -39,6 +39,7 @@ const entryHtml = [
   'benefits/correction/index.html',
   'benefits/my-corrections/index.html',
   'admin/benefit-corrections/index.html',
+  'admin/benefit-submissions/index.html',
 ].map(read)
 const benefitsExplorerEntries = [
   ['benefits/index.html', '복지 현황'],
@@ -54,6 +55,7 @@ const shellSources = [
   'src/pages/AuthCallbackPage.tsx',
   'src/pages/AdminReportsPage.tsx',
   'src/pages/AdminBenefitCorrectionsPage.tsx',
+  'src/pages/AdminBenefitSubmissionsPage.tsx',
 ].map(read).join('\n')
 
 type CssRule = {
@@ -769,6 +771,7 @@ describe('shared shell contract', () => {
       'src/pages/AuthCallbackPage.tsx',
       'src/pages/AdminReportsPage.tsx',
       'src/pages/AdminBenefitCorrectionsPage.tsx',
+      'src/pages/AdminBenefitSubmissionsPage.tsx',
     ].every((path) => read(path).includes('<AppFooter />'))).toBe(true)
   })
 

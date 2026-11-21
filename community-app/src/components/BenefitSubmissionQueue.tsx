@@ -1,0 +1,13 @@
+import type { AdminBenefitSubmissionFilter, AdminBenefitSubmissionItem } from '../types/adminBenefitSubmissions'
+
+const filters:Array<[AdminBenefitSubmissionFilter,string]>=[['active','처리 중'],['submitted','접수'],['reviewing','검토 중'],['approved','승인'],['rejected','반려'],['all','전체']]
+const categories={leave:'휴가',family:'가족',health:'건강',growth:'성장',housing:'주거',commute:'통근',remote:'원격 근무',retirement:'퇴직',meals:'식사',inclusion:'포용'}
+const statuses={submitted:'접수',reviewing:'검토 중',approved:'승인',rejected:'반려'}
+interface Props{items:AdminBenefitSubmissionItem[];selectedId:string|null;filter:AdminBenefitSubmissionFilter;loading:boolean;loadingMore:boolean;error:string|null;hasMore:boolean;announcement:string;onSelect(id:string):void;onFilterChange(value:AdminBenefitSubmissionFilter):void;onRetry():void;onLoadMore():void}
+export function BenefitSubmissionQueue({items,selectedId,filter,loading,loadingMore,error,hasMore,announcement,onSelect,onFilterChange,onRetry,onLoadMore}:Props){return <section className="report-queue benefit-submission-queue" aria-labelledby="benefit-submission-queue-title">
+  <div className="admin-section-heading"><div><p>SUBMISSION QUEUE</p><h2 id="benefit-submission-queue-title">복지 제보 대기열</h2></div><span>{items.length}건 표시</span></div>
+  <div className="report-filters" aria-label="복지 제보 상태 필터">{filters.map(([value,label])=><button key={value} type="button" aria-pressed={filter===value} onClick={()=>onFilterChange(value)}>{label}</button>)}</div>
+  <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
+  {loading?<p className="admin-state" role="status">제보를 불러오는 중입니다.</p>:error?<div className="admin-state admin-error" role="alert"><p>{error}</p><button type="button" onClick={onRetry}>다시 시도</button></div>:items.length===0?<p className="admin-state">조건에 맞는 복지 제보가 없습니다.</p>:<ol className="report-list">{items.map(item=><li key={item.id} className={selectedId===item.id?'is-selected':''}><button type="button" className="report-row correction-row" aria-pressed={selectedId===item.id} aria-label={`복지 제보 ${item.companyId} ${categories[item.categoryId]} 선택`} onClick={()=>onSelect(item.id)}><span className="report-row-top"><strong>{categories[item.categoryId]}</strong><span>{statuses[item.status]}</span><time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString('ko-KR')}</time></span><span className="correction-company">{item.companyId}</span><span className="correction-proposal">{item.benefitText}</span></button></li>)}</ol>}
+  {hasMore&&!loading&&<div className="admin-load-more"><button type="button" disabled={loadingMore} onClick={onLoadMore}>{loadingMore?'불러오는 중':'제보 더 불러오기'}</button></div>}
+</section>}

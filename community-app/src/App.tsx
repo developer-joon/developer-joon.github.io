@@ -9,6 +9,7 @@ import { getUploadRepository, type UploadRepository } from './data/uploadReposit
 import { getBenefitCorrectionRepository, type BenefitCorrectionRepository } from './data/benefitCorrectionRepository'
 import type { BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
 import type { BenefitSubmissionRepository } from './data/benefitSubmissionRepository'
+import type { AdminBenefitSubmissionRepository } from './data/adminBenefitSubmissionRepository'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
 import { CommunityActions } from './components/CommunityActions'
@@ -41,6 +42,10 @@ const AdminBenefitCorrectionsPage = lazy(async () => {
   const module = await import('./pages/AdminBenefitCorrectionsPage')
   return { default: module.AdminBenefitCorrectionsPage }
 })
+const AdminBenefitSubmissionsPage = lazy(async () => {
+  const module = await import('./pages/AdminBenefitSubmissionsPage')
+  return { default: module.AdminBenefitSubmissionsPage }
+})
 
 
 interface AppProps {
@@ -54,6 +59,7 @@ interface AppProps {
   benefitCorrectionRepository?: BenefitCorrectionRepository
   benefitDirectoryRepository?: BenefitDirectoryRepository
   benefitSubmissionRepository?: BenefitSubmissionRepository
+  adminBenefitSubmissionRepository?: AdminBenefitSubmissionRepository
 }
 
 function LazyRouteFallback({ children }: { children: React.ReactNode }) {
@@ -67,7 +73,7 @@ function LazyRouteFallback({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, benefitCorrectionRepository, benefitDirectoryRepository, benefitSubmissionRepository, authClient, onAuthCallbackNavigate }: AppProps) {
+export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, benefitCorrectionRepository, benefitDirectoryRepository, benefitSubmissionRepository, adminBenefitSubmissionRepository, authClient, onAuthCallbackNavigate }: AppProps) {
   const auth = useAuth()
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (benefitsRoute(pathname) === 'methodology') return <Suspense fallback={<LazyRouteFallback>조사 기준을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsMethodologyPage search={search} /></Suspense>
@@ -107,6 +113,9 @@ export function App({ pathname = window.location.pathname, search = window.locat
   }
   if (normalizedPathname === '/community/admin/benefit-corrections') {
     return <Suspense fallback={<LazyRouteFallback>복지 정정 검토 데스크를 준비하고 있습니다.</LazyRouteFallback>}><AdminBenefitCorrectionsPage authorizationRepository={repository ?? getCommunityRepository()} correctionRepository={benefitCorrectionRepository ?? getBenefitCorrectionRepository()} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/admin/benefit-submissions') {
+    return <Suspense fallback={<LazyRouteFallback>복지 제보 검토 데스크를 준비하고 있습니다.</LazyRouteFallback>}><AdminBenefitSubmissionsPage authorizationRepository={repository ?? getCommunityRepository()} repository={adminBenefitSubmissionRepository} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/auth/callback') {
     return <AuthCallbackPage client={authClient} search={search} navigate={onAuthCallbackNavigate} />
