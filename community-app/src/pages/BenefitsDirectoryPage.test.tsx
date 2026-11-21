@@ -31,6 +31,28 @@ afterEach(() => {
 })
 
 describe('dynamic benefit directory search', () => {
+  it('keeps one page H1 and a search-first accessible control order in loading and ready states', async () => {
+    const pending = deferred<Result<BenefitDirectoryPage>>()
+    const { container } = render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(() => pending.promise))} />)
+
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    const searchbox = screen.getByRole('searchbox', { name: '기업명 검색' })
+    const category = screen.getByRole('checkbox', { name: '휴가' })
+    const publishedOnly = screen.getByRole('checkbox', { name: '복지 정보 있는 기업만' })
+    const secondary = screen.getByRole('group', { name: '세부 필터' })
+    expect(searchbox.compareDocumentPosition(category) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(category.compareDocumentPosition(publishedOnly) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(publishedOnly.compareDocumentPosition(secondary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(secondary).toHaveAttribute('open')
+    expect(screen.getByText('기업을 검색하고 있습니다.').parentElement).toHaveAttribute('aria-live', 'polite')
+    expect(screen.getByText('기업을 검색하고 있습니다.').parentElement).toHaveAttribute('aria-atomic', 'true')
+
+    pending.resolve(ok(page()))
+    await act(async () => { await pending.promise })
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    expect(container.querySelectorAll('main')).toHaveLength(1)
+  })
+
   it('debounces typing into replaceState and sends the exact RPC input while discrete filters push immediately', async () => {
     vi.useFakeTimers()
     const search = vi.fn(async () => ok(page()))
@@ -275,5 +297,7 @@ describe('dynamic benefit directory search', () => {
     expect(card).toHaveTextContent('소프트웨어 · 대기업 · 서울')
     expect(screen.getByRole('link', { name: /가나다 공식/ })).toHaveAttribute('href', '/benefits/company/?id=KR-CRN-1101111111111')
     expect(card.textContent).not.toMatch(/source|verified|review|submitter|provenance|검토일|확인일/i)
+    expect(within(card).getByRole('status')).toHaveTextContent('게시 가능한 공개 복지 근거 미확인')
+    expect(card.querySelector('a button, button a, a a, button button')).toBeNull()
   })
 })

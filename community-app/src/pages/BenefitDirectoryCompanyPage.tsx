@@ -182,7 +182,7 @@ export function BenefitDirectoryCompanyPage({
       {company.summary && <p className="benefit-company-page__summary">{company.summary}</p>}
     </header>
 
-    {publications.length === 0 ? <section className="benefit-company-page__empty" aria-labelledby="company-empty-heading">
+    {publications.length === 0 ? <section className="benefit-company-page__empty" role="status" aria-labelledby="company-empty-heading">
       <h2 id="company-empty-heading">게시 가능한 공개 복지 근거 미확인</h2>
       <p>공개 근거가 아직 게시되지 않은 상태입니다. 게시 여부만 나타내며 실제 제도 유무를 단정하지 않습니다.</p>
       <a className="benefit-company-page__submit" href={benefitSubmissionHref(company.companyId)}>새 혜택 제보</a>

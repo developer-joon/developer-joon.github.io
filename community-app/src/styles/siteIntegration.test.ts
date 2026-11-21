@@ -96,6 +96,11 @@ function parseRules(source: string, inherited = { minWidth: 0, maxWidth: Number.
 }
 
 const cssRules = parseRules(communityCss)
+const benefitsRules = parseRules(benefitsCss)
+
+function benefitRule(selector: string, maximumWidth = Number.POSITIVE_INFINITY) {
+  return benefitsRules.find((rule) => rule.selectors.includes(selector) && rule.maxWidth === maximumWidth)
+}
 
 function specificity(selector: string) {
   return (selector.match(/\.[\w-]+/g)?.length ?? 0) * 100 + (selector.match(/(?:^|\s)main\b/g)?.length ?? 0)
@@ -521,6 +526,16 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('keeps the benefits discovery mobile contract scoped and accessible', () => {
+    expect(benefitRule('.benefits-page .domestic-directory__filter-details summary')?.declarations.display).toBe('none')
+    expect(benefitRule('.benefits-page .domestic-directory__filter-details summary', 700)?.declarations.display).toBe('flex')
+    expect(benefitRule('.benefits-page .domestic-directory__chips label')?.declarations['min-height']).toBe('44px')
+    expect(benefitRule('.benefits-page .domestic-directory :focus-visible')?.declarations.outline).toBeDefined()
+    expect(benefitRule('.benefits-page .domestic-directory__record')?.declarations['overflow-wrap']).toBe('anywhere')
+    expect(benefitRule('.benefit-company-page__card')?.declarations['min-width']).toBe('0')
+    expect(benefitsCss).not.toMatch(/(?:community-header|global-navigation|menu-toggle)/)
+  })
+
   it('keeps Benefit Atlas correction CTAs on the internal workflow only', () => {
     const companyPage = read('src/pages/BenefitsCompanyPage.tsx')
     const methodologyPage = read('src/pages/BenefitsMethodologyPage.tsx')

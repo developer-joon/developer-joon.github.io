@@ -66,6 +66,7 @@ describe('BenefitDirectoryCompanyPage', () => {
     render(<BenefitDirectoryCompanyPage search={search} repository={repository(load)} />)
     expect(screen.getByRole('alert')).toHaveTextContent('유효하지 않은 기업 상세 링크입니다.')
     expect(load).not.toHaveBeenCalled()
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
   })
 
   it.each([CRN_A, BIZ])('passes canonical server ID %s to detail unchanged', async id => {
@@ -112,11 +113,22 @@ describe('BenefitDirectoryCompanyPage', () => {
   it('binds the honest zero-publication CTA to the Task 7 submission route contract', async () => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>().mockResolvedValue(ok(detail(CRN_A, [])))
     render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(load)} />)
-    expect(await screen.findByText('게시 가능한 공개 복지 근거 미확인')).toBeVisible()
+    await screen.findByText('게시 가능한 공개 복지 근거 미확인')
+    expect(screen.getByRole('status')).toHaveTextContent('게시 가능한 공개 복지 근거 미확인')
     expect(screen.getByText(/게시 여부만 나타내며 실제 제도 유무를 단정하지 않습니다/)).toBeVisible()
     expect(screen.queryByText(/복지 없음/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: '새 혜택 제보' })).toHaveAttribute('href', `/community/benefits/submit/?companyId=${CRN_A}`)
     expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/benefits/')
+  })
+
+  it('keeps exactly one H1 in loading and error states', async () => {
+    const request = deferred<Result<BenefitCompanyDetail>>()
+    render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(vi.fn(() => request.promise))} />)
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    request.resolve(failure('network'))
+    await act(async () => { await request.promise })
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    expect(screen.getByRole('alert')).toBeVisible()
   })
 
   it.each([

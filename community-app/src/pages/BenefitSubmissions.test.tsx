@@ -45,6 +45,24 @@ describe('account-scoped render visibility',()=>{
 })
 
 describe('BenefitSubmissionPage',()=>{
+  it('keeps one H1 and connects every form description and privacy warning',async()=>{
+    const {container}=wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={storage()} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
+    await screen.findByLabelText('복지 내용')
+    expect(screen.getAllByRole('heading',{level:1})).toHaveLength(1)
+    for(const control of container.querySelectorAll<HTMLElement>('[aria-describedby]')){
+      for(const id of (control.getAttribute('aria-describedby')??'').split(/\s+/).filter(Boolean))expect(container.querySelector(`#${CSS.escape(id)}`),`${control.tagName} -> ${id}`).not.toBeNull()
+    }
+    const warning=screen.getByText(/개인 정보나 민감한 직원 정보/)
+    expect(screen.getByRole('form')).toHaveAttribute('aria-describedby',warning.id)
+    expect(screen.getByRole('textbox',{name:'공개 HTTPS 근거 URL (선택)'})).toBeInTheDocument()
+  })
+
+  it('keeps exactly one H1 while the page is preparing',()=>{
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={storage()} sessionStorage={storage()} lockAdapter={locks()} />,{...auth(null),loading:true})
+    expect(screen.getAllByRole('heading',{level:1})).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent('제보 화면을 준비하고 있습니다')
+  })
+
   it('does not expose A draft, company, or messages in B render commits before B hydration',async()=>{
     const scopeB='b'.repeat(64) as never,local=storage(),lock=locks(),sessionA={},sessionB={}
     const privateDraft={...createBenefitSubmissionDraft(scope),companyId:company.companyId,companyName:company.displayName,categoryId:'leave' as const,benefitText:'A private benefit'}
@@ -169,7 +187,7 @@ describe('BenefitSubmissionPage',()=>{
     wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
     expect(await screen.findByRole('alert')).toHaveTextContent('읽을 수 없습니다')
     expect(screen.getByRole('button',{name:'저장된 초안 초기화'})).toBeVisible()
-    expect(screen.getByRole('button',{name:'다시 불러오기'})).toBeVisible()
+    expect(screen.getByRole('button',{name:'저장된 초안 다시 불러오기'})).toBeVisible()
     expect(screen.queryByLabelText('복지 내용')).not.toBeInTheDocument()
     expect(local.getItem(key)).toBe(raw);expect(local.setItem).not.toHaveBeenCalled();expect(local.removeItem).not.toHaveBeenCalled()
   })
