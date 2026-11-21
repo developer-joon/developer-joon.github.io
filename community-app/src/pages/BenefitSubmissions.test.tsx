@@ -125,7 +125,7 @@ describe('BenefitSubmissionPage',()=>{
     wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
     fireEvent.click(await screen.findByRole('button',{name:'저장된 초안 초기화'}))
     expect(await screen.findByLabelText('복지 내용')).toHaveValue('')
-    expect(local.removeItem).toHaveBeenCalledWith(key)
+    expect(local.removeItem).not.toHaveBeenCalled()
     const fresh=local.getItem(key);expect(fresh).not.toBeNull();expect(JSON.parse(fresh!).accountScope).toBe(scope)
   })
 
@@ -138,9 +138,9 @@ describe('BenefitSubmissionPage',()=>{
     expect(local.getItem(key)).toBe('{new invalid')
   })
 
-  it.each(['throw','noop'] as const)('keeps recovery blocked when reset removal is a %s',async failure=>{
+  it.each(['throw','noop'] as const)('keeps recovery blocked when reset overwrite is a %s',async failure=>{
     const local=storage(),key=benefitSubmissionDraftKey(scope);local.values.set(key,'{blocked')
-    local.removeItem=failure==='throw'?vi.fn(()=>{throw new Error('blocked')}):vi.fn()
+    local.setItem=failure==='throw'?vi.fn(()=>{throw new Error('blocked')}):vi.fn()
     wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,auth(actor))
     fireEvent.click(await screen.findByRole('button',{name:'저장된 초안 초기화'}))
     await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('초안을 초기화하지 못했습니다'))
@@ -167,6 +167,61 @@ describe('BenefitSubmissionPage',()=>{
     wrap(<BenefitSubmissionPage repository={submissions({getCurrentAccountScope:vi.fn().mockResolvedValue({ok:true,data:'b'.repeat(64)})})} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} />,auth('33333333-3333-4333-8333-333333333333'))
     expect(await screen.findByRole('alert')).toHaveTextContent('같은 계정으로 로그인')
     expect(screen.queryByLabelText('복지 내용')).not.toBeInTheDocument();expect(local.getItem(benefitSubmissionDraftKey('preauth'))).toBe(saved.snapshot)
+  })
+
+  it('offers both claimed-intent recovery actions and restores the login-time draft only after approval',async()=>{
+    const local=storage(),session=storage(),lock=locks(),key=benefitSubmissionDraftKey(scope),raw='{invalid account';local.values.set(key,raw)
+    const preauth=createBenefitSubmissionDraft('preauth',()=> '22222222-2222-4222-8222-222222222222',()=> '2026-11-21T00:00:00.000Z')
+    const saved=await saveBenefitSubmissionDraft('preauth',{...preauth,benefitText:'복구할 로그인 전 초안'},local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} />,auth(actor))
+    expect(await screen.findByRole('heading',{name:'로그인 초안 복구 선택'})).toBeVisible()
+    expect(screen.getByRole('alert')).toHaveTextContent('계정에 저장된 초안을 읽을 수 없습니다')
+    expect(screen.getByRole('button',{name:'로그인 전 초안으로 복구'})).toBeVisible()
+    expect(screen.getByRole('button',{name:'로그인 전 초안 버리기'})).toBeVisible()
+    expect(screen.queryByLabelText('복지 내용')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'로그인 전 초안으로 복구'}))
+    expect(await screen.findByLabelText('복지 내용')).toHaveValue('복구할 로그인 전 초안')
+    const restored=JSON.parse(local.getItem(key)!);expect(restored).toMatchObject({accountScope:scope,clientKey:preauth.clientKey,updatedAt:preauth.updatedAt})
+  })
+
+  it('discards only the claimed envelope then exposes normal invalid-draft recovery',async()=>{
+    const local=storage(),session=storage(),lock=locks(),key=benefitSubmissionDraftKey(scope),raw='{invalid account';local.values.set(key,raw)
+    const saved=await saveBenefitSubmissionDraft('preauth',createBenefitSubmissionDraft('preauth'),local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} />,auth(actor))
+    fireEvent.click(await screen.findByRole('button',{name:'로그인 전 초안 버리기'}))
+    expect(await screen.findByRole('heading',{name:'저장된 초안 복구 필요'})).toBeVisible()
+    expect(local.getItem(key)).toBe(raw)
+    fireEvent.click(screen.getByRole('button',{name:'저장된 초안 초기화'}))
+    expect(await screen.findByLabelText('복지 내용')).toHaveValue('')
+  })
+
+  it('keeps claimed recovery retryable when envelope cleanup is a no-op',async()=>{
+    const local=storage(),session=storage(),lock=locks(),key=benefitSubmissionDraftKey(scope);local.values.set(key,'{invalid account')
+    const saved=await saveBenefitSubmissionDraft('preauth',{...createBenefitSubmissionDraft('preauth'),benefitText:'재시도 초안'},local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    const remove=session.removeItem;session.removeItem=vi.fn()
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} />,auth(actor))
+    fireEvent.click(await screen.findByRole('button',{name:'로그인 전 초안으로 복구'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('정리를 완료하지 못했습니다')
+    expect(screen.getByRole('button',{name:'로그인 전 초안으로 복구'})).toBeEnabled()
+    session.removeItem=remove;fireEvent.click(screen.getByRole('button',{name:'로그인 전 초안으로 복구'}))
+    expect(await screen.findByLabelText('복지 내용')).toHaveValue('재시도 초안')
+  })
+
+  it('ignores late claimed-recovery UI completion after an account switch',async()=>{
+    const scopeB='b'.repeat(64) as never,local=storage(),session=storage(),base=locks(),key=benefitSubmissionDraftKey(scope);local.values.set(key,'{invalid account')
+    const saved=await saveBenefitSubmissionDraft('preauth',{...createBenefitSubmissionDraft('preauth'),benefitText:'A 전용 복구'},local,base);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,base,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    let release!:()=>void,accountRequests=0;const gate=new Promise<void>(resolve=>{release=resolve})
+    const lock:BenefitSubmissionLockAdapter={request:<T,>(name:string,callback:()=>Promise<T>|T)=>base.request(name,async()=>{if(name.endsWith(`:account:${scope}`)&&++accountRequests===2)await gate;return callback()})}
+    const repo=submissions();(repo.getCurrentAccountScope as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ok:true,data:scope}).mockResolvedValue({ok:true,data:scopeB})
+    const view=wrap(<BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} />,auth(actor))
+    fireEvent.click(await screen.findByRole('button',{name:'로그인 전 초안으로 복구'}))
+    view.rerender(<AuthContext.Provider value={auth('33333333-3333-4333-8333-333333333333')}><BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} /></AuthContext.Provider>)
+    release()
+    expect(await screen.findByLabelText('복지 내용')).not.toHaveValue('A 전용 복구')
   })
 
   it('shows partial success and retries only conditional local cleanup',async()=>{

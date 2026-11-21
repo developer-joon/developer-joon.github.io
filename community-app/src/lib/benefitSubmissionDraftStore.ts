@@ -17,8 +17,10 @@ export type DraftSaveResult={ok:true;snapshot:string}|{ok:false;reason:'invalid'
 export type DraftClaimResult={state:'missing'}|{state:'invalid'}|{state:'unreadable'}|{state:'unavailable'}|{state:'denied'}|{state:'present';draft:BenefitSubmissionDraft;snapshot:string}
   |{state:'cleanup_failed';draft:BenefitSubmissionDraft;snapshot:string}
   |{state:'conflict';accountDraft:BenefitSubmissionDraft;accountSnapshot:string;preauthDraft:BenefitSubmissionDraft;preauthSnapshot:string}
+  |{state:'account_invalid';kind:InvalidDraftKind;snapshotId:string}
 export type ConditionalClearResult={state:'cleared'}|{state:'changed'}|{state:'invalid'}|{state:'unavailable'}
 export type InvalidDraftResetResult={state:'reset';draft:BenefitSubmissionDraft;snapshot:string}|{state:'changed'}|{state:'unavailable'}
+export type ClaimedDraftRestoreResult={state:'restored';draft:BenefitSubmissionDraft;snapshot:string}|{state:'cleanup_failed';draft:BenefitSubmissionDraft;snapshot:string}|{state:'conflict'}|{state:'missing'}|{state:'denied'}|{state:'unavailable'}
 export type VerifiedMutationResult<T>={state:'mutation_not_dispatched';reason:'invalid'|'unavailable'|'changed'}|{state:'mutation_failed';error:unknown}|{state:'mutation_succeeded_cleared';value:T}|{state:'mutation_succeeded_cleanup_failed';value:T;snapshot:string}
 export type MutationDispatchResult<T>={ok:true;value:T}|{ok:false;error:unknown}
 type LoginIntentEnvelope={version:2;state:'pending';nonce:string;draft:string}|{version:2;state:'claimed';nonce:string;draft:string;actorScope:BenefitSubmissionAccountScope}
@@ -109,11 +111,11 @@ export async function resetInvalidBenefitSubmissionDraft(accountScope:BenefitSub
     let fresh:BenefitSubmissionDraft,freshRaw:string|null
     try{fresh=createBenefitSubmissionDraft(accountScope,uuid,now);freshRaw=serialize(accountScope,fresh)}catch{return {state:'unavailable'}}
     if(!freshRaw)return {state:'unavailable'}
-    if(removeExact(storage,key,raw)!=='removed')return {state:'unavailable'}
-    const saved=saveRawUnlocked(accountScope,freshRaw,storage)
-    if(saved.ok)return {state:'reset',draft:fresh,snapshot:saved.snapshot}
-    try{storage.setItem(key,raw)}catch{/* best-effort restoration of the invalid draft */}
-    return {state:'unavailable'}
+    try{storage.setItem(key,freshRaw)}catch{/* classify the bytes that survived below */}
+    let current:string|null
+    try{current=storage.getItem(key)}catch{return {state:'unavailable'}}
+    if(current===freshRaw)return {state:'reset',draft:fresh,snapshot:freshRaw}
+    return current===raw||current===null?{state:'unavailable'}:{state:'changed'}
   })
   return result.ok?result.value:{state:'unavailable'}
 }
@@ -134,12 +136,12 @@ export async function claimPreAuthBenefitSubmissionDraft(accountScope:BenefitSub
     const transferred=parse(accountScope,{...source,accountScope,updatedAt:now()})
     if(!transferred)return {state:'invalid'}
     const transferredRaw=JSON.stringify(transferred)
-    const classified=await locked(adapter,accountLock(accountScope),():DraftClaimResult=>{
+    const classified=await locked(adapter,accountLock(accountScope),async():Promise<DraftClaimResult>=>{
       let current:string|null
       try{current=storage.getItem(benefitSubmissionDraftKey(accountScope))}catch{return {state:'unreadable'}}
       if(current===null){const saved=saveRawUnlocked(accountScope,transferredRaw,storage);return saved.ok?{state:'present',draft:transferred,snapshot:saved.snapshot}:{state:'unreadable'}}
       const accountDraft=parseRaw(accountScope,current)
-      if(!accountDraft)return {state:'invalid'}
+      if(!accountDraft){try{return {state:'account_invalid',kind:invalidKind(current),snapshotId:await snapshotIdentity(accountScope,current)}}catch{return {state:'unavailable'}}}
       if(accountDraft.clientKey!==source.clientKey)return {state:'conflict',accountDraft,accountSnapshot:current,preauthDraft:source,preauthSnapshot:claimed.draft}
       return {state:'present',draft:accountDraft,snapshot:current}
     })
@@ -156,6 +158,51 @@ export async function claimPreAuthBenefitSubmissionDraft(accountScope:BenefitSub
     return classified.value
   })
   return intent.ok?intent.value:{state:'unavailable'}
+}
+export async function restoreClaimedPreAuthBenefitSubmissionDraft(accountScope:BenefitSubmissionAccountScope,nonce:string,expectedSnapshotId:string,storage?:BenefitSubmissionDraftStorage,sessionStorage?:BenefitSubmissionDraftStorage,adapter?:BenefitSubmissionLockAdapter):Promise<ClaimedDraftRestoreResult>{
+  if(!storage||!sessionStorage||!adapter||!scope(accountScope)||accountScope==='preauth'||!isStrictUuid(nonce)||!/^[0-9a-f]{64}$/.test(expectedSnapshotId))return {state:'unavailable'}
+  const result=await locked(adapter,intentLock(),async():Promise<ClaimedDraftRestoreResult>=>{
+    let envelopeRaw:string|null
+    try{envelopeRaw=sessionStorage.getItem(LOGIN_INTENT_KEY)}catch{return {state:'unavailable'}}
+    const envelope=parseEnvelope(envelopeRaw)
+    if(!envelope||envelope.nonce!==nonce.toLowerCase())return {state:'missing'}
+    if(envelope.state!=='claimed'||envelope.actorScope!==accountScope)return {state:'denied'}
+    const source=parseRaw('preauth',envelope.draft)
+    if(!source)return {state:'unavailable'}
+    const restored=parse(accountScope,{...source,accountScope})
+    if(!restored)return {state:'unavailable'}
+    const restoredRaw=JSON.stringify(restored),key=benefitSubmissionDraftKey(accountScope)
+    const account=await locked(adapter,accountLock(accountScope),async():Promise<'restored'|'conflict'|'unavailable'>=>{
+      let current:string|null
+      try{current=storage.getItem(key)}catch{return 'unavailable'}
+      if(current===restoredRaw)return 'restored'
+      if(current===null||parseRaw(accountScope,current))return 'conflict'
+      let currentId:string
+      try{currentId=await snapshotIdentity(accountScope,current)}catch{return 'unavailable'}
+      if(currentId!==expectedSnapshotId)return 'conflict'
+      try{storage.setItem(key,restoredRaw)}catch{/* inspect without rollback */}
+      try{current=storage.getItem(key)}catch{return 'unavailable'}
+      if(current===restoredRaw)return 'restored'
+      return current===null||currentId===await snapshotIdentity(accountScope,current).catch(()=> '')?'unavailable':'conflict'
+    })
+    if(!account.ok||account.value==='unavailable')return {state:'unavailable'}
+    if(account.value==='conflict')return {state:'conflict'}
+    if(removeExact(sessionStorage,LOGIN_INTENT_KEY,envelopeRaw!)!=='removed')return {state:'cleanup_failed',draft:restored,snapshot:restoredRaw}
+    return {state:'restored',draft:restored,snapshot:restoredRaw}
+  })
+  return result.ok?result.value:{state:'unavailable'}
+}
+export async function discardClaimedPreAuthBenefitSubmissionIntent(accountScope:BenefitSubmissionAccountScope,nonce:string,sessionStorage?:BenefitSubmissionDraftStorage,adapter?:BenefitSubmissionLockAdapter):Promise<{state:'discarded'}|{state:'missing'}|{state:'denied'}|{state:'unavailable'}>{
+  if(!sessionStorage||!adapter||!scope(accountScope)||accountScope==='preauth'||!isStrictUuid(nonce))return {state:'unavailable'}
+  const result=await locked(adapter,intentLock(),()=>{
+    let raw:string|null
+    try{raw=sessionStorage.getItem(LOGIN_INTENT_KEY)}catch{return {state:'unavailable' as const}}
+    const envelope=parseEnvelope(raw)
+    if(!envelope||envelope.nonce!==nonce.toLowerCase())return {state:'missing' as const}
+    if(envelope.state!=='claimed'||envelope.actorScope!==accountScope)return {state:'denied' as const}
+    return removeExact(sessionStorage,LOGIN_INTENT_KEY,raw!)==='removed'?{state:'discarded' as const}:{state:'unavailable' as const}
+  })
+  return result.ok?result.value:{state:'unavailable'}
 }
 export async function discardClaimedPreAuthBenefitSubmissionDraft(accountScope:BenefitSubmissionAccountScope,nonce:string,storage?:BenefitSubmissionDraftStorage,sessionStorage?:BenefitSubmissionDraftStorage,adapter?:BenefitSubmissionLockAdapter):Promise<{state:'discarded'}|{state:'missing'}|{state:'denied'}|{state:'unavailable'}>{
   if(!storage||!sessionStorage||!adapter||!scope(accountScope)||accountScope==='preauth'||!isStrictUuid(nonce))return {state:'unavailable'}

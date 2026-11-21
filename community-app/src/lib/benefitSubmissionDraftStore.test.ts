@@ -4,9 +4,11 @@ import {
   claimPreAuthBenefitSubmissionDraft,
   clearBenefitSubmissionDraftIfSnapshot,
   createBenefitSubmissionDraft,
+  discardClaimedPreAuthBenefitSubmissionIntent,
   loadBenefitSubmissionDraft,
   markBenefitSubmissionLoginIntent,
   resetInvalidBenefitSubmissionDraft,
+  restoreClaimedPreAuthBenefitSubmissionDraft,
   saveBenefitSubmissionDraft,
   withVerifiedBenefitSubmissionDraft,
   type BenefitSubmissionLockAdapter,
@@ -167,18 +169,91 @@ describe('benefit submission draft store', () => {
     expect(local.getItem(key)).toBe(reset.state==='reset'?reset.snapshot:null)
   })
 
-  it('preserves an interleaved replacement and stays blocked when invalid removal throws or is a no-op', async () => {
+  it('overwrites atomically without removal and never rolls an interleaved replacement back', async () => {
     const lock=locks(),key=benefitSubmissionDraftKey(scope)
     const changed=memory();changed.values.set(key,'{old');const old=await loadBenefitSubmissionDraft(scope,changed,lock);if(old.state!=='invalid')throw new Error('invalid')
     changed.values.set(key,'{replacement')
     await expect(resetInvalidBenefitSubmissionDraft(scope,old.snapshotId,changed,lock)).resolves.toEqual({state:'changed'})
     expect(changed.getItem(key)).toBe('{replacement')
+    const interleaved=memory();interleaved.values.set(key,'{blocked');const interleavedLoaded=await loadBenefitSubmissionDraft(scope,interleaved,lock);if(interleavedLoaded.state!=='invalid')throw new Error('invalid')
+    interleaved.setItem=vi.fn(()=>void interleaved.values.set(key,'{replacement during write'))
+    await expect(resetInvalidBenefitSubmissionDraft(scope,interleavedLoaded.snapshotId,interleaved,lock)).resolves.toEqual({state:'changed'})
+    expect(interleaved.getItem(key)).toBe('{replacement during write')
+    expect(interleaved.setItem).toHaveBeenCalledTimes(1)
+    expect(interleaved.removeItem).not.toHaveBeenCalled()
     for(const failure of ['throw','noop'] as const){
       const local=memory();local.values.set(key,'{blocked');const loaded=await loadBenefitSubmissionDraft(scope,local,lock);if(loaded.state!=='invalid')throw new Error('invalid')
-      local.removeItem=failure==='throw'?vi.fn(()=>{throw new Error('blocked')}):vi.fn()
+      local.setItem=failure==='throw'?vi.fn(()=>{throw new Error('blocked')}):vi.fn()
       await expect(resetInvalidBenefitSubmissionDraft(scope,loaded.snapshotId,local,lock)).resolves.toEqual({state:'unavailable'})
       expect(local.getItem(key)).toBe('{blocked')
+      expect(local.setItem).toHaveBeenCalledTimes(1)
+      expect(local.removeItem).not.toHaveBeenCalled()
     }
+  })
+
+  it('reports an opaque claimed account-invalid state and explicitly restores the exact preauth draft', async () => {
+    const lock=locks(),local=memory(),session=memory(),key=benefitSubmissionDraftKey(scope),raw='{invalid account',actorB='b'.repeat(64) as BenefitSubmissionAccountScope
+    local.values.set(key,raw)
+    const preauth=createBenefitSubmissionDraft('preauth',()=> '11111111-1111-4111-8111-111111111111',()=> '2026-11-21T00:00:00.000Z')
+    const saved=await saveBenefitSubmissionDraft('preauth',{...preauth,benefitText:'로그인 전 초안'},local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    const claimed=await claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock)
+    expect(claimed).toMatchObject({state:'account_invalid',kind:'invalid'})
+    expect(JSON.stringify(claimed)).not.toContain(raw)
+    if(claimed.state!=='account_invalid')throw new Error('account invalid expected')
+    await expect(restoreClaimedPreAuthBenefitSubmissionDraft(actorB,marked.nonce,claimed.snapshotId,local,session,lock)).resolves.toEqual({state:'denied'})
+    const restored=await restoreClaimedPreAuthBenefitSubmissionDraft(scope,marked.nonce,claimed.snapshotId,local,session,lock)
+    expect(restored).toMatchObject({state:'restored',draft:{accountScope:scope,clientKey:preauth.clientKey,benefitText:'로그인 전 초안'}})
+    const accountRaw=local.getItem(key);expect(accountRaw).toBe(restored.state==='restored'?restored.snapshot:null)
+    expect(JSON.parse(accountRaw!).updatedAt).toBe(preauth.updatedAt)
+    await expect(discardClaimedPreAuthBenefitSubmissionIntent(scope,marked.nonce,session,lock)).resolves.toEqual({state:'missing'})
+  })
+
+  it('preserves changed account bytes before explicit claimed-draft restore', async () => {
+    const lock=locks(),local=memory(),session=memory(),key=benefitSubmissionDraftKey(scope);local.values.set(key,'{invalid account')
+    const saved=await saveBenefitSubmissionDraft('preauth',createBenefitSubmissionDraft('preauth'),local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    const claimed=await claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock);if(claimed.state!=='account_invalid')throw new Error('account invalid expected')
+    local.values.set(key,'{new account bytes')
+    await expect(restoreClaimedPreAuthBenefitSubmissionDraft(scope,marked.nonce,claimed.snapshotId,local,session,lock)).resolves.toEqual({state:'conflict'})
+    expect(local.getItem(key)).toBe('{new account bytes')
+  })
+
+  it('resumes same-account restore after envelope cleanup no-op without rewriting the restored draft', async () => {
+    const lock=locks(),local=memory(),session=memory(),key=benefitSubmissionDraftKey(scope);local.values.set(key,'{invalid account')
+    const saved=await saveBenefitSubmissionDraft('preauth',createBenefitSubmissionDraft('preauth'),local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    const claimed=await claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock);if(claimed.state!=='account_invalid')throw new Error('account invalid expected')
+    const remove=session.removeItem;session.removeItem=vi.fn()
+    await expect(restoreClaimedPreAuthBenefitSubmissionDraft(scope,marked.nonce,claimed.snapshotId,local,session,lock)).resolves.toMatchObject({state:'cleanup_failed'})
+    const restoredRaw=local.getItem(key),writes=local.setItem.mock.calls.filter(([writtenKey])=>writtenKey===key).length
+    session.removeItem=remove
+    await expect(restoreClaimedPreAuthBenefitSubmissionDraft(scope,marked.nonce,claimed.snapshotId,local,session,lock)).resolves.toMatchObject({state:'restored',snapshot:restoredRaw})
+    expect(local.setItem.mock.calls.filter(([writtenKey])=>writtenKey===key)).toHaveLength(writes)
+  })
+
+  it('discards only the exact same-account claimed envelope and leaves invalid account bytes untouched', async () => {
+    const lock=locks(),local=memory(),session=memory(),key=benefitSubmissionDraftKey(scope),raw='{invalid account',actorB='b'.repeat(64) as BenefitSubmissionAccountScope;local.values.set(key,raw)
+    const saved=await saveBenefitSubmissionDraft('preauth',createBenefitSubmissionDraft('preauth'),local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    const claimed=await claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock);expect(claimed.state).toBe('account_invalid')
+    await expect(discardClaimedPreAuthBenefitSubmissionIntent(actorB,marked.nonce,session,lock)).resolves.toEqual({state:'denied'})
+    await expect(discardClaimedPreAuthBenefitSubmissionIntent(scope,'55555555-5555-4555-8555-555555555555',session,lock)).resolves.toEqual({state:'missing'})
+    await expect(discardClaimedPreAuthBenefitSubmissionIntent(scope,marked.nonce,session,lock)).resolves.toEqual({state:'discarded'})
+    expect(local.getItem(key)).toBe(raw)
+    expect(local.removeItem).not.toHaveBeenCalledWith(key)
+  })
+
+  it.each(['throw','noop'] as const)('keeps exact claimed intent retryable when discard removal is a %s', async failure => {
+    const lock=locks(),local=memory(),session=memory(),key=benefitSubmissionDraftKey(scope),raw='{invalid account';local.values.set(key,raw)
+    const saved=await saveBenefitSubmissionDraft('preauth',createBenefitSubmissionDraft('preauth'),local,lock);if(!saved.ok)throw new Error('save')
+    const marked=await markBenefitSubmissionLoginIntent(saved.snapshot,session,lock,()=> '44444444-4444-4444-8444-444444444444');if(!marked.ok)throw new Error('mark')
+    const claimed=await claimPreAuthBenefitSubmissionDraft(scope,marked.nonce,local,session,lock);expect(claimed.state).toBe('account_invalid')
+    const remove=session.removeItem;session.removeItem=failure==='throw'?vi.fn(()=>{throw new Error('blocked')}):vi.fn()
+    await expect(discardClaimedPreAuthBenefitSubmissionIntent(scope,marked.nonce,session,lock)).resolves.toEqual({state:'unavailable'})
+    expect(local.getItem(key)).toBe(raw)
+    session.removeItem=remove
+    await expect(discardClaimedPreAuthBenefitSubmissionIntent(scope,marked.nonce,session,lock)).resolves.toEqual({state:'discarded'})
   })
 
   it('holds the account lock across verified remote mutation and exact cleanup', async () => {
