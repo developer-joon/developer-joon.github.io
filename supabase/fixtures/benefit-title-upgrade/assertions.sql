@@ -3,6 +3,7 @@ declare
   v_standalone_key text;
   v_revision_key text;
   v_detail jsonb;
+  v_expected_publications integer;
 begin
   select dedupe_key into v_standalone_key
   from public.benefit_publications
@@ -70,8 +71,12 @@ begin
     public.benefit_publications_unique_active_lineage_check deferred;
 
   v_detail:=public.get_benefit_company_v1('KR-BIZ-9970000001');
+  v_expected_publications:=2+case when exists (
+    select 1 from public.benefit_publications
+    where publication_id='e7000000-0000-4000-8000-000000000030'
+  ) then 1 else 0 end;
   if v_detail is null
-     or pg_catalog.jsonb_array_length(v_detail->'publications')<>2
+     or pg_catalog.jsonb_array_length(v_detail->'publications')<>v_expected_publications
      or not exists (
        select 1 from pg_catalog.jsonb_array_elements(v_detail->'publications') item
        where item->>'title'='Legacy title'
@@ -79,7 +84,11 @@ begin
      or not exists (
        select 1 from pg_catalog.jsonb_array_elements(v_detail->'publications') item
        where item->>'title'='Updated leave'
-     ) then
+     )
+     or (v_expected_publications=3 and not exists (
+       select 1 from pg_catalog.jsonb_array_elements(v_detail->'publications') item
+       where item->>'title'='Concurrent legacy writer'
+     )) then
     raise exception 'public detail did not expose canonical active publications';
   end if;
 end $$;

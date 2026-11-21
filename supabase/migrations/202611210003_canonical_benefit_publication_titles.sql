@@ -28,6 +28,10 @@ end $$;
 alter function private.canonical_benefit_publication_title(text) owner to postgres;
 revoke all on function private.canonical_benefit_publication_title(text) from public,anon,authenticated,service_role;
 
+-- Serialize migration 002 writers before snapshotting legacy rows so every committed
+-- row is backfilled. This briefly blocks all table readers and writers during upgrade.
+lock table public.benefit_publications in access exclusive mode;
+
 -- Fail closed before changing any publication row. Migration 002 allowed ASCII
 -- control whitespace at the edges and repeated whitespace within titles.
 do $$
