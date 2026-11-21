@@ -56,6 +56,10 @@ select throws_ok($$select public.create_benefit_submission_v1('e2000000-0000-000
 select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'http://example.com')$$,'22023','invalid public source URL','non-HTTPS source is rejected');
 select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'https://user:secret@example.com/a')$$,'22023','invalid public source URL','credential source is rejected');
 select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'https://127.0.0.1/a')$$,'22023','invalid public source URL','private source is rejected');
+select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'https://0x7f.0x0.0x0.0x1/private')$$,'22023','invalid public source URL','mixed hexadecimal numeric loopback source is rejected');
+select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'https://0X7F.0.0x0.1/private')$$,'22023','invalid public source URL','mixed-case hexadecimal and decimal numeric source is rejected');
+select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'https://0x7f.1/private')$$,'22023','invalid public source URL','shorthand hexadecimal numeric source is rejected');
+select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health','Benefit',null,null,'https://0x7f000001/private')$$,'22023','invalid public source URL','single hexadecimal numeric source is rejected');
 select throws_ok($$select public.create_benefit_submission_v1(gen_random_uuid(),'KR-BIZ-9980000001','health',repeat('x',5001),null,null,null)$$,'22023','invalid benefit text','benefit text is bounded');
 insert into submission_results values ('mine',public.list_my_benefit_submissions_v1(20));
 select is(jsonb_array_length((select payload->'items' from submission_results where name='mine')),1,'owner sees own submission');
@@ -63,6 +67,7 @@ select is((select jsonb_object_agg(key,true order by key) from submission_result
 select ok((select payload::text not like '%reviewer%' and payload::text not like '%submitter%' and payload::text not like '%fingerprint%' and payload::text not like '%example.test%' from submission_results where name='mine'),'owner projection excludes internal identities and fingerprint');
 select throws_ok($$select public.list_my_benefit_submissions_v1(0)$$,'22023','invalid page limit','owner list is bounded');
 reset role;
+select is(private.benefit_submission_source_url('https://0x7f.example.com/evidence'),'https://0x7f.example.com/evidence','ordinary DNS names containing a hexadecimal-looking label remain valid');
 
 select ok((select submitter_id='e1000000-0000-0000-0000-000000000001' and source_url is null and payload_fingerprint ~ '^[0-9a-f]{64}$' from public.benefit_submissions where id=((select payload->>'id' from submission_results where name='created')::uuid)),'actor derived and nullable source stored');
 select is((select count(*)::integer from public.benefit_submission_events where submission_id=((select payload->>'id' from submission_results where name='created')::uuid) and action='submitted'),1,'create emits one event');
@@ -124,7 +129,9 @@ insert into submission_results values ('revision-approved',public.review_benefit
 reset role;
 select ok((select old.status='superseded' and successor.revision=2 and successor.dedupe_key=old.dedupe_key and successor.supersedes_publication_id=old.publication_id and successor.source_url='https://example.com/private-evidence' from public.benefit_publications old join public.benefit_publications successor on successor.supersedes_publication_id=old.publication_id where old.publication_id='e4000000-0000-0000-0000-000000000001'),'existing publication approval creates next revision and supersession');
 
--- A publication failure rolls the submission and event back.
+-- A successor insertion failure rolls predecessor supersession and approval state back.
+insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type)
+values ('e4000000-0000-0000-0000-000000000020','KR-BIZ-9980000001','remote','Rollback predecessor','Rollback predecessor description','community_reviewed','active','rollback-lineage',1,'seed');
 set local role authenticated;
 set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000001';
 insert into submission_results values ('rollback-create',public.create_benefit_submission_v1('e2000000-0000-0000-0000-000000000020','KR-BIZ-9980000001','remote','Rollback benefit',null,null,null));
@@ -132,10 +139,44 @@ reset role;
 set local role authenticated;
 set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000003';
 select public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='rollback-create')::uuid),'submitted','start_review','Reviewing','e3000000-0000-0000-0000-000000000020',null,null,null,null,null);
-select throws_like(format('select public.review_benefit_submission_v1(%L,''reviewing'',''approve'',''Approved'',gen_random_uuid(),repeat(''x'',201),''description'',null,null,null)',(select payload->>'id' from submission_results where name='rollback-create')),'%invalid public title%','publication validation failure is surfaced');
 reset role;
+create function pg_temp.fail_successor_after_supersession()
+returns trigger language plpgsql set search_path='' as $$
+begin
+  if new.supersedes_publication_id='e4000000-0000-0000-0000-000000000020'::uuid
+     and (select status from public.benefit_publications where publication_id=new.supersedes_publication_id)='superseded' then
+    raise exception 'test successor insertion failure' using errcode='P0001';
+  end if;
+  return new;
+end $$;
+create trigger test_fail_successor_after_supersession before insert on public.benefit_publications
+for each row execute function pg_temp.fail_successor_after_supersession();
+set local role authenticated;
+set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000003';
+select throws_ok(format('select public.review_benefit_submission_v1(%L,''reviewing'',''approve'',''Approved'',''e3000000-0000-0000-0000-000000000021'',''Rollback successor'',''Rollback successor description'',null,null,''e4000000-0000-0000-0000-000000000020'')',(select payload->>'id' from submission_results where name='rollback-create')),'P0001','test successor insertion failure','successor insertion failure is surfaced after predecessor supersession');
+reset role;
+drop trigger test_fail_successor_after_supersession on public.benefit_publications;
+drop function pg_temp.fail_successor_after_supersession();
+select is((select status from public.benefit_publications where publication_id='e4000000-0000-0000-0000-000000000020'),'active','failed successor insertion restores predecessor active');
+select is((select count(*)::integer from public.benefit_publications where supersedes_publication_id='e4000000-0000-0000-0000-000000000020'),0,'failed successor insertion leaves no successor');
 select ok((select status='reviewing' and publication_id is null from public.benefit_submissions where id=((select payload->>'id' from submission_results where name='rollback-create')::uuid)),'failed approval leaves submission reviewing');
 select is((select count(*)::integer from public.benefit_submission_events where submission_id=((select payload->>'id' from submission_results where name='rollback-create')::uuid) and action='approved'),0,'failed approval emits no approval event');
+
+-- Reviewing submissions can be rejected exactly once without publication.
+set local role authenticated;
+set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000001';
+insert into submission_results values ('reject-create',public.create_benefit_submission_v1('e2000000-0000-0000-0000-000000000030','KR-BIZ-9980000001','meals','Reject benefit',null,null,null));
+reset role;
+set local role authenticated;
+set local request.jwt.claim.sub='e1000000-0000-0000-0000-000000000003';
+select public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='reject-create')::uuid),'submitted','start_review','Reviewing','e3000000-0000-0000-0000-000000000030',null,null,null,null,null);
+insert into submission_results values ('rejected',public.review_benefit_submission_v1(((select payload->>'id' from submission_results where name='reject-create')::uuid),'reviewing','reject','Insufficient evidence','e3000000-0000-0000-0000-000000000031',null,null,null,null,null));
+select is((select payload->>'status' from submission_results where name='rejected'),'rejected','reviewing submission rejects');
+select throws_ok(format('select public.review_benefit_submission_v1(%L,''reviewing'',''reject'',''Reject again'',gen_random_uuid(),null,null,null,null,null)',(select payload->>'id' from submission_results where name='reject-create')),'40001','benefit submission state changed','rejected submission refuses further review action');
+reset role;
+select ok((select status='rejected' and admin_response='Insufficient evidence' and reviewer_id='e1000000-0000-0000-0000-000000000003' and reviewed_at is not null and publication_id is null from public.benefit_submissions where id=((select payload->>'id' from submission_results where name='reject-create')::uuid)),'rejection stores terminal reviewer fields without publication');
+select is((select count(*)::integer from public.benefit_submission_events where submission_id=((select payload->>'id' from submission_results where name='reject-create')::uuid) and action='rejected' and from_status='reviewing' and to_status='rejected' and publication_id is null),1,'rejection emits one terminal event');
+select is((select count(*)::integer from public.benefit_publications where provenance->>'submission_id'=(select payload->>'id' from submission_results where name='reject-create')),0,'rejection creates no publication');
 
 -- Rate limit is bounded.
 insert into public.rate_limit_events(user_id,action,idempotency_key)

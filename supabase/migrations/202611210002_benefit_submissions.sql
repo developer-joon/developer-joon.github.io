@@ -116,6 +116,7 @@ begin
   if v_port is not null and v_port::integer not between 1 and 65535 then raise exception 'invalid public source URL' using errcode='22023'; end if;
   if v_host='localhost' or v_host like '%.localhost' or v_host like '%.local' or v_host like '%.internal'
      or v_host like '%.test' or v_host like '%.invalid' or v_host ~ '^[0-9.]+$'
+     or v_host ~ '^(?:[0-9]+|0x[0-9a-f]+)(?:\.(?:[0-9]+|0x[0-9a-f]+))*$'
      or v_host !~ '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$' then
     raise exception 'invalid public source URL' using errcode='22023';
   end if;

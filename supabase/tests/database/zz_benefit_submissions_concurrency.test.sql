@@ -3,11 +3,12 @@ select no_plan();
 create extension if not exists dblink with schema extensions;
 
 create temporary table submission_race_fixture(
-  owner_id uuid,admin_one_id uuid,admin_two_id uuid,same_submission_id uuid,equiv_one_id uuid,equiv_two_id uuid,
+  owner_id uuid,admin_one_id uuid,admin_two_id uuid,same_submission_id uuid,idem_review_submission_id uuid,equiv_one_id uuid,equiv_two_id uuid,
+  create_client_key uuid,review_client_key uuid,
   connection_string text,second_pid integer
 );
 insert into submission_race_fixture
-select gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),
+select gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),
  format('hostaddr=%s port=%s dbname=%L user=%L password=postgres options=%L',coalesce(host(inet_server_addr()),'127.0.0.1'),inet_server_port(),current_database(),current_user,'-c statement_timeout=8000 -c lock_timeout=5000'),null;
 
 create function pg_temp.wait_for_lock(p_pid integer,p_timeout interval default interval '3 seconds') returns boolean language plpgsql as $$
@@ -40,12 +41,13 @@ select extensions.dblink_exec('bs_setup',format($setup$
  insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,source_edition) values ('KR-BIZ-9980000002','registered_business','Race Company','race company','test');
  insert into public.benefit_submissions(id,submitter_id,client_key,payload_fingerprint,company_id,category_id,benefit_text,status,admin_response,reviewer_id,reviewed_at,created_at,updated_at) values
   (%L,%L,gen_random_uuid(),repeat('a',64),'KR-BIZ-9980000002','health','Same approval','reviewing','Reviewing',%L,pg_catalog.now(),pg_catalog.now(),pg_catalog.now()),
+  (%L,%L,gen_random_uuid(),repeat('d',64),'KR-BIZ-9980000002','housing','Idempotent approval','reviewing','Reviewing',%L,pg_catalog.now(),pg_catalog.now(),pg_catalog.now()),
   (%L,%L,gen_random_uuid(),repeat('b',64),'KR-BIZ-9980000002','leave','Equivalent one','reviewing','Reviewing',%L,pg_catalog.now(),pg_catalog.now(),pg_catalog.now()),
   (%L,%L,gen_random_uuid(),repeat('c',64),'KR-BIZ-9980000002','leave','Equivalent two','reviewing','Reviewing',%L,pg_catalog.now(),pg_catalog.now(),pg_catalog.now())
 $setup$,
  owner_id,owner_id::text||'@bs-race.test',admin_one_id,admin_one_id::text||'@bs-race.test',admin_two_id,admin_two_id::text||'@bs-race.test',
  owner_id,'bs-race-owner',admin_one_id,'bs-race-admin-one',admin_two_id,'bs-race-admin-two',owner_id,admin_one_id,admin_two_id,
- same_submission_id,owner_id,admin_one_id,equiv_one_id,owner_id,admin_one_id,equiv_two_id,owner_id,admin_one_id
+ same_submission_id,owner_id,admin_one_id,idem_review_submission_id,owner_id,admin_one_id,equiv_one_id,owner_id,admin_one_id,equiv_two_id,owner_id,admin_one_id
 )) from submission_race_fixture;
 
 select extensions.dblink_connect('bs_one',connection_string),extensions.dblink_connect('bs_two',connection_string) from submission_race_fixture;
@@ -60,6 +62,51 @@ select extensions.dblink_exec('bs_two',$fn$
  $body$;
  grant execute on function pg_temp.try_approve(uuid,uuid,text) to authenticated
 $fn$);
+
+-- Exact concurrent create requests from one actor replay the winner.
+select extensions.dblink_exec('bs_one','begin');
+select extensions.dblink_exec('bs_one','set local role authenticated');
+select extensions.dblink_exec('bs_one',format('set local request.jwt.claim.sub=%L',owner_id)) from submission_race_fixture;
+create temporary table create_first(value jsonb);
+insert into create_first select r.value::jsonb from submission_race_fixture f cross join lateral extensions.dblink('bs_one',format($q$select public.create_benefit_submission_v1(%L,'KR-BIZ-9980000002','remote','Concurrent create','Employees','Condition','https://example.com/evidence')::text$q$,f.create_client_key)) r(value text);
+select extensions.dblink_exec('bs_two','begin');
+select extensions.dblink_exec('bs_two','set local role authenticated');
+select extensions.dblink_exec('bs_two',format('set local request.jwt.claim.sub=%L',owner_id)) from submission_race_fixture;
+update submission_race_fixture set second_pid=(select pid from extensions.dblink('bs_two','select pg_backend_pid()') r(pid integer));
+select extensions.dblink_send_query('bs_two',format($q$select public.create_benefit_submission_v1(%L,'KR-BIZ-9980000002','remote','Concurrent create','Employees','Condition','https://example.com/evidence')::text$q$,create_client_key)) from submission_race_fixture;
+select ok((select pg_temp.wait_for_lock(second_pid) from submission_race_fixture),'same-key concurrent create waits for the winner without deadlock');
+select extensions.dblink_exec('bs_one','commit');
+create temporary table create_second(value jsonb);
+insert into create_second select value::jsonb from extensions.dblink_get_result('bs_two') r(value text);
+select count(*) from extensions.dblink_get_result('bs_two') r(value text);
+select extensions.dblink_exec('bs_two','commit');
+select is((select value->>'id' from create_second),(select value->>'id' from create_first),'same-key concurrent create returns the winner submission identity');
+select is((select count(*)::integer from submission_race_fixture f cross join lateral extensions.dblink(f.connection_string,format('select id from public.benefit_submissions where submitter_id=%L and client_key=%L',f.owner_id,f.create_client_key)) r(id uuid)),1,'same-key concurrent create stores one submission');
+select is((select count(*)::integer from submission_race_fixture f cross join lateral extensions.dblink(f.connection_string,format('select e.id from public.benefit_submission_events e join public.benefit_submissions s on s.id=e.submission_id where s.submitter_id=%L and s.client_key=%L and e.action=''submitted''',f.owner_id,f.create_client_key)) r(id uuid)),1,'same-key concurrent create emits one submitted event');
+select is((select count(*)::integer from submission_race_fixture f cross join lateral extensions.dblink(f.connection_string,format('select id from public.rate_limit_events where user_id=%L and action=''benefit_submission.create'' and idempotency_key=%L',f.owner_id,f.create_client_key::text)) r(id uuid)),1,'same-key concurrent create consumes one rate event');
+
+-- Exact concurrent approval requests from one admin replay the winner.
+select extensions.dblink_exec('bs_one','begin');
+select extensions.dblink_exec('bs_one','set local role authenticated');
+select extensions.dblink_exec('bs_one',format('set local request.jwt.claim.sub=%L',admin_one_id)) from submission_race_fixture;
+create temporary table review_first(value jsonb);
+insert into review_first select r.value::jsonb from submission_race_fixture f cross join lateral extensions.dblink('bs_one',format($q$select public.review_benefit_submission_v1(%L,'reviewing','approve','Approved',%L,'Idempotent title','Idempotent description',null,null,null)::text$q$,f.idem_review_submission_id,f.review_client_key)) r(value text);
+select extensions.dblink_exec('bs_two','begin');
+select extensions.dblink_exec('bs_two','set local role authenticated');
+select extensions.dblink_exec('bs_two',format('set local request.jwt.claim.sub=%L',admin_one_id)) from submission_race_fixture;
+update submission_race_fixture set second_pid=(select pid from extensions.dblink('bs_two','select pg_backend_pid()') r(pid integer));
+select extensions.dblink_send_query('bs_two',format($q$select public.review_benefit_submission_v1(%L,'reviewing','approve','Approved',%L,'Idempotent title','Idempotent description',null,null,null)::text$q$,idem_review_submission_id,review_client_key)) from submission_race_fixture;
+select ok((select pg_temp.wait_for_lock(second_pid) from submission_race_fixture),'same-key concurrent approval waits for the winner without deadlock');
+select extensions.dblink_exec('bs_one','commit');
+create temporary table review_second(value jsonb);
+insert into review_second select value::jsonb from extensions.dblink_get_result('bs_two') r(value text);
+select count(*) from extensions.dblink_get_result('bs_two') r(value text);
+select extensions.dblink_exec('bs_two','commit');
+select is((select value->>'id' from review_second),(select value->>'id' from review_first),'same-key concurrent approval returns the same submission identity');
+select is((select value->>'publication_id' from review_second),(select value->>'publication_id' from review_first),'same-key concurrent approval returns the same publication identity');
+select is((select count(*)::integer from submission_race_fixture f cross join lateral extensions.dblink(f.connection_string,format('select id from public.benefit_submission_events where submission_id=%L and action=''approved''',f.idem_review_submission_id)) r(id uuid)),1,'same-key concurrent approval emits one approved event');
+select is((select count(*)::integer from submission_race_fixture f cross join lateral extensions.dblink(f.connection_string,format('select publication_id from public.benefit_publications where provenance->>''submission_id''=%L',f.idem_review_submission_id::text)) r(publication_id uuid)),1,'same-key concurrent approval creates one publication');
+select is((select count(*)::integer from submission_race_fixture f cross join lateral extensions.dblink(f.connection_string,format('select id from public.rate_limit_events where user_id=%L and action=''benefit_submission.review'' and idempotency_key=%L',f.admin_one_id,f.review_client_key::text)) r(id uuid)),1,'same-key concurrent approval consumes one review rate event');
 
 -- Two admins approve the same submission: one wins and the loser observes stale CAS.
 select extensions.dblink_exec('bs_one','begin');
