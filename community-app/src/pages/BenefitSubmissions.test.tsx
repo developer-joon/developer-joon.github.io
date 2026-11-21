@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { User } from '@supabase/supabase-js'
+import { Profiler } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import type { BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
@@ -7,6 +8,7 @@ import type { BenefitSubmissionRepository } from '../data/benefitSubmissionRepos
 import { benefitSubmissionDraftKey, createBenefitSubmissionDraft, markBenefitSubmissionLoginIntent, saveBenefitSubmissionDraft, type BenefitSubmissionLockAdapter } from '../lib/benefitSubmissionDraftStore'
 import { BenefitSubmissionPage } from './BenefitSubmissionPage'
 import { MyBenefitSubmissionsPage } from './MyBenefitSubmissionsPage'
+import { accountLifecycle, visibleAccountState } from './accountStateLifecycle'
 
 const actor='11111111-1111-4111-8111-111111111111'
 const scope='a'.repeat(64) as never
@@ -19,8 +21,60 @@ function directory():BenefitDirectoryRepository{return {search:vi.fn().mockResol
 const item={id:'22222222-2222-4222-8222-222222222222',companyId:company.companyId,categoryId:'leave' as const,benefitText:'가족 돌봄 휴가',eligibilityText:null,conditionText:null,sourceUrl:null,status:'submitted' as const,adminResponse:null,publicationId:null,reviewedAt:null,createdAt:'2026-11-21T00:00:00Z',updatedAt:'2026-11-21T00:00:00Z'}
 function submissions(overrides:Partial<BenefitSubmissionRepository>={}):BenefitSubmissionRepository{return {getCurrentAccountScope:vi.fn().mockResolvedValue({ok:true,data:scope}),createSubmission:vi.fn().mockResolvedValue({ok:true,data:item}),listMySubmissions:vi.fn().mockResolvedValue({ok:true,data:{items:[item],hasMore:false,nextCursor:null}}),...overrides}}
 function wrap(ui:React.ReactNode,value:AuthContextValue){return render(<AuthContext.Provider value={value}>{ui}</AuthContext.Provider>)}
+function reactHandler<T>(node:HTMLElement,name:string):T{const key=Object.keys(node).find(value=>value.startsWith('__reactProps$'));if(!key)throw new Error('React props unavailable');return (node as unknown as Record<string,Record<string,T>>)[key][name]}
+
+describe('account-scoped render visibility',()=>{
+  it('hides an A snapshot on B first render and keeps it hidden when A returns until fresh hydration',()=>{
+    const sessionA={},sessionB={}
+    const lifecycleA=accountLifecycle(undefined,actor,sessionA)
+    const snapshot={lifecycle:lifecycleA,value:{privateText:'A private draft'}}
+    const lifecycleB=accountLifecycle(lifecycleA,'33333333-3333-4333-8333-333333333333',sessionB)
+    expect(visibleAccountState(snapshot,lifecycleB)).toBeNull()
+    const returnedA=accountLifecycle(lifecycleB,actor,sessionA)
+    expect(returnedA).not.toBe(lifecycleA)
+    expect(visibleAccountState(snapshot,returnedA)).toBeNull()
+    expect(visibleAccountState({lifecycle:returnedA,value:{privateText:'fresh A draft'}},returnedA)).toEqual({privateText:'fresh A draft'})
+  })
+
+  it('keeps signed-out drafts in an explicit anonymous lifecycle',()=>{
+    const anonymous=accountLifecycle(undefined,null,null)
+    const snapshot={lifecycle:anonymous,value:'preauth only'}
+    expect(visibleAccountState(snapshot,anonymous)).toBe('preauth only')
+    expect(visibleAccountState(snapshot,accountLifecycle(anonymous,actor,{}))).toBeNull()
+  })
+})
 
 describe('BenefitSubmissionPage',()=>{
+  it('does not expose A draft, company, or messages in B render commits before B hydration',async()=>{
+    const scopeB='b'.repeat(64) as never,local=storage(),lock=locks(),sessionA={},sessionB={}
+    const privateDraft={...createBenefitSubmissionDraft(scope),companyId:company.companyId,companyName:company.displayName,categoryId:'leave' as const,benefitText:'A private benefit'}
+    const saved=await saveBenefitSubmissionDraft(scope,privateDraft,local,lock);if(!saved.ok)throw new Error('save')
+    let resolveB!:(value:unknown)=>void;const pendingB=new Promise(value=>{resolveB=value})
+    const repo=submissions();(repo.getCurrentAccountScope as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ok:true,data:scope}).mockReturnValueOnce(pendingB)
+    const first={...auth(actor),session:sessionA as never},second={...auth('33333333-3333-4333-8333-333333333333'),session:sessionB as never}
+    const commits:string[]=[];let switching=false,host:HTMLElement|null=null
+    const profile=(value:AuthContextValue)=><AuthContext.Provider value={value}><Profiler id="submission" onRender={()=>{if(switching)commits.push(host?.textContent??'')}}><BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={lock} /></Profiler></AuthContext.Provider>
+    const view=render(profile(first));host=view.container
+    expect(await screen.findByLabelText('복지 내용')).toHaveValue('A private benefit');expect(screen.getByText(company.displayName)).toBeVisible()
+    switching=true;view.rerender(profile(second))
+    expect(commits.length).toBeGreaterThan(0)
+    expect(commits.every(text=>!text.includes('A private benefit')&&!text.includes(company.displayName))).toBe(true)
+    resolveB({ok:true,data:scopeB})
+  })
+
+  it('rejects an A submit handler invoked after the render switches to B',async()=>{
+    let resolveB!:(value:unknown)=>void;const pendingB=new Promise(value=>{resolveB=value}),repo=submissions(),local=storage(),sessionA={},sessionB={}
+    ;(repo.getCurrentAccountScope as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ok:true,data:scope}).mockReturnValueOnce(pendingB)
+    const first={...auth(actor),session:sessionA as never},second={...auth('33333333-3333-4333-8333-333333333333'),session:sessionB as never}
+    const view=wrap(<BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} />,first)
+    fireEvent.change(await screen.findByLabelText('기업 검색'),{target:{value:'테스트'}});fireEvent.click(await screen.findByRole('button',{name:/테스트 기업/}));fireEvent.change(screen.getByLabelText('복지 분야'),{target:{value:'leave'}});fireEvent.change(screen.getByLabelText('복지 내용'),{target:{value:'A private benefit'}})
+    await waitFor(()=>expect(screen.getByRole('button',{name:'복지 제보 제출'})).toBeEnabled())
+    const staleSubmit=reactHandler<(event:{preventDefault():void})=>Promise<void>>(screen.getByRole('button',{name:'복지 제보 제출'}).closest('form')!,'onSubmit')
+    view.rerender(<AuthContext.Provider value={second}><BenefitSubmissionPage repository={repo} directoryRepository={directory()} storage={local} sessionStorage={storage()} lockAdapter={locks()} /></AuthContext.Provider>)
+    await staleSubmit({preventDefault:vi.fn()})
+    expect(repo.createSubmission).not.toHaveBeenCalled();resolveB({ok:true,data:'b'.repeat(64)})
+  })
+
   it('keeps the form editable while signed out and saves before starting OAuth with full safe return path',async()=>{
     const local=storage(),session=storage(),value=auth(null)
     wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={locks()} currentPath="/community/benefits/submit/?companyId=KR-BIZ-1234567890#form" search="?companyId=KR-BIZ-1234567890" />,value)
@@ -274,8 +328,19 @@ describe('MyBenefitSubmissionsPage',()=>{
     wrap(<MyBenefitSubmissionsPage repository={submissions({listMySubmissions:list})} />,auth(actor))
     expect(await screen.findByText('가족 돌봄 휴가')).toBeVisible();fireEvent.click(screen.getByRole('button',{name:'더 보기'}));expect(await screen.findByRole('alert')).toHaveTextContent('네트워크');expect(screen.getByText('가족 돌봄 휴가')).toBeVisible()
   })
-  it('hides old account data synchronously on actor change and ignores late completion',async()=>{
-    let resolve!:(value:unknown)=>void;const late=new Promise(value=>{resolve=value});const repo=submissions({listMySubmissions:vi.fn().mockReturnValue(late) as never});const first=auth(actor),second=auth('33333333-3333-4333-8333-333333333333')
-    const view=wrap(<MyBenefitSubmissionsPage repository={repo} />,first);view.rerender(<AuthContext.Provider value={second}><MyBenefitSubmissionsPage repository={repo} /></AuthContext.Provider>);expect(screen.queryByText('가족 돌봄 휴가')).not.toBeInTheDocument();resolve({ok:true,data:{items:[item],hasMore:false,nextCursor:null}});await Promise.resolve();expect(screen.queryByText('가족 돌봄 휴가')).not.toBeInTheDocument()
+  it('hides old account data in every B render commit and ignores late completion',async()=>{
+    let resolveB!:(value:unknown)=>void;const pendingB=new Promise(value=>{resolveB=value});const list=vi.fn().mockResolvedValueOnce({ok:true,data:{items:[item],hasMore:false,nextCursor:null}}).mockReturnValueOnce(pendingB)
+    const repo=submissions({listMySubmissions:list}),first=auth(actor),second=auth('33333333-3333-4333-8333-333333333333'),commits:string[]=[];let switching=false,host:HTMLElement|null=null
+    const profile=(value:AuthContextValue)=><AuthContext.Provider value={value}><Profiler id="owner-list" onRender={()=>{if(switching)commits.push(host?.textContent??'')}}><MyBenefitSubmissionsPage repository={repo} /></Profiler></AuthContext.Provider>
+    const view=render(profile(first));host=view.container;expect(await screen.findByText('가족 돌봄 휴가')).toBeVisible()
+    switching=true;view.rerender(profile(second));expect(commits.length).toBeGreaterThan(0);expect(commits.every(text=>!text.includes('가족 돌봄 휴가'))).toBe(true)
+    resolveB({ok:true,data:{items:[{...item,benefitText:'B benefit'}],hasMore:false,nextCursor:null}});expect(await screen.findByText('B benefit')).toBeVisible();expect(screen.queryByText('가족 돌봄 휴가')).not.toBeInTheDocument()
+  })
+  it('rejects an A append handler invoked after the render switches to B',async()=>{
+    let resolveB!:(value:unknown)=>void;const pendingB=new Promise(value=>{resolveB=value}),cursor=JSON.stringify({created_at:item.createdAt,id:item.id}),list=vi.fn().mockResolvedValueOnce({ok:true,data:{items:[item],hasMore:true,nextCursor:cursor}}).mockReturnValueOnce(pendingB),repo=submissions({listMySubmissions:list})
+    const first=auth(actor),second=auth('33333333-3333-4333-8333-333333333333'),view=wrap(<MyBenefitSubmissionsPage repository={repo} />,first)
+    const staleMore=reactHandler<()=>void>(await screen.findByRole('button',{name:'더 보기'}),'onClick')
+    view.rerender(<AuthContext.Provider value={second}><MyBenefitSubmissionsPage repository={repo} /></AuthContext.Provider>);staleMore()
+    expect(list).toHaveBeenCalledTimes(2);resolveB({ok:true,data:{items:[],hasMore:false,nextCursor:null}})
   })
 })
