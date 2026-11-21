@@ -19,6 +19,7 @@
     "db:test:community-snapshot-upgrade": "bash ../supabase/tests/community_snapshot_upgrade.sh",
     "db:test:oauth-profile-upgrade": "bash ../supabase/tests/oauth_profile_upgrade.sh",
     "db:test:benefit-title-upgrade": "bash ../supabase/tests/benefit_title_upgrade.sh",
+    "db:test:benefit-title-upgrade-isolation": "bash ../supabase/tests/benefit_title_upgrade_isolation_test.sh",
     "db:lint": "supabase db lint --level error",
     "db:stop": "supabase stop",
     "release:check": "node ../scripts/release-gate.mjs"
