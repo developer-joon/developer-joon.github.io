@@ -156,19 +156,29 @@ function isAbortError(error: unknown) {
 function errorCode(error: unknown) {
   return isRecord(error) && typeof error.code === 'string' ? error.code : undefined
 }
-function errorStatus(error: unknown) {
-  return isRecord(error) && typeof error.status === 'number' ? error.status : undefined
+function responseStatus(status: unknown) {
+  return Number.isInteger(status) && (status as number) >= 100 && (status as number) <= 599
+    ? status as number
+    : undefined
 }
-function mapTransportError<T>(error: unknown): Result<T> {
+function mapTransportError<T>(
+  transport: { error: unknown; status?: unknown; statusText?: unknown },
+  operation?: 'search_benefit_companies_v1' | 'get_benefit_company_v1',
+): Result<T> {
+  const { error } = transport
   if (isAbortError(error)) return aborted()
   if (error instanceof TypeError || (isRecord(error) && typeof error.message === 'string' && /failed to fetch|networkerror|network request failed/i.test(error.message))) {
     return failure('network', '네트워크 요청에 실패했습니다.')
   }
   const code = errorCode(error)
-  const status = errorStatus(error)
+  const status = responseStatus(transport.status)
+  if (code === 'PGRST202') return failure('configuration', '서비스 설정을 확인할 수 없습니다.')
+  if (operation === 'get_benefit_company_v1' && code === 'PGRST116') return failure('not_found', '기업 정보를 찾을 수 없습니다.')
   if (status === 400 || code === '22023') return invalidArgument()
-  if (status === 408 || status === 504 || code === '57014' || code === 'PGRST504') return failure('timeout', '요청 시간이 초과되었습니다.')
-  if (status === 429 || code === 'PGRST429') return failure('rate_limited', '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.')
+  if (code === '57014' || code === 'PGRST504') return failure('timeout', '요청 시간이 초과되었습니다.')
+  if (code === 'PGRST429') return failure('rate_limited', '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.')
+  if (status === 408) return failure('timeout', '요청 시간이 초과되었습니다.')
+  if (status === 429) return failure('rate_limited', '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.')
   if (status !== undefined && status >= 500) return failure('unavailable', '서비스를 일시적으로 이용할 수 없습니다.')
   return failure('unknown', '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.')
 }
@@ -187,8 +197,7 @@ function validSearchInput(input: BenefitDirectorySearchInput) {
     || (input.cursor !== null && input.cursor !== undefined && !validOpaqueCursor(input.cursor))) return false
   if (input.categories !== null && input.categories !== undefined) {
     if (!Array.isArray(input.categories) || input.categories.length < 1 || input.categories.length > 10
-      || input.categories.some(category => !isCategory(category))
-      || new Set(input.categories).size !== input.categories.length) return false
+      || input.categories.some(category => !isCategory(category))) return false
   }
   return true
 }
@@ -214,7 +223,11 @@ export function createBenefitDirectoryRepository(): BenefitDirectoryRepository {
       if (!isRecord(response) || !('data' in response) || !('error' in response)) {
         return failure('invalid_response', '서버 응답을 확인할 수 없습니다.')
       }
-      if (response.error) return mapTransportError(response.error)
+      if (response.error) return mapTransportError({
+        error: response.error,
+        status: response.status,
+        statusText: response.statusText,
+      }, name)
       try { return { ok: true, data: decode(response.data) } }
       catch (error) {
         return error instanceof BenefitDirectoryNotFoundError
@@ -223,7 +236,7 @@ export function createBenefitDirectoryRepository(): BenefitDirectoryRepository {
       }
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) return aborted()
-      return mapTransportError(error)
+      return mapTransportError({ error }, name)
     }
   }
 
