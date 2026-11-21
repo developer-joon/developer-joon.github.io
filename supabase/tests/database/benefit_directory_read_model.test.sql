@@ -173,11 +173,88 @@ select is(public.get_benefit_company_v1('KR-CRN-3303333333333'),'null'::jsonb,'n
 
 select throws_ok($$select public.search_benefit_companies_v1(null,null,null,null,null,false,51,null)$$,'22023','invalid page size','page size above 50 is rejected');
 select throws_ok($$select public.search_benefit_companies_v1(repeat('x',201),null,null,null,null,false,10,null)$$,'22023','invalid query','oversized query is rejected');
+select throws_ok($$select public.search_benefit_companies_v1(null,null,null,repeat('x',33),null,false,10,null)$$,'22023','invalid size length','oversized size is rejected before enum comparison');
+select throws_ok($$select public.search_benefit_companies_v1(null,array[repeat('x',33)],null,null,null,false,10,null)$$,'22023','invalid category length','oversized category elements are rejected before comparison or aggregation');
 select throws_ok($$select public.search_benefit_companies_v1(null,array['unknown'],null,null,null,false,10,null)$$,'22023','invalid category','invalid category is rejected');
 select throws_ok($$select public.search_benefit_companies_v1(null,null,null,'giant',null,false,10,null)$$,'22023','invalid size','invalid size enum is rejected');
 select throws_ok($$select public.search_benefit_companies_v1(null,null,null,null,null,false,10,'{}')$$,'22023','invalid cursor','incomplete cursor shape is rejected');
 select throws_ok($$select public.search_benefit_companies_v1(null,null,null,null,null,false,10,'{"normalized_name":"x","company_id":"KR-BIZ-1234567890","extra":true}')$$,'22023','invalid cursor','cursor extra keys are rejected');
 reset role;
+
+-- Keep the representative corpus in this transaction so rollback cleans it up.
+insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance)
+select 'KR-BIZ-'||pg_catalog.lpad(n::text,10,'0'),'recruitment_observation',
+  'Performance Company '||pg_catalog.lpad(n::text,5,'0'),
+  'performance company '||pg_catalog.lpad(n::text,5,'0'),true,'performance-fixture-v1','{}'::jsonb
+from pg_catalog.generate_series(2000000000,2000040046) n;
+analyze public.benefit_companies;
+
+create function pg_temp.explain_json(p_sql text)
+returns jsonb language plpgsql as $$
+declare v_plan jsonb;
+begin
+  execute 'explain (format json,costs off) '||p_sql into v_plan;
+  return v_plan;
+end $$;
+create function pg_temp.plan_nodes(p_plan jsonb)
+returns setof jsonb language sql immutable as $$
+  with recursive nodes(node) as (
+    select p_plan->0->'Plan'
+    union all
+    select child
+    from nodes
+    cross join lateral pg_catalog.jsonb_array_elements(coalesce(node->'Plans','[]'::jsonb)) child
+  )
+  select node from nodes
+$$;
+create temporary table benefit_directory_plans(plan jsonb);
+insert into benefit_directory_plans values (pg_temp.explain_json($sql$
+  with candidates as materialized (
+    select c.company_id,c.normalized_name
+    from public.benefit_companies c
+    where c.is_searchable
+    order by c.normalized_name,c.company_id
+    limit 11
+  ), page as materialized (
+    select company_id,normalized_name
+    from candidates
+    order by normalized_name,company_id
+    limit 10
+  ), publication_aggregates as materialized (
+    select bp.company_id,count(*) benefit_count,
+      count(*) filter (where bp.trust_tier='official_verified') official_count,
+      count(*) filter (where bp.trust_tier='community_reviewed') community_count,
+      pg_catalog.jsonb_agg(distinct bp.category_id order by bp.category_id) categories
+    from page p
+    join public.benefit_publications bp on bp.company_id=p.company_id and bp.status='active'
+    group by bp.company_id
+  )
+  select p.company_id,p.normalized_name,coalesce(a.benefit_count,0)
+  from page p
+  left join publication_aggregates a using(company_id)
+  order by p.normalized_name,p.company_id
+$sql$));
+select ok((select exists(
+    select 1 from pg_temp.plan_nodes(plan) node
+    where node->>'Node Type'='Limit'
+      and node::text like '%benefit_companies_search_order_idx%'
+  ) and exists(
+    select 1 from pg_temp.plan_nodes(plan) node
+    where node->>'Node Type'='Aggregate'
+      and node::text like '%"CTE Name": "page"%'
+      and node::text like '%benefit_publications%'
+  ) from benefit_directory_plans),'page candidates use the ordered company index and are limited before page-only publication aggregation');
+
+set local role anon;
+insert into benefit_results values ('representative-volume',public.search_benefit_companies_v1(null,null,null,null,null,false,10,null));
+reset role;
+select is((select (payload->>'total')::integer from benefit_results where name='representative-volume'),40053,'representative-volume search reports the exact full-set total');
+select ok((select jsonb_array_length(payload->'items')<=10 from benefit_results where name='representative-volume'),'representative-volume first page stays within page size');
+select is(
+  (select array_agg(item->>'company_id' order by ordinal) from benefit_results cross join lateral jsonb_array_elements(payload->'items') with ordinality rows(item,ordinal) where name='representative-volume'),
+  (select array_agg(company_id order by normalized_name,company_id) from (select company_id,normalized_name from public.benefit_companies where is_searchable order by normalized_name,company_id limit 10) expected),
+  'representative-volume first page uses deterministic normalized-name and company-id order'
+);
 
 select throws_ok($$insert into public.benefit_publications(company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance) values ('KR-CRN-1101111111111','health','중복','중복 active','official_verified','active','health-check',2,'official_ledger','{}')$$,'23505',null,'duplicate active lineage is rejected');
 select throws_ok($$insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values ('KR-BIZ-9999999999','group_affiliate','invalid','invalid',true,'fixture','{}')$$,'23514',null,'identity classes are explicit and stable');
