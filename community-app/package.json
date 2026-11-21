@@ -22,6 +22,10 @@
     "db:test:benefit-title-upgrade-isolation": "bash ../supabase/tests/benefit_title_upgrade_isolation_test.sh",
     "db:lint": "supabase db lint --level error",
     "db:stop": "supabase stop",
+    "benefit-seed:generate": "node ../scripts/generate-benefit-directory-seed.mjs",
+    "benefit-seed:check": "node ../scripts/generate-benefit-directory-seed.mjs --check",
+    "benefit-seed:apply": "node ../scripts/apply-benefit-directory-seed.mjs",
+    "benefit-seed:apply:dry-run": "node ../scripts/apply-benefit-directory-seed.mjs --dry-run",
     "release:check": "node ../scripts/release-gate.mjs"
   },
   "dependencies": {
