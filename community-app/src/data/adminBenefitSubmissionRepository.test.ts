@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAdminBenefitSubmissionRepository, type AdminBenefitSubmissionSessionContext } from './adminBenefitSubmissionRepository'
+import { adminBenefitSubmissionReviewFingerprint, createAdminBenefitSubmissionRepository, type AdminBenefitSubmissionSessionContext } from './adminBenefitSubmissionRepository'
 
 const actor = '10000000-0000-4000-8000-000000000001'
 const id = '20000000-0000-4000-8000-000000000001'
@@ -7,6 +7,8 @@ const publicationId = '30000000-0000-4000-8000-000000000001'
 const createdAt = '2026-11-21T00:00:00Z'
 const submitted = { id, company_id:'KR-CRN-1234567890123', category_id:'leave', benefit_text:'유급 휴가 20일', eligibility_text:null, condition_text:null, source_url:null, status:'submitted', admin_response:null, publication_id:null, reviewed_at:null, created_at:createdAt, updated_at:createdAt }
 const reviewing = { ...submitted, status:'reviewing', admin_response:'검토 시작', reviewed_at:'2026-11-21T01:00:00Z', updated_at:'2026-11-21T01:00:00Z' }
+const rejected = { ...reviewing, status:'rejected', admin_response:'반려', updated_at:'2026-11-21T02:00:00Z' }
+const approved = { ...reviewing, status:'approved', admin_response:'승인', publication_id:publicationId, updated_at:'2026-11-21T02:00:00Z' }
 
 function setup(data: unknown) {
   const rpc = vi.fn().mockResolvedValue({ data, error:null, status:200, statusText:'OK' })
@@ -28,6 +30,30 @@ describe('admin benefit submission repository', () => {
     await expect(value.repository.listQueue({status:'active',limit:101})).resolves.toMatchObject({ok:false,error:{code:'invalid_argument'}})
     const malformed=setup({items:[{...submitted,submitter_id:actor}],has_more:false,next_cursor:null})
     await expect(malformed.repository.listQueue({status:'all',limit:10})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
+  it.each([
+    ['submitted', reviewing],
+    ['reviewing', submitted],
+    ['approved', rejected],
+    ['rejected', approved],
+  ] as const)('rejects a %s queue response containing a different status', async (status, row) => {
+    const value=setup({items:[row],has_more:false,next_cursor:null})
+    await expect(value.repository.listQueue({status,limit:2})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
+  it('rejects mixed exact-filter pages and terminal rows in the active queue', async () => {
+    const mixed=setup({items:[submitted,reviewing],has_more:false,next_cursor:null})
+    await expect(mixed.repository.listQueue({status:'submitted',limit:2})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+    const active=setup({items:[approved],has_more:false,next_cursor:null})
+    await expect(active.repository.listQueue({status:'active',limit:2})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
+  it('accepts every canonical status for the all filter', async () => {
+    for (const row of [submitted,reviewing,approved,rejected]) {
+      const value=setup({items:[row],has_more:false,next_cursor:null})
+      await expect(value.repository.listQueue({status:'all',limit:1})).resolves.toMatchObject({ok:true,data:{items:[{status:row.status}]}})
+    }
   })
 
   it('preserves PostgreSQL microsecond ordering for queue pages', async () => {
@@ -59,10 +85,45 @@ describe('admin benefit submission repository', () => {
   })
 
   it('sends exact approval projection and requires community-reviewed publication success', async () => {
-    const approved={...reviewing,status:'approved',admin_response:'승인',publication_id:publicationId,updated_at:'2026-11-21T02:00:00Z'}
     const value=setup(approved)
     await expect(value.repository.review({submissionId:id,expectedStatus:'reviewing',action:'approve',adminResponse:'승인',clientKey:'40000000-0000-4000-8000-000000000001',publicTitle:'휴가 20일',publicDescription:'유급 휴가 20일',publicEligibility:null,publicCondition:null,existingPublicationId:null})).resolves.toMatchObject({ok:true,data:{status:'approved',publicationId}})
     expect(value.rpc).toHaveBeenCalledWith('review_benefit_submission_v1',{p_submission_id:id,p_expected_status:'reviewing',p_action:'approve',p_admin_response:'승인',p_client_key:'40000000-0000-4000-8000-000000000001',p_public_title:'휴가 20일',p_public_description:'유급 휴가 20일',p_public_eligibility:null,p_public_condition:null,p_existing_publication_id:null},undefined)
+  })
+
+  it.each([
+    ['start_review', 'submitted', reviewing, '검토 시작'],
+    ['approve', 'reviewing', approved, '승인'],
+    ['reject', 'reviewing', rejected, '반려'],
+  ] as const)('binds %s success to the canonical requested admin response', async (action, expectedStatus, row, adminResponse) => {
+    const value=setup(row)
+    const base={submissionId:id,expectedStatus,action,adminResponse,clientKey:'40000000-0000-4000-8000-000000000001'} as const
+    const input=action==='approve'?{...base,action,expectedStatus:'reviewing' as const,publicTitle:'휴가 20일',publicDescription:'유급 휴가 20일',publicEligibility:null,publicCondition:null,existingPublicationId:null}:base
+    await expect(value.repository.review(input as never)).resolves.toMatchObject({ok:true,data:{adminResponse}})
+    const mismatch=setup({...row,admin_response:`${adminResponse} 아님`})
+    await expect(mismatch.repository.review(input as never)).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
+  it('normalizes admin response with SQL btrim semantics for RPC and response binding', async () => {
+    const value=setup(reviewing)
+    await expect(value.repository.review({submissionId:id,expectedStatus:'submitted',action:'start_review',adminResponse:'  검토 시작  ',clientKey:'40000000-0000-4000-8000-000000000001'})).resolves.toMatchObject({ok:true,data:{adminResponse:'검토 시작'}})
+    expect(value.rpc).toHaveBeenCalledWith('review_benefit_submission_v1',expect.objectContaining({p_admin_response:'검토 시작'}),undefined)
+    const empty=setup({...reviewing,admin_response:''})
+    await expect(empty.repository.review({submissionId:id,expectedStatus:'submitted',action:'start_review',adminResponse:'검토 시작',clientKey:'40000000-0000-4000-8000-000000000001'})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
+  it('fingerprints the canonical admin response and every server-bound action field', () => {
+    const base={submissionId:id,expectedStatus:'reviewing' as const,action:'approve' as const,adminResponse:' 승인 ',clientKey:'40000000-0000-4000-8000-000000000001',publicTitle:'휴가 20일',publicDescription:'유급 휴가 20일',publicEligibility:null,publicCondition:null,existingPublicationId:null}
+    expect(adminBenefitSubmissionReviewFingerprint(base)).toBe(adminBenefitSubmissionReviewFingerprint({...base,adminResponse:'승인',clientKey:'40000000-0000-4000-8000-000000000002'}))
+    for (const changed of [
+      {...base,submissionId:'20000000-0000-4000-8000-000000000002'},
+      {...base,action:'reject' as const,publicTitle:undefined,publicDescription:undefined,publicEligibility:undefined,publicCondition:undefined,existingPublicationId:undefined},
+      {...base,adminResponse:'다른 응답'},
+      {...base,publicTitle:'다른 제목'},
+      {...base,publicDescription:'다른 설명'},
+      {...base,publicEligibility:'정규직'},
+      {...base,publicCondition:'재직 중'},
+      {...base,existingPublicationId:publicationId},
+    ]) expect(adminBenefitSubmissionReviewFingerprint(changed as never)).not.toBe(adminBenefitSubmissionReviewFingerprint(base))
   })
 
   it('rejects invalid transitions/projection bounds and maps CAS/idempotency errors', async () => {
