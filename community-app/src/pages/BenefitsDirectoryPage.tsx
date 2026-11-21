@@ -214,7 +214,7 @@ export function BenefitsDirectoryPage({
         </div></fieldset>
         <label className="domestic-directory__check"><input type="checkbox" checked={draft.hasBenefitsOnly} onChange={event => updateDiscrete({ hasBenefitsOnly: event.target.checked })} /> 복지 정보 있는 기업만</label>
         <details className="domestic-directory__filter-details" role="group" aria-label="세부 필터" open={filtersOpen} onToggle={event => setFiltersOpen(event.currentTarget.open)}>
-          <summary>세부 필터</summary>
+          <summary>{filtersOpen ? '세부 필터 접기' : '세부 필터 다시 열기'}</summary>
           <div className="domestic-directory__filter-fields">
             <label>업종<input value={draft.industry} maxLength={100} onChange={event => setDraft(current => ({ ...current, industry: event.target.value.slice(0, 100) }))} onBlur={() => { applyTextDraft(draft); setDraft(current => ({ ...current, industry: canonicalizeBenefitDirectoryQuery(current).industry })) }} /></label>
             <label>기업 규모<select value={draft.size ?? ''} onChange={event => updateDiscrete({ size: event.target.value ? event.target.value as BenefitDirectoryQueryState['size'] : null })}>

@@ -527,8 +527,16 @@ describe('Jekyll visual contract', () => {
 
 describe('shared shell contract', () => {
   it('keeps the benefits discovery mobile contract scoped and accessible', () => {
-    expect(benefitRule('.benefits-page .domestic-directory__filter-details summary')?.declarations.display).toBe('none')
-    expect(benefitRule('.benefits-page .domestic-directory__filter-details summary', 700)?.declarations.display).toBe('flex')
+    const summarySelector = '.benefits-page .domestic-directory__filter-details > summary'
+    const openSummarySelector = '.benefits-page .domestic-directory__filter-details[open] > summary'
+    const closedSummarySelector = '.benefits-page .domestic-directory__filter-details:not([open]) > summary'
+
+    expect(benefitRule(summarySelector)?.declarations.display).toBe('flex')
+    expect(benefitRule(summarySelector)?.declarations['min-height']).toBe('44px')
+    expect(benefitRule(openSummarySelector)?.declarations.display).toBe('none')
+    expect(benefitRule(closedSummarySelector)?.declarations.display).toBe('flex')
+    expect(benefitRule(openSummarySelector, 700)?.declarations.display).toBe('flex')
+    expect(benefitsRules.some((rule) => rule.maxWidth === Number.POSITIVE_INFINITY && rule.selectors.includes(summarySelector) && rule.declarations.display === 'none')).toBe(false)
     expect(benefitRule('.benefits-page .domestic-directory__chips label')?.declarations['min-height']).toBe('44px')
     expect(benefitRule('.benefits-page .domestic-directory :focus-visible')?.declarations.outline).toBeDefined()
     expect(benefitRule('.benefits-page .domestic-directory__record')?.declarations['overflow-wrap']).toBe('anywhere')

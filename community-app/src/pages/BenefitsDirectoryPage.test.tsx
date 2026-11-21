@@ -53,6 +53,24 @@ describe('dynamic benefit directory search', () => {
     expect(container.querySelectorAll('main')).toHaveLength(1)
   })
 
+  it('keeps a collapsed secondary-filter summary named and operable so it can reopen after a resize', async () => {
+    const pending = deferred<Result<BenefitDirectoryPage>>()
+    render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(() => pending.promise))} />)
+    const details = screen.getByRole('group', { name: '세부 필터' })
+    const collapse = within(details).getByText('세부 필터 접기')
+
+    fireEvent.click(collapse)
+
+    expect(details).not.toHaveAttribute('open')
+    const reopen = await within(details).findByText('세부 필터 다시 열기')
+    expect(reopen).toHaveAccessibleName('세부 필터 다시 열기')
+
+    fireEvent.click(reopen)
+
+    await waitFor(() => expect(details).toHaveAttribute('open'))
+    expect(within(details).getByText('세부 필터 접기')).toBeInTheDocument()
+  })
+
   it('debounces typing into replaceState and sends the exact RPC input while discrete filters push immediately', async () => {
     vi.useFakeTimers()
     const search = vi.fn(async () => ok(page()))
