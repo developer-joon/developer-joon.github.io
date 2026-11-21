@@ -949,9 +949,12 @@ function databaseTestCount(stepName, result) {
   })
   const streams = streamValues.map((value) => value.split('\n'))
   const lines = streams.flat()
-  const standaloneSummaries = lines
-    .map((line) => /^\s*Tests=(.*?)\s*$/.exec(line))
-    .filter(Boolean)
+  const standaloneSummaries = streams.flatMap((streamLines, streamIndex) =>
+    streamLines.flatMap((line, lineIndex) => {
+      const match = /^\s*Tests=(.*?)\s*$/.exec(line)
+      return match ? [{ value: match[1], streamIndex, lineIndex }] : []
+    }),
+  )
   const proveSummaries = []
   const provePattern = /^\s*Files=([1-9]\d*), Tests=(\d+),\s+\d+(?:\.\d+)? wallclock secs \(\s*\d+(?:\.\d+)? usr\s+\d+(?:\.\d+)? sys \+\s+\d+(?:\.\d+)? cusr\s+\d+(?:\.\d+)? csys =\s+\d+(?:\.\d+)? CPU\)\s*$/
   const resultPattern = /^\s*Result:\s*(.*?)\s*$/
@@ -993,7 +996,7 @@ function databaseTestCount(stepName, result) {
     if (allSuccessMarkers > 0 || resultMarkers > 0 || proveBlocks > 0) throw invalidProve('; ambiguous prove result markers')
   }
 
-  const summaries = [...standaloneSummaries.map((summary) => summary[1]), ...proveSummaries]
+  const summaries = [...standaloneSummaries.map((summary) => summary.value), ...proveSummaries]
   if (summaries.length === 0) {
     if (MANDATORY_DATABASE_TEST_STEPS.has(stepName)) {
       throw new ReleaseFailure(stepName, 'evidence', `${stepName} must emit exactly one Tests=<integer> summary or valid prove aggregate summary`)
@@ -1002,6 +1005,14 @@ function databaseTestCount(stepName, result) {
   }
   if (MANDATORY_DATABASE_TEST_STEPS.has(stepName) && summaries.length !== 1) {
     throw new ReleaseFailure(stepName, 'evidence', `${stepName} must emit exactly one Tests=<integer> summary`)
+  }
+  if (MANDATORY_DATABASE_TEST_STEPS.has(stepName) && standaloneSummaries.length === 1) {
+    const { streamIndex, lineIndex } = standaloneSummaries[0]
+    // stdout/stderr chronology is unavailable, so enforce terminality only within
+    // the captured stream that carries the standalone protocol summary.
+    if (streams[streamIndex].slice(lineIndex + 1).some(line => line.trim() !== '')) {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} Tests=<integer> summary must be the final nonempty line in its stream`)
+    }
   }
   const counts = summaries.map((summary) => {
     if (!/^\d+$/.test(summary)) {

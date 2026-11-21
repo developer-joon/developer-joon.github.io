@@ -14,16 +14,14 @@ command -v psql >/dev/null 2>&1 || fail "psql executable is required on PATH"
 export PSQL_BIN="${PSQL_BIN:-$(realpath "$(command -v psql)")}"
 
 cleanup() {
-  status=$?
+  local original_status="${1:-$?}" cleanup_status=0 cleanup_diagnostics='' output step_status
   trap - EXIT INT TERM
   set +e
-  cleanup_failed=0
-  cleanup_diagnostics=''
   if [[ -n "$log" ]]; then
     output="$(rm -f -- "$log" 2>&1)"
     step_status=$?
     if (( step_status != 0 )); then
-      cleanup_failed=1
+      cleanup_status=1
       cleanup_diagnostics+=$'log cleanup failed:\n'"$output"$'\n'
     fi
   fi
@@ -31,7 +29,7 @@ cleanup() {
     output="$(rm -f -- "$encoding_wrapper" 2>&1)"
     step_status=$?
     if (( step_status != 0 )); then
-      cleanup_failed=1
+      cleanup_status=1
       cleanup_diagnostics+=$'psql wrapper cleanup failed:\n'"$output"$'\n'
     fi
   fi
@@ -39,23 +37,23 @@ cleanup() {
     output="$("$cli" db reset --local --no-seed 2>&1)"
     step_status=$?
     if (( step_status != 0 )); then
-      cleanup_failed=1
+      cleanup_status=1
       cleanup_diagnostics+=$'database cleanup failed:\n'"$output"$'\n'
     fi
     output="$("$cli" stop 2>&1)"
     step_status=$?
     if (( step_status != 0 )); then
-      cleanup_failed=1
+      cleanup_status=1
       cleanup_diagnostics+=$'Supabase stop failed:\n'"$output"$'\n'
     fi
   fi
-  if (( cleanup_failed != 0 )); then
+  if (( cleanup_status != 0 )); then
     printf 'benefit seed importer integration cleanup: %s\n' "${cleanup_diagnostics: -4000}" >&2
-    (( status != 0 )) || status=1
   fi
-  exit "$status"
+  if (( original_status != 0 )); then return "$original_status"; fi
+  return "$cleanup_status"
 }
-trap cleanup EXIT
+trap 'cleanup "$?"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -177,4 +175,9 @@ fixture_fingerprint="${baseline%%:*}"
 [[ "$(psqlq "select count(*)||':'||(select count(*) from private.benefit_company_sources)||':'||(select count(*) from private.benefit_import_receipts) from public.benefit_companies where company_id<>'KR-BIZ-9999999999'")" == "$first_counts" ]] || fail "replay changed exact counts"
 
 printf 'benefit seed importer integration PASS: trigger rewrites rolled back; schema, dry-run, receipt, late-failure, apply, replay verified\n'
+set +e
+cleanup 0
+cleanup_status=$?
+set -e
+if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi
 printf 'Tests=7\n'

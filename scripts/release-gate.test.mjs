@@ -1887,7 +1887,7 @@ test('binds passed reproducibility evidence to identical manifest bytes and exac
     ]
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
-      stdout: name === 'test-database' ? 'runner detail\nTests=7\nprivate-user@example.com\n' : '',
+      stdout: name === 'test-database' ? 'runner detail\nprivate-user@example.com\nTests=7\n' : '',
     })
     state.dependencies.filesystem.readFile = async (file) => {
       reads.push(file)
@@ -2034,7 +2034,7 @@ test('database helpers may omit summaries, stderr summaries are counted, and the
   }
 })
 
-test('new benefit database suites expose one final standalone positive count only after their success prose', () => {
+test('new benefit database suites clean up explicitly before their final standalone positive count', () => {
   const contracts = [
     [
       path.join(import.meta.dirname, '../supabase/tests/benefit_title_upgrade.sh'),
@@ -2049,8 +2049,28 @@ test('new benefit database suites expose one final standalone positive count onl
   ]
   for (const [file, successProse, count] of contracts) {
     const source = readFileSync(file, 'utf8')
+    const lines = source.split('\n')
+    const nonemptyLines = lines.filter(line => line.trim() !== '')
+    const cleanupStart = lines.indexOf('cleanup() {')
+    const fallbackTrap = lines.findIndex(line => /^trap .* EXIT$/.test(line))
+    const cleanupLines = lines.slice(cleanupStart, fallbackTrap)
+    const successLine = lines.indexOf(`printf '${successProse}\\n'`)
+    const explicitCleanup = lines.lastIndexOf('cleanup 0')
+    const summaryLine = lines.indexOf(`printf 'Tests=${count}\\n'`)
+
+    assert.ok(cleanupStart >= 0 && fallbackTrap > cleanupStart, file)
+    assert.equal(cleanupLines.filter(line => line.trim() === 'trap - EXIT INT TERM').length, 1, file)
+    assert.equal(cleanupLines.some(line => /^\s*exit(?:\s|$)/.test(line)), false, file)
+    assert.ok(cleanupLines.some(line => line.trim() === 'if (( original_status != 0 )); then return "$original_status"; fi'), file)
+    assert.ok(cleanupLines.some(line => line.trim() === 'return "$cleanup_status"'), file)
+    assert.ok(successLine >= 0 && successLine < explicitCleanup, file)
+    assert.ok(explicitCleanup < summaryLine, file)
+    assert.equal(lines[explicitCleanup + 1], 'cleanup_status=$?', file)
+    assert.equal(lines[explicitCleanup + 2], 'set -e', file)
+    assert.equal(lines[explicitCleanup + 3], 'if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi', file)
+    assert.equal(lines.slice(explicitCleanup + 1, summaryLine).some(line => /^trap .* EXIT$/.test(line)), false, file)
     assert.equal((source.match(/^printf 'Tests=\d+\\n'$/gm) ?? []).length, 1, file)
-    assert.ok(source.endsWith(`printf '${successProse}\\n'\n` + `printf 'Tests=${count}\\n'\n`), file)
+    assert.equal(nonemptyLines.at(-1), `printf 'Tests=${count}\\n'`, file)
   }
 })
 
@@ -2087,6 +2107,51 @@ test('mandatory database suites reject missing, zero, and duplicate summaries an
       steps: MANDATORY_DATABASE_COUNTS,
       total: 1157,
     })
+  } finally {
+    state.close()
+  }
+})
+
+test('mandatory standalone database summaries reject later nonempty output in their own captured stream', async () => {
+  for (const stream of ['stdout', 'stderr']) {
+    const state = executionFixture()
+    try {
+      const suite = 'test-benefit-title-upgrade'
+      const output = 'upgrade fixture passed\nTests=4\nPOST_SUMMARY_OUTPUT\n'
+      state.dependencies.plan = passingPlan('local', state.evidence, [suite, 'never'])
+      state.dependencies.runner = async ({ name }) => ({
+        code: 0,
+        stdout: name === suite && stream === 'stdout' ? output : '',
+        stderr: name === suite && stream === 'stderr' ? output : '',
+      })
+
+      await assert.rejects(
+        runReleaseGate(state.options, state.dependencies),
+        new RegExp(`${suite}.*(?:final|summary|Tests)`, 'i'),
+        stream,
+      )
+      const evidence = state.evidence()
+      assert.equal(evidence.status, 'failed', stream)
+      assert.equal(evidence.databaseTests, null, stream)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('mandatory standalone summary terminality is stream-local because cross-stream chronology is unavailable', async () => {
+  const state = executionFixture()
+  try {
+    const suite = 'test-benefit-title-upgrade'
+    state.dependencies.plan = passingPlan('local', state.evidence, [suite])
+    state.dependencies.runner = async ({ name }) => ({
+      code: 0,
+      stdout: name === suite ? 'upgrade fixture passed\nTests=4\n' : '',
+      stderr: name === suite ? 'tool diagnostic from independently captured stderr\n' : '',
+    })
+
+    const evidence = await runReleaseGate(state.options, state.dependencies)
+    assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: suite, count: 4 }]))
   } finally {
     state.close()
   }

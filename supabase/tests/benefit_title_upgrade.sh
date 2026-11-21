@@ -172,39 +172,67 @@ wait_for_process() {
 }
 
 cleanup() {
-  local original_status=$? cleanup_status=0 pid db_name primary_after
-  (( cleaning_up == 0 )) || exit "$original_status"
+  local original_status="${1:-$?}" cleanup_status=0 pid db_name primary_after
+  (( cleaning_up == 0 )) || return "$original_status"
   cleaning_up=1
   trap - EXIT INT TERM
   set +e
 
   if [[ -n "$writer_fd" ]]; then
-    printf '\\q\n' >&"$writer_fd" 2>/dev/null
-    eval "exec ${writer_fd}>&-"
+    printf '\\q\n' >&"$writer_fd" 2>/dev/null || {
+      printf 'benefit title cleanup: failed to stop legacy writer input\n' >&2
+      cleanup_status=1
+    }
+    eval "exec ${writer_fd}>&-" || {
+      printf 'benefit title cleanup: failed to close legacy writer input\n' >&2
+      cleanup_status=1
+    }
     writer_fd=""
   fi
   for pid in "${background_pids[@]}"; do
     kill "$pid" 2>/dev/null
   done
   for db_name in "${temp_dbs[@]}"; do
-    validate_db_name "$db_name" || { cleanup_status=1; continue; }
-    admin_psql -c "revoke connect on database \"$db_name\" from public; select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname='$db_name' and pid<>pg_catalog.pg_backend_pid();" >/dev/null 2>&1
+    validate_db_name "$db_name" || {
+      printf 'benefit title cleanup: refusing unsafe tracked database name: %s\n' "$db_name" >&2
+      cleanup_status=1
+      continue
+    }
+    admin_psql -c "revoke connect on database \"$db_name\" from public; select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname='$db_name' and pid<>pg_catalog.pg_backend_pid();" >/dev/null 2>&1 || {
+      printf 'benefit title cleanup: failed to terminate sessions for %s\n' "$db_name" >&2
+      cleanup_status=1
+    }
   done
   for pid in "${background_pids[@]}"; do
     if ! timeout 5s tail --pid="$pid" -f /dev/null 2>/dev/null; then
       kill -KILL "$pid" 2>/dev/null
-      timeout 2s tail --pid="$pid" -f /dev/null 2>/dev/null || cleanup_status=1
+      timeout 2s tail --pid="$pid" -f /dev/null 2>/dev/null || {
+        printf 'benefit title cleanup: process did not terminate: %s\n' "$pid" >&2
+        cleanup_status=1
+      }
     fi
     wait "$pid" 2>/dev/null
   done
   for db_name in "${temp_dbs[@]}"; do
-    validate_db_name "$db_name" || { cleanup_status=1; continue; }
-    admin_psql -c "drop database if exists \"$db_name\"" >/dev/null 2>&1 || cleanup_status=1
+    validate_db_name "$db_name" || {
+      cleanup_status=1
+      continue
+    }
+    admin_psql -c "drop database if exists \"$db_name\"" >/dev/null 2>&1 || {
+      printf 'benefit title cleanup: failed to drop scenario database: %s\n' "$db_name" >&2
+      cleanup_status=1
+    }
   done
-  rm -f "$writer_fifo" "$writer_log" "$migration_log"
+  rm -f "$writer_fifo" "$writer_log" "$migration_log" || {
+    printf 'benefit title cleanup: failed to remove temporary process files\n' >&2
+    cleanup_status=1
+  }
 
   if [[ -n "$primary_before" ]]; then
-    primary_after="$(primary_summary)" || cleanup_status=1
+    primary_after="$(primary_summary)" || {
+      printf 'benefit title cleanup: failed to fingerprint primary postgres database\n' >&2
+      cleanup_status=1
+    }
     if [[ "$primary_after" != "$primary_before" ]]; then
       printf 'primary postgres database changed: before=%s after=%s\n' "$primary_before" "$primary_after" >&2
       cleanup_status=1
@@ -212,10 +240,10 @@ cleanup() {
       printf 'primary postgres database unchanged: %s\n' "$primary_after"
     fi
   fi
-  if (( original_status != 0 )); then exit "$original_status"; fi
-  exit "$cleanup_status"
+  if (( original_status != 0 )); then return "$original_status"; fi
+  return "$cleanup_status"
 }
-trap cleanup EXIT
+trap 'cleanup "$?"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -420,4 +448,9 @@ fi
 printf 'canonical collision rollback preserved rows=%s constraint and RPC fingerprints\n' "$collision_rows_before"
 
 printf 'benefit title upgrade, lock race, invalid-title rollback, and canonical collision rollback fixtures passed\n'
+set +e
+cleanup 0
+cleanup_status=$?
+set -e
+if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi
 printf 'Tests=4\n'
