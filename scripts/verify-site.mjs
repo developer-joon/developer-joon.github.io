@@ -38,6 +38,8 @@ const requiredFiles = [
   'community/benefits/methodology/index.html',
   'community/benefits/correction/index.html',
   'community/benefits/my-corrections/index.html',
+  'benefits/index.html',
+  'benefits/company/index.html',
 ]
 
 const forbiddenSegments = new Set([
@@ -394,12 +396,13 @@ function extractDocumentTitle(html) {
   return { error, titles, canonicalLinks }
 }
 
-function hasCommunityAjaxOptOut(html) {
+function hasNavigationAjaxOptOut(html, expectedHref, expectedText, requireMenuList = false) {
   const lowerHtml = html.toLowerCase()
   const inertStack = []
   let anchor = null
-  let foundCommunityMenuLink = false
-  let allCommunityMenuLinksOptOut = true
+  let foundMenuLinks = 0
+  let allMenuLinksOptOut = true
+  const menuListStack = []
   let position = 0
 
   while (position < html.length) {
@@ -442,14 +445,18 @@ function hasCommunityAjaxOptOut(html) {
       } else if (name === 'a' && inertStack.length === 0) {
         if (!anchor) return false
         const classes = anchor.attributes.get('class')?.split(htmlWhitespaceSequence) ?? []
-        const isCommunityMenuLink = anchor.attributes.get('href') === '/community/'
-          && anchor.text.trim() === 'Community'
+        const isExpectedMenuLink = anchor.attributes.get('href') === expectedHref
+          && anchor.text.trim() === expectedText
           && classes.includes('menu__list__item__link')
-        if (isCommunityMenuLink) {
-          foundCommunityMenuLink = true
-          if (!classes.includes('js-no-ajax')) allCommunityMenuLinksOptOut = false
+          && (!requireMenuList || anchor.inMenuList)
+        if (isExpectedMenuLink) {
+          foundMenuLinks += 1
+          if (!classes.includes('js-no-ajax')) allMenuLinksOptOut = false
         }
         anchor = null
+      } else if (name === 'ul' && inertStack.length === 0) {
+        if (menuListStack.length === 0) return false
+        menuListStack.pop()
       }
       position = tagEnd + 1
       continue
@@ -470,17 +477,29 @@ function hasCommunityAjaxOptOut(html) {
     }
     if (inertElements.has(tag.name)) {
       inertStack.push(tag.name)
+    } else if (tag.name === 'ul' && inertStack.length === 0) {
+      const classes = tag.attributes.get('class')?.split(htmlWhitespaceSequence) ?? []
+      menuListStack.push((menuListStack.at(-1) ?? false) || classes.includes('menu__list'))
     } else if (tag.name === 'a' && inertStack.length === 0) {
       if (anchor || tag.selfClosing) return false
-      anchor = { attributes: tag.attributes, text: '' }
+      anchor = { attributes: tag.attributes, text: '', inMenuList: menuListStack.at(-1) ?? false }
     }
     position = tagEnd + 1
   }
 
   return anchor === null
     && inertStack.length === 0
-    && foundCommunityMenuLink
-    && allCommunityMenuLinksOptOut
+    && menuListStack.length === 0
+    && (requireMenuList ? foundMenuLinks === 1 : foundMenuLinks > 0)
+    && allMenuLinksOptOut
+}
+
+function hasCommunityAjaxOptOut(html) {
+  return hasNavigationAjaxOptOut(html, '/community/', 'Community')
+}
+
+function hasBenefitsAjaxOptOut(html) {
+  return hasNavigationAjaxOptOut(html, '/benefits/', '기업 복지', true)
 }
 
 function communityAssetReferences(html, shellPath) {
@@ -638,6 +657,8 @@ async function main() {
     ],
     ['404.html', 'Page Not Found – Ria & Seoa PaPa', 'https://www.breadlab.ai/404.html'],
     ['community/benefits/directory/index.html', '국내 기업 검색 · Benefit Atlas', 'https://www.breadlab.ai/community/benefits/directory/'],
+    ['benefits/index.html', '기업 복지 검색 · Breadlab', 'https://breadlab.ai/benefits/'],
+    ['benefits/company/index.html', '기업 복지 상세 · Breadlab', 'https://breadlab.ai/benefits/company/'],
   ]
   for (const [relativePath, expectedTitle, canonical] of routeChecks) {
     const html = await readText(relativePath)
@@ -655,17 +676,30 @@ async function main() {
     } else if (documentTitle.titles[0] !== expectedTitle) {
       fail(`${relativePath} has unexpected document title: ${JSON.stringify(documentTitle.titles[0])} (expected ${JSON.stringify(expectedTitle)})`)
     }
-    if (relativePath === 'community/benefits/directory/index.html') {
-      if (documentTitle.canonicalLinks.length !== 1 || documentTitle.canonicalLinks[0] !== canonical) {
-        fail(`${relativePath} is missing canonical URL in the document head`)
-      }
-    } else {
-      assertIncludes(html, `<link rel="canonical" href="${canonical}">`, relativePath, 'canonical URL')
+    if (documentTitle.canonicalLinks.length !== 1 || documentTitle.canonicalLinks[0] !== canonical) {
+      fail(`${relativePath} is missing canonical URL in the document head`)
     }
   }
   const home = await readText('index.html')
   if (!hasCommunityAjaxOptOut(home)) {
     fail('index.html Community navigation link must include the js-no-ajax class')
+  }
+  if (!hasBenefitsAjaxOptOut(home)) {
+    fail('index.html 기업 복지 navigation link must include the js-no-ajax class in the actual menu')
+  }
+  if (files.some((file) => file === 'community/benefits-root' || file.startsWith('community/benefits-root/'))) {
+    fail('community/benefits-root duplicate tree must be absent')
+  }
+
+  for (const relativePath of ['benefits/index.html', 'benefits/company/index.html']) {
+    const html = await readText(relativePath)
+    assertIncludes(html, '<div id="app"></div>', relativePath, 'public React mount')
+    const assets = communityAssetReferences(html, relativePath)
+    if (assets.length === 0) fail(`${relativePath} does not reference a built /community/assets/ file`)
+    if (/\/(?:src|node_modules)\//.test(html)) fail(`${relativePath} references implementation source`)
+    if (/AuthProvider|supabase|benefit(?:Submission|Correction)|admin/i.test(html)) {
+      fail(`${relativePath} contains an auth/private bundle marker`)
+    }
   }
 
   const privacyPath = files.includes('privacy.html')
@@ -780,6 +814,8 @@ async function main() {
     'https://www.breadlab.ai/lab/',
     'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm',
     'https://www.breadlab.ai/privacy',
+    'https://breadlab.ai/benefits/',
+    'https://breadlab.ai/benefits/company/',
   ]) {
     assertIncludes(sitemap, `<loc>${location}</loc>`, 'sitemap.xml', 'key route')
   }
@@ -806,7 +842,7 @@ async function main() {
   }
 
   console.log(`Verified ${files.length} files in ${siteRoot}`)
-  console.log('Required Jekyll routes, six community shells, four benefits entries, artifact integrity, canonical URLs, and leak checks passed.')
+  console.log('Required Jekyll routes, community shells, legacy benefits entries, two canonical benefits routes, artifact integrity, canonical URLs, and leak checks passed.')
 }
 
 await main()

@@ -17,6 +17,10 @@ const PAGE_KEYS = ['has_more', 'items', 'next_cursor_created_at', 'next_cursor_i
 const POST_KEYS = ['author', 'body_markdown', 'created_at', 'id', 'tags', 'title', 'updated_at']
 const AUTHOR_KEYS = ['display_name', 'login']
 const TAG_KEYS = ['id', 'label', 'slug']
+const CANONICAL_PUBLIC_ROUTES = [
+  `${SITE_ORIGIN.replace('www.', '')}/benefits/`,
+  `${SITE_ORIGIN.replace('www.', '')}/benefits/company/`,
+]
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|([+-])(\d{2}):(\d{2}))$/
@@ -344,7 +348,10 @@ function validateAndMergeSitemap(xml, posts) {
     if (!['http:', 'https:'].includes(parsed.protocol)) fail('malformed sitemap location')
     existing.add(location)
   }
-  const additions = posts.map((post) => `${SITE_ORIGIN}/community/content/${post.id}/`).filter((loc) => !existing.has(loc)).sort()
+  const additions = [
+    ...CANONICAL_PUBLIC_ROUTES,
+    ...posts.map((post) => `${SITE_ORIGIN}/community/content/${post.id}/`),
+  ].filter((loc) => !existing.has(loc)).sort()
   if (!additions.length) return withoutSnapshots
   const nodes = additions.map((loc) => `  <url><loc>${escapeHtml(loc)}</loc></url>`).join('\n')
   return withoutSnapshots.replace(/\s*<\/urlset>\s*$/, `\n${nodes}\n</urlset>\n`)

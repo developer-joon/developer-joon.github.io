@@ -24,6 +24,29 @@ rm -rf _site/community
 mkdir -p _site/community
 cp -a community-app/dist/. _site/community/
 
+install_benefits_shell() {
+  local source="$1"
+  local destination="$2"
+  [ -f "$source" ] && [ ! -L "$source" ] || { printf 'Invalid canonical benefits source: %s\n' "$source" >&2; return 1; }
+  [ ! -L "$destination" ] || { printf 'Unsafe canonical benefits destination: %s\n' "$destination" >&2; return 1; }
+  local destination_dir="$(dirname "$destination")"
+  local current="_site"
+  local suffix="${destination_dir#_site/}"
+  [ "$suffix" != "$destination_dir" ] || { printf 'Unsafe canonical benefits destination: %s\n' "$destination" >&2; return 1; }
+  IFS='/' read -r -a destination_parts <<< "$suffix"
+  for part in "${destination_parts[@]}"; do
+    [ -n "$part" ] && [ "$part" != . ] && [ "$part" != .. ] || { printf 'Unsafe canonical benefits destination: %s\n' "$destination" >&2; return 1; }
+    current="$current/$part"
+    [ ! -L "$current" ] || { printf 'Unsafe canonical benefits destination directory: %s\n' "$current" >&2; return 1; }
+    mkdir -p "$current"
+  done
+  [ ! -L "$(dirname "$destination")" ] || { printf 'Unsafe canonical benefits destination directory: %s\n' "$(dirname "$destination")" >&2; return 1; }
+  install -m 0644 "$source" "$destination"
+}
+install_benefits_shell community-app/dist/benefits-root/index.html _site/benefits/index.html
+install_benefits_shell community-app/dist/benefits-root/company/index.html _site/benefits/company/index.html
+rm -rf _site/community/benefits-root
+
 case "${COMMUNITY_SNAPSHOT_MODE:-fixture}" in
   fixture)
     node scripts/community-snapshots.mjs --output _site/community/content --sitemap _site/sitemap.xml --fixture scripts/fixtures/community-snapshots.json

@@ -130,6 +130,18 @@ test('merges deterministic snapshot URLs without duplicating existing locs', asy
   })
 })
 
+test('adds the exact canonical benefits route inventory once and never adds benefits-root', async () => {
+  await withSetup(async (ctx) => {
+    await writeJson(ctx.fixture, [page([])])
+    assert.equal(run(ctx).status, 0)
+    const xml = await readFile(ctx.sitemap, 'utf8')
+    for (const canonical of ['https://breadlab.ai/benefits/', 'https://breadlab.ai/benefits/company/']) {
+      assert.equal(xml.split(`<loc>${canonical}</loc>`).length - 1, 1)
+    }
+    assert.doesNotMatch(xml, /benefits-root/)
+  })
+})
+
 test('removes stale snapshot locations while merging the current deterministic set', async () => {
   await withSetup(async (ctx) => {
     const stale = 'https://www.breadlab.ai/community/content/33333333-3333-4333-8333-333333333333/'

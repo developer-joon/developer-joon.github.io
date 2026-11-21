@@ -12,6 +12,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         home: page('./index.html'),
+        benefitsRoot: page('./benefits-root/index.html'),
+        benefitsRootCompany: page('./benefits-root/company/index.html'),
         benefits: page('./benefits/index.html'),
         benefitsDirectory: page('./benefits/directory/index.html'),
         benefitsFit: page('./benefits/fit/index.html'),

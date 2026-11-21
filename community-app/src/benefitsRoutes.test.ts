@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { benefitSubmissionHref, benefitsRoute } from './benefitsRoutes'
+import { benefitSubmissionHref, benefitsRoute, legacyBenefitsRedirect } from './benefitsRoutes'
 
 describe('Task 7 benefit submission route contract', () => {
   it('builds the canonical company-prefilled submission URL', () => {
@@ -24,9 +24,32 @@ describe('non-ranking benefits routes', () => {
     expect(benefitsRoute(`/community/benefits/${part}`)).toBe(route)
   })
 
-  it('maps the canonical company shell to the dynamic company route without enabling the Task 9 root shell', () => {
+  it('maps both canonical shells to the dynamic public routes', () => {
+    expect(benefitsRoute('/benefits/')).toBe('directory')
+    expect(benefitsRoute('/benefits')).toBe('directory')
     expect(benefitsRoute('/benefits/company/')).toBe('company')
-    expect(benefitsRoute('/benefits')).toBe(null)
+    expect(benefitsRoute('/benefits/company')).toBe('company')
+  })
+
+  it.each([
+    ['/community/benefits/directory/', '/benefits/'],
+    ['/community/benefits/directory', '/benefits/'],
+    ['/community/benefits/company/', '/benefits/company/'],
+    ['/community/benefits/company', '/benefits/company/'],
+  ])('redirects legacy %s with raw query and hash preserved', (pathname, destination) => {
+    expect(legacyBenefitsRedirect(pathname, '?b=2&a=1&a=%2F&bad=%E0%A4%A', '#raw%2Fhash')).toBe(
+      `${destination}?b=2&a=1&a=%2F&bad=%E0%A4%A#raw%2Fhash`,
+    )
+  })
+
+  it.each([
+    '/benefits/',
+    '/benefits/company/',
+    '/community/benefits/',
+    '/community/benefits/directory-extra/',
+    '/community/benefits/company/extra/',
+  ])('does not redirect canonical, deeper, or lookalike route %s', pathname => {
+    expect(legacyBenefitsRedirect(pathname, '?id=raw', '#hash')).toBe(null)
   })
 
   it('does not expose a rankings route', () => {

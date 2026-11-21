@@ -70,7 +70,7 @@ function PageShell({ children }: { children: ReactNode }) {
 }
 
 function backHref(directoryQuery: string) {
-  return `/community/benefits/directory/${directoryQuery}`
+  return `/benefits/${directoryQuery}`
 }
 
 function groupPublications(publications: BenefitDirectoryPublication[]) {
@@ -150,7 +150,7 @@ export function BenefitDirectoryCompanyPage({
   }, [])
 
   if (!parsed.id) return <PageShell>
-    <a className="benefit-company-page__back" href="/community/benefits/directory/">기업 검색으로 돌아가기</a>
+    <a className="benefit-company-page__back" href="/benefits/">기업 검색으로 돌아가기</a>
     <h1>기업 복지 상세</h1>
     <div className="benefit-company-page__state" role="alert">유효하지 않은 기업 상세 링크입니다.</div>
   </PageShell>

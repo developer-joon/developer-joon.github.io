@@ -87,11 +87,11 @@ describe('AppHeader global shell', () => {
       ['Revenue Lab', '/lab/'],
       ['Blog', '/blog/'],
       ['Community', '/community/'],
-      ['Benefit Atlas', '/community/benefits/'],
+      ['기업 복지', '/benefits/'],
       ['Shop', '/shop/'],
       ['About', '/about'],
     ])
-    expect(within(navigation).queryByText('기업 복지 탐색기')).not.toBeInTheDocument()
+    expect(within(navigation).getAllByRole('link', { name: '기업 복지' })).toHaveLength(1)
     expect(within(navigation).getByRole('link', { name: 'Community' })).toHaveAttribute('aria-current', 'page')
     expect(header.firstElementChild).toHaveClass('community-header__wrap', 'community-wrap')
     const menuList = within(navigation).getByRole('list')
@@ -100,20 +100,22 @@ describe('AppHeader global shell', () => {
   })
 
   it.each([
-    '/community/benefits',
-    '/community/benefits/',
-    '/community/benefits/fit/',
-    '/community/benefits/company/',
-    '/community/benefits/methodology/',
-    '/community/benefits/correction/',
-  ])('marks the Benefit Atlas menu item current on %s', (pathname) => {
+    '/benefits',
+    '/benefits/',
+    '/benefits/company/',
+  ])('marks the 기업 복지 menu item current on %s', (pathname) => {
     window.history.replaceState({}, '', pathname)
     render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
 
     const navigation = screen.getByRole('navigation', { name: '주요 메뉴' })
-    expect(within(navigation).getByRole('link', { name: 'Benefit Atlas' })).toHaveAttribute('aria-current', 'page')
-    expect(within(navigation).queryByText('기업 복지 탐색기')).not.toBeInTheDocument()
+    expect(within(navigation).getByRole('link', { name: '기업 복지' })).toHaveAttribute('aria-current', 'page')
     expect(within(navigation).getByRole('link', { name: 'Community' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('does not mark the canonical benefit link current for a lookalike prefix', () => {
+    window.history.replaceState({}, '', '/benefits-extra')
+    render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
+    expect(screen.getByRole('link', { name: '기업 복지' })).not.toHaveAttribute('aria-current')
   })
 
   it('keeps account controls and identity outside the global header and navigation', () => {

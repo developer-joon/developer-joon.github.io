@@ -102,7 +102,7 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(within(leave).getByText('입사 1년 후')).toBeVisible()
     expect(screen.getAllByText('공식 확인')).toHaveLength(2)
     expect(screen.getByText('사용자 제보')).toBeVisible()
-    expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/community/benefits/directory/?q=%EA%B0%80')
+    expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/benefits/?q=%EA%B0%80')
 
     const publicText = container.textContent ?? ''
     expect(publicText).not.toMatch(/revision|source|verified|review|submitter|reviewer|digest|provenance|확인일|검토일/i)
@@ -116,7 +116,7 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(screen.getByText(/게시 여부만 나타내며 실제 제도 유무를 단정하지 않습니다/)).toBeVisible()
     expect(screen.queryByText(/복지 없음/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: '새 혜택 제보' })).toHaveAttribute('href', `/community/benefits/submit/?companyId=${CRN_A}`)
-    expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/community/benefits/directory/')
+    expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/benefits/')
   })
 
   it.each([
@@ -213,9 +213,9 @@ describe('BenefitDirectoryCompanyPage', () => {
 })
 
 describe('public route dispatch', () => {
-  it.each(['/benefits/company/', '/community/benefits/company/'])('maps %s to the same lazy dynamic page and preserves query', async pathname => {
+  it('maps the canonical company route to the lazy dynamic page and preserves query', async () => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>().mockResolvedValue(ok(detail(BIZ, [])))
-    render(<BenefitsApp pathname={pathname} search={`?id=${BIZ}`} benefitDirectoryRepository={repository(load)} />)
+    render(<BenefitsApp pathname="/benefits/company/" search={`?id=${BIZ}`} benefitDirectoryRepository={repository(load)} />)
     expect(await screen.findByRole('heading', { name: '가 기업' })).toBeVisible()
     expect(load).toHaveBeenCalledWith(BIZ, expect.any(AbortSignal))
   })

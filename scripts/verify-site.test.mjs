@@ -64,7 +64,7 @@ async function put(root, relativePath, content = '') {
 async function makeValidArtifact() {
   const root = await mkdtemp(path.join(tmpdir(), 'verify-site-test-'))
   const routes = [
-    ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/', '<a class="menu__list__item__link js-no-ajax" href="/community/">Community</a>'],
+    ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/', '<ul class="menu__list"><li><a class="menu__list__item__link js-no-ajax" href="/community/">Community</a></li><li><a class="menu__list__item__link js-no-ajax" href="/benefits/">기업 복지</a></li></ul>'],
     ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/', ''],
     ['lab/index.html', '<title>수익실험실 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
     ['blog/ceph-cluster-install-with-helm.html', '<title>[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm', ''],
@@ -80,6 +80,8 @@ async function makeValidArtifact() {
     await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
   }
   await put(root, 'community/benefits/directory/index.html', '<!doctype html><html lang="ko"><head><title>국내 기업 검색 · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/directory/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
+  await put(root, 'benefits/index.html', '<!doctype html><html lang="ko"><head><title>기업 복지 검색 · Breadlab</title><link rel="canonical" href="https://breadlab.ai/benefits/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
+  await put(root, 'benefits/company/index.html', '<!doctype html><html lang="ko"><head><title>기업 복지 상세 · Breadlab</title><link rel="canonical" href="https://breadlab.ai/benefits/company/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
   await put(root, snapshotPath, `<title>Published snapshot example | Breadlab 커뮤니티</title><link rel="canonical" href="${snapshotUrl}"><meta property="og:type" content="article"><meta property="og:url" content="${snapshotUrl}"><script type="application/ld+json">{"@type":"BlogPosting"}</script>`)
   await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 Google OAuth 로그인은 Supabase Auth를 사용합니다. 안정적인 provider subject는 인증 계층에서만 사용하고 공개 프로필에는 개인정보가 아닌 결정적 로그인 이름, 최대 120자의 Google 표시 이름, 최대 2,048자의 HTTPS 프로필 이미지 URL, 사용자 ID와 로그인 세션 정보를 처리합니다. 이메일과 provider access token 또는 refresh token은 공개 프로필에 저장하지 않습니다. 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
@@ -90,6 +92,8 @@ async function makeValidArtifact() {
     'https://www.breadlab.ai/lab/',
     'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm',
     'https://www.breadlab.ai/privacy',
+    'https://breadlab.ai/benefits/',
+    'https://breadlab.ai/benefits/company/',
     snapshotUrl,
   ].map((location) => `<loc>${location}</loc>`).join('\n'))
   for (const relativePath of [
@@ -159,6 +163,55 @@ test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects a missing canonical benefits route', async () => {
+  await withArtifact(async (root) => {
+    await rm(path.join(root, 'benefits/index.html'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /missing required artifact: benefits\/index\.html/)
+  })
+})
+
+test('rejects stale canonical metadata even when expected values appear outside head', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'benefits/index.html', '<!doctype html><html><head><title>stale</title><link rel="canonical" href="https://breadlab.ai/stale/"></head><body><!-- <title>기업 복지 검색 · Breadlab</title> --><link rel="canonical" href="https://breadlab.ai/benefits/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></body></html>')
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /benefits\/index\.html has unexpected document title|missing canonical URL/)
+  })
+})
+
+test('rejects duplicate canonical title and link in the actual head', async () => {
+  await withArtifact(async (root) => {
+    const route = path.join(root, 'benefits/index.html')
+    const html = await readFile(route, 'utf8')
+    await writeFile(route, html.replace('</head>', '<title>기업 복지 검색 · Breadlab</title><link rel="canonical" href="https://breadlab.ai/benefits/"></head>'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /exactly one document title|canonical URL/)
+  })
+})
+
+test('rejects an unmarked real benefits nav link despite a marked body decoy', async () => {
+  await withArtifact(async (root) => {
+    const home = path.join(root, 'index.html')
+    const html = await readFile(home, 'utf8')
+    await writeFile(home, html.replace('menu__list__item__link js-no-ajax" href="/benefits/"', 'menu__list__item__link" href="/benefits/"').replace('</body>', '<main><a class="js-no-ajax" href="/benefits/">기업 복지</a></main></body>'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /기업 복지 navigation link.*js-no-ajax/)
+  })
+})
+
+test('rejects a duplicate community benefits-root tree', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/benefits-root/index.html', 'duplicate')
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /community\/benefits-root.*must be absent/)
   })
 })
 
@@ -782,7 +835,7 @@ test('rejects an unmarked Community menu link despite a marked body-link decoy',
 
 test('accepts a marked Community menu link without imposing the opt-out on a body link', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a></nav><main><a href="/community/">Community</a></main></body></html>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">기업 복지</a></li></ul></nav><main><a href="/community/">Community</a></main></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -808,7 +861,7 @@ test('rejects a marked Community body link when no actual menu link exists', asy
 
 test('accepts a marked Community link with a greater-than sign in a quoted attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a></body></html>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">기업 복지</a></li></ul></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -816,7 +869,7 @@ test('accepts a marked Community link with a greater-than sign in a quoted attri
 
 test('accepts visible Community text inside nested markup with a quoted greater-than attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a></body></html>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">기업 복지</a></li></ul></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })

@@ -35,6 +35,8 @@ function initialSourceGraph(entry: string) {
 describe('public benefits entry boundary', () => {
   it('builds only the supported public shells', () => {
     for (const path of [
+      'benefits-root/index.html',
+      'benefits-root/company/index.html',
       'benefits/index.html',
       'benefits/fit/index.html',
       'benefits/company/index.html',
@@ -48,6 +50,26 @@ describe('public benefits entry boundary', () => {
       expect(source(path)).not.toContain('/src/benefits-main.tsx')
     }
     expect(existsSync(`${process.cwd()}/benefits/rankings/index.html`)).toBe(false)
+    const vite = source('vite.config.ts')
+    expect(vite).toContain("benefitsRoot: page('./benefits-root/index.html')")
+    expect(vite).toContain("benefitsRootCompany: page('./benefits-root/company/index.html')")
+  })
+
+  it('gives canonical shells exact production metadata and public entry only', () => {
+    for (const [path, title, canonical] of [
+      ['benefits-root/index.html', '기업 복지 검색 · Breadlab', 'https://breadlab.ai/benefits/'],
+      ['benefits-root/company/index.html', '기업 복지 상세 · Breadlab', 'https://breadlab.ai/benefits/company/'],
+    ]) {
+      const html = source(path)
+      expect(html.match(/<title>/g)).toHaveLength(1)
+      expect(html).toContain(`<title>${title}</title>`)
+      expect(html.match(/rel="canonical"/g)).toHaveLength(1)
+      expect(html).toContain(`<link rel="canonical" href="${canonical}" />`)
+      expect(html).toContain('<link rel="shortcut icon" href="/images/favicon.ico" />')
+      expect(html).toContain('/src/benefits-main.tsx')
+      expect(html).not.toContain('/src/main.tsx')
+      expect(html).not.toMatch(/supabase|AuthProvider|admin|submission/i)
+    }
   })
 
   it('keeps the public shell dependency graph free of the directory repository', () => {

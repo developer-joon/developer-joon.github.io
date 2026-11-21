@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { benefitsRoute } from './benefitsRoutes'
+import { benefitsRoute, legacyBenefitsRedirect } from './benefitsRoutes'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
 import type { BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
@@ -38,6 +38,11 @@ export function BenefitsApp({
   search?: string
   benefitDirectoryRepository?: BenefitDirectoryRepository
 }) {
+  const redirect = legacyBenefitsRedirect(pathname, window.location.search, window.location.hash)
+  if (redirect) {
+    window.location.replace(redirect)
+    return null
+  }
   const route = benefitsRoute(pathname)
   if (!route) throw new Error('복지 탐색기 경로가 아닙니다.')
   return (

@@ -44,7 +44,7 @@ function historyUrl(query: string) {
   return `${window.location.pathname}${query}${window.location.hash}`
 }
 function detailLink(companyId: string) {
-  return `/community/benefits/company/?id=${encodeURIComponent(companyId)}`
+  return `/benefits/company/?id=${encodeURIComponent(companyId)}`
 }
 function mergeItems(current: BenefitDirectorySearchItem[], next: BenefitDirectorySearchItem[]) {
   const seen = new Set(current.map(item => item.companyId))
