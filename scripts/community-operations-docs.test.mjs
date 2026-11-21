@@ -413,7 +413,7 @@ test('hosted Supabase procedures never persist a link and every remote command h
     /\bsupabase\b/.test(command) && /\b(?:db (?:dump|push)|storage (?:ls|cp)|functions deploy)\b/.test(command))
   assert.ok(hostedCommands.length >= 15, 'expected all documented hosted CLI commands')
   for (const command of hostedCommands) {
-    assert.match(command, /--project-ref "\$(?:DEVELOPMENT|PRODUCTION|RECOVERY)_PROJECT_REF"/, `implicit hosted target: ${command}`)
+    assert.match(command, /--project-ref "\$(?:DEVELOPMENT|PRODUCTION|RECOVERY|TARGET)_PROJECT_REF"/, `implicit hosted target: ${command}`)
     assert.doesNotMatch(command, /\s--linked(?:\s|$)/, `linked-state target: ${command}`)
   }
 })
@@ -495,6 +495,32 @@ ${evidenceBlock}`], {
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('hosted seed import binds both calls to the reviewed target and requires post-dry-run confirmation', async () => {
+  const runbook = await operationText('community-release-runbook.md')
+  const checklist = await operationText('community-release-checklist.md')
+  assert.match(runbook, /assert_seed_import_target\(\) \{[\s\S]*node scripts\/assert-benefit-seed-target\.mjs[\s\S]*\n\}/)
+  const hostedBlock = runbook.indexOf('assert_seed_import_target()')
+  const dryRun = runbook.indexOf('node scripts/apply-benefit-directory-seed.mjs --dry-run', hostedBlock)
+  const apply = runbook.indexOf('node scripts/apply-benefit-directory-seed.mjs\n', dryRun + 1)
+  assert.ok(dryRun > 0 && apply > dryRun)
+  assert.ok(runbook.lastIndexOf('assert_seed_import_target', dryRun) > runbook.lastIndexOf('node scripts/verify-benefit-directory-seed.mjs', dryRun))
+  assert.ok(runbook.lastIndexOf('assert_seed_import_target', apply) > dryRun)
+  assert.ok(runbook.lastIndexOf('TARGET_SEED_APPLY_CONFIRMATION', apply) > dryRun)
+  assertMatches(runbook, [
+    /TARGET_PROJECT_REF.*lowercase.*20/i,
+    /REVIEWED_HEAD/,
+    /git status --porcelain/,
+    /TARGET_SEED_IMPORT_EVIDENCE_REF/,
+    /DATABASE_URL.*(?:never|must not).*(?:print|output|log)/is,
+  ])
+  assertMatches(checklist, [
+    /target binding.*before.*--dry-run/is,
+    /target binding.*before.*normal import/is,
+    /mismatch.*NO-GO/is,
+    /post-dry-run confirmation/i,
+  ])
 })
 
 test('documents safe credentials and explicit project targeting', async () => {

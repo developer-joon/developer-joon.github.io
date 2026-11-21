@@ -4,14 +4,14 @@ const globalLinks = [
   { label: 'Revenue Lab', href: '/lab/' },
   { label: 'Blog', href: '/blog/' },
   { label: 'Community', href: '/community/' },
-  { label: 'Benefit Atlas', href: '/community/benefits/' },
+  { label: '기업 복지', href: '/benefits/' },
   { label: 'Shop', href: '/shop/' },
   { label: 'About', href: '/about' },
 ] as const
 
 export function AppHeader() {
   const pathname = window.location.pathname
-  const onBenefitsRoute = pathname === '/community/benefits' || pathname.startsWith('/community/benefits/')
+  const onBenefitsRoute = pathname === '/benefits' || pathname.startsWith('/benefits/')
   const [menuOpen, setMenuOpen] = useState(false)
   const [mobileNavigation, setMobileNavigation] = useState(() => window.matchMedia?.('(max-width: 1023px)').matches ?? true)
   const toggleRef = useRef<HTMLButtonElement>(null)
@@ -93,7 +93,7 @@ export function AppHeader() {
         <nav ref={navigationRef} id="global-navigation" className={mobileNavigation && menuOpen ? 'global-navigation is-open' : 'global-navigation'} aria-label="주요 메뉴">
           <ul className="global-navigation__list">
             {globalLinks.map((link) => {
-              const current = link.href === '/community/benefits/'
+              const current = link.href === '/benefits/'
                 ? onBenefitsRoute
                 : link.href === '/community/' && !onBenefitsRoute
               return (

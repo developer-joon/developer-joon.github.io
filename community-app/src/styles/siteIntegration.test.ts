@@ -39,6 +39,7 @@ const entryHtml = [
   'benefits/correction/index.html',
   'benefits/my-corrections/index.html',
   'admin/benefit-corrections/index.html',
+  'admin/benefit-submissions/index.html',
 ].map(read)
 const benefitsExplorerEntries = [
   ['benefits/index.html', '복지 현황'],
@@ -54,6 +55,7 @@ const shellSources = [
   'src/pages/AuthCallbackPage.tsx',
   'src/pages/AdminReportsPage.tsx',
   'src/pages/AdminBenefitCorrectionsPage.tsx',
+  'src/pages/AdminBenefitSubmissionsPage.tsx',
 ].map(read).join('\n')
 
 type CssRule = {
@@ -94,6 +96,11 @@ function parseRules(source: string, inherited = { minWidth: 0, maxWidth: Number.
 }
 
 const cssRules = parseRules(communityCss)
+const benefitsRules = parseRules(benefitsCss)
+
+function benefitRule(selector: string, maximumWidth = Number.POSITIVE_INFINITY) {
+  return benefitsRules.find((rule) => rule.selectors.includes(selector) && rule.maxWidth === maximumWidth)
+}
 
 function specificity(selector: string) {
   return (selector.match(/\.[\w-]+/g)?.length ?? 0) * 100 + (selector.match(/(?:^|\s)main\b/g)?.length ?? 0)
@@ -519,6 +526,24 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('keeps the benefits discovery mobile contract scoped and accessible', () => {
+    const summarySelector = '.benefits-page .domestic-directory__filter-details > summary'
+    const openSummarySelector = '.benefits-page .domestic-directory__filter-details[open] > summary'
+    const closedSummarySelector = '.benefits-page .domestic-directory__filter-details:not([open]) > summary'
+
+    expect(benefitRule(summarySelector)?.declarations.display).toBe('flex')
+    expect(benefitRule(summarySelector)?.declarations['min-height']).toBe('44px')
+    expect(benefitRule(openSummarySelector)?.declarations.display).toBe('none')
+    expect(benefitRule(closedSummarySelector)?.declarations.display).toBe('flex')
+    expect(benefitRule(openSummarySelector, 700)?.declarations.display).toBe('flex')
+    expect(benefitsRules.some((rule) => rule.maxWidth === Number.POSITIVE_INFINITY && rule.selectors.includes(summarySelector) && rule.declarations.display === 'none')).toBe(false)
+    expect(benefitRule('.benefits-page .domestic-directory__chips label')?.declarations['min-height']).toBe('44px')
+    expect(benefitRule('.benefits-page .domestic-directory :focus-visible')?.declarations.outline).toBeDefined()
+    expect(benefitRule('.benefits-page .domestic-directory__record')?.declarations['overflow-wrap']).toBe('anywhere')
+    expect(benefitRule('.benefit-company-page__card')?.declarations['min-width']).toBe('0')
+    expect(benefitsCss).not.toMatch(/(?:community-header|global-navigation|menu-toggle)/)
+  })
+
   it('keeps Benefit Atlas correction CTAs on the internal workflow only', () => {
     const companyPage = read('src/pages/BenefitsCompanyPage.tsx')
     const methodologyPage = read('src/pages/BenefitsMethodologyPage.tsx')
@@ -769,6 +794,7 @@ describe('shared shell contract', () => {
       'src/pages/AuthCallbackPage.tsx',
       'src/pages/AdminReportsPage.tsx',
       'src/pages/AdminBenefitCorrectionsPage.tsx',
+      'src/pages/AdminBenefitSubmissionsPage.tsx',
     ].every((path) => read(path).includes('<AppFooter />'))).toBe(true)
   })
 

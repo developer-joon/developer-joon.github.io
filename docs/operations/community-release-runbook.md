@@ -140,6 +140,93 @@ done
 
 Task 16 records every created post, comment, attachment, Storage object path, and Auth test user as **operator-recorded fixture IDs** in private external evidence. Cleanup selects and deletes only those exact IDs; prefix-only or age-only deletion is forbidden. It then repeats the same authenticated reads and Storage listing and records a **zero-residue read-back**. A cleanup failure blocks production.
 
+## Dynamic benefits directory
+
+The repository bytes are the release authority for this read model: the pinned `domestic-search-index-v1` source deterministically generates `supabase/fixtures/benefit-directory`. The tracked manifest is descriptive, not authority. The public contract is the exact-key PostgreSQL RPC projection and the frontend's strict anonymous decoder. Source URL, observation/review dates, reviewer identity, and other provenance stay private; official and community-reviewed labels must remain distinct. Any private field such as `source_url`, `verified_at`, or `reviewer_id` in an anonymous response is a release stop.
+
+### Local proof (no hosted credentials)
+
+Use only the loopback database and a trusted absolute `psql` executable. Do not set a hosted ref, hosted URL, publishable key, access token, or hosted `DATABASE_URL` in this shell.
+
+```bash
+npm --prefix community-app run db:start
+npm --prefix community-app run db:reset
+npm --prefix community-app run db:test:benefit-title-upgrade
+npm --prefix community-app run db:test:benefit-seed-importer
+npm --prefix community-app run db:test
+npm --prefix community-app run db:lint
+node scripts/generate-benefit-directory-seed.mjs --check
+node scripts/verify-benefit-directory-seed.mjs
+
+export DATABASE_URL="${LOCAL_DATABASE_URL:?set the loopback-only local database URL}"
+export PSQL_BIN='/trusted/absolute/path/to/psql'
+node scripts/apply-benefit-directory-seed.mjs --dry-run
+printf '%s\n' 'STOP: dry-run must roll back; inspect the unchanged pre-import counts'
+node scripts/apply-benefit-directory-seed.mjs
+npm --prefix community-app run check
+npm --prefix community-app run build
+```
+
+The dry run executes the full import and then rolls back; it is not the normal local import. After the normal import, perform the bounded scalar read-back in [the seed-import runbook](benefit-directory-seed-import.md#read-back-checks): exact company count `40,053`, identity split `1,000 / 35,910 / 3,143`, and one receipt bound to the bundle digest, ordered-ID digest, and pinned source digest. Re-running the import must be idempotent and must not delete or rewrite unrelated companies or publications. The local release gate then runs the frontend strict-decoder tests, frontend build, two assembled-site builds, independent site verification for A and B, browser acceptance, and reproducibility. Do not continue if the RPC key assertions or private-field rejection test fails.
+
+### Hosted development and production (manual only)
+
+For each target, start from the exact reviewed revision and a clean tree. Record a separate target, external backup/evidence reference, and approval for (1) migration, (2) seed import, and (3) Pages. Reverify the bundle with `node scripts/verify-benefit-directory-seed.mjs` immediately before import. Never place a password, connection string, publishable key, or other secret in a CLI argument, document, log, or evidence record; the placeholders below are environment values supplied through the approved secret mechanism.
+
+**Hosted migration stop point:** inspect a dry run against the explicit target ref, then stop. Apply only after the migration approval is recorded.
+
+```bash
+: "${TARGET_PROJECT_REF:?set the separately approved target ref}"
+: "${TARGET_MIGRATION_APPROVAL:?record migration approval}"
+./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
+  db push --project-ref "$TARGET_PROJECT_REF" --dry-run
+printf '%s\n' 'STOP: approve the reviewed migration independently of seed import'
+```
+
+**Hosted seed-import stop point:** migration success does not authorize import. Obtain a distinct import approval, export the target `DATABASE_URL` through the secret mechanism, set `PSQL_BIN` to a trusted absolute executable, and bind the connection to the exact target before each importer call. `TARGET_PROJECT_REF` is a lowercase 20-character sequence of letters or digits. The validator accepts the canonical direct host `db.<ref>.supabase.co` or canonical pooler username `postgres.<ref>`; if both identifiers are present they must agree. It reads environment values only and never prints or logs `DATABASE_URL`, credentials, or its URL components.
+
+```bash
+set -euo pipefail
+: "${TARGET_PROJECT_REF:?set the separately approved target ref}"
+: "${REVIEWED_HEAD:?set the exact reviewed 40-character lowercase commit}"
+: "${TARGET_SEED_IMPORT_APPROVAL:?record seed import approval}"
+: "${TARGET_SEED_IMPORT_EVIDENCE_REF:?record target-specific external backup/evidence reference}"
+: "${DATABASE_URL:?supplied by the approved secret mechanism}"
+: "${PSQL_BIN:?set a trusted absolute psql path}"
+
+assert_seed_import_target() {
+  test "$(git rev-parse --show-toplevel)" = "$REPO_ROOT"
+  test -z "$(git status --porcelain)"
+  test "$(git rev-parse HEAD)" = "$REVIEWED_HEAD"
+  test "${#REVIEWED_HEAD}" -eq 40
+  : "${TARGET_SEED_IMPORT_APPROVAL:?seed import approval is required}"
+  : "${TARGET_SEED_IMPORT_EVIDENCE_REF:?target evidence reference is required}"
+  node scripts/assert-benefit-seed-target.mjs
+}
+
+node scripts/verify-benefit-directory-seed.mjs
+assert_seed_import_target
+node scripts/apply-benefit-directory-seed.mjs --dry-run
+printf '%s\n' 'STOP: dry-run rolled back; inspect its sanitized result and obtain a distinct apply confirmation'
+: "${TARGET_SEED_APPLY_CONFIRMATION:?record the post-dry-run confirmation for normal import}"
+assert_seed_import_target
+node scripts/apply-benefit-directory-seed.mjs
+```
+
+A missing, malformed, ambiguous, conflicting, or mismatched target binding is a hard stop. The normal import's `TARGET_SEED_APPLY_CONFIRMATION` is distinct from the earlier seed-import approval and may be recorded only after the dry-run result is reviewed.
+
+Record only the receipt digest and exact aggregate counts. Read private receipt details only through the approved database session. The import is idempotent and does not delete unrelated companies or publications.
+
+Run a bounded read-only smoke through the public RPC with only that target's publishable key: search one known canonical company, fetch its detail, exercise the `혜택 있음` filter, and verify zero-evidence semantics mean `공개 복지 정보 미확인`, never `복지 없음`. The operator inspects only a sanitized exact-key/count result. Never log the key, URL query, response body, company row, private field name values, or provenance. Require private field names and values to be absent and preserve the public `공식 확인` versus `사용자 제보` labeling.
+
+### Navigation cutover and recovery
+
+Backend migration, separately approved import, receipt read-back, and public smoke all precede Pages. Deploy Pages only once through `.github/workflows/jekyll.yml`. After deployment, verify canonical `/benefits`, one canonical company deep link, and the legacy query/hash redirect.
+
+There is no destructive seed/schema down or bulk delete. A failed dry-run or failed import transaction must leave prior companies, sources, receipts, and publications unchanged. If the public read model is wrong, stop Pages/cutover or revert the frontend link/shell to the prior reviewed revision while disabling writes if needed; preserve receipts, backups, and evidence; forward-fix the database/read model; then rerun the gate and smoke. Backend forward-fix is distinct from frontend route rollback.
+
+`scripts/release-gate.mjs` never applies a hosted migration or seed, runs `db push`, deploys a Function or Pages, executes a canary, or writes to a hosted resource. Production-readiness remains revision-bound offline evidence aggregation.
+
 ## Production backend, probes, Pages, and canary
 
 First complete [backup and recovery evidence](community-backup-restore.md). Only additive migrations are allowed. There is no destructive down migration: disable writes and forward-fix instead.

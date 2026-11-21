@@ -6,6 +6,24 @@ import path from 'node:path'
 const pinnedSha256 = 'b7e61860d69f289735f42a6ae275c8a5303cbde367036f77865c7b20de7b9594'
 const pinnedBytes = 8392604
 const parts = ['community', 'data', 'company-benefits', 'domestic-search-index-v1']
+export function verifyDomesticSearchIndexBytes(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length !== pinnedBytes) throw Error('index unsafe file or count/bytes mismatch')
+  if (createHash('sha256').update(bytes).digest('hex') !== pinnedSha256) throw Error('index SHA mismatch')
+  const doc = JSON.parse(bytes.toString('utf8'))
+  if (doc.schema_version !== 'domestic-search-index-v1' || doc.entries?.length !== 40053 || doc.approved !== 0 || doc.totals?.records !== 40053 || doc.totals?.new_records !== 35910 || doc.totals?.base_aliases !== 174 || doc.totals?.ftc_only !== 3143 || doc.totals?.research_companies !== 12 || doc.totals?.research_leads !== 128) throw Error('index count or approval mismatch')
+  const ids = new Set(); let biz = 0; let ftc = 0; let aliases = 0; let leads = 0; let companies = 0
+  for (const row of doc.entries) {
+    if (!row || !/^KR-(?:BIZ-\d{10}|CRN-\d{13})$/.test(row.id) || ids.has(row.id) || typeof row.name !== 'string' || !row.name || !['unclassified', 'large_affiliate', 'mid_history', 'sme_unspecified'].includes(row.size_class) || Object.hasOwn(row, 'approved') || Object.hasOwn(row, 'benefit_action')) throw Error('index duplicate/unknown ID or false approval')
+    ids.add(row.id)
+    if (row.source_type === 'ftc_affiliate') ftc++
+    else if (row.id.startsWith('KR-BIZ-')) biz++
+    else if (row.source_type === 'dated_recruitment_observation') aliases++
+    if (row.research_count !== undefined) { if (!row.id.startsWith('KR-CRN-') || !Number.isSafeInteger(row.research_count) || row.research_count < 1) throw Error('index research count invalid'); companies++; leads += row.research_count }
+  }
+  if (ids.size !== 40053 || biz !== 35910 || ftc !== 3143 || aliases !== 174 || companies !== 12 || leads !== 128) throw Error('index derived count mismatch')
+  return `search index: ${ids.size} identities, ${leads} research-only leads, 0 approved; SHA ${pinnedSha256}`
+}
+
 export async function verifyDomesticSearchIndex(root) {
   const opened = []
   try {
@@ -31,19 +49,6 @@ export async function verifyDomesticSearchIndex(root) {
     }
     const after = await file.stat({ bigint: true })
     if (after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) throw Error('index changed during read')
-    if (createHash('sha256').update(bytes).digest('hex') !== pinnedSha256) throw Error('index SHA mismatch')
-    const doc = JSON.parse(bytes.toString('utf8'))
-    if (doc.schema_version !== 'domestic-search-index-v1' || doc.entries?.length !== 40053 || doc.approved !== 0 || doc.totals?.records !== 40053 || doc.totals?.new_records !== 35910 || doc.totals?.base_aliases !== 174 || doc.totals?.ftc_only !== 3143 || doc.totals?.research_companies !== 12 || doc.totals?.research_leads !== 128) throw Error('index count or approval mismatch')
-    const ids = new Set(); let biz = 0; let ftc = 0; let aliases = 0; let leads = 0; let companies = 0
-    for (const row of doc.entries) {
-      if (!row || !/^KR-(?:BIZ-\d{10}|CRN-\d{13})$/.test(row.id) || ids.has(row.id) || typeof row.name !== 'string' || !row.name || !['unclassified', 'large_affiliate', 'mid_history', 'sme_unspecified'].includes(row.size_class) || Object.hasOwn(row, 'approved') || Object.hasOwn(row, 'benefit_action')) throw Error('index duplicate/unknown ID or false approval')
-      ids.add(row.id)
-      if (row.source_type === 'ftc_affiliate') ftc++
-      else if (row.id.startsWith('KR-BIZ-')) biz++
-      else if (row.source_type === 'dated_recruitment_observation') aliases++
-      if (row.research_count !== undefined) { if (!row.id.startsWith('KR-CRN-') || !Number.isSafeInteger(row.research_count) || row.research_count < 1) throw Error('index research count invalid'); companies++; leads += row.research_count }
-    }
-    if (ids.size !== 40053 || biz !== 35910 || ftc !== 3143 || aliases !== 174 || companies !== 12 || leads !== 128) throw Error('index derived count mismatch')
-    return `search index: ${ids.size} identities, ${leads} research-only leads, 0 approved; SHA ${pinnedSha256}`
+    return verifyDomesticSearchIndexBytes(bytes)
   } finally { for (const handle of opened.reverse()) await handle.close() }
 }

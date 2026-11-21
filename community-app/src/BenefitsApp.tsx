@@ -1,7 +1,8 @@
 import { lazy, Suspense } from 'react'
-import { benefitsRoute } from './benefitsRoutes'
+import { benefitsRoute, legacyBenefitsRedirect } from './benefitsRoutes'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
+import type { BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
 
 const BenefitsMethodologyPage = lazy(() =>
   import('./pages/BenefitsMethodologyPage').then((module) => ({
@@ -14,6 +15,7 @@ const BenefitsExplorerPage = lazy(() =>
   })),
 )
 const BenefitsDirectoryPage = lazy(() => import('./pages/BenefitsDirectoryPage').then((module) => ({ default: module.BenefitsDirectoryPage })))
+const BenefitDirectoryCompanyPage = lazy(() => import('./pages/BenefitDirectoryCompanyPage').then((module) => ({ default: module.BenefitDirectoryCompanyPage })))
 
 function BenefitsFallback() {
   return (
@@ -30,16 +32,25 @@ function BenefitsFallback() {
 export function BenefitsApp({
   pathname = window.location.pathname,
   search = window.location.search,
+  benefitDirectoryRepository,
 }: {
   pathname?: string
   search?: string
+  benefitDirectoryRepository?: BenefitDirectoryRepository
 }) {
+  const redirect = legacyBenefitsRedirect(pathname, window.location.search, window.location.hash)
+  if (redirect) {
+    window.location.replace(redirect)
+    return null
+  }
   const route = benefitsRoute(pathname)
   if (!route) throw new Error('복지 탐색기 경로가 아닙니다.')
   return (
     <Suspense fallback={<BenefitsFallback />}>
       {route === 'directory' ? (
-        <BenefitsDirectoryPage search={search} />
+        <BenefitsDirectoryPage search={search} repository={benefitDirectoryRepository} />
+      ) : route === 'company' ? (
+        <BenefitDirectoryCompanyPage search={search} repository={benefitDirectoryRepository} />
       ) : route === 'methodology' ? (
         <BenefitsMethodologyPage search={search} />
       ) : (

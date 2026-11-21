@@ -122,7 +122,22 @@ test('builds community snapshots from fixtures by default and requires live cred
   assert.match(build, /SUPABASE_PUBLISHABLE_KEY:\?SUPABASE_PUBLISHABLE_KEY is required in live mode/)
 })
 
-test('keeps all six community entry titles aligned with the release verifier contract', async () => {
+test('assembles only the two canonical benefits shells after Vite and removes the duplicate tree', async () => {
+  const build = await readFile(path.join(repoRoot, 'scripts/build-site.sh'), 'utf8')
+  const vite = 'npm --prefix community-app run build'
+  const rootCopy = 'install_benefits_shell community-app/dist/benefits-root/index.html _site/benefits/index.html'
+  const companyCopy = 'install_benefits_shell community-app/dist/benefits-root/company/index.html _site/benefits/company/index.html'
+  const removeDuplicate = 'rm -rf _site/community/benefits-root'
+  assert.ok(build.includes(rootCopy), 'canonical root shell copy is omitted')
+  assert.ok(build.includes(companyCopy), 'canonical company shell copy is omitted')
+  assert.ok(build.indexOf(rootCopy) > build.indexOf(vite), 'canonical copy must follow Vite build')
+  assert.ok(build.indexOf(companyCopy) > build.indexOf(rootCopy), 'canonical copies must have deterministic order')
+  assert.ok(build.indexOf(removeDuplicate) > build.indexOf(companyCopy), 'duplicate removal must follow both copies')
+  assert.match(build, /\[ -f "\$source" \] && \[ ! -L "\$source" \]/)
+  assert.match(build, /\[ ! -L "\$destination" \]/)
+})
+
+test('keeps community and canonical benefits entry titles aligned with the release verifier contract', async () => {
   const verifier = await readFile(path.join(repoRoot, 'scripts/verify-site.mjs'), 'utf8')
   const titles = new Map([
     ['community-app/index.html', '<title>Community · Ria &amp; Seoa PaPa</title>'],
@@ -133,11 +148,14 @@ test('keeps all six community entry titles aligned with the release verifier con
     ['community-app/auth/callback/index.html', '<title>로그인 처리 · Ria &amp; Seoa PaPa</title>'],
     ['community-app/benefits/correction/index.html', '<title>복지 정보 수정 요청 · Ria &amp; Seoa PaPa</title>'],
     ['community-app/benefits/my-corrections/index.html', '<title>내 복지 수정 요청 · Ria &amp; Seoa PaPa</title>'],
+    ['community-app/benefits-root/index.html', '<title>기업 복지 검색 · Breadlab</title>'],
+    ['community-app/benefits-root/company/index.html', '<title>기업 복지 상세 · Breadlab</title>'],
   ])
 
   for (const [relativePath, expectedTitle] of titles) {
     assert.ok((await readFile(path.join(repoRoot, relativePath), 'utf8')).includes(expectedTitle))
-    assert.ok(verifier.includes(expectedTitle), `release verifier title is stale for ${relativePath}`)
+    const titleText = expectedTitle.slice('<title>'.length, -'</title>'.length)
+    assert.ok(verifier.includes(titleText), `release verifier title is stale for ${relativePath}`)
   }
 })
 

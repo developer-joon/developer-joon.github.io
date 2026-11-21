@@ -33,6 +33,31 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Record every synthetic row/Auth user/object as operator-recorded fixture IDs.
 - [ ] Cleanup uses exact IDs only; repeat reads/listing and record zero-residue read-back.
 
+## 2A. Dynamic benefits directory evidence and approvals
+
+### Local, no hosted credentials
+
+- [ ] Start/reset local Supabase; run `db:test:benefit-title-upgrade`, `db:test:benefit-seed-importer`, `db:test`, and `db:lint` with no hosted target or credential present.
+- [ ] Run `node scripts/generate-benefit-directory-seed.mjs --check`, then the independent `node scripts/verify-benefit-directory-seed.mjs`; require `40,053` actual rows and the frozen byte/ID/source digests.
+- [ ] Set loopback-only `DATABASE_URL` and trusted absolute `PSQL_BIN`; run `apply-benefit-directory-seed.mjs --dry-run`; stop and prove rollback left prior rows/publications unchanged.
+- [ ] Run the normal local import separately; read back exact company count `40,053`, identity split `1,000 / 35,910 / 3,143`, and the receipt/bundle/ordered-ID/source digests. Replay is idempotent and unrelated companies/publications are unchanged.
+- [ ] Run frontend check/build and the assembled-site A/B verification, browser acceptance, and reproducibility. Exact RPC keys and strict decoder rejection of `source_url`, `verified_at`, `reviewer_id`, or any other private provenance are mandatory.
+
+### Hosted development/production, manual only
+
+- [ ] For each target, confirm exact reviewed revision, clean tree, target-specific external backup/evidence, and three distinct approvals: migration, seed import, Pages.
+- [ ] With the explicit target ref, inspect migration `db push --dry-run`; **STOP**. Migration apply requires its own approval and does not authorize seed import.
+- [ ] Immediately before import, re-run the independent bundle verifier. Supply target `DATABASE_URL` only through the approved secret environment and use trusted absolute `PSQL_BIN`; never log or pass secrets as CLI literals.
+- [ ] Immediately before the target seed `--dry-run`, establish the target binding by running `node scripts/assert-benefit-seed-target.mjs` with the exact lowercase 20-character `TARGET_PROJECT_REF`; require a clean exact `REVIEWED_HEAD`, target-specific evidence reference, and seed-import approval. Any absent, malformed, ambiguous, conflicting, or mismatched target binding is **NO-GO**.
+- [ ] Run target seed `--dry-run`; **STOP** and inspect the sanitized rollback result. Record a distinct post-dry-run confirmation (`TARGET_SEED_APPLY_CONFIRMATION`); the earlier seed-import approval alone does not authorize normal import.
+- [ ] Immediately before normal import, repeat the clean exact-HEAD/evidence/approval checks and target binding validator. A target mismatch is **NO-GO**.
+- [ ] After normal import, record only exact aggregate counts and receipt digest; inspect private receipt details only through the approved DB session. Confirm idempotence and no deletion of unrelated companies/publications.
+- [ ] Run bounded read-only public-RPC smoke using the publishable key: one known canonical company search/detail, `혜택 있음`, zero-evidence semantics (`공개 복지 정보 미확인`, not `복지 없음`), exact public keys, no private field names/values. Do not log key, URL query, or body.
+- [ ] Require backend migration/import, receipt read-back, and public smoke before Pages. After the single approved workflow deploy, verify `/benefits`, one company deep link, and legacy query/hash redirect.
+- [ ] **NO-GO:** any digest/count/revision mismatch, dirty tree, missing or reused approval, private projection leak, failed/ambiguous smoke, unrelated-row change, or dry-run/import residue.
+- [ ] Recovery retains additive schema/seed and evidence: stop cutover or revert only the frontend route/link shell, disable writes if needed, preserve receipts/backups, forward-fix DB/read model, and rerun gate/smoke. Never use a destructive down/delete.
+- [ ] Confirm automatic `scripts/release-gate.mjs` contains no hosted migration/import/push/deploy/canary/write; production-readiness is offline evidence aggregation only.
+
 ## 3. production backup/capability evidence
 
 - [ ] Verify current Free Plan capabilities: managed daily backups are not available; PITR, project clone, and managed restore-to-new-project are unavailable Free recovery assumptions.

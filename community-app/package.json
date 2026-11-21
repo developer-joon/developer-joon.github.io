@@ -18,8 +18,15 @@
     "db:test:public-listing-upgrade": "bash ../supabase/tests/public_listing_upgrade.sh",
     "db:test:community-snapshot-upgrade": "bash ../supabase/tests/community_snapshot_upgrade.sh",
     "db:test:oauth-profile-upgrade": "bash ../supabase/tests/oauth_profile_upgrade.sh",
+    "db:test:benefit-title-upgrade": "bash ../supabase/tests/benefit_title_upgrade.sh",
+    "db:test:benefit-title-upgrade-isolation": "bash ../supabase/tests/benefit_title_upgrade_isolation_test.sh",
+    "db:test:benefit-seed-importer": "bash ../supabase/tests/benefit_seed_importer_integration.sh",
     "db:lint": "supabase db lint --level error",
     "db:stop": "supabase stop",
+    "benefit-seed:generate": "node ../scripts/generate-benefit-directory-seed.mjs",
+    "benefit-seed:check": "node ../scripts/generate-benefit-directory-seed.mjs --check",
+    "benefit-seed:apply": "node ../scripts/apply-benefit-directory-seed.mjs",
+    "benefit-seed:apply:dry-run": "node ../scripts/apply-benefit-directory-seed.mjs --dry-run",
     "release:check": "node ../scripts/release-gate.mjs"
   },
   "dependencies": {
