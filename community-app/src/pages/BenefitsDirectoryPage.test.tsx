@@ -315,7 +315,26 @@ describe('dynamic benefit directory search', () => {
     expect(card).toHaveTextContent('소프트웨어 · 대기업 · 서울')
     expect(screen.getByRole('link', { name: /가나다 공식/ })).toHaveAttribute('href', '/benefits/company/?id=KR-CRN-1101111111111')
     expect(card.textContent).not.toMatch(/source|verified|review|submitter|provenance|검토일|확인일/i)
-    expect(within(card).getByRole('status')).toHaveTextContent('게시 가능한 공개 복지 근거 미확인')
+    expect(within(card).queryByRole('status')).not.toBeInTheDocument()
     expect(card.querySelector('a button, button a, a a, button button')).toBeNull()
+  })
+
+  it('keeps repeated zero-evidence card metadata visible without creating per-card live regions', async () => {
+    const zero = { ...baseItem, benefitCount: 0, officialCount: 0, communityCount: 0, categories: [], summary: null }
+    const secondZero = { ...zero, companyId: 'KR-BIZ-1234567890', displayName: '두번째 기업' }
+    render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([zero, secondZero]))))} />)
+
+    const messages = await screen.findAllByText('게시 가능한 공개 복지 근거 미확인')
+    expect(messages).toHaveLength(2)
+    messages.forEach(message => expect(message).toBeVisible())
+    const cards = screen.getAllByRole('article')
+    cards.forEach(card => expect(within(card).queryByRole('status')).not.toBeInTheDocument())
+
+    const statuses = screen.getAllByRole('status')
+    expect(statuses).toHaveLength(1)
+    expect(statuses[0]).toHaveClass('domestic-directory__results-status')
+    expect(statuses[0]).toHaveAttribute('aria-live', 'polite')
+    expect(statuses[0]).toHaveAttribute('aria-atomic', 'true')
+    expect(statuses[0]).toHaveTextContent('검색 결과 2개 기업')
   })
 })

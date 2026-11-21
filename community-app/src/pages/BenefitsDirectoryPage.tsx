@@ -59,7 +59,7 @@ function DirectoryCard({ item }: { item: BenefitDirectorySearchItem }) {
     <p className="domestic-directory__size">{facts}</p>
     {item.summary && <p>{item.summary}</p>}
     {item.benefitCount === 0
-      ? <p className="domestic-directory__status" role="status">게시 가능한 공개 복지 근거 미확인</p>
+      ? <p className="domestic-directory__status">게시 가능한 공개 복지 근거 미확인</p>
       : <p className="domestic-directory__counts">복지 {item.benefitCount}건 · 공식 확인 {item.officialCount}건 · 사용자 제보 {item.communityCount}건</p>}
     {item.categories.length > 0 && <ul className="domestic-directory__badges" aria-label="복지 범주">
       {item.categories.map(category => <li key={category}>{categoryLabels[category]}</li>)}
