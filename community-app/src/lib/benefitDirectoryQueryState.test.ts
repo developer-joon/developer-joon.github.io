@@ -46,6 +46,14 @@ describe('benefit directory URL query state', () => {
     expect(parseBenefitDirectoryQuery(`?q=${encodeURIComponent('😀'.repeat(201))}`).q).toBe('')
   })
 
+  it('trims editable text when parsing URL state', () => {
+    expect(parseBenefitDirectoryQuery('?q=%20%20test%20%20&industry=%20%EC%A0%9C%EC%A1%B0%20')).toEqual({
+      ...DEFAULT_BENEFIT_DIRECTORY_QUERY,
+      q: 'test',
+      industry: '제조',
+    })
+  })
+
   it('intentionally drops unknown parameters and never persists a cursor', () => {
     const parsed = parseBenefitDirectoryQuery('?q=test&utm_source=x&cursor=private')
     expect(serializeBenefitDirectoryQuery(parsed)).toBe('?q=test')

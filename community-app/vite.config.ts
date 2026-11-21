@@ -8,6 +8,7 @@ export default defineConfig({
   base: '/community/',
   plugins: [react()],
   build: {
+    manifest: true,
     rollupOptions: {
       input: {
         home: page('./index.html'),

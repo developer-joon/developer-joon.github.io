@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
 import type { BenefitDirectoryPage, BenefitDirectorySearchItem, Result } from '../types/benefitDirectory'
@@ -60,6 +61,39 @@ describe('dynamic benefit directory search', () => {
     expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ query: '가나', categories: ['leave', 'health'], hasBenefitsOnly: true, cursor: null }), expect.any(AbortSignal))
   })
 
+  it('preserves editable text spacing and applies q and industry together with one replace', async () => {
+    vi.useFakeTimers()
+    const search = vi.fn(async () => ok(page()))
+    const replace = vi.spyOn(window.history, 'replaceState')
+    const push = vi.spyOn(window.history, 'pushState')
+    render(<BenefitsDirectoryPage search="" repository={repository(search)} debounceMs={300} />)
+    await act(async () => { await Promise.resolve() })
+    replace.mockClear(); push.mockClear(); search.mockClear()
+
+    const query = screen.getByRole('searchbox', { name: '기업명 검색' })
+    const industry = screen.getByRole('textbox', { name: '업종' })
+    fireEvent.change(query, { target: { value: '  가나다  ' } })
+    fireEvent.change(industry, { target: { value: '소프트웨어 ' } })
+    expect(industry).toHaveValue('소프트웨어 ')
+    fireEvent.change(industry, { target: { value: '소프트웨어 개발' } })
+    expect(industry).toHaveValue('소프트웨어 개발')
+    expect(search).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    expect(push).not.toHaveBeenCalled()
+    expect(replace).toHaveBeenCalledTimes(1)
+    expect(replace).toHaveBeenLastCalledWith({}, '', '/?q=%EA%B0%80%EB%82%98%EB%8B%A4&industry=%EC%86%8C%ED%94%84%ED%8A%B8%EC%9B%A8%EC%96%B4+%EA%B0%9C%EB%B0%9C')
+    expect(search).toHaveBeenCalledTimes(1)
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ query: '가나다', industry: '소프트웨어 개발' }), expect.any(AbortSignal))
+
+    fireEvent.change(query, { target: { value: '가나다 ' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    expect(replace).toHaveBeenCalledTimes(1)
+    expect(search).toHaveBeenCalledTimes(1)
+    fireEvent.blur(query)
+    expect(query).toHaveValue('가나다')
+  })
+
   it('restores controls on popstate, performs one request, and does not write history again', async () => {
     const search = vi.fn(async () => ok(page()))
     const replace = vi.spyOn(window.history, 'replaceState')
@@ -76,6 +110,30 @@ describe('dynamic benefit directory search', () => {
     expect(screen.getByRole('checkbox', { name: '건강' })).toBeChecked()
     expect(screen.getByRole('combobox', { name: '기업 규모' })).toHaveValue('small')
     expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ query: '뒤로', categories: ['leave', 'health'], size: 'small', cursor: null }), expect.any(AbortSignal))
+    expect(replace).not.toHaveBeenCalled()
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  it('cancels pending text debounce when popstate restores both drafts', async () => {
+    vi.useFakeTimers()
+    const search = vi.fn(async () => ok(page()))
+    const replace = vi.spyOn(window.history, 'replaceState')
+    const push = vi.spyOn(window.history, 'pushState')
+    render(<BenefitsDirectoryPage search="?q=처음&industry=제조" repository={repository(search)} debounceMs={300} />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '보류 중 ' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '업종' }), { target: { value: '소프트웨어 ' } })
+    replace.mockClear(); push.mockClear(); search.mockClear()
+
+    window.history.replaceState({}, '', '/?q=%EB%92%A4%EB%A1%9C&industry=%EA%B0%9C%EB%B0%9C')
+    replace.mockClear()
+    fireEvent.popState(window)
+    await act(async () => { await Promise.resolve(); await vi.advanceTimersByTimeAsync(300) })
+
+    expect(screen.getByRole('searchbox')).toHaveValue('뒤로')
+    expect(screen.getByRole('textbox', { name: '업종' })).toHaveValue('개발')
+    expect(search).toHaveBeenCalledTimes(1)
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ query: '뒤로', industry: '개발' }), expect.any(AbortSignal))
     expect(replace).not.toHaveBeenCalled()
     expect(push).not.toHaveBeenCalled()
   })
@@ -120,6 +178,62 @@ describe('dynamic benefit directory search', () => {
     expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ query: 'B' }), expect.any(AbortSignal))
     retry.resolve(ok(page([{ ...baseItem, displayName: 'B 성공' }]))); await act(async () => { await retry.promise })
     expect(await screen.findByText('B 성공')).toBeInTheDocument()
+  })
+
+  it('hides completed results immediately when the repository changes and retries only the new repository', async () => {
+    const pending = deferred<Result<BenefitDirectoryPage>>()
+    const retried = deferred<Result<BenefitDirectoryPage>>()
+    const searchA = vi.fn(async () => ok(page([{ ...baseItem, displayName: 'A 기업' }], { total: 7 })))
+    const searchB = vi.fn().mockImplementationOnce(() => pending.promise).mockImplementationOnce(() => retried.promise)
+    const view = render(<BenefitsDirectoryPage search="?q=같음" repository={repository(searchA)} />)
+    expect(await screen.findByText('A 기업')).toBeInTheDocument()
+
+    view.rerender(<BenefitsDirectoryPage search="?q=같음" repository={repository(searchB)} />)
+    expect(screen.queryByText('A 기업')).not.toBeInTheDocument()
+    expect(screen.queryByText('7개 기업')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('기업을 검색하고 있습니다.')
+
+    pending.resolve(fail('B 검색 실패')); await act(async () => { await pending.promise })
+    expect(await screen.findByRole('alert')).toHaveTextContent('B 검색 실패')
+    expect(screen.queryByText('A 기업')).not.toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: '다시 시도' }))
+    expect(searchA).toHaveBeenCalledTimes(1)
+    expect(searchB).toHaveBeenCalledTimes(2)
+    retried.resolve(ok(page([{ ...baseItem, displayName: 'B 기업' }]))); await act(async () => { await retried.promise })
+    expect(await screen.findByText('B 기업')).toBeInTheDocument()
+  })
+
+  it('ignores a late old-repository result and stale finalizer after replacement', async () => {
+    const a = deferred<Result<BenefitDirectoryPage>>()
+    const b = deferred<Result<BenefitDirectoryPage>>()
+    const signals: AbortSignal[] = []
+    const repoA = repository(vi.fn((_input, signal) => { signals.push(signal!); return a.promise }))
+    const repoB = repository(vi.fn((_input, signal) => { signals.push(signal!); return b.promise }))
+    const view = render(<BenefitsDirectoryPage search="" repository={repoA} />)
+    await waitFor(() => expect(repoA.search).toHaveBeenCalledOnce())
+    view.rerender(<BenefitsDirectoryPage search="" repository={repoB} />)
+    expect(signals[0].aborted).toBe(true)
+    a.resolve(ok(page([{ ...baseItem, displayName: '늦은 A' }]))); await act(async () => { await a.promise })
+    expect(screen.queryByText('늦은 A')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('기업을 검색하고 있습니다.')
+    b.resolve(ok(page([{ ...baseItem, displayName: '현재 B' }]))); await act(async () => { await b.promise })
+    expect(await screen.findByText('현재 B')).toBeInTheDocument()
+  })
+
+  it('keeps only the active StrictMode request generation visible', async () => {
+    const requests: Array<{ signal: AbortSignal; result: ReturnType<typeof deferred<Result<BenefitDirectoryPage>>> }> = []
+    const search = vi.fn<BenefitDirectoryRepository['search']>((_input, signal) => {
+      const result = deferred<Result<BenefitDirectoryPage>>()
+      requests.push({ signal: signal!, result })
+      return result.promise
+    })
+    render(<StrictMode><BenefitsDirectoryPage search="" repository={repository(search)} /></StrictMode>)
+    await waitFor(() => expect(requests.length).toBe(2))
+    expect(requests[0].signal.aborted).toBe(true)
+    requests[0].result.resolve(ok(page([{ ...baseItem, displayName: '폐기된 요청' }]))); await act(async () => { await requests[0].result.promise })
+    expect(screen.queryByText('폐기된 요청')).not.toBeInTheDocument()
+    requests[1].result.resolve(ok(page([{ ...baseItem, displayName: '활성 요청' }]))); await act(async () => { await requests[1].result.promise })
+    expect(await screen.findByText('활성 요청')).toBeInTheDocument()
   })
 
   it('distinguishes first failure and honest empty state', async () => {

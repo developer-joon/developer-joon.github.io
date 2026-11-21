@@ -53,7 +53,8 @@ export function parseBenefitDirectoryQuery(search: string): BenefitDirectoryQuer
   const values = (key: string) => entries.filter(([name]) => name === key).map(([, value]) => value)
   const first = (key: string) => values(key)[0]
   const rawQuery = first('q') ?? ''
-  const q = bounded(rawQuery, 200, 800) && !rawQuery.includes('\uFFFD') ? rawQuery : ''
+  const trimmedQuery = rawQuery.trim()
+  const q = trimmedQuery && bounded(trimmedQuery, 200, 800) && !rawQuery.includes('\uFFFD') ? trimmedQuery : ''
   const rawIndustry = first('industry') ?? ''
   const industry = rawIndustry.trim() && bounded(rawIndustry.trim(), 100, 400) && !rawIndustry.includes('\uFFFD')
     ? rawIndustry.trim()

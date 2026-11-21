@@ -2,7 +2,7 @@ import { lazy, Suspense } from 'react'
 import { benefitsRoute } from './benefitsRoutes'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
-import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
+import type { BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
 
 const BenefitsMethodologyPage = lazy(() =>
   import('./pages/BenefitsMethodologyPage').then((module) => ({
@@ -31,7 +31,7 @@ function BenefitsFallback() {
 export function BenefitsApp({
   pathname = window.location.pathname,
   search = window.location.search,
-  benefitDirectoryRepository = getBenefitDirectoryRepository(),
+  benefitDirectoryRepository,
 }: {
   pathname?: string
   search?: string
