@@ -1,6 +1,7 @@
 import { parseEnv } from '../config/env'
 import { getSupabaseClient } from '../lib/supabase'
 import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
+import { comparePostgresTimestamps, parsePostgresTimestampMicros } from '../lib/postgresTimestamp'
 import { BENEFIT_SUBMISSION_CATEGORIES, BENEFIT_SUBMISSION_STATUSES, type BenefitSubmissionAccountScope, type BenefitSubmissionCategory, type BenefitSubmissionCursor, type BenefitSubmissionErrorCode, type BenefitSubmissionItem, type BenefitSubmissionListInput, type BenefitSubmissionPage, type BenefitSubmissionResult, type CreateBenefitSubmissionInput } from '../types/benefitSubmissions'
 
 export interface BenefitSubmissionRpcResponse { data: unknown; error: unknown; status: number; statusText: string }
@@ -17,7 +18,7 @@ export interface BenefitSubmissionRepository {
 }
 
 const companyPattern = /^(?:KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10})$/
-const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2}):(\d{2}))$/
+
 const ownerKeys = ['id','company_id','category_id','benefit_text','eligibility_text','condition_text','source_url','status','admin_response','publication_id','reviewed_at','created_at','updated_at'] as const
 const SESSION_DOMAIN = 'breadlab:benefit-submission:session-fingerprint:v1'
 const SCOPE_DOMAIN = 'breadlab:benefit-submission:account-scope:v1'
@@ -28,12 +29,8 @@ function length(value: string) { return Array.from(value).length }
 function bounded(value: unknown, max: number): value is string { return typeof value === 'string' && length(value)>=1 && length(value)<=max && value.trim()===value }
 function nullableBounded(value: unknown, max: number): value is string|null { return value===null || bounded(value,max) }
 function category(value: unknown): value is BenefitSubmissionCategory { return typeof value === 'string' && (BENEFIT_SUBMISSION_CATEGORIES as readonly string[]).includes(value) }
-function leap(year:number){ return year%4===0&&(year%100!==0||year%400===0) }
-function days(year:number,month:number){ return month===2?(leap(year)?29:28):[4,6,9,11].includes(month)?30:31 }
 export function isBenefitSubmissionTimestamp(value: unknown): value is string {
-  if(typeof value!=='string') return false; const match=timestampPattern.exec(value); if(!match)return false
-  const [year,month,day,hour,minute,second,offsetHour,offsetMinute]=match.slice(1).map(Number)
-  return year>=1&&month>=1&&month<=12&&day>=1&&day<=days(year,month)&&hour<=23&&minute<=59&&second<=59&&(Number.isNaN(offsetHour)||(offsetHour<=23&&offsetMinute<=59))&&Number.isFinite(Date.parse(value))
+  return typeof value === 'string' && parsePostgresTimestampMicros(value) !== null
 }
 export function isBenefitSubmissionSourceUrl(value: unknown): value is string {
   if(typeof value!=='string'||length(value)<9||length(value)>2048||value.trim()!==value||/\s/u.test(value)||Array.from(value).some(character=>{const code=character.charCodeAt(0);return code<=31||code===127})) return false
@@ -43,7 +40,7 @@ export function isBenefitSubmissionSourceUrl(value: unknown): value is string {
   if(host==='localhost'||host.endsWith('.localhost')||host.endsWith('.local')||host.endsWith('.internal')||host.endsWith('.test')||host.endsWith('.invalid')||/^[0-9.]+$/.test(host)||/^(?:[0-9]+|0x[0-9a-f]+)(?:\.(?:[0-9]+|0x[0-9a-f]+))*$/i.test(host))return false
   return /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(host)
 }
-function order(...values:(string|null)[]){ const present=values.filter((v):v is string=>v!==null); return present.every((v,i)=>i===0||Date.parse(v)>=Date.parse(present[i-1])) }
+function order(...values:(string|null)[]){ const present=values.filter((v):v is string=>v!==null); return present.every((v,i)=>i===0||comparePostgresTimestamps(v,present[i-1])>=0) }
 export function decodeBenefitSubmissionItem(value: unknown): BenefitSubmissionItem {
   if(!record(value)||!exact(value,ownerKeys)||!isCanonicalUuid(value.id)||typeof value.company_id!=='string'||!companyPattern.test(value.company_id)||!category(value.category_id)||!bounded(value.benefit_text,5000)||!nullableBounded(value.eligibility_text,2000)||!nullableBounded(value.condition_text,2000)||(value.source_url!==null&&!isBenefitSubmissionSourceUrl(value.source_url))||typeof value.status!=='string'||!(BENEFIT_SUBMISSION_STATUSES as readonly string[]).includes(value.status)||!nullableBounded(value.admin_response,2000)||(value.publication_id!==null&&!isCanonicalUuid(value.publication_id))||(value.reviewed_at!==null&&!isBenefitSubmissionTimestamp(value.reviewed_at))||!isBenefitSubmissionTimestamp(value.created_at)||!isBenefitSubmissionTimestamp(value.updated_at)) throw new Error('invalid owner projection')
   const status=value.status as BenefitSubmissionItem['status']; const untouched=status==='submitted'; const approved=status==='approved'
@@ -54,8 +51,7 @@ interface ParsedCursor {createdAt:string;id:string}
 function cursor(value:unknown):ParsedCursor { if(!record(value)||!exact(value,['created_at','id'])||!isBenefitSubmissionTimestamp(value.created_at)||!isCanonicalUuid(value.id))throw new Error('invalid cursor'); return {createdAt:value.created_at,id:value.id} }
 function parseOpaqueCursor(value:unknown):ParsedCursor|null {if(typeof value!=='string'||value.length<2||value.length>500)return null;const match=/^\{"created_at":"([^"]+)","id":"([^"]+)"\}$/.exec(value);if(!match||!isBenefitSubmissionTimestamp(match[1])||!isCanonicalUuid(match[2]))return null;return {createdAt:match[1],id:match[2]}}
 function encodeCursor(value:ParsedCursor):BenefitSubmissionCursor{return JSON.stringify({created_at:value.createdAt,id:value.id})}
-function micros(value:string){ const match=/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/.exec(value)!; return BigInt(Date.parse(`${match[1]}${match[3]}`))*1000n+BigInt((match[2]??'').padEnd(6,'0')||'0') }
-function compare(a:ParsedCursor,b:ParsedCursor){ const delta=micros(a.createdAt)-micros(b.createdAt); return delta<0n?-1:delta>0n?1:a.id.toLowerCase()<b.id.toLowerCase()?-1:a.id.toLowerCase()>b.id.toLowerCase()?1:0 }
+function compare(a:ParsedCursor,b:ParsedCursor){ const time=comparePostgresTimestamps(a.createdAt,b.createdAt); return time!==0?time:a.id.toLowerCase()<b.id.toLowerCase()?-1:a.id.toLowerCase()>b.id.toLowerCase()?1:0 }
 function decodePage(value:unknown,input:BenefitSubmissionListInput,requestCursor:ParsedCursor|null):BenefitSubmissionPage {
   if(!record(value)||!exact(value,['items','has_more','next_cursor'])||!Array.isArray(value.items)||!dense(value.items)||value.items.length>input.limit||typeof value.has_more!=='boolean'||(value.has_more&&(value.next_cursor===null||value.items.length!==input.limit))||(!value.has_more&&value.next_cursor!==null))throw new Error('invalid page')
   const items=value.items.map(decodeBenefitSubmissionItem); if(new Set(items.map(item=>item.id)).size!==items.length||items.some((item,index)=>index>0&&compare({createdAt:items[index-1].createdAt,id:items[index-1].id},{createdAt:item.createdAt,id:item.id})<=0))throw new Error('invalid page order')

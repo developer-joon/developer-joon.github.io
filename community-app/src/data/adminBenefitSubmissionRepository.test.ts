@@ -37,6 +37,27 @@ describe('admin benefit submission repository', () => {
     await expect(value.repository.listQueue({status:'all',limit:2})).resolves.toMatchObject({ok:true,data:{items:[{id:later.id},{id:earlier.id}]}})
   })
 
+  it('compares timezone-equivalent instants by submission id and preserves cursor literals',async()=>{
+    const high={...submitted,id:'20000000-0000-4000-8000-000000000009',created_at:'2026-11-21T09:00:00.000001+09:00',updated_at:'2026-11-21T09:00:00.000001+09:00'}
+    const low={...submitted,id:'20000000-0000-4000-8000-000000000001',created_at:'2026-11-21T00:00:00.000001Z',updated_at:'2026-11-21T00:00:00.000001Z'}
+    const value=setup({items:[high,low],has_more:true,next_cursor:{created_at:low.created_at,id:low.id}})
+    await expect(value.repository.listQueue({status:'all',limit:2})).resolves.toMatchObject({ok:true,data:{items:[{id:high.id},{id:low.id}]}})
+    expect(value.rpc).toHaveBeenCalledWith('list_benefit_submission_queue_v1',expect.objectContaining({p_cursor_created_at:null}),undefined)
+    const cursorValue=setup({items:[],has_more:false,next_cursor:null})
+    await cursorValue.repository.listQueue({status:'all',limit:2,cursor:{createdAt:high.created_at,id:high.id}})
+    expect(cursorValue.rpc).toHaveBeenCalledWith('list_benefit_submission_queue_v1',expect.objectContaining({p_cursor_created_at:high.created_at}),undefined)
+  })
+
+  it.each(['2026-02-29T00:00:00Z','2024-01-01T00:00:00+24:00','2024-01-01T00:00:00.0000001Z'])('rejects invalid PostgreSQL timestamp %s',async created_at=>{
+    const value=setup({items:[{...submitted,created_at,updated_at:created_at}],has_more:false,next_cursor:null})
+    await expect(value.repository.listQueue({status:'all',limit:2})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
+  it('rejects chronology reversed by one microsecond',async()=>{
+    const value=setup({items:[{...reviewing,created_at:'2026-11-21T00:00:00.000002Z',reviewed_at:'2026-11-21T00:00:00.000003Z',updated_at:'2026-11-21T00:00:00.000001Z'}],has_more:false,next_cursor:null})
+    await expect(value.repository.listQueue({status:'all',limit:2})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
   it('sends exact approval projection and requires community-reviewed publication success', async () => {
     const approved={...reviewing,status:'approved',admin_response:'승인',publication_id:publicationId,updated_at:'2026-11-21T02:00:00Z'}
     const value=setup(approved)

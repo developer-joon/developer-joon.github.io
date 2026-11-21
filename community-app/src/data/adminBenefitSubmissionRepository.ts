@@ -1,6 +1,7 @@
 import { parseEnv } from '../config/env'
 import { getSupabaseClient } from '../lib/supabase'
 import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
+import { comparePostgresTimestamps } from '../lib/postgresTimestamp'
 import { createBenefitSubmissionSessionProvider, decodeBenefitSubmissionItem, isBenefitSubmissionTimestamp, type BenefitSubmissionRpcResponse, type BenefitSubmissionSessionContext, type BenefitSubmissionSessionProvider } from './benefitSubmissionRepository'
 import { ADMIN_BENEFIT_SUBMISSION_FILTERS, type AdminBenefitSubmissionCursor, type AdminBenefitSubmissionListInput, type AdminBenefitSubmissionPage, type AdminBenefitSubmissionRepositoryError, type AdminBenefitSubmissionResult, type AdminBenefitSubmissionReviewInput } from '../types/adminBenefitSubmissions'
 import type { BenefitSubmissionErrorCode, BenefitSubmissionItem } from '../types/benefitSubmissions'
@@ -18,8 +19,7 @@ function length(value:string){return Array.from(value).length}
 function bounded(value:unknown,max:number):value is string{return typeof value==='string'&&length(value)>=1&&length(value)<=max&&value.trim()===value}
 function nullable(value:unknown,max:number):value is string|null{return value===null||bounded(value,max)}
 function validCursor(value:AdminBenefitSubmissionCursor|undefined){return value===undefined||(isBenefitSubmissionTimestamp(value.createdAt)&&isCanonicalUuid(value.id))}
-function timestampMicros(value:string){const match=/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);if(!match)throw new Error('invalid timestamp');return BigInt(Date.parse(`${match[1]}${match[3]}`))*1000n+BigInt((match[2]??'').padEnd(6,'0')||'0')}
-function compare(left:AdminBenefitSubmissionCursor,right:AdminBenefitSubmissionCursor){const time=timestampMicros(left.createdAt)-timestampMicros(right.createdAt);return time<0n?-1:time>0n?1:left.id.localeCompare(right.id)}
+function compare(left:AdminBenefitSubmissionCursor,right:AdminBenefitSubmissionCursor){const time=comparePostgresTimestamps(left.createdAt,right.createdAt);return time!==0?time:left.id.localeCompare(right.id)}
 function validList(input:AdminBenefitSubmissionListInput){return statuses.includes(input.status)&&Number.isSafeInteger(input.limit)&&input.limit>=1&&input.limit<=100&&validCursor(input.cursor)}
 function fail<T>(code:BenefitSubmissionErrorCode,message:string,sourceCode?:string):AdminBenefitSubmissionResult<T>{return {ok:false,error:{code,message,...(sourceCode?{sourceCode}:{})}}}
 function sourceCode(error:unknown){if(!record(error)||typeof error.code!=='string')return undefined;if(error.code==='PGRST'&&typeof error.message==='string'){try{const parsed:unknown=JSON.parse(error.message);return record(parsed)&&typeof parsed.code==='string'?parsed.code:'PGRST'}catch{return 'PGRST'}}return error.code}

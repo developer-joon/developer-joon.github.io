@@ -11,7 +11,7 @@ const actorB='10000000-0000-4000-8000-000000000002'
 const submitted:AdminBenefitSubmissionItem={id:'20000000-0000-4000-8000-000000000001',companyId:'KR-CRN-1234567890123',categoryId:'leave',benefitText:'유급 휴가 20일',eligibilityText:'정규직',conditionText:null,sourceUrl:null,status:'submitted',adminResponse:null,publicationId:null,reviewedAt:null,createdAt:'2026-11-21T00:00:00Z',updatedAt:'2026-11-21T00:00:00Z'}
 const reviewing:AdminBenefitSubmissionItem={...submitted,status:'reviewing',adminResponse:'검토 시작',reviewedAt:'2026-11-21T01:00:00Z',updatedAt:'2026-11-21T01:00:00Z'}
 const signedOut={loading:false,pending:false,session:null,user:null,error:null,signIn:vi.fn(),signOut:vi.fn(),invalidateStaleSession:vi.fn(()=>false)} satisfies AuthContextValue
-const auth=(id=actorA)=>({...signedOut,session:{} as never,user:{id} as never})
+const auth=(id=actorA,session={} as never)=>({...signedOut,session,user:{id} as never})
 function authorization(result=true){return {isAdmin:vi.fn().mockResolvedValue({ok:true,data:result})} as unknown as CommunityRepository}
 function repository(overrides:Partial<AdminBenefitSubmissionRepository>={}):AdminBenefitSubmissionRepository{return {listQueue:vi.fn().mockResolvedValue({ok:true,data:{items:[submitted],hasMore:false,nextCursor:null}}),review:vi.fn(),...overrides}}
 function page(repo=repository(),gate=authorization(),value:AuthContextValue=auth()){return render(<AuthContext.Provider value={value}><AdminBenefitSubmissionsPage authorizationRepository={gate} repository={repo} currentPath="/community/admin/benefit-submissions/?status=active#queue" /></AuthContext.Provider>)}
@@ -79,5 +79,69 @@ describe('AdminBenefitSubmissionsPage',()=>{
     view.rerender(<AuthContext.Provider value={auth(actorA)}><AdminBenefitSubmissionsPage authorizationRepository={gate} repository={repo} currentPath="/community/admin/benefit-submissions/" /></AuthContext.Provider>)
     await act(async()=>finishA({ok:true,data:{items:[submitted],hasMore:false,nextCursor:null}}))
     expect(screen.queryByText('유급 휴가 20일')).not.toBeInTheDocument()
+  })
+
+  it('rechecks a same-actor replacement session and hides loaded private data when the role was revoked',async()=>{
+    const firstSession={access_token:'first'} as never,secondSession={access_token:'second'} as never
+    const gate={isAdmin:vi.fn().mockResolvedValueOnce({ok:true,data:true}).mockResolvedValueOnce({ok:true,data:false})} as unknown as CommunityRepository
+    const repo=repository();const view=page(repo,gate,auth(actorA,firstSession))
+    expect(await screen.findByText('유급 휴가 20일')).toBeInTheDocument()
+    view.rerender(<AuthContext.Provider value={auth(actorA,secondSession)}><AdminBenefitSubmissionsPage authorizationRepository={gate} repository={repo} currentPath="/community/admin/benefit-submissions/?status=active#queue" /></AuthContext.Provider>)
+    expect(await screen.findByRole('heading',{name:'접근 권한이 없습니다'})).toBeInTheDocument()
+    expect(screen.queryByText('유급 휴가 20일')).not.toBeInTheDocument()
+    expect(gate.isAdmin).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails closed with distinct signed-out guidance when a loaded queue reports auth_required',async()=>{
+    const session={access_token:'expired'} as never,invalidateStaleSession=vi.fn(()=>true)
+    const listQueue=vi.fn().mockResolvedValueOnce({ok:true,data:{items:[submitted],hasMore:false,nextCursor:null}}).mockResolvedValueOnce({ok:false,error:{code:'auth_required',message:'로그인이 만료되었습니다.'}})
+    page(repository({listQueue}),authorization(),{...auth(actorA,session),invalidateStaleSession})
+    expect(await screen.findByText('유급 휴가 20일')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'승인'}))
+    expect(await screen.findByRole('heading',{name:'관리자 로그인이 필요합니다'})).toBeInTheDocument()
+    expect(screen.queryByText('유급 휴가 20일')).not.toBeInTheDocument()
+    expect(invalidateStaleSession).toHaveBeenCalledWith(session)
+  })
+
+  it('fails closed on review revocation and ignores its late pre-revocation success',async()=>{
+    let finishReview!:(value:unknown)=>void
+    const review=vi.fn().mockReturnValue(new Promise(resolve=>{finishReview=resolve}))
+    const listQueue=vi.fn().mockResolvedValueOnce({ok:true,data:{items:[reviewing],hasMore:false,nextCursor:null}}).mockResolvedValueOnce({ok:false,error:{code:'forbidden',message:'관리자 검토 권한이 없습니다.'}})
+    page(repository({listQueue,review}))
+    fireEvent.click(await screen.findByRole('button',{name:/복지 제보.*선택/}))
+    fireEvent.change(screen.getByLabelText('관리자 응답'),{target:{value:'반려'}})
+    fireEvent.click(screen.getByRole('button',{name:'제보 반려'}))
+    fireEvent.click(screen.getByRole('button',{name:'승인'}))
+    expect(await screen.findByRole('heading',{name:'접근 권한이 없습니다'})).toBeInTheDocument()
+    await act(async()=>finishReview({ok:true,data:{...reviewing,status:'rejected',updatedAt:'2026-11-21T02:00:00Z'}}))
+    expect(screen.queryByText('유급 휴가 20일')).not.toBeInTheDocument()
+    expect(screen.queryByText('복지 제보를 반려했습니다.')).not.toBeInTheDocument()
+  })
+
+  it('fails closed when the review repository itself reports forbidden',async()=>{
+    const review=vi.fn().mockResolvedValue({ok:false,error:{code:'forbidden',message:'관리자 검토 권한이 없습니다.'}})
+    const listQueue=vi.fn().mockResolvedValue({ok:true,data:{items:[reviewing],hasMore:false,nextCursor:null}})
+    page(repository({listQueue,review}))
+    fireEvent.click(await screen.findByRole('button',{name:/복지 제보.*선택/}))
+    fireEvent.change(screen.getByLabelText('관리자 응답'),{target:{value:'반려'}})
+    fireEvent.click(screen.getByRole('button',{name:'제보 반려'}))
+    expect(await screen.findByRole('heading',{name:'접근 권한이 없습니다'})).toBeInTheDocument()
+    expect(screen.queryByText('유급 휴가 20일')).not.toBeInTheDocument()
+  })
+
+  it('retires delayed A review on selection change without mutating A or blocking B',async()=>{
+    const second={...reviewing,id:'20000000-0000-4000-8000-000000000002',companyId:'KR-BIZ-1234567890',benefitText:'재택 근무 지원'}
+    let finishA!:(value:unknown)=>void,finishB!:(value:unknown)=>void
+    const review=vi.fn().mockReturnValueOnce(new Promise(resolve=>{finishA=resolve})).mockReturnValueOnce(new Promise(resolve=>{finishB=resolve}))
+    const listQueue=vi.fn().mockResolvedValue({ok:true,data:{items:[reviewing,second],hasMore:false,nextCursor:null}})
+    page(repository({listQueue,review}))
+    const rows=await screen.findAllByRole('button',{name:/복지 제보.*선택/})
+    fireEvent.click(rows[0]);fireEvent.change(screen.getByLabelText('관리자 응답'),{target:{value:'A 반려'}});fireEvent.click(screen.getByRole('button',{name:'제보 반려'}))
+    fireEvent.click(rows[1]);fireEvent.change(screen.getByLabelText('관리자 응답'),{target:{value:'B 반려'}});fireEvent.click(screen.getByRole('button',{name:'제보 반려'}))
+    expect(review).toHaveBeenCalledTimes(2)
+    await act(async()=>finishA({ok:true,data:{...reviewing,status:'rejected',adminResponse:'A 반려',updatedAt:'2026-11-21T02:00:00Z'}}))
+    expect(screen.getAllByRole('button',{name:/복지 제보.*선택/})).toHaveLength(2)
+    expect(screen.getByRole('button',{name:'제보 반려'})).toBeDisabled()
+    await act(async()=>finishB({ok:true,data:{...second,status:'rejected',adminResponse:'B 반려',updatedAt:'2026-11-21T02:00:00Z'}}))
   })
 })
