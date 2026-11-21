@@ -1,0 +1,121 @@
+import { describe, expect, it, vi } from 'vitest'
+import {
+  createBenefitSubmissionRepository,
+  createBenefitSubmissionSessionProvider,
+  decodeBenefitSubmissionItem,
+  type BenefitSubmissionSessionContext,
+} from './benefitSubmissionRepository'
+import type { CreateBenefitSubmissionInput } from '../types/benefitSubmissions'
+
+const actor = '11111111-1111-4111-8111-111111111111'
+const wire = {
+  id: '22222222-2222-4222-8222-222222222222',
+  company_id: 'KR-BIZ-1234567890',
+  category_id: 'leave',
+  benefit_text: '연 5일의 유급 가족 돌봄 휴가',
+  eligibility_text: null,
+  condition_text: null,
+  source_url: null,
+  status: 'submitted',
+  admin_response: null,
+  publication_id: null,
+  reviewed_at: null,
+  created_at: '2026-11-21T00:00:00Z',
+  updated_at: '2026-11-21T00:00:00Z',
+}
+const input: CreateBenefitSubmissionInput = {
+  clientKey: '33333333-3333-4333-8333-333333333333',
+  companyId: 'KR-BIZ-1234567890', categoryId: 'leave', benefitText: wire.benefit_text,
+  eligibilityText: null, conditionText: null, sourceUrl: null,
+}
+function context(rpc = vi.fn().mockResolvedValue({ data: wire, error: null, status: 200, statusText: 'OK' })): BenefitSubmissionSessionContext {
+  return { actorId: actor, sessionFingerprint: 'session-a', rpc }
+}
+
+describe('benefit submission repository', () => {
+  it('decodes only the exact owner-safe projection and enforces terminal consistency', () => {
+    expect(decodeBenefitSubmissionItem(wire)).toMatchObject({ companyId: wire.company_id, sourceUrl: null, status: 'submitted' })
+    expect(() => decodeBenefitSubmissionItem({ ...wire, reviewer_id: actor })).toThrow()
+    expect(() => decodeBenefitSubmissionItem({ ...wire, status: 'approved', admin_response: '승인', publication_id: null, reviewed_at: wire.updated_at })).toThrow()
+    expect(() => decodeBenefitSubmissionItem({ ...wire, created_at: '2026-02-30T00:00:00Z' })).toThrow()
+  })
+
+  it('sends the exact nullable create RPC args and binds completion to one immutable session', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: wire, error: null, status: 200, statusText: 'OK' })
+    const getSessionContext = vi.fn().mockResolvedValue(context(rpc))
+    const repository = createBenefitSubmissionRepository({ getSessionContext })
+    await expect(repository.createSubmission(input)).resolves.toEqual({ ok: true, data: decodeBenefitSubmissionItem(wire) })
+    expect(rpc).toHaveBeenCalledWith('create_benefit_submission_v1', {
+      p_client_key: input.clientKey, p_company_id: input.companyId, p_category_id: input.categoryId,
+      p_benefit_text: input.benefitText, p_eligibility_text: null, p_condition_text: null, p_source_url: null,
+    }, undefined)
+    expect(getSessionContext).toHaveBeenCalledTimes(3)
+  })
+
+  it('normalizes an optional empty source URL to null', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: wire, error: null, status: 200, statusText: 'OK' })
+    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(rpc) })
+    await expect(repository.createSubmission({ ...input, sourceUrl: '' })).resolves.toMatchObject({ ok: true })
+    expect(rpc).toHaveBeenCalledWith('create_benefit_submission_v1', expect.objectContaining({ p_source_url: null }), undefined)
+  })
+
+  it('rejects an A-B-A session switch even when actor returns to A', async () => {
+    const contexts = [context(), { ...context(), sessionFingerprint: 'session-b' }, context()]
+    const repository = createBenefitSubmissionRepository({ getSessionContext: vi.fn().mockImplementation(async () => contexts.shift() ?? context()) })
+    await expect(repository.createSubmission(input)).resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
+  })
+
+  it('rejects an A-B-A switch observed as a newer session generation', async () => {
+    const original = context()
+    const repository = createBenefitSubmissionRepository({ getSessionContext: vi.fn()
+      .mockResolvedValueOnce(original).mockResolvedValueOnce(original)
+      .mockResolvedValueOnce({ ...original, sessionFingerprint: 'session-a-generation-2' }) })
+    await expect(repository.createSubmission(input)).resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
+  })
+
+  it('advances the immutable session fingerprint across A-B-A auth events', async () => {
+    let onChange: (() => void) | undefined
+    const auth = {
+      getSession: vi.fn().mockResolvedValue({ data: { session: { user: { id: actor }, access_token: 'token-a' } } }),
+      onAuthStateChange: vi.fn((callback: () => void) => { onChange = callback; return { data: { subscription: { unsubscribe: vi.fn() } } } }),
+    }
+    const provider = createBenefitSubmissionSessionProvider(auth, { supabaseUrl: 'https://example.supabase.co', supabasePublishableKey: 'sb_publishable_test' }, vi.fn() as never)
+    const before = await provider(); onChange?.(); onChange?.(); const after = await provider()
+    expect(before?.sessionFingerprint).not.toBe(after?.sessionFingerprint)
+  })
+
+  it('validates strict source URLs, canonical IDs, bounds and idempotency UUIDs before RPC', async () => {
+    const rpc = vi.fn()
+    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(rpc) })
+    for (const invalid of [
+      { ...input, sourceUrl: 'http://example.com' },
+      { ...input, sourceUrl: 'https://user@example.com' },
+      { ...input, sourceUrl: 'https://127.0.0.1/x' },
+      { ...input, companyId: 'KR-BIZ-123' },
+      { ...input, clientKey: 'not-a-uuid' },
+      { ...input, benefitText: ' '.repeat(2) },
+    ]) await expect(repository.createSubmission(invalid as CreateBenefitSubmissionInput)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('decodes bounded dense duplicate-free list pages and exact cursors', async () => {
+    const second = { ...wire, id: '44444444-4444-4444-8444-444444444444', created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z' }
+    const rpc = vi.fn().mockResolvedValue({ data: { items: [wire, second], has_more: true, next_cursor: { created_at: second.created_at, id: second.id } }, error: null, status: 200, statusText: 'OK' })
+    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(rpc) })
+    await expect(repository.listMySubmissions({ limit: 2 })).resolves.toMatchObject({ ok: true, data: { hasMore: true, items: [{ id: wire.id }, { id: second.id }] } })
+    rpc.mockResolvedValueOnce({ data: { items: [wire, wire], has_more: false, next_cursor: null }, error: null, status: 200, statusText: 'OK' })
+    await expect(repository.listMySubmissions({ limit: 2 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it.each([
+    [{ status: 401, code: 'PGRST303', message: 'jwt expired' }, 'auth_required'],
+    [{ status: 429, code: 'PGRST429', message: 'limit' }, 'rate_limited'],
+    [{ status: 400, code: '22023', message: 'client key reused with different payload' }, 'idempotency_mismatch'],
+    [{ status: 409, code: '40001', message: 'conflict' }, 'conflict'],
+  ])('maps transport errors without exposing server detail', async (error, code) => {
+    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(vi.fn().mockResolvedValue({ data: null, error, status: error.status, statusText: 'Error' })) })
+    const result = await repository.createSubmission(input)
+    expect(result).toMatchObject({ ok: false, error: { code } })
+    if (!result.ok) expect(result.error.message).not.toContain(error.message)
+  })
+})

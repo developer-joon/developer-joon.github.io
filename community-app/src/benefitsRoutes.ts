@@ -1,5 +1,6 @@
 const CANONICAL_COMPANY_ID = /^(?:KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10})$/
-const BENEFIT_SUBMISSION_PATH = '/community/benefits/submit/'
+export const BENEFIT_SUBMISSION_PATH = '/community/benefits/submit/'
+export const MY_BENEFIT_SUBMISSIONS_PATH = '/community/benefits/my-submissions/'
 
 export function benefitSubmissionHref(companyId: string): string {
   if (!CANONICAL_COMPANY_ID.test(companyId)) throw new Error('Invalid canonical company ID')

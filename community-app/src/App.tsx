@@ -8,6 +8,7 @@ import { useAuth, type AuthClient } from './auth/AuthProvider'
 import { getUploadRepository, type UploadRepository } from './data/uploadRepository'
 import { getBenefitCorrectionRepository, type BenefitCorrectionRepository } from './data/benefitCorrectionRepository'
 import type { BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
+import type { BenefitSubmissionRepository } from './data/benefitSubmissionRepository'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
 import { CommunityActions } from './components/CommunityActions'
@@ -17,6 +18,8 @@ const BenefitsExplorerPage = lazy(() => import('./pages/BenefitsExplorerPage').t
 const BenefitsDirectoryPage = lazy(() => import('./pages/BenefitsDirectoryPage').then(m => ({ default: m.BenefitsDirectoryPage })))
 const BenefitCorrectionPage = lazy(() => import('./pages/BenefitCorrectionPage').then(m => ({ default: m.BenefitCorrectionPage })))
 const MyBenefitCorrectionsPage = lazy(() => import('./pages/MyBenefitCorrectionsPage').then(m => ({ default: m.MyBenefitCorrectionsPage })))
+const BenefitSubmissionPage = lazy(() => import('./pages/BenefitSubmissionPage').then(m => ({ default: m.BenefitSubmissionPage })))
+const MyBenefitSubmissionsPage = lazy(() => import('./pages/MyBenefitSubmissionsPage').then(m => ({ default: m.MyBenefitSubmissionsPage })))
 
 const PostDetailPage = lazy(async () => {
   const module = await import('./pages/PostDetailPage')
@@ -50,6 +53,7 @@ interface AppProps {
   uploadRepository?: UploadRepository
   benefitCorrectionRepository?: BenefitCorrectionRepository
   benefitDirectoryRepository?: BenefitDirectoryRepository
+  benefitSubmissionRepository?: BenefitSubmissionRepository
 }
 
 function LazyRouteFallback({ children }: { children: React.ReactNode }) {
@@ -63,7 +67,7 @@ function LazyRouteFallback({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, benefitCorrectionRepository, benefitDirectoryRepository, authClient, onAuthCallbackNavigate }: AppProps) {
+export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, benefitCorrectionRepository, benefitDirectoryRepository, benefitSubmissionRepository, authClient, onAuthCallbackNavigate }: AppProps) {
   const auth = useAuth()
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (benefitsRoute(pathname) === 'methodology') return <Suspense fallback={<LazyRouteFallback>조사 기준을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsMethodologyPage search={search} /></Suspense>
@@ -75,6 +79,12 @@ export function App({ pathname = window.location.pathname, search = window.locat
   }
   if (normalizedPathname === '/community/benefits/my-corrections') {
     return <Suspense fallback={<LazyRouteFallback>요청 내역을 준비하고 있습니다.</LazyRouteFallback>}><MyBenefitCorrectionsPage currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/benefits/submit') {
+    return <Suspense fallback={<LazyRouteFallback>복지 제보 화면을 준비하고 있습니다.</LazyRouteFallback>}><BenefitSubmissionPage repository={benefitSubmissionRepository} directoryRepository={benefitDirectoryRepository} search={search} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/benefits/my-submissions') {
+    return <Suspense fallback={<LazyRouteFallback>내 복지 제보를 준비하고 있습니다.</LazyRouteFallback>}><MyBenefitSubmissionsPage repository={benefitSubmissionRepository} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />

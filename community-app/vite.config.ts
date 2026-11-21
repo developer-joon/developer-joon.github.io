@@ -19,6 +19,8 @@ export default defineConfig({
         benefitsMethodology: page('./benefits/methodology/index.html'),
         benefitsCorrection: page('./benefits/correction/index.html'),
         benefitsMyCorrections: page('./benefits/my-corrections/index.html'),
+        benefitsSubmit: page('./benefits/submit/index.html'),
+        benefitsMySubmissions: page('./benefits/my-submissions/index.html'),
         write: page('./write/index.html'),
         post: page('./post/index.html'),
         edit: page('./edit/index.html'),
