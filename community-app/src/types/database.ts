@@ -43,6 +43,7 @@ export type Database = {
           status: string;
           storage_path: string;
         };
+        ComputedFields: never;
         Insert: {
           attached_at?: string | null;
           byte_size: number;
@@ -114,6 +115,7 @@ export type Database = {
           summary: string | null;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           company_id: string;
           created_at?: string;
@@ -163,6 +165,7 @@ export type Database = {
           response_text: string | null;
           to_status: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           actor_id?: string | null;
@@ -220,6 +223,7 @@ export type Database = {
           idempotency_key: string;
           occurred_at: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           actor_snapshot: string;
@@ -258,6 +262,7 @@ export type Database = {
           submitter_id: string;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           admin_response?: string | null;
           applied_at?: string | null;
@@ -340,6 +345,7 @@ export type Database = {
           updated_at: string;
           verified_at: string | null;
         };
+        ComputedFields: never;
         Insert: {
           category_id: string;
           company_id: string;
@@ -401,6 +407,164 @@ export type Database = {
           },
         ];
       };
+      benefit_submission_events: {
+        Row: {
+          action: string;
+          actor_id: string;
+          client_key: string;
+          created_at: string;
+          from_status: string | null;
+          id: string;
+          operation: string;
+          payload_fingerprint: string;
+          publication_id: string | null;
+          response_text: string | null;
+          submission_id: string;
+          to_status: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          action: string;
+          actor_id: string;
+          client_key: string;
+          created_at?: string;
+          from_status?: string | null;
+          id?: string;
+          operation: string;
+          payload_fingerprint: string;
+          publication_id?: string | null;
+          response_text?: string | null;
+          submission_id: string;
+          to_status: string;
+        };
+        Update: {
+          action?: string;
+          actor_id?: string;
+          client_key?: string;
+          created_at?: string;
+          from_status?: string | null;
+          id?: string;
+          operation?: string;
+          payload_fingerprint?: string;
+          publication_id?: string | null;
+          response_text?: string | null;
+          submission_id?: string;
+          to_status?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_submission_events_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "benefit_submission_events_publication_id_fkey";
+            columns: ["publication_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_publications";
+            referencedColumns: ["publication_id"];
+          },
+          {
+            foreignKeyName: "benefit_submission_events_submission_id_fkey";
+            columns: ["submission_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_submissions";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      benefit_submissions: {
+        Row: {
+          admin_response: string | null;
+          benefit_text: string;
+          category_id: string;
+          client_key: string;
+          company_id: string;
+          condition_text: string | null;
+          created_at: string;
+          eligibility_text: string | null;
+          id: string;
+          payload_fingerprint: string;
+          publication_id: string | null;
+          reviewed_at: string | null;
+          reviewer_id: string | null;
+          source_url: string | null;
+          status: string;
+          submitter_id: string;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          admin_response?: string | null;
+          benefit_text: string;
+          category_id: string;
+          client_key: string;
+          company_id: string;
+          condition_text?: string | null;
+          created_at?: string;
+          eligibility_text?: string | null;
+          id?: string;
+          payload_fingerprint: string;
+          publication_id?: string | null;
+          reviewed_at?: string | null;
+          reviewer_id?: string | null;
+          source_url?: string | null;
+          status?: string;
+          submitter_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          admin_response?: string | null;
+          benefit_text?: string;
+          category_id?: string;
+          client_key?: string;
+          company_id?: string;
+          condition_text?: string | null;
+          created_at?: string;
+          eligibility_text?: string | null;
+          id?: string;
+          payload_fingerprint?: string;
+          publication_id?: string | null;
+          reviewed_at?: string | null;
+          reviewer_id?: string | null;
+          source_url?: string | null;
+          status?: string;
+          submitter_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_submissions_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_submissions_publication_id_fkey";
+            columns: ["publication_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_publications";
+            referencedColumns: ["publication_id"];
+          },
+          {
+            foreignKeyName: "benefit_submissions_reviewer_id_fkey";
+            columns: ["reviewer_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "benefit_submissions_submitter_id_fkey";
+            columns: ["submitter_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       comment_reactions: {
         Row: {
           comment_id: string;
@@ -408,6 +572,7 @@ export type Database = {
           id: string;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           comment_id: string;
           created_at?: string;
@@ -449,6 +614,7 @@ export type Database = {
           status: string;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           author_id: string;
           body_markdown: string;
@@ -507,6 +673,7 @@ export type Database = {
           resource_type: string | null;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           created_at?: string;
           expires_at: string;
@@ -550,6 +717,7 @@ export type Database = {
           target_id: string;
           target_type: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           actor_id?: string | null;
@@ -587,6 +755,7 @@ export type Database = {
           post_id: string;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           created_at?: string;
           id?: string;
@@ -621,6 +790,7 @@ export type Database = {
           post_id: string;
           tag_id: string;
         };
+        ComputedFields: never;
         Insert: {
           post_id: string;
           tag_id: string;
@@ -659,6 +829,7 @@ export type Database = {
           title: string;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           author_id: string;
           body_markdown: string;
@@ -704,6 +875,7 @@ export type Database = {
           metadata_provider: string | null;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           avatar_url?: string | null;
           created_at?: string;
@@ -735,6 +907,7 @@ export type Database = {
           upload_reservation_id: string | null;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           id?: string;
@@ -771,6 +944,7 @@ export type Database = {
           updated_at: string;
           window_seconds: number;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           created_at?: string;
@@ -804,6 +978,7 @@ export type Database = {
           target_id: string;
           target_type: string;
         };
+        ComputedFields: never;
         Insert: {
           created_at?: string;
           detail?: string | null;
@@ -853,6 +1028,7 @@ export type Database = {
           slug: string;
           sort_order: number;
         };
+        ComputedFields: never;
         Insert: {
           id?: string;
           is_active?: boolean;
@@ -876,6 +1052,7 @@ export type Database = {
           role: string;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           granted_at?: string;
           granted_by?: string | null;
@@ -955,6 +1132,18 @@ export type Database = {
           p_proposed_text: string;
           p_scope_text: string;
           p_source_url: string;
+        };
+        Returns: Json;
+      };
+      create_benefit_submission_v1: {
+        Args: {
+          p_benefit_text: string;
+          p_category_id: string;
+          p_client_key: string;
+          p_company_id: string;
+          p_condition_text?: string;
+          p_eligibility_text?: string;
+          p_source_url?: string;
         };
         Returns: Json;
       };
@@ -1051,6 +1240,24 @@ export type Database = {
         };
         Returns: Json;
       };
+      list_benefit_submission_audit_v1: {
+        Args: {
+          p_cursor_created_at?: string;
+          p_cursor_sequence?: string;
+          p_limit?: number;
+          p_submission_id: string;
+        };
+        Returns: Json;
+      };
+      list_benefit_submission_queue_v1: {
+        Args: {
+          p_cursor_created_at?: string;
+          p_cursor_id?: string;
+          p_limit?: number;
+          p_status?: string;
+        };
+        Returns: Json;
+      };
       list_moderation_audit_logs_v1: {
         Args: {
           p_cursor_created_at?: string;
@@ -1071,6 +1278,10 @@ export type Database = {
         Returns: Json;
       };
       list_my_benefit_correction_requests_v1: {
+        Args: { p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number };
+        Returns: Json;
+      };
+      list_my_benefit_submissions_v1: {
         Args: { p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number };
         Returns: Json;
       };
@@ -1213,6 +1424,21 @@ export type Database = {
           p_client_key: string;
           p_expected_status: string;
           p_request_id: string;
+        };
+        Returns: Json;
+      };
+      review_benefit_submission_v1: {
+        Args: {
+          p_action: string;
+          p_admin_response: string;
+          p_client_key: string;
+          p_existing_publication_id?: string;
+          p_expected_status: string;
+          p_public_condition?: string;
+          p_public_description?: string;
+          p_public_eligibility?: string;
+          p_public_title?: string;
+          p_submission_id: string;
         };
         Returns: Json;
       };
