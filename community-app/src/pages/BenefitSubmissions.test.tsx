@@ -204,7 +204,7 @@ describe('BenefitSubmissionPage',()=>{
     const remove=session.removeItem;session.removeItem=vi.fn()
     wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={directory()} storage={local} sessionStorage={session} lockAdapter={lock} search={`?intent=${marked.nonce}`} />,auth(actor))
     fireEvent.click(await screen.findByRole('button',{name:'로그인 전 초안으로 복구'}))
-    expect(await screen.findByRole('alert')).toHaveTextContent('정리를 완료하지 못했습니다')
+    await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('정리를 완료하지 못했습니다'))
     expect(screen.getByRole('button',{name:'로그인 전 초안으로 복구'})).toBeEnabled()
     session.removeItem=remove;fireEvent.click(screen.getByRole('button',{name:'로그인 전 초안으로 복구'}))
     expect(await screen.findByLabelText('복지 내용')).toHaveValue('재시도 초안')
@@ -244,7 +244,7 @@ describe('BenefitSubmissionPage',()=>{
     fireEvent.change(await screen.findByLabelText('기업 검색'),{target:{value:'테스트'}});fireEvent.click(await screen.findByRole('button',{name:/테스트 기업/}));fireEvent.change(screen.getByLabelText('복지 분야'),{target:{value:'leave'}});fireEvent.change(screen.getByLabelText('복지 내용'),{target:{value:'가족 돌봄 휴가'}})
     await waitFor(()=>expect(screen.getByRole('button',{name:'복지 제보 제출'})).toBeEnabled());blockRemove=true;fireEvent.click(screen.getByRole('button',{name:'복지 제보 제출'}));await screen.findByRole('alert')
     const key=benefitSubmissionDraftKey(scope),current=local.getItem(key);if(!current)throw new Error('draft missing');const newer={...JSON.parse(current),benefitText:'더 새로운 로컬 편집',updatedAt:new Date().toISOString()};local.setItem(key,JSON.stringify(newer));blockRemove=false
-    fireEvent.click(screen.getByRole('button',{name:'로컬 초안 정리 다시 시도'}));expect(await screen.findByRole('alert')).toHaveTextContent('더 새로운 로컬 초안을 발견해 삭제하지 않았습니다');expect(local.getItem(key)).toContain('더 새로운 로컬 편집');expect(repo.createSubmission).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button',{name:'로컬 초안 정리 다시 시도'}));await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('더 새로운 로컬 초안을 발견해 삭제하지 않았습니다'));expect(local.getItem(key)).toContain('더 새로운 로컬 편집');expect(repo.createSubmission).toHaveBeenCalledTimes(1)
   })
 
   it('renders repository failures exactly rather than as draft storage errors',async()=>{
