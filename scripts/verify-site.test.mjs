@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile, readFile, cp } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, readFile, cp, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -74,14 +74,14 @@ async function makeValidArtifact() {
     await put(root, relativePath, `<!doctype html><html><head>${title}<link rel="canonical" href="${canonical}"></head><body>${body}</body></html>`)
   }
   for (const [relativePath, title] of shellTitles) {
-    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img srcset="/community/assets/logo-Xy12Za34.png 1x, https://cdn.example/logo.png 2x, data:image/png;base64,AA== 3x"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img srcset="/community/assets/logo-Xy12Za34.png 1x, https://cdn.example/logo.png 2x, data:image/png;base64,AA== 3x"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
   }
   for (const [part,title] of [['','복지 현황'],['fit/','조건 탐색'],['company/','기업 근거 상세'],['methodology/','조사 기준·정정 이력']]) {
-    await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
+    await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script>`)
   }
-  await put(root, 'community/benefits/directory/index.html', '<!doctype html><html lang="ko"><head><title>국내 기업 검색 · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/directory/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
-  await put(root, 'benefits/index.html', '<!doctype html><html lang="ko"><head><title>기업 복지 검색 · Breadlab</title><link rel="canonical" href="https://breadlab.ai/benefits/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
-  await put(root, 'benefits/company/index.html', '<!doctype html><html lang="ko"><head><title>기업 복지 상세 · Breadlab</title><link rel="canonical" href="https://breadlab.ai/benefits/company/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
+  await put(root, 'community/benefits/directory/index.html', '<!doctype html><html lang="ko"><head><title>국내 기업 검색 · Benefit Atlas</title><meta name="description" content="공개 근거"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/directory/"><script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
+  await put(root, 'benefits/index.html', '<!doctype html><html lang="ko"><head><title>기업 복지 검색 · Breadlab</title><link rel="canonical" href="https://breadlab.ai/benefits/"><script type="module" crossorigin src="/community/assets/benefits-main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
+  await put(root, 'benefits/company/index.html', '<!doctype html><html lang="ko"><head><title>기업 복지 상세 · Breadlab</title><link rel="canonical" href="https://breadlab.ai/benefits/company/"><script type="module" crossorigin src="/community/assets/benefits-main-Ab12Cd34.js"></script></head><body><div id="app"></div></body></html>')
   await put(root, snapshotPath, `<title>Published snapshot example | Breadlab 커뮤니티</title><link rel="canonical" href="${snapshotUrl}"><meta property="og:type" content="article"><meta property="og:url" content="${snapshotUrl}"><script type="application/ld+json">{"@type":"BlogPosting"}</script>`)
   await put(root, 'privacy.html', '<title>개인정보처리방침 – Ria & Seoa PaPa</title><link rel="canonical" href="https://www.breadlab.ai/privacy">giscus 댓글은 GitHub 계정으로 인증됩니다. 커뮤니티 Google OAuth 로그인은 Supabase Auth를 사용합니다. 안정적인 provider subject는 인증 계층에서만 사용하고 공개 프로필에는 개인정보가 아닌 결정적 로그인 이름, 최대 120자의 Google 표시 이름, 최대 2,048자의 HTTPS 프로필 이미지 URL, 사용자 ID와 로그인 세션 정보를 처리합니다. 이메일과 provider access token 또는 refresh token은 공개 프로필에 저장하지 않습니다. 처리 완료 후 최대 3년')
   await put(root, 'CNAME', 'www.breadlab.ai\n')
@@ -103,7 +103,7 @@ async function makeValidArtifact() {
     'images/generated.png',
     'fonts/generated.woff2',
     'notes/generated.txt',
-    'community/assets/main-Ab12Cd34.js',
+    'community/assets/benefits-main-Ab12Cd34.js',
     'community/assets/logo-Xy12Za34.png',
   ]) {
     await put(root, relativePath)
@@ -177,7 +177,7 @@ test('rejects a missing canonical benefits route', async () => {
 
 test('rejects stale canonical metadata even when expected values appear outside head', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'benefits/index.html', '<!doctype html><html><head><title>stale</title><link rel="canonical" href="https://breadlab.ai/stale/"></head><body><!-- <title>기업 복지 검색 · Breadlab</title> --><link rel="canonical" href="https://breadlab.ai/benefits/"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script></body></html>')
+    await put(root, 'benefits/index.html', '<!doctype html><html><head><title>stale</title><link rel="canonical" href="https://breadlab.ai/stale/"></head><body><!-- <title>기업 복지 검색 · Breadlab</title> --><link rel="canonical" href="https://breadlab.ai/benefits/"><script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script></body></html>')
     const result = verify(root)
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /benefits\/index\.html has unexpected document title|missing canonical URL/)
@@ -212,6 +212,117 @@ test('rejects a duplicate community benefits-root tree', async () => {
     const result = verify(root)
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /community\/benefits-root.*must be absent/)
+  })
+})
+
+for (const [kind, createDuplicate] of [
+  ['empty directory', (root) => mkdir(path.join(root, 'community/benefits-root'), { recursive: true })],
+  ['regular file', (root) => put(root, 'community/benefits-root', 'duplicate')],
+  ['symbolic link', async (root) => symlink('../assets', path.join(root, 'community/benefits-root'))],
+]) {
+  test(`rejects a duplicate community benefits-root ${kind}`, async () => {
+    await withArtifact(async (root) => {
+      await createDuplicate(root)
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /community\/benefits-root duplicate path must be absent/)
+    })
+  })
+}
+
+const canonicalEntryMutations = [
+  ['hashed image as script source', (html) => html.replace('/community/assets/benefits-main-Ab12Cd34.js', '/community/assets/logo-Xy12Za34.png')],
+  ['missing script', (html) => html.replace(/<script type="module" crossorigin src="\/community\/assets\/benefits-main-Ab12Cd34\.js"><\/script>/, '')],
+  ['inline-only module script', (html) => html.replace(' crossorigin src="/community/assets/benefits-main-Ab12Cd34.js"', '')],
+  ['wrong script type', (html) => html.replace('type="module"', 'type="text/javascript"')],
+  ['unhashed script source', (html) => html.replace('/community/assets/benefits-main-Ab12Cd34.js', '/community/assets/main.js')],
+  ['non-assets script source', (html) => html.replace('/community/assets/benefits-main-Ab12Cd34.js', '/community/benefits-main-Ab12Cd34.js')],
+  ['query-bearing script source', (html) => html.replace('/community/assets/benefits-main-Ab12Cd34.js', '/community/assets/benefits-main-Ab12Cd34.js?v=1')],
+  ['fragment-bearing script source', (html) => html.replace('/community/assets/benefits-main-Ab12Cd34.js', '/community/assets/benefits-main-Ab12Cd34.js#entry')],
+  ['credential-bearing script source', (html) => html.replace('/community/assets/benefits-main-Ab12Cd34.js', 'https://user@example.test/community/assets/benefits-main-Ab12Cd34.js')],
+  ['duplicate module script', (html) => html.replace('</head>', '<script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script></head>')],
+  ['modulepreload only', (html) => html.replace(/<script type="module" crossorigin src="([^"]+)"><\/script>/, '<link rel="modulepreload" href="$1">')],
+  ['comment decoy', (html) => html.replace(/<script type="module" crossorigin src="([^"]+)"><\/script>/, '<!-- <script type="module" src="$1"></script> -->')],
+  ['template decoy', (html) => html.replace(/<script type="module" crossorigin src="([^"]+)"><\/script>/, '<template><script type="module" src="$1"></script></template>')],
+  ['body text decoy', (html) => html
+    .replace(/<script type="module" crossorigin src="([^"]+)"><\/script>/, '')
+    .replace('<div id="app"></div>', '<div id="app"></div><p>&lt;script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"&gt;&lt;/script&gt;</p>')],
+]
+
+for (const [description, mutate] of canonicalEntryMutations) {
+  test(`rejects canonical benefits ${description}`, async () => {
+    await withArtifact(async (root) => {
+      const route = path.join(root, 'benefits/index.html')
+      await writeFile(route, mutate(await readFile(route, 'utf8')))
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${description}`)
+      assert.match(result.stderr, /benefits\/index\.html must contain exactly one executable external Vite module entry/)
+    })
+  })
+}
+
+test('rejects a canonical entry whose JavaScript file is missing', async () => {
+  await withArtifact(async (root) => {
+    await rm(path.join(root, 'community/assets/benefits-main-Ab12Cd34.js'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /canonical benefits entry is not a regular non-symlink file/)
+  })
+})
+
+test('rejects a canonical entry whose JavaScript path is a symlink', async () => {
+  await withArtifact(async (root) => {
+    const entry = path.join(root, 'community/assets/benefits-main-Ab12Cd34.js')
+    await rm(entry)
+    await symlink('logo-Xy12Za34.png', entry)
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /canonical benefits entry is not a regular non-symlink file/)
+  })
+})
+
+test('rejects different executable entries for the two canonical benefits shells', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/assets/benefits-main-Zy98Xw76.js')
+    const route = path.join(root, 'benefits/company/index.html')
+    await writeFile(route, (await readFile(route, 'utf8')).replace('benefits-main-Ab12Cd34.js', 'benefits-main-Zy98Xw76.js'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /canonical benefits shells must use the same public entry asset/)
+  })
+})
+
+test('accepts and verifies the assembled Vite manifest benefits-main binding', async () => {
+  await withArtifact(async (root) => {
+    const imported = [
+      'jsx-runtime-Xy12Za34.js',
+      'react-Zy98Xw76.js',
+      'benefits-Qw12Er34.js',
+    ]
+    for (const file of imported) await put(root, `community/assets/${file}`)
+    for (const relativePath of ['benefits/index.html', 'benefits/company/index.html']) {
+      const route = path.join(root, relativePath)
+      const imports = imported.map((file) => `<script type="module" crossorigin src="/community/assets/${file}"></script>`).join('')
+      await writeFile(route, (await readFile(route, 'utf8')).replace('<script type="module" crossorigin src="/community/assets/benefits-main-Ab12Cd34.js"></script>', `${imports}<script type="module" crossorigin src="/community/assets/benefits-main-Ab12Cd34.js"></script>`))
+    }
+    const manifestPath = 'community/.vite/manifest.json'
+    const manifest = {
+      '_benefits-main-Ab12Cd34.js': {
+        file: 'assets/benefits-main-Ab12Cd34.js',
+        name: 'benefits-main',
+        imports: imported.map((file) => `_${file}`),
+      },
+      ...Object.fromEntries(imported.map((file) => [`_${file}`, { file: `assets/${file}` }])),
+    }
+    await put(root, manifestPath, JSON.stringify(manifest))
+    const accepted = verify(root)
+    assert.equal(accepted.status, 0, accepted.stderr)
+
+    manifest['_benefits-main-Ab12Cd34.js'].file = 'assets/other-Ab12Cd34.js'
+    await put(root, manifestPath, JSON.stringify(manifest))
+    const rejected = verify(root)
+    assert.notEqual(rejected.status, 0)
+    assert.match(rejected.stderr, /must bind the canonical public entry to the Vite benefits-main chunk/)
   })
 })
 
@@ -906,7 +1017,7 @@ test('rejects a missing required community snapshot', async () => {
 test('rejects a community snapshot without canonical, OpenGraph, and JSON-LD metadata', async () => {
   await withArtifact(async (root) => {
     for (const [part,title] of [['','복지 히트맵'],['rankings/','분야별 순위'],['fit/','내게 맞는 복지'],['company/','기업 근거 상세']]) {
-    await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="예시 데이터"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/main-Ab12Cd34.js"></script>`)
+    await put(root, `community/benefits/${part}index.html`, `<title>${title} · Benefit Atlas</title><meta name="description" content="예시 데이터"><link rel="canonical" href="https://www.breadlab.ai/community/benefits/${part}"><script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script>`)
   }
   await cp(path.join(repoRoot, 'community-app/public/data/company-benefits'),path.join(root,'community/data/company-benefits'),{recursive:true})
   await put(root,'community/benefits/methodology/index.html','<h1>조사 기준·정정 이력</h1><p>예시 데이터</p>')
@@ -1063,7 +1174,7 @@ test('rejects an unhashed local stylesheet referenced by a community shell', asy
   await withArtifact(async (root) => {
     await put(root, 'community/assets/styles.css')
     const [relativePath, title] = shellTitles.entries().next().value
-    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><link rel="stylesheet" href="/community/assets/styles.css">`)
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script><link rel="stylesheet" href="/community/assets/styles.css">`)
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unhashed stylesheet')
     assert.match(result.stderr, /content-hashed/)
@@ -1074,7 +1185,7 @@ test('rejects an existing unhashed image referenced by every community shell', a
   await withArtifact(async (root) => {
     await put(root, 'community/assets/logo.png')
     for (const [relativePath, title] of shellTitles) {
-      await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/logo.png">`)
+      await put(root, relativePath, `${title}<script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script><img src="/community/assets/logo.png">`)
     }
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unhashed non-JS/CSS shell asset')
@@ -1096,7 +1207,7 @@ for (const extension of ['js', 'css']) {
 test('rejects a hashed non-JS/CSS community asset reference when the file is missing', async () => {
   await withArtifact(async (root) => {
     const [relativePath, title] = shellTitles.entries().next().value
-    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img src="/community/assets/missing-Xy12Za34.png">`)
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script><img src="/community/assets/missing-Xy12Za34.png">`)
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a missing hashed asset')
     assert.match(result.stderr, /missing community asset/)
@@ -1107,7 +1218,7 @@ test('rejects an unhashed local asset referenced through srcset', async () => {
   await withArtifact(async (root) => {
     await put(root, 'community/assets/logo.png')
     const [relativePath, title] = shellTitles.entries().next().value
-    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><img srcset="https://cdn.example/logo.png 1x, /community/assets/logo.png 2x, data:image/png;base64,AA== 3x">`)
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script><img srcset="https://cdn.example/logo.png 1x, /community/assets/logo.png 2x, data:image/png;base64,AA== 3x">`)
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted an unhashed srcset asset')
     assert.match(result.stderr, /content-hashed/)
@@ -1117,7 +1228,7 @@ test('rejects an unhashed local asset referenced through srcset', async () => {
 test('rejects a missing hashed local asset referenced through srcset', async () => {
   await withArtifact(async (root) => {
     const [relativePath, title] = shellTitles.entries().next().value
-    await put(root, relativePath, `${title}<script type="module" src="/community/assets/main-Ab12Cd34.js"></script><source srcset="/community/assets/missing-Xy12Za34.webp 640w, https://cdn.example/image.webp 1280w">`)
+    await put(root, relativePath, `${title}<script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script><source srcset="/community/assets/missing-Xy12Za34.webp 640w, https://cdn.example/image.webp 1280w">`)
     const result = verify(root)
     assert.notEqual(result.status, 0, 'verifier unexpectedly accepted a missing srcset asset')
     assert.match(result.stderr, /missing community asset/)

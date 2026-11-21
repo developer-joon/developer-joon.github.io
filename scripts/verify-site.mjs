@@ -232,6 +232,7 @@ function extractDocumentTitle(html) {
   const lowerHtml = html.toLowerCase()
   const titles = []
   const canonicalLinks = []
+  const scriptTags = []
   let position = 0
   const inertStack = []
   let htmlStarts = 0
@@ -240,7 +241,10 @@ function extractDocumentTitle(html) {
   let headEnds = 0
   let inHtml = false
   let inHead = false
+  let inBody = false
   let bodyStarted = false
+  let bodyStarts = 0
+  let bodyEnds = 0
   let doctypeSeen = false
   let error = null
 
@@ -315,6 +319,10 @@ function extractDocumentTitle(html) {
         headEnds += 1
         if (!inHead || !inHtml || bodyStarted || headEnds !== 1) error ??= 'head'
         inHead = false
+      } else if (name === 'body') {
+        bodyEnds += 1
+        if (!inBody || !inHtml || bodyEnds !== 1) error ??= 'body'
+        inBody = false
       } else if (name === 'title') {
         error ??= 'title-outside-head'
       }
@@ -331,6 +339,10 @@ function extractDocumentTitle(html) {
 
     if (!inHtml && tag.name !== 'html') error ??= 'html'
     if (inHtml && headStarts === 0 && !['head', 'title'].includes(tag.name)) error ??= 'head'
+
+    if (tag.name === 'script' && inertStack.length === 0 && (inHead || inBody)) {
+      scriptTags.push(tag)
+    }
 
     if (rawTextElements.has(tag.name) && tag.name !== 'title') {
       const afterRawText = skipRawTextElement(html, lowerHtml, tagEnd + 1, tag.name)
@@ -369,8 +381,11 @@ function extractDocumentTitle(html) {
       continue
     }
     if (tag.name === 'body') {
+      bodyStarts += 1
       if (!inHtml || inHead || headEnds !== 1) error ??= 'head'
+      if (tag.selfClosing || inBody || bodyStarts !== 1 || bodyEnds !== 0) error ??= 'body'
       bodyStarted = true
+      inBody = true
       position = tagEnd + 1
       continue
     }
@@ -393,7 +408,8 @@ function extractDocumentTitle(html) {
 
   if (htmlStarts !== 1 || htmlEnds !== 1 || inHtml) error ??= 'html'
   if (headStarts !== 1 || headEnds !== 1 || inHead) error ??= 'head'
-  return { error, titles, canonicalLinks }
+  if (bodyStarts !== 1 || bodyEnds !== 1 || inBody) error ??= 'body'
+  return { error, titles, canonicalLinks, scriptTags }
 }
 
 function hasNavigationAjaxOptOut(html, expectedHref, expectedText, requireMenuList = false) {
@@ -602,7 +618,9 @@ async function walk(relativeDirectory = '') {
     if (hasForbiddenPathSegment) {
       fail(`implementation/private path leaked into artifact: ${relativePath}`)
     }
-    if (!hasForbiddenPathSegment && entry.name.startsWith('.') && !allowedDotfiles.has(entry.name)) {
+    const isVerifiedViteManifestPath = relativePath === 'community/.vite'
+      || relativePath === 'community/.vite/manifest.json'
+    if (!hasForbiddenPathSegment && entry.name.startsWith('.') && !allowedDotfiles.has(entry.name) && !isVerifiedViteManifestPath) {
       const kind = entryStat.isDirectory() ? 'path' : 'file'
       fail(`implementation/private ${kind} leaked into artifact: ${relativePath}`)
     } else if (forbiddenNames.some((pattern) => pattern.test(entry.name))) {
@@ -621,11 +639,145 @@ async function walk(relativeDirectory = '') {
   return files
 }
 
+async function assertDuplicateBenefitsRootAbsent() {
+  const communityPath = path.join(siteRoot, 'community')
+  let communityStat
+  try {
+    communityStat = await lstat(communityPath)
+  } catch (error) {
+    if (error.code !== 'ENOENT') fail(`cannot inspect community for duplicate benefits-root path: ${error.message}`)
+    return
+  }
+  if (!communityStat.isDirectory() || communityStat.isSymbolicLink()) return
+
+  try {
+    await lstat(path.join(communityPath, 'benefits-root'))
+    fail('community/benefits-root duplicate path must be absent')
+  } catch (error) {
+    if (error.code !== 'ENOENT') fail(`cannot inspect community/benefits-root duplicate path: ${error.message}`)
+  }
+}
+
+async function canonicalBenefitsEntry(document, relativePath) {
+  if (document.error) {
+    fail(`${relativePath} must contain exactly one executable external Vite module entry in a valid document head or body`)
+    return null
+  }
+  const scripts = document.scriptTags ?? []
+  if (scripts.length === 0) {
+    fail(`${relativePath} must contain exactly one executable external Vite module entry (found 0 script tags)`)
+    return null
+  }
+
+  const allowedAttributes = new Set(['type', 'src', 'crossorigin'])
+  const sources = []
+  for (const { attributes, selfClosing } of scripts) {
+    const type = attributes.get('type')
+    const src = attributes.get('src')
+    const crossorigin = attributes.get('crossorigin')
+    const attributesAllowed = [...attributes.keys()].every((name) => allowedAttributes.has(name))
+    const crossoriginAllowed = !attributes.has('crossorigin')
+      || crossorigin === null
+      || crossorigin === ''
+      || crossorigin?.toLowerCase() === 'anonymous'
+    const validSrc = typeof src === 'string'
+      && /^\/community\/assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{8,}\.js$/.test(src)
+    if (selfClosing
+        || type?.toLowerCase() !== 'module'
+        || !validSrc
+        || !attributesAllowed
+        || !crossoriginAllowed) {
+      fail(`${relativePath} must contain exactly one executable external Vite module entry with allowlisted attributes and a hashed /community/assets/*.js src`)
+      return null
+    }
+    const assetRelativePath = src.slice(1)
+    const assetPath = path.resolve(siteRoot, assetRelativePath)
+    if (!assetPath.startsWith(`${siteRoot}${path.sep}`)) {
+      fail(`${relativePath} canonical benefits entry escapes the bound site root: ${src}`)
+      return null
+    }
+    try {
+      const entryStat = await lstat(assetPath)
+      if (!entryStat.isFile() || entryStat.isSymbolicLink()) throw new Error('not a regular file')
+    } catch {
+      fail(`${relativePath} canonical benefits entry is not a regular non-symlink file: ${src}`)
+      return null
+    }
+    sources.push(src)
+  }
+  if (new Set(sources).size !== sources.length) {
+    fail(`${relativePath} must contain exactly one executable external Vite module entry (duplicate module script)`)
+    return null
+  }
+  const entries = sources.filter((src) => /^\/community\/assets\/benefits-main-[A-Za-z0-9_-]{8,}\.js$/.test(src))
+  if (entries.length !== 1) {
+    fail(`${relativePath} must contain exactly one executable external Vite module entry (found ${entries.length})`)
+    return null
+  }
+  return { entry: entries[0], sources }
+}
+
+async function verifyCanonicalBenefitsManifest(canonical) {
+  const relativePath = 'community/.vite/manifest.json'
+  const manifestPath = path.join(siteRoot, relativePath)
+  let manifestStat
+  try {
+    manifestStat = await lstat(manifestPath)
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      if (canonical.sources.length !== 1) fail('canonical benefits imported module scripts require the assembled Vite manifest')
+      return
+    }
+    fail(`cannot inspect ${relativePath}: ${error.message}`)
+    return
+  }
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.size > 1024 * 1024) {
+    fail(`${relativePath} must be a bounded regular non-symlink file`)
+    return
+  }
+
+  let manifest
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+  } catch (error) {
+    fail(`${relativePath} is not valid JSON: ${error.message}`)
+    return
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    fail(`${relativePath} must contain a Vite manifest object`)
+    return
+  }
+  const expectedFile = canonical.entry.slice('/community/'.length)
+  const expectedKey = `_${path.posix.basename(expectedFile)}`
+  const matches = Object.entries(manifest).filter(([, value]) => value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && value.name === 'benefits-main')
+  if (matches.length !== 1
+      || matches[0][0] !== expectedKey
+      || matches[0][1].file !== expectedFile) {
+    fail(`${relativePath} must bind the canonical public entry to the Vite benefits-main chunk`)
+    return
+  }
+  const importKeys = matches[0][1].imports ?? []
+  const importFiles = Array.isArray(importKeys)
+    ? importKeys.map((key) => manifest[key]?.file).filter((file) => typeof file === 'string')
+    : []
+  const expectedSources = new Set([canonical.entry, ...importFiles.map((file) => `/community/${file}`)])
+  if (importFiles.length !== importKeys.length
+      || expectedSources.size !== canonical.sources.length
+      || canonical.sources.some((source) => !expectedSources.has(source))) {
+    fail(`${relativePath} must bind every canonical executable module script to the benefits-main entry imports`)
+  }
+}
+
 async function main() {
   const rootStat = await stat('')
   if (!rootStat?.isDirectory()) {
     fail(`site artifact is not a directory: ${siteRoot}`)
   }
+
+  if (rootStat?.isDirectory()) await assertDuplicateBenefitsRootAbsent()
 
   for (const relativePath of requiredFiles) {
     const fileStat = await stat(relativePath)
@@ -669,6 +821,8 @@ async function main() {
       fail(`${relativePath} must contain exactly one explicit, properly closed document html element`)
     } else if (documentTitle.error === 'head') {
       fail(`${relativePath} must contain exactly one explicit, properly closed document head`)
+    } else if (documentTitle.error === 'body') {
+      fail(`${relativePath} must contain exactly one explicit, properly closed document body`)
     } else if (documentTitle.error === 'title-outside-head') {
       fail(`${relativePath} document title tags must appear only inside the explicit document head`)
     } else if (documentTitle.titles.length !== 1) {
@@ -687,18 +841,24 @@ async function main() {
   if (!hasBenefitsAjaxOptOut(home)) {
     fail('index.html 기업 복지 navigation link must include the js-no-ajax class in the actual menu')
   }
-  if (files.some((file) => file === 'community/benefits-root' || file.startsWith('community/benefits-root/'))) {
-    fail('community/benefits-root duplicate tree must be absent')
-  }
-
+  const canonicalEntries = []
   for (const relativePath of ['benefits/index.html', 'benefits/company/index.html']) {
     const html = await readText(relativePath)
     assertIncludes(html, '<div id="app"></div>', relativePath, 'public React mount')
-    const assets = communityAssetReferences(html, relativePath)
-    if (assets.length === 0) fail(`${relativePath} does not reference a built /community/assets/ file`)
+    const document = extractDocumentTitle(html)
+    canonicalEntries.push(await canonicalBenefitsEntry(document, relativePath))
     if (/\/(?:src|node_modules)\//.test(html)) fail(`${relativePath} references implementation source`)
     if (/AuthProvider|supabase|benefit(?:Submission|Correction)|admin/i.test(html)) {
       fail(`${relativePath} contains an auth/private bundle marker`)
+    }
+  }
+  if (canonicalEntries.every(Boolean) && new Set(canonicalEntries.map(({ entry }) => entry)).size !== 1) {
+    fail('canonical benefits shells must use the same public entry asset')
+  } else if (canonicalEntries.every(Boolean)) {
+    await verifyCanonicalBenefitsManifest(canonicalEntries[0])
+    if (canonicalEntries[0].sources.length !== canonicalEntries[1].sources.length
+        || canonicalEntries[0].sources.some((source) => !canonicalEntries[1].sources.includes(source))) {
+      fail('canonical benefits shells must use the same public executable module set')
     }
   }
 
