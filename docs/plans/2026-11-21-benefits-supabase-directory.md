@@ -583,11 +583,18 @@ Run:
 
 ```bash
 npm run db:reset
+npm run db:test:benefit-title-upgrade
 npm run db:test
 npm run db:lint
 ```
 
-Expected: migration, pgTAP, lint PASS.
+`db:test:benefit-title-upgrade`는 migration 002 상태의 legacy title과 revision lineage를
+003으로 올린 뒤 canonical title/dedupe/supersession/public detail을 검사한다. 이어서
+whitespace-only legacy title이 preflight에서 실패하고 migration ledger, row, constraint가
+그대로 rollback되는지도 검사한다. Docker 기반 local Supabase가 필요하므로 frontend-only
+`npm run check`에는 포함하지 않는다.
+
+Expected: upgrade/rollback fixture, migration, pgTAP, lint PASS.
 
 **Step 2: seed 검증과 local dry-run**
 

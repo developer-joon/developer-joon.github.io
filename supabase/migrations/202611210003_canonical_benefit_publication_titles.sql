@@ -28,6 +28,132 @@ end $$;
 alter function private.canonical_benefit_publication_title(text) owner to postgres;
 revoke all on function private.canonical_benefit_publication_title(text) from public,anon,authenticated,service_role;
 
+-- Fail closed before changing any publication row. Migration 002 allowed ASCII
+-- control whitespace at the edges and repeated whitespace within titles.
+do $$
+begin
+  if exists (
+    select 1
+    from public.benefit_publications publication
+    cross join lateral (
+      select pg_catalog.btrim(
+        pg_catalog.regexp_replace(
+          pg_catalog.translate(publication.title,E'\t\n\v\f\r','     '),
+          ' +',' ','g'
+        ),
+        ' '
+      ) canonical_title
+    ) normalized
+    where normalized.canonical_title=''
+       or pg_catalog.char_length(normalized.canonical_title)>200
+  ) then
+    raise exception 'benefit title canonicalization preflight failed: invalid title'
+      using errcode='22023';
+  end if;
+
+  if exists (
+    select 1
+    from public.benefit_publications publication
+    group by publication.company_id,publication.dedupe_key
+    having pg_catalog.count(distinct pg_catalog.jsonb_build_array(
+      publication.company_id,publication.category_id
+    ))>1
+  ) then
+    raise exception 'benefit title canonicalization preflight failed: inconsistent lineage company/category'
+      using errcode='23514';
+  end if;
+
+  if exists (
+    with lineage_base as (
+      select distinct on (publication.company_id,publication.dedupe_key)
+        publication.company_id,
+        publication.dedupe_key old_dedupe_key,
+        publication.category_id,
+        private.canonical_benefit_publication_title(publication.title) canonical_title
+      from public.benefit_publications publication
+      order by publication.company_id,publication.dedupe_key,
+        publication.revision,publication.publication_id
+    ), mapped as (
+      select lineage_base.*,
+        'user-'||pg_catalog.encode(extensions.digest(pg_catalog.convert_to(
+          lineage_base.company_id||E'\n'||lineage_base.category_id||E'\n'||
+          pg_catalog.translate(lineage_base.canonical_title,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),
+          'UTF8'
+        ),'sha256'),'hex') new_dedupe_key
+      from lineage_base
+    )
+    select 1
+    from mapped
+    group by mapped.company_id,mapped.new_dedupe_key
+    having pg_catalog.count(*)>1
+  ) then
+    raise exception 'benefit title canonicalization preflight failed: canonical lineage collision'
+      using errcode='23505';
+  end if;
+end $$;
+
+create temporary table benefit_title_upgrade_lineages on commit drop as
+with lineage_base as (
+  select distinct on (publication.company_id,publication.dedupe_key)
+    publication.company_id,
+    publication.dedupe_key old_dedupe_key,
+    publication.category_id,
+    private.canonical_benefit_publication_title(publication.title) canonical_title
+  from public.benefit_publications publication
+  order by publication.company_id,publication.dedupe_key,
+    publication.revision,publication.publication_id
+)
+select lineage_base.*,
+  'migration-003-'||pg_catalog.encode(extensions.digest(pg_catalog.convert_to(
+    lineage_base.company_id||E'\n'||lineage_base.old_dedupe_key,'UTF8'
+  ),'sha256'),'hex') staging_dedupe_key,
+  'user-'||pg_catalog.encode(extensions.digest(pg_catalog.convert_to(
+    lineage_base.company_id||E'\n'||lineage_base.category_id||E'\n'||
+    pg_catalog.translate(lineage_base.canonical_title,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),
+    'UTF8'
+  ),'sha256'),'hex') new_dedupe_key
+from lineage_base;
+
+-- An old arbitrary key could equal a generated staging key. Reject that rare
+-- case instead of relying on immediate unique-constraint update order.
+do $$
+begin
+  if exists (
+    select 1
+    from pg_temp.benefit_title_upgrade_lineages staged
+    join public.benefit_publications publication
+      on publication.company_id=staged.company_id
+     and publication.dedupe_key=staged.staging_dedupe_key
+     and publication.dedupe_key<>staged.old_dedupe_key
+  ) or exists (
+    select 1
+    from pg_temp.benefit_title_upgrade_lineages staged
+    group by staged.company_id,staged.staging_dedupe_key
+    having pg_catalog.count(*)>1
+  ) then
+    raise exception 'benefit title canonicalization preflight failed: staging lineage collision'
+      using errcode='23505';
+  end if;
+end $$;
+
+update public.benefit_publications publication
+set dedupe_key=staged.staging_dedupe_key
+from pg_temp.benefit_title_upgrade_lineages staged
+where publication.company_id=staged.company_id
+  and publication.dedupe_key=staged.old_dedupe_key;
+
+update public.benefit_publications publication
+set title=private.canonical_benefit_publication_title(publication.title),
+    dedupe_key=staged.new_dedupe_key
+from pg_temp.benefit_title_upgrade_lineages staged
+where publication.company_id=staged.company_id
+  and publication.dedupe_key=staged.staging_dedupe_key;
+
+set constraints public.benefit_publications_lineage_check,
+  public.benefit_publications_unique_active_lineage_check immediate;
+set constraints public.benefit_publications_lineage_check,
+  public.benefit_publications_unique_active_lineage_check deferred;
+
 alter table public.benefit_publications
   drop constraint benefit_publications_title_check;
 alter table public.benefit_publications
