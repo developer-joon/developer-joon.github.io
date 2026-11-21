@@ -23,7 +23,7 @@
 					{% assign menu_url = item.url %}
 					{% assign benefits_current = false %}
 					{% if item.title == 'Benefit Atlas' %}
-						{% assign menu_title = '기업 복지' %}
+						{% assign menu_title = 'Benefits' %}
 						{% assign menu_url = '/benefits/' %}
 						{% assign benefits_prefix = page.url | slice: 0, 10 %}
 						{% if page.url == '/benefits' or benefits_prefix == '/benefits/' %}{% assign benefits_current = true %}{% endif %}

@@ -516,7 +516,7 @@ function hasCommunityAjaxOptOut(html) {
 }
 
 function hasBenefitsAjaxOptOut(html) {
-  return hasNavigationAjaxOptOut(html, '/benefits/', '기업 복지', true)
+  return hasNavigationAjaxOptOut(html, '/benefits/', 'Benefits', true)
 }
 
 function communityAssetReferences(html, shellPath) {
@@ -1153,7 +1153,7 @@ async function main() {
     fail('index.html Community navigation link must include the js-no-ajax class')
   }
   if (!hasBenefitsAjaxOptOut(home)) {
-    fail('index.html 기업 복지 navigation link must include the js-no-ajax class in the actual menu')
+    fail('index.html Benefits navigation link must include the js-no-ajax class in the actual menu')
   }
   const canonicalEntries = []
   for (const relativePath of ['benefits/index.html', 'benefits/company/index.html']) {

@@ -87,11 +87,11 @@ describe('AppHeader global shell', () => {
       ['Revenue Lab', '/lab/'],
       ['Blog', '/blog/'],
       ['Community', '/community/'],
-      ['기업 복지', '/benefits/'],
+      ['Benefits', '/benefits/'],
       ['Shop', '/shop/'],
       ['About', '/about'],
     ])
-    expect(within(navigation).getAllByRole('link', { name: '기업 복지' })).toHaveLength(1)
+    expect(within(navigation).getAllByRole('link', { name: 'Benefits' })).toHaveLength(1)
     expect(within(navigation).getByRole('link', { name: 'Community' })).toHaveAttribute('aria-current', 'page')
     expect(header.firstElementChild).toHaveClass('community-header__wrap', 'community-wrap')
     const menuList = within(navigation).getByRole('list')
@@ -103,19 +103,19 @@ describe('AppHeader global shell', () => {
     '/benefits',
     '/benefits/',
     '/benefits/company/',
-  ])('marks the 기업 복지 menu item current on %s', (pathname) => {
+  ])('marks the Benefits menu item current on %s', (pathname) => {
     window.history.replaceState({}, '', pathname)
     render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
 
     const navigation = screen.getByRole('navigation', { name: '주요 메뉴' })
-    expect(within(navigation).getByRole('link', { name: '기업 복지' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).getByRole('link', { name: 'Benefits' })).toHaveAttribute('aria-current', 'page')
     expect(within(navigation).getByRole('link', { name: 'Community' })).not.toHaveAttribute('aria-current')
   })
 
   it('does not mark the canonical benefit link current for a lookalike prefix', () => {
     window.history.replaceState({}, '', '/benefits-extra')
     render(<AuthContext.Provider value={authValue()}><AppHeader /></AuthContext.Provider>)
-    expect(screen.getByRole('link', { name: '기업 복지' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('link', { name: 'Benefits' })).not.toHaveAttribute('aria-current')
   })
 
   it('keeps account controls and identity outside the global header and navigation', () => {
