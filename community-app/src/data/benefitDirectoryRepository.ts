@@ -35,8 +35,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isDenseArray(value: unknown): value is unknown[] {
-  if (!Array.isArray(value)) return false
+function isDenseArray(value: unknown[]) {
   for (let index = 0; index < value.length; index += 1) {
     if (!Object.prototype.hasOwnProperty.call(value, index)) return false
   }
@@ -91,7 +90,8 @@ function decodeSearchItem(value: unknown): BenefitDirectorySearchItem {
   if (!isRecord(value) || !hasExactKeys(value, searchItemKeys)) throw new Error('invalid search item keys')
   const company = decodeCompany(Object.fromEntries(companyKeys.map(key => [key, value[key]])))
   if (!nonnegativeInteger(value.benefit_count) || !nonnegativeInteger(value.official_count)
-    || !nonnegativeInteger(value.community_count) || !isDenseArray(value.categories)
+    || !nonnegativeInteger(value.community_count) || !Array.isArray(value.categories)
+    || value.categories.length > BENEFIT_DIRECTORY_CATEGORIES.length || !isDenseArray(value.categories)
     || value.categories.some(category => !isCategory(category))) throw new Error('invalid search aggregates')
   const categories = value.categories as BenefitDirectoryCategory[]
   const uniqueCategories = new Set(categories)
@@ -111,8 +111,8 @@ function validOpaqueCursor(value: unknown): value is string {
 }
 
 function decodePage(value: unknown, input: BenefitDirectorySearchInput): BenefitDirectoryPage {
-  if (!isRecord(value) || !hasExactKeys(value, searchPageKeys) || !isDenseArray(value.items)
-    || value.items.length > input.pageSize || value.items.length > 50
+  if (!isRecord(value) || !hasExactKeys(value, searchPageKeys) || !Array.isArray(value.items)
+    || value.items.length > input.pageSize || value.items.length > 50 || !isDenseArray(value.items)
     || typeof value.has_more !== 'boolean' || !nonnegativeInteger(value.total)) throw new Error('invalid search page')
   if ((value.has_more && (!validOpaqueCursor(value.next_cursor) || value.items.length !== input.pageSize))
     || (!value.has_more && value.next_cursor !== null)) throw new Error('invalid search cursor state')
@@ -140,8 +140,8 @@ function decodePublication(value: unknown): BenefitDirectoryPublication {
 }
 
 function decodeDetail(value: unknown, requestedCompanyId: string): BenefitCompanyDetail {
-  if (!isRecord(value) || !hasExactKeys(value, detailKeys) || !isDenseArray(value.publications)
-    || value.publications.length > MAX_BENEFIT_DETAIL_PUBLICATIONS) throw new Error('invalid detail projection')
+  if (!isRecord(value) || !hasExactKeys(value, detailKeys) || !Array.isArray(value.publications)
+    || value.publications.length > MAX_BENEFIT_DETAIL_PUBLICATIONS || !isDenseArray(value.publications)) throw new Error('invalid detail projection')
   const company = decodeCompany(value.company)
   const publications = value.publications.map(decodePublication)
   if (company.companyId !== requestedCompanyId
@@ -229,7 +229,8 @@ function validSearchInput(input: BenefitDirectorySearchInput) {
     || (input.size !== null && input.size !== undefined && !inValues(input.size, BENEFIT_DIRECTORY_SIZE_CLASSES))
     || (input.cursor !== null && input.cursor !== undefined && !validOpaqueCursor(input.cursor))) return false
   if (input.categories !== null && input.categories !== undefined) {
-    if (!isDenseArray(input.categories) || input.categories.length < 1 || input.categories.length > 10
+    if (!Array.isArray(input.categories) || input.categories.length > BENEFIT_DIRECTORY_CATEGORIES.length
+      || !isDenseArray(input.categories) || input.categories.length < 1
       || input.categories.some(category => !isCategory(category))) return false
   }
   return true

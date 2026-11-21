@@ -11,7 +11,7 @@ select ok((select bool_and(not has_table_privilege('public',oid,'SELECT,INSERT,U
 select ok((select bool_and(p.prosecdef and p.proconfig @> array['search_path=""'] and pg_get_userbyid(p.proowner)='postgres') from pg_proc p where p.oid=any(array['public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)'::regprocedure,'public.get_benefit_company_v1(text)'::regprocedure])),'public RPCs are fixed-owner SECURITY DEFINER with empty search_path');
 select ok(not has_function_privilege('public','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE') and has_function_privilege('anon','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE') and has_function_privilege('authenticated','public.search_benefit_companies_v1(text,text[],text,text,text,boolean,integer,text)','EXECUTE'),'search grants are browser-only');
 select ok(not has_function_privilege('public','public.get_benefit_company_v1(text)','EXECUTE') and not has_function_privilege('service_role','public.get_benefit_company_v1(text)','EXECUTE') and has_function_privilege('anon','public.get_benefit_company_v1(text)','EXECUTE') and has_function_privilege('authenticated','public.get_benefit_company_v1(text)','EXECUTE'),'detail grants are browser-only and exclude PUBLIC/service_role');
-select ok(pg_catalog.pg_get_functiondef('public.get_benefit_company_v1(text)'::regprocedure) ~ 'order by bp.category_id,bp.title,bp.publication_id[[:space:]]+limit 201' and pg_catalog.pg_get_functiondef('public.get_benefit_company_v1(text)'::regprocedure) ~ 'limit 200','detail checks a canonical 201-row lookahead before its bounded aggregate');
+select ok(pg_catalog.pg_get_functiondef('public.get_benefit_company_v1(text)'::regprocedure) ~ 'where bp.company_id=p_company_id and bp.status=''active''[[:space:]]+limit 201' and pg_catalog.pg_get_functiondef('public.get_benefit_company_v1(text)'::regprocedure) !~ 'order by bp.category_id,bp.title,bp.publication_id[[:space:]]+limit 201' and pg_catalog.pg_get_functiondef('public.get_benefit_company_v1(text)'::regprocedure) ~ 'order by bounded.category_id,bounded.title,bounded.publication_id','detail uses an unordered bounded overflow probe before canonical aggregation');
 select ok((select exists(select 1 from pg_catalog.pg_class c join pg_catalog.pg_index i on i.indexrelid=c.oid where c.oid='public.benefit_publications_active_company_idx'::regclass and i.indpred is not null and pg_catalog.pg_get_expr(i.indpred,i.indrelid) like '%status%active%')),'detail company/status predicate has a partial active-publication index');
 select ok((select coalesce(bool_and(not i.indisunique),false) from pg_catalog.pg_class c join pg_catalog.pg_index i on i.indexrelid=c.oid where c.relnamespace='public'::regnamespace and c.relname='benefit_publications_active_lineage_idx'),'active lineage lookup index is non-unique so either transaction write order is possible');
 select ok((select coalesce(bool_and(t.tgdeferrable and t.tginitdeferred),false) from pg_catalog.pg_trigger t where t.tgrelid='public.benefit_publications'::regclass and t.tgname='benefit_publications_unique_active_lineage_check'),'active lineage uniqueness is checked by a deferred constraint trigger');
@@ -283,6 +283,13 @@ begin
   execute 'explain (format json,costs off) '||p_sql into v_plan;
   return v_plan;
 end $$;
+create function pg_temp.explain_analyze_json(p_sql text)
+returns jsonb language plpgsql as $$
+declare v_plan jsonb;
+begin
+  execute 'explain (analyze,format json,costs off,timing off,summary off) '||p_sql into v_plan;
+  return v_plan;
+end $$;
 create function pg_temp.plan_nodes(p_plan jsonb)
 returns setof jsonb language sql immutable as $$
   with recursive nodes(node) as (
@@ -342,6 +349,37 @@ select is(
   (select array_agg(company_id order by normalized_name,company_id) from (select company_id,normalized_name from public.benefit_companies where is_searchable order by normalized_name,company_id limit 10) expected),
   'representative-volume first page uses deterministic normalized-name and company-id order'
 );
+
+-- The detail overflow probe must stop at 201 even for production-shaped volume.
+insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance)
+values ('KR-BIZ-8800099999','registered_business','Overflow plan fixture','overflow plan fixture',true,'overflow-plan-v1','{}');
+insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type,provenance)
+select ('b9990000-0000-4000-8000-'||pg_catalog.lpad(n::text,12,'0'))::uuid,'KR-BIZ-8800099999',
+  case n%10 when 0 then 'leave' when 1 then 'family' when 2 then 'health' when 3 then 'growth' when 4 then 'housing' when 5 then 'commute' when 6 then 'remote' when 7 then 'retirement' when 8 then 'meals' else 'inclusion' end,
+  'Overflow benefit '||n,'bounded','official_verified','active','overflow-plan-'||n,1,'official_ledger','{}'::jsonb
+from pg_catalog.generate_series(1,10000) n;
+analyze public.benefit_publications;
+create temporary table benefit_detail_overflow_plan(plan jsonb);
+insert into benefit_detail_overflow_plan values (pg_temp.explain_analyze_json($sql$
+  select pg_catalog.count(*)::integer
+  from (
+    select 1
+    from public.benefit_publications bp
+    where bp.company_id='KR-BIZ-8800099999' and bp.status='active'
+    limit 201
+  ) bounded
+$sql$));
+select ok((select exists(
+    select 1 from pg_temp.plan_nodes(plan) node
+    where node->>'Node Type'='Limit' and (node->>'Actual Rows')::integer=201
+  ) and not exists(
+    select 1 from pg_temp.plan_nodes(plan) node where node->>'Node Type'='Sort'
+  ) and coalesce((select pg_catalog.max((node->>'Actual Rows')::integer)
+    from pg_temp.plan_nodes(plan) node
+    where node->>'Node Type' in ('Index Scan','Index Only Scan','Seq Scan')),0)<=201
+  from benefit_detail_overflow_plan),'10,000-row detail overflow probe reads at most 201 candidates with no Sort before Limit');
+delete from public.benefit_publications where company_id='KR-BIZ-8800099999';
+delete from public.benefit_companies where company_id='KR-BIZ-8800099999';
 
 select throws_ok($lineage$
 do $test$

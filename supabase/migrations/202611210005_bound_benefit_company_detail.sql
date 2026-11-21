@@ -40,7 +40,6 @@ begin
     select 1
     from public.benefit_publications bp
     where bp.company_id=p_company_id and bp.status='active'
-    order by bp.category_id,bp.title,bp.publication_id
     limit 201
   ) bounded;
 

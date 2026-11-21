@@ -33,6 +33,29 @@ function sparseInMiddle<T>(first: T, last: T): T[] {
   return values
 }
 
+function oversizedSparseArray<T>(length: number, value: T) {
+  let accesses = 0
+  const values = Array<T>(length)
+  Object.defineProperty(values, 0, {
+    configurable: true,
+    get() {
+      accesses += 1
+      return value
+    },
+  })
+  return { values, accesses: () => accesses }
+}
+
+function countDenseIndexChecks() {
+  let checks = 0
+  const original = Object.prototype.hasOwnProperty
+  const spy = vi.spyOn(Object.prototype, 'hasOwnProperty').mockImplementation(function (this: object, property: PropertyKey) {
+    if (typeof property === 'number') checks += 1
+    return Reflect.apply(original, this, [property])
+  })
+  return { checks: () => checks, restore: () => spy.mockRestore() }
+}
+
 type Response = { data: unknown; error: unknown; status?: unknown; statusText?: unknown }
 const success = (data: unknown, status = 200): Response => ({ data, error: null, status, statusText: status === 200 ? 'OK' : 'No Content' })
 function rpcClient(response: Response | Promise<Response>) {
@@ -98,6 +121,17 @@ describe('benefit directory repository', () => {
     expect(getAnonymousSupabaseClient).not.toHaveBeenCalled()
   })
 
+  it('rejects oversized sparse category input before traversing its indexes', async () => {
+    const categories = oversizedSparseArray(1_000_000, 'health')
+    const indexChecks = countDenseIndexChecks()
+    const result = await createBenefitDirectoryRepository().search({ pageSize: 20, categories: categories.values as never })
+    const checks = indexChecks.checks(); indexChecks.restore()
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(checks).toBe(0)
+    expect(categories.accesses()).toBe(0)
+    expect(getAnonymousSupabaseClient).not.toHaveBeenCalled()
+  })
+
   it('calls the public detail RPC and preserves PostgreSQL UUID text without version restrictions', async () => {
     const transport = rpcClient(success(detail))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
@@ -155,6 +189,16 @@ describe('benefit directory repository', () => {
     expect(await createBenefitDirectoryRepository().search({ pageSize: 50 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
+  it('rejects oversized sparse search item arrays before traversing their indexes', async () => {
+    const items = oversizedSparseArray(1_000_000, searchItem)
+    const transport = rpcClient(success({ ...page, items: items.values, total: 1_000_000 })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const indexChecks = countDenseIndexChecks()
+    expect(await createBenefitDirectoryRepository().search({ pageSize: 50 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    const checks = indexChecks.checks(); indexChecks.restore()
+    expect(checks).toBe(0)
+    expect(items.accesses()).toBe(0)
+  })
+
   it.each([
     { categories: sparseAtZero('health') },
     { categories: sparseInMiddle('health', 'leave') },
@@ -165,6 +209,17 @@ describe('benefit directory repository', () => {
     }
     const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().search({ pageSize: 50 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects oversized sparse search item categories before traversing their indexes', async () => {
+    const categories = oversizedSparseArray(1_000_000, 'health')
+    const wire = { ...page, items: [{ ...searchItem, benefit_count: 1_000_000, official_count: 1_000_000, categories: categories.values }] }
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const indexChecks = countDenseIndexChecks()
+    expect(await createBenefitDirectoryRepository().search({ pageSize: 50 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    const checks = indexChecks.checks(); indexChecks.restore()
+    expect(checks).toBe(1) // The one-item page is checked; oversized categories are not.
+    expect(categories.accesses()).toBe(0)
   })
 
   it.each([
@@ -195,6 +250,16 @@ describe('benefit directory repository', () => {
     const transport = rpcClient(success({ company, publications }))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects oversized sparse detail publications before traversing their indexes', async () => {
+    const publications = oversizedSparseArray(1_000_000, publication)
+    const transport = rpcClient(success({ company, publications: publications.values })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const indexChecks = countDenseIndexChecks()
+    expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    const checks = indexChecks.checks(); indexChecks.restore()
+    expect(checks).toBe(0)
+    expect(publications.accesses()).toBe(0)
   })
 
   it.each([
