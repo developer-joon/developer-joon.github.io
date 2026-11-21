@@ -10,6 +10,7 @@ import {
   FROZEN_SEED_CONTRACT,
   verifyBenefitDirectorySeed,
 } from './verify-benefit-directory-seed.mjs'
+import { validateSeedBytes } from './generate-benefit-directory-seed.mjs'
 
 const execFileAsync = promisify(execFile)
 const repo = path.resolve(import.meta.dirname, '..')
@@ -64,9 +65,15 @@ test('self-consistent row deletion and identity mutation cannot override indepen
   try {
     for (const mutation of ['delete', 'identity']) {
       const bundleDir = await mutateBundle(root, mutation)
+      const manifestBytes = await readFile(path.join(bundleDir, 'manifest.json'))
+      const companiesBytes = await readFile(path.join(bundleDir, 'companies.ndjson'))
+      assert.doesNotThrow(
+        () => validateSeedBytes(manifestBytes, companiesBytes),
+        `${mutation} must remain structurally valid so the independent pins are reachable`,
+      )
       await assert.rejects(
         verifyBenefitDirectorySeed({ sourceFile: canonicalSource, bundleDir }),
-        /frozen|authority|drift|count|digest|identity/i,
+        /independent frozen seed contract/,
         mutation,
       )
     }

@@ -205,7 +205,7 @@ function validateManifest(manifest) {
   if (manifest.schema_version !== 'benefit-directory-seed-v1' || manifest.source_contract_version !== PINNED_SOURCE.schemaVersion || manifest.companies.path !== 'companies.ndjson') throw Error('manifest contract version invalid')
 }
 
-function validateSeedBytes(manifestBytes, ndjson) {
+export function validateSeedBytes(manifestBytes, ndjson) {
   const manifest = parseJson(manifestBytes, 'bundle manifest')
   validateManifest(manifest)
   if (manifest.companies.byte_count !== ndjson.length || manifest.companies.sha256 !== sha256(ndjson)) throw Error('bundle companies byte/hash drift')
@@ -237,7 +237,7 @@ export async function verifySeedBundle({ sourceFile, bundleDir }) {
   const { bytes, doc } = await loadSource(sourceFile)
   const expected = buildSeedFromDocument(doc, bytes)
   if (!manifestBytes.equals(expected.manifestBytes) || !ndjson.equals(expected.ndjson)) throw Error('bundle drift from pinned source authority')
-  return { manifest, rows, manifestBytes, ndjson, sourceBytes: bytes, bundleSha256: sha256(manifestBytes) }
+  return { manifest, rows, manifestBytes, ndjson, sourceSha256: sha256(bytes), bundleSha256: sha256(manifestBytes) }
 }
 
 export async function generateSeedBundle({ sourceFile, outputDir, check = false, injectBeforeCommit, testOnly } = {}) {

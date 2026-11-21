@@ -9,6 +9,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import {
+  buildChildEnvironment,
   buildReleasePlan,
   cleanupReleaseWorkspace,
   createReleaseWorkspace,
@@ -225,6 +226,40 @@ test('browser preflight discovers a supported PATH executable or fails clearly',
   } finally {
     state.close()
   }
+})
+
+test('child environment uses an exact safe allowlist and only the absolute browser override', () => {
+  const sentinel = 'must-not-reach-a-child'
+  const hostile = {
+    PATH: '/safe/bin', HOME: '/safe/home', USER: 'operator', LOGNAME: 'operator',
+    TMPDIR: '/safe/tmp', LANG: 'C.UTF-8', TZ: 'UTC', TERM: 'dumb', CI: '1',
+    XDG_RUNTIME_DIR: '/safe/run', DOCKER_CONTEXT: 'rootless',
+    SUPABASE_URL: sentinel, supabase_service_role_key: sentinel,
+    DATABASE_URL: sentinel, Postgres_URL: sentinel, PGHOST: sentinel,
+    libpq_service: sentinel, APP_DATABASE_PASSWORD: sentinel,
+    vite_public_value: sentinel, NEXT_PUBLIC_VALUE: sentinel,
+    Public_VALUE: sentinel, react_app_value: sentinel,
+    NODE_OPTIONS: sentinel, Bash_Env: sentinel, ENV: sentinel, CDPATH: sentinel,
+    GIT_CONFIG_COUNT: sentinel, npm_config_registry: sentinel,
+    NPM_CONFIG_TOKEN: sentinel, HTTPS_PROXY: sentinel, github_token: sentinel,
+  }
+  const browser = '/trusted/bin/chromium'
+  const child = buildChildEnvironment(hostile, { BENEFITS_CHROMIUM: browser }, 'test-benefits-browser')
+  assert.deepEqual(child, {
+    PATH: '/safe/bin', HOME: '/safe/home', USER: 'operator', LOGNAME: 'operator',
+    TMPDIR: '/safe/tmp', LANG: 'C.UTF-8', TZ: 'UTC', TERM: 'dumb', CI: '1',
+    XDG_RUNTIME_DIR: '/safe/run', DOCKER_CONTEXT: 'rootless', BENEFITS_CHROMIUM: browser,
+  })
+  assert.equal(Object.values(child).includes(sentinel), false)
+  assert.throws(() => buildChildEnvironment(hostile, { DATABASE_URL: '/absolute/but-forbidden' }), /step environment.*DATABASE_URL/i)
+  assert.throws(
+    () => buildChildEnvironment(hostile, { BENEFITS_CHROMIUM: browser }, 'frontend-check'),
+    /only.*test-benefits-browser/i,
+  )
+  assert.throws(
+    () => buildChildEnvironment(hostile, { BENEFITS_CHROMIUM: 'relative/chromium' }, 'test-benefits-browser'),
+    /absolute.*BENEFITS_CHROMIUM|BENEFITS_CHROMIUM.*absolute/i,
+  )
 })
 
 test('release workspaces are private, isolated, and cleanup removes only its owner run', async () => {
@@ -450,6 +485,76 @@ test('release execution passes the preflight-resolved browser path explicitly', 
     await runReleaseGate(state.options, state.dependencies)
     const browserStep = seen.find(({ name }) => name === 'test-benefits-browser')
     assert.equal(browserStep.environment.BENEFITS_CHROMIUM, browser)
+  } finally {
+    state.close()
+  }
+})
+
+test('every default-runner spawn including cleanup receives the sandbox and preflight-fixed command', async () => {
+  const state = executionFixture()
+  try {
+    const sentinel = 'hostile-parent-secret'
+    const browser = '/trusted/bin/chromium'
+    const parentEnvironment = {
+      PATH: '/preflight/bin', HOME: '/safe/home', LANG: 'C.UTF-8',
+      DATABASE_URL: sentinel, PgPassword: sentinel, VITE_SECRET: sentinel,
+      NODE_OPTIONS: sentinel, GIT_SSH_COMMAND: sentinel, npm_config_token: sentinel,
+    }
+    const names = [
+      'check-benefit-seed-generation', 'start-local-supabase',
+      'test-benefit-title-upgrade', 'test-benefit-seed-importer', 'test-database',
+      'frontend-check', 'test-benefits-browser',
+    ]
+    state.dependencies.plan = compactPlan('local', state.evidence, names)
+    const commands = {
+      'check-benefit-seed-generation': 'node',
+      'start-local-supabase': 'docker',
+      'test-benefit-title-upgrade': 'npm',
+      'test-benefit-seed-importer': 'npm',
+      'test-database': 'npm',
+      'frontend-check': 'npm',
+      'test-benefits-browser': 'node',
+    }
+    for (const releaseStep of state.dependencies.plan.steps) releaseStep.command = commands[releaseStep.name]
+    const calls = []
+    delete state.dependencies.runner
+    state.dependencies.parentEnvironment = parentEnvironment
+    state.dependencies.executablePreflight = async () => {
+      parentEnvironment.PATH = '/redirect-after-preflight'
+      return new Map([
+        ['node', '/trusted/bin/node'], ['npm', '/trusted/bin/npm'],
+        ['docker', '/trusted/bin/docker'], ['BENEFITS_CHROMIUM', browser],
+      ])
+    }
+    state.dependencies.spawn = (command, args, options) => {
+      calls.push({ command, args, options })
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.kill = () => true
+      setImmediate(() => {
+        const stepName = args[0]?.replace(/\.mjs$/, '')
+        const count = MANDATORY_DATABASE_COUNTS.find(item => item.name === stepName)?.count
+        if (count !== undefined) child.stdout.emit('data', Buffer.from(`Tests=${count}\n`))
+        child.emit('close', 0, null)
+      })
+      return child
+    }
+
+    await runReleaseGate(state.options, state.dependencies)
+
+    assert.equal(calls.length, names.length + 1)
+    assert.deepEqual(calls.map(call => call.command), [
+      '/trusted/bin/node', '/trusted/bin/docker', '/trusted/bin/npm', '/trusted/bin/npm',
+      '/trusted/bin/npm', '/trusted/bin/npm', '/trusted/bin/node', '/trusted/bin/npm',
+    ])
+    for (const call of calls) {
+      assert.equal(Object.values(call.options.env).includes(sentinel), false)
+      assert.equal(call.options.env.PATH, '/redirect-after-preflight')
+      assert.equal(call.options.shell, false)
+    }
+    assert.equal(calls.find(call => call.args[0] === 'test-benefits-browser.mjs').options.env.BENEFITS_CHROMIUM, browser)
+    assert.equal(calls.at(-1).args.includes('db:stop'), true)
   } finally {
     state.close()
   }
@@ -966,10 +1071,23 @@ function passingPlan(mode, evidencePath, names) {
 
 function passingResult(name, overrides = {}) {
   const count = MANDATORY_DATABASE_COUNTS.find((item) => item.name === name)?.count
+  const stdout = count === undefined ? '' : `Tests=${count}\n`
   return {
     code: 0,
-    stdout: count === undefined ? '' : `Tests=${count}\n`,
+    stdout,
     stderr: '',
+    ...(name === 'test-benefit-title-upgrade' || name === 'test-benefit-seed-importer'
+      ? { orderedTranscript: transcript([{ stream: 'stdout', chunk: stdout }]) }
+      : {}),
+    ...overrides,
+  }
+}
+
+function transcript(events, overrides = {}) {
+  return {
+    events,
+    bytes: events.reduce((total, event) => total + Buffer.byteLength(event.chunk), 0),
+    truncated: false,
     ...overrides,
   }
 }
@@ -1401,7 +1519,7 @@ test('default runner bounds TERM-to-KILL for an uncooperative process tree befor
     descendantPid = path.join(state.root, 'descendant.pid')
     mkdirSync(bin)
     const npm = path.join(bin, 'npm')
-    writeFileSync(npm, '#!/bin/sh\nprintf cleaned > "$RELEASE_GATE_CLEANUP_MARKER"\n')
+    writeFileSync(npm, `#!/bin/sh\nprintf cleaned > "${marker}"\n`)
     chmodSync(npm, 0o700)
     process.env.PATH = `${bin}${path.delimiter}${originalPath}`
     process.env.RELEASE_GATE_CLEANUP_MARKER = marker
@@ -1515,7 +1633,7 @@ test('default runner escalates the process group after its leader exits on TERM'
     descendantPid = path.join(state.root, 'descendant.pid')
     mkdirSync(bin)
     const npm = path.join(bin, 'npm')
-    writeFileSync(npm, '#!/bin/sh\nprintf cleaned > "$RELEASE_GATE_CLEANUP_MARKER"\n')
+    writeFileSync(npm, `#!/bin/sh\nprintf cleaned > "${marker}"\n`)
     chmodSync(npm, 0o700)
     process.env.PATH = `${bin}${path.delimiter}${originalPath}`
     process.env.RELEASE_GATE_CLEANUP_MARKER = marker
@@ -2089,7 +2207,16 @@ test('mandatory database suites reject missing, zero, and duplicate summaries an
       const state = executionFixture()
       try {
         state.dependencies.plan = compactPlan('local', state.evidence, [suite, 'never'])
-        state.dependencies.runner = async ({ name }) => ({ code: 0, stdout: name === suite ? output : '' })
+        state.dependencies.runner = async ({ name }) => {
+          const stdout = name === suite ? output : ''
+          return {
+            code: 0,
+            stdout,
+            orderedTranscript: name === suite
+              ? transcript(stdout ? [{ stream: 'stdout', chunk: stdout }] : [])
+              : undefined,
+          }
+        }
         await assert.rejects(runReleaseGate(state.options, state.dependencies), new RegExp(`${suite}.*(?:Tests|summary|positive|duplicate)`, 'i'), `${suite}/${label}`)
         assert.equal(state.evidence().databaseTests, null, `${suite}/${label}`)
       } finally {
@@ -2101,7 +2228,16 @@ test('mandatory database suites reject missing, zero, and duplicate summaries an
   const state = executionFixture()
   try {
     state.dependencies.plan = passingPlan('local', state.evidence, MANDATORY_DATABASE_COUNTS.map(({ name }) => name))
-    state.dependencies.runner = async ({ name }) => ({ code: 0, stdout: realSuccess[name] ?? '' })
+    state.dependencies.runner = async ({ name }) => {
+      const stdout = realSuccess[name] ?? ''
+      return {
+        code: 0,
+        stdout,
+        ...(['test-benefit-title-upgrade', 'test-benefit-seed-importer'].includes(name)
+          ? { orderedTranscript: transcript([{ stream: 'stdout', chunk: stdout }]) }
+          : {}),
+      }
+    }
     const evidence = await runReleaseGate(state.options, state.dependencies)
     assert.deepEqual(evidence.databaseTests, {
       steps: MANDATORY_DATABASE_COUNTS,
@@ -2123,6 +2259,7 @@ test('mandatory standalone database summaries reject later nonempty output in th
         code: 0,
         stdout: name === suite && stream === 'stdout' ? output : '',
         stderr: name === suite && stream === 'stderr' ? output : '',
+        orderedTranscript: name === suite ? transcript([{ stream, chunk: output }]) : undefined,
       })
 
       await assert.rejects(
@@ -2139,7 +2276,7 @@ test('mandatory standalone database summaries reject later nonempty output in th
   }
 })
 
-test('mandatory standalone summary terminality is stream-local because cross-stream chronology is unavailable', async () => {
+test('mandatory standalone suites fail closed without a production-shaped ordered transcript', async () => {
   const state = executionFixture()
   try {
     const suite = 'test-benefit-title-upgrade'
@@ -2147,11 +2284,66 @@ test('mandatory standalone summary terminality is stream-local because cross-str
     state.dependencies.runner = async ({ name }) => ({
       code: 0,
       stdout: name === suite ? 'upgrade fixture passed\nTests=4\n' : '',
-      stderr: name === suite ? 'tool diagnostic from independently captured stderr\n' : '',
+      stderr: '',
     })
+    await assert.rejects(runReleaseGate(state.options, state.dependencies), /ordered transcript/i)
+    assert.equal(state.evidence().databaseTests, null)
+  } finally {
+    state.close()
+  }
+})
 
-    const evidence = await runReleaseGate(state.options, state.dependencies)
-    assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: suite, count: 4 }]))
+test('mandatory standalone summary is the unique final stdout line in ordered cross-stream output', async () => {
+  for (const [label, events, accepted] of [
+    ['diagnostic before summary', [
+      { stream: 'stderr', chunk: 'tool diagnostic\n' },
+      { stream: 'stdout', chunk: 'upgrade fixture passed\nTests=4\n' },
+    ], true],
+    ['stderr summary', [{ stream: 'stderr', chunk: 'Tests=4\n' }], false],
+    ['stderr after summary', [
+      { stream: 'stdout', chunk: 'Tests=4\n' },
+      { stream: 'stderr', chunk: 'late diagnostic\n' },
+    ], false],
+    ['stdout bytes after summary', [{ stream: 'stdout', chunk: 'Tests=4\nlate output' }], false],
+  ]) {
+    const state = executionFixture()
+    try {
+      const suite = 'test-benefit-title-upgrade'
+      const stdout = events.filter(event => event.stream === 'stdout').map(event => event.chunk).join('')
+      const stderr = events.filter(event => event.stream === 'stderr').map(event => event.chunk).join('')
+      state.dependencies.plan = passingPlan('local', state.evidence, [suite])
+      state.dependencies.runner = async ({ name }) => name === suite
+        ? { code: 0, stdout, stderr, orderedTranscript: transcript(events) }
+        : passingResult(name)
+      if (accepted) {
+        const evidence = await runReleaseGate(state.options, state.dependencies)
+        assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: suite, count: 4 }]))
+      } else {
+        await assert.rejects(runReleaseGate(state.options, state.dependencies), /summary|stdout|final|ordered transcript/i, label)
+        assert.equal(state.evidence().databaseTests, null, label)
+      }
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('mandatory ordered transcript rejects combined output over its cap before accepting a final summary', async () => {
+  const state = executionFixture()
+  try {
+    const suite = 'test-benefit-title-upgrade'
+    const stderr = `${'e'.repeat(9_000)}\n`
+    const stdout = `${'o'.repeat(9_000)}\nTests=4\n`
+    const events = [
+      { stream: 'stderr', chunk: stderr },
+      { stream: 'stdout', chunk: stdout },
+    ]
+    state.dependencies.plan = passingPlan('local', state.evidence, [suite])
+    state.dependencies.runner = async ({ name }) => name === suite
+      ? { code: 0, stdout, stderr, orderedTranscript: transcript(events) }
+      : passingResult(name)
+    await assert.rejects(runReleaseGate(state.options, state.dependencies), /ordered transcript.*(?:limit|exceeded|incomplete)/i)
+    assert.equal(state.evidence().databaseTests, null)
   } finally {
     state.close()
   }
@@ -2274,6 +2466,50 @@ test('default runner rejects a failure hidden before truncated stdout or stderr'
       )
       assert.equal(state.evidence().databaseTests, null, stream)
       assert.equal(JSON.stringify(state.evidence()).includes(rawSecret), false, stream)
+    } finally {
+      state.close()
+    }
+  }
+})
+
+test('default runner preserves chunk-split summaries and rejects any later cross-stream byte', async () => {
+  for (const [label, emitTitle, accepted] of [
+    ['split', child => {
+      child.stdout.emit('data', Buffer.from('Tests='))
+      child.stdout.emit('data', Buffer.from('4\n'))
+    }, true],
+    ['later stderr', child => {
+      child.stdout.emit('data', Buffer.from('Tests=4\n'))
+      child.stderr.emit('data', Buffer.from('late diagnostic\n'))
+    }, false],
+  ]) {
+    const state = executionFixture()
+    try {
+      state.dependencies.plan = passingPlan('local', state.evidence, ['test-benefit-title-upgrade'])
+      delete state.dependencies.runner
+      state.dependencies.executablePreflight = async () => new Map([['node', process.execPath], ['npm', process.execPath]])
+      state.dependencies.spawn = (_command, args) => {
+        const child = new EventEmitter()
+        child.stdout = new EventEmitter()
+        child.stderr = new EventEmitter()
+        child.kill = () => true
+        setImmediate(() => {
+          const name = args[0]?.replace(/\.mjs$/, '')
+          if (name === 'test-benefit-title-upgrade') emitTitle(child)
+          else {
+            const count = MANDATORY_DATABASE_COUNTS.find(item => item.name === name)?.count
+            if (count !== undefined) child.stdout.emit('data', Buffer.from(`Tests=${count}\n`))
+          }
+          child.emit('close', 0, null)
+        })
+        return child
+      }
+      if (accepted) {
+        const evidence = await runReleaseGate(state.options, state.dependencies)
+        assert.deepEqual(evidence.databaseTests, expectedDatabaseEvidence([{ name: 'test-benefit-title-upgrade', count: 4 }]))
+      } else {
+        await assert.rejects(runReleaseGate(state.options, state.dependencies), /final|summary|ordered transcript/i, label)
+      }
     } finally {
       state.close()
     }
@@ -2966,8 +3202,8 @@ test('default runner suppresses raw child stdout and stderr from terminal and ev
           'test-database.mjs': 1146,
         }
         const summary = counts[args?.[0]] === undefined ? '' : '\\nTests=' + counts[args[0]] + '\\n'
-        child.stdout.emit('data', Buffer.from(${JSON.stringify(childOutput)} + summary))
         child.stderr.emit('data', Buffer.from(${JSON.stringify(childOutput)}))
+        child.stdout.emit('data', Buffer.from(${JSON.stringify(childOutput)} + summary))
         child.emit('close', 0, null)
       })
       return child

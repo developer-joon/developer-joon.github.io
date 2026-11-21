@@ -158,7 +158,7 @@ npm --prefix community-app run db:lint
 node scripts/generate-benefit-directory-seed.mjs --check
 node scripts/verify-benefit-directory-seed.mjs
 
-export DATABASE_URL='postgresql://postgres:***@127.0.0.1:54322/postgres'
+export DATABASE_URL="${LOCAL_DATABASE_URL:?set the loopback-only local database URL}"
 export PSQL_BIN='/trusted/absolute/path/to/psql'
 node scripts/apply-benefit-directory-seed.mjs --dry-run
 printf '%s\n' 'STOP: dry-run must roll back; inspect the unchanged pre-import counts'
@@ -183,17 +183,37 @@ For each target, start from the exact reviewed revision and a clean tree. Record
 printf '%s\n' 'STOP: approve the reviewed migration independently of seed import'
 ```
 
-**Hosted seed-import stop point:** migration success does not authorize import. Obtain a distinct import approval, export the target `DATABASE_URL` through the secret mechanism, set `PSQL_BIN` to a trusted absolute executable, reverify the bundle, run `--dry-run`, inspect the sanitized result, stop again, and only then run the normal importer under the same approved target binding.
+**Hosted seed-import stop point:** migration success does not authorize import. Obtain a distinct import approval, export the target `DATABASE_URL` through the secret mechanism, set `PSQL_BIN` to a trusted absolute executable, and bind the connection to the exact target before each importer call. `TARGET_PROJECT_REF` is a lowercase 20-character sequence of letters or digits. The validator accepts the canonical direct host `db.<ref>.supabase.co` or canonical pooler username `postgres.<ref>`; if both identifiers are present they must agree. It reads environment values only and never prints or logs `DATABASE_URL`, credentials, or its URL components.
 
 ```bash
+set -euo pipefail
+: "${TARGET_PROJECT_REF:?set the separately approved target ref}"
+: "${REVIEWED_HEAD:?set the exact reviewed 40-character lowercase commit}"
 : "${TARGET_SEED_IMPORT_APPROVAL:?record seed import approval}"
+: "${TARGET_SEED_IMPORT_EVIDENCE_REF:?record target-specific external backup/evidence reference}"
 : "${DATABASE_URL:?supplied by the approved secret mechanism}"
 : "${PSQL_BIN:?set a trusted absolute psql path}"
+
+assert_seed_import_target() {
+  test "$(git rev-parse --show-toplevel)" = "$REPO_ROOT"
+  test -z "$(git status --porcelain)"
+  test "$(git rev-parse HEAD)" = "$REVIEWED_HEAD"
+  test "${#REVIEWED_HEAD}" -eq 40
+  : "${TARGET_SEED_IMPORT_APPROVAL:?seed import approval is required}"
+  : "${TARGET_SEED_IMPORT_EVIDENCE_REF:?target evidence reference is required}"
+  node scripts/assert-benefit-seed-target.mjs
+}
+
 node scripts/verify-benefit-directory-seed.mjs
+assert_seed_import_target
 node scripts/apply-benefit-directory-seed.mjs --dry-run
-printf '%s\n' 'STOP: dry-run rolled back; approve the normal target import separately'
+printf '%s\n' 'STOP: dry-run rolled back; inspect its sanitized result and obtain a distinct apply confirmation'
+: "${TARGET_SEED_APPLY_CONFIRMATION:?record the post-dry-run confirmation for normal import}"
+assert_seed_import_target
 node scripts/apply-benefit-directory-seed.mjs
 ```
+
+A missing, malformed, ambiguous, conflicting, or mismatched target binding is a hard stop. The normal import's `TARGET_SEED_APPLY_CONFIRMATION` is distinct from the earlier seed-import approval and may be recorded only after the dry-run result is reviewed.
 
 Record only the receipt digest and exact aggregate counts. Read private receipt details only through the approved database session. The import is idempotent and does not delete unrelated companies or publications.
 

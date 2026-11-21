@@ -29,6 +29,17 @@ const MANDATORY_DATABASE_TEST_STEPS = new Set([
   'test-benefit-seed-importer',
   'test-database',
 ])
+const ORDERED_TRANSCRIPT_DATABASE_STEPS = new Set([
+  'test-benefit-title-upgrade',
+  'test-benefit-seed-importer',
+])
+const CHILD_ENV_ALLOWLIST = Object.freeze([
+  'PATH', 'HOME', 'USER', 'LOGNAME',
+  'TMPDIR', 'TMP', 'TEMP',
+  'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TERM', 'CI',
+  'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME',
+  'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',
+])
 const HOSTED_LOCAL_ENV = [
   'SUPABASE_URL',
   'SUPABASE_PUBLISHABLE_KEY',
@@ -52,6 +63,27 @@ function deepFreeze(value) {
     Object.freeze(value)
   }
   return value
+}
+
+export function buildChildEnvironment(parentEnvironment = {}, stepEnvironment = {}, stepName) {
+  const child = {}
+  for (const name of CHILD_ENV_ALLOWLIST) {
+    if (typeof parentEnvironment[name] === 'string') child[name] = parentEnvironment[name]
+  }
+  for (const name of Object.keys(stepEnvironment)) {
+    if (name !== 'BENEFITS_CHROMIUM') throw new Error(`step environment override is forbidden: ${name}`)
+  }
+  if (Object.hasOwn(stepEnvironment, 'BENEFITS_CHROMIUM')) {
+    if (stepName !== 'test-benefits-browser') {
+      throw new Error('BENEFITS_CHROMIUM step environment is allowed only for test-benefits-browser')
+    }
+    const browser = stepEnvironment.BENEFITS_CHROMIUM
+    if (typeof browser !== 'string' || !path.isAbsolute(browser)) {
+      throw new Error('BENEFITS_CHROMIUM step environment must be an absolute path')
+    }
+    child.BENEFITS_CHROMIUM = browser
+  }
+  return child
 }
 
 function canonicalProjectRef(value) {
@@ -569,6 +601,7 @@ function localCoreSteps(workspace) {
       'scripts/build-definition.test.mjs',
       'scripts/check-benefits-browser.test.mjs',
       'scripts/community-snapshots.test.mjs',
+      'scripts/assert-benefit-seed-target.test.mjs',
       'scripts/verify-benefit-directory-seed.test.mjs',
       'scripts/verify-site.test.mjs',
     ]),
@@ -932,6 +965,77 @@ function safeFailure(step, result) {
   return new ReleaseFailure(step.name, sentinel ? 'sentinel' : 'command', `${subject} failed with ${exit}`)
 }
 
+function validateMandatoryOrderedTranscript(stepName, result, streamValues) {
+  const transcript = result?.orderedTranscript
+  if (!transcript || !Array.isArray(transcript.events)
+    || !Number.isSafeInteger(transcript.bytes) || transcript.bytes < 0
+    || typeof transcript.truncated !== 'boolean') {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} requires a production-shaped ordered transcript`)
+  }
+  if (transcript.events.length > RUNNER_OUTPUT_LIMIT || transcript.truncated || transcript.bytes > RUNNER_OUTPUT_LIMIT) {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} ordered transcript is incomplete because it exceeded the byte limit`)
+  }
+  const reconstructed = { stdout: '', stderr: '' }
+  let actualBytes = 0
+  const completed = []
+  const pending = { stdout: '', stderr: '' }
+  let lastStream
+  for (const [eventIndex, event] of transcript.events.entries()) {
+    if (!event || !['stdout', 'stderr'].includes(event.stream)
+      || typeof event.chunk !== 'string' || event.chunk.length === 0) {
+      throw new ReleaseFailure(stepName, 'evidence', `${stepName} ordered transcript has an invalid event`)
+    }
+    if (lastStream && lastStream !== event.stream && pending[lastStream].length > 0) {
+      const previous = transcript.events[eventIndex - 1]
+      completed.push({
+        stream: lastStream,
+        text: pending[lastStream],
+        eventIndex: eventIndex - 1,
+        offset: previous.chunk.length - 1,
+        terminated: false,
+      })
+      pending[lastStream] = ''
+    }
+    lastStream = event.stream
+    actualBytes += Buffer.byteLength(event.chunk)
+    reconstructed[event.stream] += event.chunk
+    for (let offset = 0; offset < event.chunk.length; offset += 1) {
+      const character = event.chunk[offset]
+      pending[event.stream] += character
+      if (character === '\n') {
+        completed.push({
+          stream: event.stream,
+          text: pending[event.stream].slice(0, -1).replace(/\r$/, ''),
+          eventIndex,
+          offset,
+          terminated: true,
+        })
+        pending[event.stream] = ''
+      }
+    }
+  }
+  if (actualBytes !== transcript.bytes
+    || reconstructed.stdout.replaceAll('\r\n', '\n') !== streamValues[0]
+    || reconstructed.stderr.replaceAll('\r\n', '\n') !== streamValues[1]) {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} ordered transcript does not match captured streams`)
+  }
+  const summaries = completed.filter(line => /^\s*Tests=.*?\s*$/.test(line.text))
+  if (summaries.length !== 1) {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} ordered transcript must contain exactly one Tests=<integer> summary`)
+  }
+  const summary = summaries[0]
+  if (summary.stream !== 'stdout' || !summary.terminated) {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} Tests=<integer> summary must be a complete line emitted on stdout`)
+  }
+  const summaryEvent = transcript.events[summary.eventIndex]
+  const hasLaterBytes = summary.offset + 1 < summaryEvent.chunk.length
+    || transcript.events.slice(summary.eventIndex + 1).some(event => event.chunk.length > 0)
+  if (hasLaterBytes || pending.stdout.length > 0 || pending.stderr.length > 0
+    || completed.at(-1) !== summary) {
+    throw new ReleaseFailure(stepName, 'evidence', `${stepName} Tests=<integer> summary must be the unique final ordered transcript line`)
+  }
+}
+
 function databaseTestCount(stepName, result) {
   const streamValues = ['stdout', 'stderr'].map((name) => {
     const value = String(result?.[name] ?? '')
@@ -949,6 +1053,9 @@ function databaseTestCount(stepName, result) {
   })
   const streams = streamValues.map((value) => value.split('\n'))
   const lines = streams.flat()
+  if (ORDERED_TRANSCRIPT_DATABASE_STEPS.has(stepName)) {
+    validateMandatoryOrderedTranscript(stepName, result, streamValues)
+  }
   const standaloneSummaries = streams.flatMap((streamLines, streamIndex) =>
     streamLines.flatMap((line, lineIndex) => {
       const match = /^\s*Tests=(.*?)\s*$/.exec(line)
@@ -1220,13 +1327,13 @@ async function runHostedProbes(options, dependencies) {
   return { code: 0 }
 }
 
-function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceMs = 2_000) {
+function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceMs = 2_000, parentEnvironment = process.env) {
   return (releaseStep, { ignoreAbort = false } = {}) => new Promise((resolve, reject) => {
     const activeSignal = ignoreAbort ? undefined : signal
     const useProcessGroup = process.platform !== 'win32'
     const child = spawnImplementation(releaseStep.command, releaseStep.args, {
       cwd: repoRoot,
-      env: { ...process.env, ...releaseStep.environment },
+      env: buildChildEnvironment(parentEnvironment, releaseStep.environment, releaseStep.name),
       shell: false,
       detached: useProcessGroup,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1235,6 +1342,10 @@ function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceM
     let stderr = Buffer.alloc(0)
     let stdoutBytes = 0
     let stderrBytes = 0
+    let transcriptBytes = 0
+    let retainedTranscriptBytes = 0
+    let transcriptTruncated = false
+    const transcriptEvents = []
     let escalation
     let settled = false
     const append = (current, chunk) => {
@@ -1245,13 +1356,28 @@ function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceM
         ? Buffer.from(combined.subarray(combined.length - RUNNER_OUTPUT_LIMIT))
         : combined
     }
+    const appendTranscript = (stream, chunk) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      transcriptBytes = Math.min(Number.MAX_SAFE_INTEGER, transcriptBytes + bytes.length)
+      const remaining = Math.max(0, RUNNER_OUTPUT_LIMIT - retainedTranscriptBytes)
+      if (remaining > 0) {
+        const portion = bytes.subarray(0, remaining)
+        if (portion.length > 0) {
+          transcriptEvents.push({ stream, chunk: portion.toString('utf8') })
+          retainedTranscriptBytes += portion.length
+        }
+      }
+      if (bytes.length > remaining) transcriptTruncated = true
+    }
     child.stdout.on('data', (chunk) => {
       stdoutBytes = Math.min(Number.MAX_SAFE_INTEGER, stdoutBytes + Buffer.byteLength(chunk))
       stdout = append(stdout, chunk)
+      appendTranscript('stdout', chunk)
     })
     child.stderr.on('data', (chunk) => {
       stderrBytes = Math.min(Number.MAX_SAFE_INTEGER, stderrBytes + Buffer.byteLength(chunk))
       stderr = append(stderr, chunk)
+      appendTranscript('stderr', chunk)
     })
     const kill = (childSignal) => {
       try {
@@ -1292,6 +1418,11 @@ function defaultRunner(repoRoot, signal, spawnImplementation = spawn, killGraceM
       streamMetadata: {
         stdout: { bytes: stdoutBytes, truncated: stdoutBytes > RUNNER_OUTPUT_LIMIT },
         stderr: { bytes: stderrBytes, truncated: stderrBytes > RUNNER_OUTPUT_LIMIT },
+      },
+      orderedTranscript: {
+        events: transcriptEvents,
+        bytes: transcriptBytes,
+        truncated: transcriptTruncated,
       },
     })))
     if (activeSignal?.aborted) abort()
@@ -1366,16 +1497,18 @@ export async function runReleaseGate(options, dependencies = {}) {
       ? await createReleaseWorkspace(scratchRoot, runId)
       : undefined
   const plan = dependencies.plan ?? buildReleasePlan(options, ownedWorkspace)
+  const parentEnvironment = dependencies.parentEnvironment ?? process.env
   const usesDefaultRunner = dependencies.runner === undefined
   const runner = dependencies.runner ?? defaultRunner(
     repoRoot,
     dependencies.signal,
     dependencies.spawn,
     dependencies.killGraceMs,
+    parentEnvironment,
   )
   const executablePreflight =
     dependencies.executablePreflight ??
-    (() => defaultExecutablePreflight(plan, repoRoot))
+    (() => defaultExecutablePreflight(plan, repoRoot, parentEnvironment))
 
   const steps = []
   let artifactManifest = null
