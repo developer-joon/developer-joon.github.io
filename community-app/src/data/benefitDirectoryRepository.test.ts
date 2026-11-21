@@ -20,6 +20,19 @@ const publication = {
 const page = { items: [searchItem], has_more: false, next_cursor: null, total: 1 }
 const detail = { company, publications: [publication] }
 
+function sparseAtZero<T>(value: T): T[] {
+  const values = Array<T>(2)
+  values[1] = value
+  return values
+}
+
+function sparseInMiddle<T>(first: T, last: T): T[] {
+  const values = Array<T>(3)
+  values[0] = first
+  values[2] = last
+  return values
+}
+
 type Response = { data: unknown; error: unknown; status?: unknown; statusText?: unknown }
 const success = (data: unknown, status = 200): Response => ({ data, error: null, status, statusText: status === 200 ? 'OK' : 'No Content' })
 function rpcClient(response: Response | Promise<Response>) {
@@ -66,6 +79,23 @@ describe('benefit directory repository', () => {
     expect(transport.rpc).toHaveBeenCalledWith('search_benefit_companies_v1', expect.objectContaining({
       p_categories: ['health', 'leave', 'health'],
     }))
+  })
+
+  it.each([
+    { categories: sparseAtZero('health') },
+    { categories: sparseInMiddle('health', 'leave') },
+  ])('rejects sparse category input before calling the RPC', async ({ categories }) => {
+    const transport = rpcClient(success(page))
+    getAnonymousSupabaseClient.mockReturnValue(transport.client)
+
+    const result = await createBenefitDirectoryRepository().search({
+      pageSize: 20,
+      categories: categories as never,
+    })
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(transport.rpc).not.toHaveBeenCalled()
+    expect(getAnonymousSupabaseClient).not.toHaveBeenCalled()
   })
 
   it('calls the public detail RPC and preserves PostgreSQL UUID text without version restrictions', async () => {
@@ -118,6 +148,26 @@ describe('benefit directory repository', () => {
   })
 
   it.each([
+    { ...page, items: sparseAtZero(searchItem), total: 2 },
+    { ...page, items: sparseInMiddle(searchItem, { ...searchItem, company_id: 'KR-BIZ-0000000002' }), total: 3 },
+  ])('rejects sparse search item arrays', async (wire) => {
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    expect(await createBenefitDirectoryRepository().search({ pageSize: 50 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it.each([
+    { categories: sparseAtZero('health') },
+    { categories: sparseInMiddle('health', 'leave') },
+  ])('rejects sparse search item category arrays', async ({ categories }) => {
+    const wire = {
+      ...page,
+      items: [{ ...searchItem, benefit_count: categories.length, official_count: categories.length, categories }],
+    }
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    expect(await createBenefitDirectoryRepository().search({ pageSize: 50 })).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it.each([
     { ...detail, publications: [{ ...publication, publication_id: 'not-a-uuid' }] },
     { ...detail, publications: [{ ...publication, category_id: 'unknown' }] },
     { ...detail, publications: [{ ...publication, trust_label: '검증 안 됨' }] },
@@ -126,6 +176,14 @@ describe('benefit directory repository', () => {
     { ...detail, publications: null },
   ])('rejects malformed detail wire data', async (wire) => {
     const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it.each([
+    { publications: sparseAtZero(publication) },
+    { publications: sparseInMiddle(publication, { ...publication, publication_id: 'b1000000-0000-0000-0000-000000000002' }) },
+  ])('rejects sparse detail publication arrays', async ({ publications }) => {
+    const transport = rpcClient(success({ ...detail, publications })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
