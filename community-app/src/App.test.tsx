@@ -165,7 +165,7 @@ describe('App', () => {
 
     expect(await screen.findByRole('heading', { name: '복지 정정 검토 데스크' })).toBeInTheDocument()
     expect(repository.isAdmin).toHaveBeenCalledTimes(1)
-    expect(correctionRepository.listAdminQueue).toHaveBeenCalledWith({ status: 'active', limit: 50 }, expect.any(AbortSignal))
+    await waitFor(() => expect(correctionRepository.listAdminQueue).toHaveBeenCalledWith({ status: 'active', limit: 50 }, expect.any(AbortSignal)))
   })
 
   it('routes the admin benefit submission static shell to its lazy authenticated desk', async () => {
@@ -183,7 +183,7 @@ describe('App', () => {
 
     expect(await screen.findByRole('heading', { name: '복지 제보 검토 데스크' })).toBeInTheDocument()
     expect(repository.isAdmin).toHaveBeenCalledOnce()
-    expect(submissionRepository.listQueue).toHaveBeenCalledWith({ status: 'active', limit: 50 }, expect.any(AbortSignal))
+    await waitFor(() => expect(submissionRepository.listQueue).toHaveBeenCalledWith({ status: 'active', limit: 50 }, expect.any(AbortSignal)))
   })
 
   it('renders a friendly Korean configuration error', () => {
