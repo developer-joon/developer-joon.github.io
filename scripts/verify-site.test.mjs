@@ -104,10 +104,29 @@ async function makeValidArtifact() {
     'fonts/generated.woff2',
     'notes/generated.txt',
     'community/assets/benefits-main-Ab12Cd34.js',
+    'community/assets/jsx-runtime-Xy12Za34.js',
+    'community/assets/react-Zy98Xw76.js',
+    'community/assets/main-Qw12Er34.js',
     'community/assets/logo-Xy12Za34.png',
   ]) {
     await put(root, relativePath)
   }
+  await put(root, 'community/.vite/manifest.json', JSON.stringify({
+    '_benefits-main-Ab12Cd34.js': {
+      file: 'assets/benefits-main-Ab12Cd34.js',
+      name: 'benefits-main',
+      imports: ['_jsx-runtime-Xy12Za34.js', '_react-Zy98Xw76.js'],
+    },
+    '_jsx-runtime-Xy12Za34.js': { file: 'assets/jsx-runtime-Xy12Za34.js', name: 'jsx-runtime' },
+    '_react-Zy98Xw76.js': { file: 'assets/react-Zy98Xw76.js', name: 'react' },
+    'index.html': {
+      file: 'assets/main-Qw12Er34.js',
+      name: 'home',
+      src: 'index.html',
+      isEntry: true,
+      imports: ['_react-Zy98Xw76.js'],
+    },
+  }))
   return root
 }
 
@@ -292,39 +311,96 @@ test('rejects different executable entries for the two canonical benefits shells
   })
 })
 
-test('accepts and verifies the assembled Vite manifest benefits-main binding', async () => {
+test('accepts the production-shaped Vite manifest benefits-main binding', async () => {
   await withArtifact(async (root) => {
-    const imported = [
-      'jsx-runtime-Xy12Za34.js',
-      'react-Zy98Xw76.js',
-      'benefits-Qw12Er34.js',
-    ]
-    for (const file of imported) await put(root, `community/assets/${file}`)
-    for (const relativePath of ['benefits/index.html', 'benefits/company/index.html']) {
-      const route = path.join(root, relativePath)
-      const imports = imported.map((file) => `<script type="module" crossorigin src="/community/assets/${file}"></script>`).join('')
-      await writeFile(route, (await readFile(route, 'utf8')).replace('<script type="module" crossorigin src="/community/assets/benefits-main-Ab12Cd34.js"></script>', `${imports}<script type="module" crossorigin src="/community/assets/benefits-main-Ab12Cd34.js"></script>`))
-    }
-    const manifestPath = 'community/.vite/manifest.json'
-    const manifest = {
-      '_benefits-main-Ab12Cd34.js': {
-        file: 'assets/benefits-main-Ab12Cd34.js',
-        name: 'benefits-main',
-        imports: imported.map((file) => `_${file}`),
-      },
-      ...Object.fromEntries(imported.map((file) => [`_${file}`, { file: `assets/${file}` }])),
-    }
-    await put(root, manifestPath, JSON.stringify(manifest))
     const accepted = verify(root)
     assert.equal(accepted.status, 0, accepted.stderr)
-
-    manifest['_benefits-main-Ab12Cd34.js'].file = 'assets/other-Ab12Cd34.js'
-    await put(root, manifestPath, JSON.stringify(manifest))
-    const rejected = verify(root)
-    assert.notEqual(rejected.status, 0)
-    assert.match(rejected.stderr, /must bind the canonical public entry to the Vite benefits-main chunk/)
   })
 })
+
+test('rejects canonical benefits shells when the assembled Vite manifest is missing', async () => {
+  await withArtifact(async (root) => {
+    await rm(path.join(root, 'community/.vite/manifest.json'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /assembled Vite manifest is required/)
+  })
+})
+
+test('rejects an empty or malformed assembled Vite manifest', async () => {
+  for (const contents of ['', '{']) {
+    await withArtifact(async (root) => {
+      await put(root, 'community/.vite/manifest.json', contents)
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /manifest\.json.*(?:bounded|empty|valid JSON)/)
+    })
+  }
+})
+
+test('rejects duplicate keys in the assembled Vite manifest', async () => {
+  await withArtifact(async (root) => {
+    const record = '{"file":"assets/benefits-main-Ab12Cd34.js","name":"benefits-main"}'
+    await put(root, 'community/.vite/manifest.json', `{"entry":${record},"entry":${record}}`)
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /duplicate JSON key/)
+  })
+})
+
+test('rejects an oversized assembled Vite manifest', async () => {
+  await withArtifact(async (root) => {
+    await put(root, 'community/.vite/manifest.json', ' '.repeat(1024 * 1024 + 1))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /bounded regular non-symlink file/)
+  })
+})
+
+for (const [kind, replaceManifest] of [
+  ['directory', async (manifestPath) => { await rm(manifestPath); await mkdir(manifestPath) }],
+  ['symbolic link', async (manifestPath) => {
+    const target = path.join(path.dirname(manifestPath), 'linked-manifest.json')
+    await writeFile(target, '{}')
+    await rm(manifestPath)
+    await symlink('linked-manifest.json', manifestPath)
+  }],
+]) {
+  test(`rejects an assembled Vite manifest ${kind}`, async () => {
+    await withArtifact(async (root) => {
+      await replaceManifest(path.join(root, 'community/.vite/manifest.json'))
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /manifest\.json.*(?:bounded regular non-symlink|symbolic link)/)
+    })
+  })
+}
+
+for (const [description, mutate] of [
+  ['missing benefits-main record', (manifest) => { delete manifest['_benefits-main-Ab12Cd34.js'] }],
+  ['duplicate benefits-main record', (manifest) => { manifest.other = { ...manifest['_benefits-main-Ab12Cd34.js'] } }],
+  ['mismatched benefits-main file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].file = 'assets/benefits-main-Qq11Ww22.js' }],
+  ['unsafe traversing benefits-main file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].file = 'assets/../benefits-main-Ab12Cd34.js' }],
+  ['query-bearing benefits-main file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].file += '?v=1' }],
+  ['fragment-bearing benefits-main file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].file += '#entry' }],
+  ['backslash-bearing benefits-main file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].file = 'assets\\benefits-main-Ab12Cd34.js' }],
+  ['credential-bearing benefits-main file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].file = 'https://user@example.test/assets/benefits-main-Ab12Cd34.js' }],
+  ['non-string benefits-main file', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].file = 1 }],
+  ['non-string benefits-main name', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].name = ['benefits-main'] }],
+  ['invalid benefits-main imports type', (manifest) => { manifest['_benefits-main-Ab12Cd34.js'].imports = '_react-Zy98Xw76.js' }],
+]) {
+  test(`rejects ${description} in the assembled Vite manifest`, async () => {
+    await withArtifact(async (root) => {
+      const manifestPath = path.join(root, 'community/.vite/manifest.json')
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+      mutate(manifest)
+      await writeFile(manifestPath, JSON.stringify(manifest))
+      const result = verify(root)
+      assert.notEqual(result.status, 0, `verifier unexpectedly accepted ${description}`)
+      assert.match(result.stderr, /manifest\.json.*benefits-main/)
+    })
+  })
+}
 
 test('rejects a missing domestic search route from an otherwise valid site', async () => {
   await withArtifact(async (root) => {

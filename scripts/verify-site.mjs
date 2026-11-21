@@ -5,8 +5,8 @@ import { verifyBenefitsResearchArtifacts } from './verify-benefits-research-arti
 import { verifyDomesticDirectoryArtifacts } from './verify-domestic-directory-artifacts.mjs'
 import { verifyDomesticSizeArtifacts } from './verify-domestic-size-artifacts.mjs'
 import { verifyDomesticSearchIndex } from './verify-domestic-search-index.mjs'
-import { createReadStream } from 'node:fs'
-import { lstat, readFile, readdir } from 'node:fs/promises'
+import { constants, createReadStream } from 'node:fs'
+import { lstat, open, readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 
@@ -664,13 +664,12 @@ async function canonicalBenefitsEntry(document, relativePath) {
     return null
   }
   const scripts = document.scriptTags ?? []
-  if (scripts.length === 0) {
-    fail(`${relativePath} must contain exactly one executable external Vite module entry (found 0 script tags)`)
+  if (scripts.length !== 1) {
+    fail(`${relativePath} must contain exactly one executable external Vite module entry (found ${scripts.length} script tags)`)
     return null
   }
 
   const allowedAttributes = new Set(['type', 'src', 'crossorigin'])
-  const sources = []
   for (const { attributes, selfClosing } of scripts) {
     const type = attributes.get('type')
     const src = attributes.get('src')
@@ -703,42 +702,145 @@ async function canonicalBenefitsEntry(document, relativePath) {
       fail(`${relativePath} canonical benefits entry is not a regular non-symlink file: ${src}`)
       return null
     }
-    sources.push(src)
+    if (!/^\/community\/assets\/benefits-main-[A-Za-z0-9_-]{8,}\.js$/.test(src)) {
+      fail(`${relativePath} must contain exactly one executable external Vite module entry (found 0)`)
+      return null
+    }
+    return { entry: src }
   }
-  if (new Set(sources).size !== sources.length) {
-    fail(`${relativePath} must contain exactly one executable external Vite module entry (duplicate module script)`)
-    return null
-  }
-  const entries = sources.filter((src) => /^\/community\/assets\/benefits-main-[A-Za-z0-9_-]{8,}\.js$/.test(src))
-  if (entries.length !== 1) {
-    fail(`${relativePath} must contain exactly one executable external Vite module entry (found ${entries.length})`)
-    return null
-  }
-  return { entry: entries[0], sources }
+  return null
 }
 
-async function verifyCanonicalBenefitsManifest(canonical) {
-  const relativePath = 'community/.vite/manifest.json'
-  const manifestPath = path.join(siteRoot, relativePath)
-  let manifestStat
-  try {
-    manifestStat = await lstat(manifestPath)
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      if (canonical.sources.length !== 1) fail('canonical benefits imported module scripts require the assembled Vite manifest')
+function parseJsonRejectingDuplicateKeys(text) {
+  let position = 0
+  const whitespace = /[\t\n\r ]/
+  const skipWhitespace = () => {
+    while (whitespace.test(text[position] ?? '')) position += 1
+  }
+  const parseString = () => {
+    const start = position
+    if (text[position] !== '"') throw new SyntaxError('expected JSON string')
+    position += 1
+    while (position < text.length) {
+      const character = text[position]
+      if (character === '"') {
+        position += 1
+        return JSON.parse(text.slice(start, position))
+      }
+      if (character === '\\') {
+        position += 2
+      } else {
+        position += 1
+      }
+    }
+    throw new SyntaxError('unterminated JSON string')
+  }
+  const parseValue = () => {
+    skipWhitespace()
+    if (text[position] === '{') return parseObject()
+    if (text[position] === '[') return parseArray()
+    if (text[position] === '"') {
+      parseString()
       return
     }
-    fail(`cannot inspect ${relativePath}: ${error.message}`)
-    return
+    const match = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(text.slice(position))
+    if (!match) throw new SyntaxError('invalid JSON value')
+    position += match[0].length
   }
-  if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.size > 1024 * 1024) {
+  const parseObject = () => {
+    position += 1
+    skipWhitespace()
+    const keys = new Set()
+    if (text[position] === '}') {
+      position += 1
+      return
+    }
+    while (position < text.length) {
+      const key = parseString()
+      if (keys.has(key)) throw new SyntaxError(`duplicate JSON key ${JSON.stringify(key)}`)
+      keys.add(key)
+      skipWhitespace()
+      if (text[position] !== ':') throw new SyntaxError('expected JSON object colon')
+      position += 1
+      parseValue()
+      skipWhitespace()
+      if (text[position] === '}') {
+        position += 1
+        return
+      }
+      if (text[position] !== ',') throw new SyntaxError('expected JSON object separator')
+      position += 1
+      skipWhitespace()
+    }
+    throw new SyntaxError('unterminated JSON object')
+  }
+  const parseArray = () => {
+    position += 1
+    skipWhitespace()
+    if (text[position] === ']') {
+      position += 1
+      return
+    }
+    while (position < text.length) {
+      parseValue()
+      skipWhitespace()
+      if (text[position] === ']') {
+        position += 1
+        return
+      }
+      if (text[position] !== ',') throw new SyntaxError('expected JSON array separator')
+      position += 1
+    }
+    throw new SyntaxError('unterminated JSON array')
+  }
+
+  parseValue()
+  skipWhitespace()
+  if (position !== text.length) throw new SyntaxError('unexpected trailing JSON content')
+  return JSON.parse(text)
+}
+
+async function readBoundedRegularFile(relativePath, maximumBytes) {
+  const absolutePath = path.join(siteRoot, relativePath)
+  let handle
+  try {
+    handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    const fileStat = await handle.stat()
+    if (!fileStat.isFile() || fileStat.size < 1 || fileStat.size > maximumBytes) {
+      throw new Error('not a nonempty bounded regular file')
+    }
+    const buffer = Buffer.alloc(maximumBytes + 1)
+    let bytesRead = 0
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, null)
+      if (result.bytesRead === 0) break
+      bytesRead += result.bytesRead
+    }
+    if (bytesRead < 1 || bytesRead > maximumBytes) throw new Error('not a nonempty bounded regular file')
+    return buffer.subarray(0, bytesRead).toString('utf8')
+  } finally {
+    await handle?.close()
+  }
+}
+
+async function verifyCanonicalBenefitsManifest(canonicalEntries) {
+  const relativePath = 'community/.vite/manifest.json'
+  let manifestText
+  try {
+    manifestText = await readBoundedRegularFile(relativePath, 1024 * 1024)
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      fail(`${relativePath} assembled Vite manifest is required for canonical benefits verification`)
+      return
+    }
     fail(`${relativePath} must be a bounded regular non-symlink file`)
     return
   }
 
   let manifest
   try {
-    manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+    if (manifestText.trim() === '') throw new SyntaxError('empty JSON document')
+    manifest = parseJsonRejectingDuplicateKeys(manifestText)
   } catch (error) {
     fail(`${relativePath} is not valid JSON: ${error.message}`)
     return
@@ -747,27 +849,26 @@ async function verifyCanonicalBenefitsManifest(canonical) {
     fail(`${relativePath} must contain a Vite manifest object`)
     return
   }
-  const expectedFile = canonical.entry.slice('/community/'.length)
-  const expectedKey = `_${path.posix.basename(expectedFile)}`
   const matches = Object.entries(manifest).filter(([, value]) => value
     && typeof value === 'object'
     && !Array.isArray(value)
     && value.name === 'benefits-main')
-  if (matches.length !== 1
-      || matches[0][0] !== expectedKey
-      || matches[0][1].file !== expectedFile) {
-    fail(`${relativePath} must bind the canonical public entry to the Vite benefits-main chunk`)
+  if (matches.length !== 1) {
+    fail(`${relativePath} must contain exactly one Vite record named benefits-main`)
     return
   }
-  const importKeys = matches[0][1].imports ?? []
-  const importFiles = Array.isArray(importKeys)
-    ? importKeys.map((key) => manifest[key]?.file).filter((file) => typeof file === 'string')
-    : []
-  const expectedSources = new Set([canonical.entry, ...importFiles.map((file) => `/community/${file}`)])
-  if (importFiles.length !== importKeys.length
-      || expectedSources.size !== canonical.sources.length
-      || canonical.sources.some((source) => !expectedSources.has(source))) {
-    fail(`${relativePath} must bind every canonical executable module script to the benefits-main entry imports`)
+  const record = matches[0][1]
+  if (typeof record.name !== 'string'
+      || typeof record.file !== 'string'
+      || !/^assets\/benefits-main-[A-Za-z0-9_-]{8,}\.js$/.test(record.file)
+      || (record.imports !== undefined
+        && (!Array.isArray(record.imports) || record.imports.some((key) => typeof key !== 'string')))) {
+    fail(`${relativePath} benefits-main record has invalid required fields or unsafe file path`)
+    return
+  }
+  const manifestEntry = `/community/${record.file}`
+  if (canonicalEntries.some(({ entry }) => entry !== manifestEntry)) {
+    fail(`${relativePath} benefits-main record must bind both canonical public entry scripts exactly`)
   }
 }
 
@@ -855,11 +956,7 @@ async function main() {
   if (canonicalEntries.every(Boolean) && new Set(canonicalEntries.map(({ entry }) => entry)).size !== 1) {
     fail('canonical benefits shells must use the same public entry asset')
   } else if (canonicalEntries.every(Boolean)) {
-    await verifyCanonicalBenefitsManifest(canonicalEntries[0])
-    if (canonicalEntries[0].sources.length !== canonicalEntries[1].sources.length
-        || canonicalEntries[0].sources.some((source) => !canonicalEntries[1].sources.includes(source))) {
-      fail('canonical benefits shells must use the same public executable module set')
-    }
+    await verifyCanonicalBenefitsManifest(canonicalEntries)
   }
 
   const privacyPath = files.includes('privacy.html')

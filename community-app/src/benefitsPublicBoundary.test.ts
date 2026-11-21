@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { canonicalBenefitsEntryOnly } from '../vite.config'
 
 const source = (path: string) => readFileSync(`${process.cwd()}/${path}`, 'utf8')
 
@@ -33,6 +34,21 @@ function initialSourceGraph(entry: string) {
 }
 
 describe('public benefits entry boundary', () => {
+  it('emits only the manifest-authoritative entry script in canonical production shells', async () => {
+    const html = '<head><script type="module" crossorigin src="/community/assets/react-Ab12Cd34.js"></script><script type="module" crossorigin src="/community/assets/benefits-main-Xy12Za34.js"></script></head>'
+    const transformed = await canonicalBenefitsEntryOnly.transformIndexHtml.handler.call({} as never, html, {
+      path: '/benefits-root/index.html',
+      filename: `${process.cwd()}/benefits-root/index.html`,
+      bundle: {},
+      chunk: {} as never,
+      server: undefined,
+      originalUrl: undefined,
+    })
+    expect(transformed).toContain('/community/assets/benefits-main-Xy12Za34.js')
+    expect(transformed).not.toContain('/community/assets/react-Ab12Cd34.js')
+    expect(transformed.match(/<script\b/g)).toHaveLength(1)
+  })
+
   it('builds only the supported public shells', () => {
     for (const path of [
       'benefits-root/index.html',
