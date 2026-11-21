@@ -18,7 +18,8 @@ export interface BenefitSubmissionItem {
   createdAt: string
   updatedAt: string
 }
-export interface BenefitSubmissionCursor { createdAt: string; id: string }
+/** Opaque JSON cursor. Callers must retain and replay it literally. */
+export type BenefitSubmissionCursor = string
 export interface BenefitSubmissionPage { items: BenefitSubmissionItem[]; hasMore: boolean; nextCursor: BenefitSubmissionCursor | null }
 export interface CreateBenefitSubmissionInput {
   clientKey: string

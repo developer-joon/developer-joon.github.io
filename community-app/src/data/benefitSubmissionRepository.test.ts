@@ -107,6 +107,29 @@ describe('benefit submission repository', () => {
     await expect(repository.listMySubmissions({ limit: 2 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
+  it('rejects owner pages that replay or cross the request boundary or claim a short next page', async () => {
+    const boundary=JSON.stringify({created_at:'2026-11-21T00:00:00Z',id:'55555555-5555-4555-8555-555555555555'})
+    const above={...wire,id:'66666666-6666-4666-8666-666666666666'}
+    const rpc=vi.fn().mockResolvedValue({data:{items:[above],has_more:false,next_cursor:null},error:null,status:200,statusText:'OK'})
+    const repository=createBenefitSubmissionRepository({getSessionContext:async()=>context(rpc)})
+    await expect(repository.listMySubmissions({limit:2,cursor:boundary as never})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+    rpc.mockResolvedValueOnce({data:{items:[{...wire,created_at:'2026-11-20T00:00:00Z',updated_at:'2026-11-20T00:00:00Z'}],has_more:true,next_cursor:{created_at:'2026-11-20T00:00:00Z',id:wire.id}},error:null,status:200,statusText:'OK'})
+    await expect(repository.listMySubmissions({limit:2,cursor:boundary as never})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
+  it('forwards a valid opaque cursor literal without normalizing its timestamp or UUID',async()=>{
+    const literal='{"created_at":"2026-11-21T09:00:00+09:00","id":"55555555-5555-4555-8555-AAAAAAAAAAAA"}'
+    const rpc=vi.fn().mockResolvedValue({data:{items:[],has_more:false,next_cursor:null},error:null,status:200,statusText:'OK'}),repository=createBenefitSubmissionRepository({getSessionContext:async()=>context(rpc)})
+    await expect(repository.listMySubmissions({limit:2,cursor:literal})).resolves.toMatchObject({ok:true})
+    expect(rpc).toHaveBeenCalledWith('list_my_benefit_submissions_v1',{p_limit:2,p_cursor_created_at:'2026-11-21T09:00:00+09:00',p_cursor_id:'55555555-5555-4555-8555-AAAAAAAAAAAA'},undefined)
+  })
+
+  it.each(['{}',`{"created_at":"2026-11-21T00:00:00Z","id":"bad"}`,`{"id":"55555555-5555-4555-8555-555555555555","created_at":"2026-11-21T00:00:00Z","extra":1}`])('rejects malformed opaque owner cursor %s',async cursor=>{
+    const rpc=vi.fn(),repository=createBenefitSubmissionRepository({getSessionContext:async()=>context(rpc)})
+    await expect(repository.listMySubmissions({limit:2,cursor:cursor as never})).resolves.toMatchObject({ok:false,error:{code:'invalid_argument'}})
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
   it.each([
     [{ status: 401, code: 'PGRST303', message: 'jwt expired' }, 'auth_required'],
     [{ status: 429, code: 'PGRST429', message: 'limit' }, 'rate_limited'],
