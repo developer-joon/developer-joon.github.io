@@ -6,10 +6,11 @@ db_container="supabase_db_developer-joon-community-design"
 fixture_root="$repo_root/supabase/fixtures/benefit-title-upgrade"
 migration_root="$repo_root/supabase/migrations"
 db_prefix="benefit_title_upgrade"
-run_nonce="$(printf '%08x' "$(( (RANDOM << 16) ^ RANDOM ))")"
-run_base="${db_prefix}_$$_${run_nonce}"
-writer_app="benefit-title-legacy-writer-$run_nonce"
-migration_app="benefit-title-migration-003-$run_nonce"
+run_token=""
+run_nonce=""
+run_base=""
+writer_app=""
+migration_app=""
 temp_dbs=()
 background_pids=()
 writer_pid=""
@@ -23,16 +24,27 @@ cleaning_up=0
 
 validate_db_name() {
   local db_name="${1:-}"
-  [[ "$db_name" =~ ^benefit_title_upgrade_[0-9]+_[0-9a-f]{8}_(positive|race|rollback)$ ]]
+  [[ "$db_name" =~ ^benefit_title_upgrade_[0-9]+_[0-9a-f]{8}_(positive|race|rollback|collision)$ ]]
 }
 
 if [[ "${1:-}" == "--validate-db-name" ]]; then
   validate_db_name "${2:-}"
   exit
+elif [[ "${1:-}" == "--run-token" && "${2:-}" =~ ^[0-9a-f]{8}$ && $# == 2 ]]; then
+  run_token="$2"
 elif (( $# != 0 )); then
-  printf 'usage: %s [--validate-db-name NAME]\n' "$0" >&2
+  printf 'usage: %s [--validate-db-name NAME] [--run-token 8_HEX_DIGITS]\n' "$0" >&2
   exit 2
 fi
+
+if [[ -n "$run_token" ]]; then
+  run_nonce="$run_token"
+else
+  run_nonce="$(printf '%08x' "$(( (RANDOM << 16) ^ RANDOM ))")"
+fi
+run_base="${db_prefix}_$$_${run_nonce}"
+writer_app="benefit-title-legacy-writer-$run_nonce"
+migration_app="benefit-title-migration-003-$run_nonce"
 
 admin_psql() {
   docker exec -i "$db_container" psql -X -Aqt -v ON_ERROR_STOP=1 -U postgres -d postgres "$@"
@@ -68,7 +80,7 @@ scenario_psql() {
   {
     scenario_guard
     cat
-  } | docker exec -i -e "PGAPPNAME=${PGAPPNAME:-benefit-title-scenario}" "$db_container" \
+  } | docker exec -i -e "PGAPPNAME=${PGAPPNAME:-benefit-title-scenario-$run_nonce}" "$db_container" \
       psql -X -v ON_ERROR_STOP=1 -v "expected_db=$db_name" -U postgres -d "$db_name" "$@"
 }
 
@@ -179,6 +191,10 @@ cleanup() {
     admin_psql -c "revoke connect on database \"$db_name\" from public; select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname='$db_name' and pid<>pg_catalog.pg_backend_pid();" >/dev/null 2>&1
   done
   for pid in "${background_pids[@]}"; do
+    if ! timeout 5s tail --pid="$pid" -f /dev/null 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null
+      timeout 2s tail --pid="$pid" -f /dev/null 2>/dev/null || cleanup_status=1
+    fi
     wait "$pid" 2>/dev/null
   done
   for db_name in "${temp_dbs[@]}"; do
@@ -213,6 +229,7 @@ printf 'primary postgres database baseline: %s\n' "$primary_before"
 positive_db="${run_base}_positive"
 race_db="${run_base}_race"
 rollback_db="${run_base}_rollback"
+collision_db="${run_base}_collision"
 
 bootstrap_v2 "$positive_db"
 if [[ "${BENEFIT_TITLE_UPGRADE_INJECT:-}" == "after-create" ]]; then
@@ -339,4 +356,67 @@ if [[ "$(scenario_query "$rollback_db" "select to_regprocedure('private.canonica
   exit 1
 fi
 
-printf 'benefit title upgrade, lock race, and rollback fixtures passed\n'
+bootstrap_v2 "$collision_db"
+scenario_file "$collision_db" "$fixture_root/collision_seed.sql" >/dev/null
+collision_exact="$(scenario_query "$collision_db" "select count(*)=2 and count(*) filter (where publication_id='e7000000-0000-4000-8000-000000000040' and title='Collision title' and description='First distinct migration 002 lineage' and eligibility_text='All employees' and condition_text='Annual enrollment' and dedupe_key='legacy-collision-lineage-a' and status='active' and provenance->>'submission_id'='e7100000-0000-4000-8000-000000000040' and provenance->>'payload'='first' and (select count(*) from jsonb_object_keys(provenance))=2)=1 and count(*) filter (where publication_id='e7000000-0000-4000-8000-000000000041' and title=E'Collision\\t title' and description='Second distinct migration 002 lineage' and eligibility_text='Full-time employees' and condition_text='Manager approval' and dedupe_key='legacy-collision-lineage-b' and status='active' and provenance->>'submission_id'='e7100000-0000-4000-8000-000000000041' and provenance->>'payload'='second' and (select count(*) from jsonb_object_keys(provenance))=2)=1 from public.benefit_publications where company_id='KR-BIZ-9970000003'")"
+if [[ "$collision_exact" != "t" ]]; then
+  printf 'collision fixture exact rows, payloads, lineage keys, or statuses differ from the production-shaped seed\n' >&2
+  exit 1
+fi
+collision_shape="$(scenario_query "$collision_db" "select count(*)||'|'||count(distinct dedupe_key)||'|'||count(*) filter (where status='active')||'|'||count(distinct lower(btrim(regexp_replace(translate(title,E'\\t\\n\\v\\f\\r','     '),' +',' ','g')))) from public.benefit_publications where company_id='KR-BIZ-9970000003'")"
+if [[ "$collision_shape" != "2|2|2|1" ]]; then
+  printf 'collision fixture does not contain two distinct active old lineages mapping to one canonical title: %s\n' "$collision_shape" >&2
+  exit 1
+fi
+collision_rows_before="$(scenario_query "$collision_db" "select md5(string_agg(row_to_json(publication)::text,E'\\n' order by publication.publication_id)) from public.benefit_publications publication where company_id='KR-BIZ-9970000003'")"
+collision_constraint_before="$(scenario_query "$collision_db" "select pg_get_constraintdef(oid) from pg_constraint where conrelid='public.benefit_publications'::regclass and conname='benefit_publications_title_check'")"
+collision_rpc_before="$(scenario_query "$collision_db" "select md5(pg_get_functiondef('public.review_benefit_submission_v1(uuid,text,text,text,uuid,text,text,text,text,uuid)'::regprocedure))")"
+collision_ledger_before="$(scenario_query "$collision_db" "select md5(string_agg(row_to_json(m)::text,E'\\n' order by version)) from supabase_migrations.schema_migrations m")"
+if [[ "$(scenario_query "$collision_db" "select string_agg(version,',' order by version) from supabase_migrations.schema_migrations")" != "202611210001,202611210002" ]]; then
+  printf 'collision fixture did not start from the exact migration 002 ledger state\n' >&2
+  exit 1
+fi
+if [[ "$(scenario_query "$collision_db" "select to_regprocedure('private.canonical_benefit_publication_title(text)') is null")" != "t" ]]; then
+  printf 'collision fixture unexpectedly started with canonical helper installed\n' >&2
+  exit 1
+fi
+set +e
+scenario_file "$collision_db" "$migration_root/202611210003_canonical_benefit_publication_titles.sql" >"$migration_log" 2>&1
+collision_status=$?
+set -e
+if (( collision_status == 0 )); then
+  printf 'migration unexpectedly merged colliding legacy lineages\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'benefit title canonicalization preflight failed: canonical lineage collision' "$migration_log"; then
+  printf 'migration failure did not include the canonical lineage collision error\n' >&2
+  cat "$migration_log" >&2
+  exit 1
+fi
+if [[ "$(scenario_query "$collision_db" "select md5(string_agg(row_to_json(publication)::text,E'\\n' order by publication.publication_id)) from public.benefit_publications publication where company_id='KR-BIZ-9970000003'")" != "$collision_rows_before" ]]; then
+  printf 'failed collision migration changed exact publication rows or payloads\n' >&2
+  exit 1
+fi
+if [[ "$(scenario_query "$collision_db" "select count(*)||'|'||count(distinct dedupe_key)||'|'||count(*) filter (where status='active')||'|'||count(distinct lower(btrim(regexp_replace(translate(title,E'\\t\\n\\v\\f\\r','     '),' +',' ','g')))) from public.benefit_publications where company_id='KR-BIZ-9970000003'")" != "$collision_shape" ]]; then
+  printf 'failed collision migration changed old lineage keys, statuses, or canonical mapping\n' >&2
+  exit 1
+fi
+if [[ "$(scenario_query "$collision_db" "select pg_get_constraintdef(oid) from pg_constraint where conrelid='public.benefit_publications'::regclass and conname='benefit_publications_title_check'")" != "$collision_constraint_before" ]]; then
+  printf 'failed collision migration changed the legacy title constraint\n' >&2
+  exit 1
+fi
+if [[ "$(scenario_query "$collision_db" "select md5(pg_get_functiondef('public.review_benefit_submission_v1(uuid,text,text,text,uuid,text,text,text,text,uuid)'::regprocedure))")" != "$collision_rpc_before" ]]; then
+  printf 'failed collision migration replaced the review RPC\n' >&2
+  exit 1
+fi
+if [[ "$(scenario_query "$collision_db" "select to_regprocedure('private.canonical_benefit_publication_title(text)') is null")" != "t" ]]; then
+  printf 'failed collision migration left the canonical helper installed\n' >&2
+  exit 1
+fi
+if [[ "$(scenario_query "$collision_db" "select md5(string_agg(row_to_json(m)::text,E'\\n' order by version)) from supabase_migrations.schema_migrations m")" != "$collision_ledger_before" ]] || [[ "$(scenario_query "$collision_db" "select exists(select 1 from supabase_migrations.schema_migrations where version='202611210003')")" != "f" ]]; then
+  printf 'failed collision migration advanced or changed the migration ledger\n' >&2
+  exit 1
+fi
+printf 'canonical collision rollback preserved rows=%s constraint and RPC fingerprints\n' "$collision_rows_before"
+
+printf 'benefit title upgrade, lock race, invalid-title rollback, and canonical collision rollback fixtures passed\n'
