@@ -3,6 +3,7 @@ select no_plan();
 
 select has_table('public','benefit_companies','benefit companies table exists');
 select has_table('public','benefit_publications','benefit publications table exists');
+select has_column('public','benefit_companies','search_name','companies store an indexed normalized search name');
 select has_function('public','search_benefit_companies_v1',array['text','text[]','text','text','text','boolean','integer','text'],'search RPC exists');
 select has_function('public','get_benefit_company_v1',array['text'],'detail RPC exists');
 
@@ -24,6 +25,7 @@ insert into public.benefit_companies(company_id,identity_class,display_name,norm
  ('KR-BIZ-1000000003','registered_business','Tie Company C','tie company',null,null,null,null,true,'fixture-v1','{}'),
  ('KR-BIZ-1000000001','registered_business','Tie Company A','tie company',null,null,null,null,true,'fixture-v1','{}'),
  ('KR-BIZ-1000000002','registered_business','Tie Company B','tie company',null,null,null,null,true,'fixture-v1','{}');
+select is((select search_name from public.benefit_companies where company_id='KR-CRN-1101111111111'),'가나다공식','stored search names remove insignificant whitespace');
 
 select lives_ok($$insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values
   ('KR-CRN-4404444444444','legal_corporation','Legal class fixture','legal class fixture',false,'identity-fixture-v1','{}'),
@@ -209,6 +211,18 @@ select is((select payload->>'total' from benefit_results where name='category'),
 insert into benefit_results values ('region',public.search_benefit_companies_v1(null,null,null,null,'서울',false,50,null));
 select is((select payload->>'total' from benefit_results where name='region'),'2','region filter is applied server-side');
 insert into benefit_results values ('literal-pattern',public.search_benefit_companies_v1('%',null,null,null,null,false,50,null));
+set local role postgres;
+insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,size_class,is_searchable,source_edition,provenance) values
+ ('KR-CRN-6606666666666','legal_corporation','(주)카카오','(주)카카오','large',true,'fixture-v1','{}'),
+ ('KR-CRN-7707777777777','legal_corporation','에스케이하이닉스(주)','에스케이하이닉스(주)','large',true,'fixture-v1','{}');
+set local role anon;
+insert into benefit_results values ('legal-prefix',public.search_benefit_companies_v1('카카오',null,null,null,null,false,50,null));
+insert into benefit_results values ('latin-alias',public.search_benefit_companies_v1('SK하이닉스',null,null,null,null,false,50,null));
+select is((select payload->'items'->0->>'company_id' from benefit_results where name='legal-prefix'),'KR-CRN-6606666666666','search ignores a leading Korean legal-form marker');
+select is((select payload->'items'->0->>'company_id' from benefit_results where name='latin-alias'),'KR-CRN-7707777777777','search resolves the common SK Latin alias to its Korean legal name');
+set local role postgres;
+delete from public.benefit_companies where company_id in ('KR-CRN-6606666666666','KR-CRN-7707777777777');
+set local role anon;
 select is((select payload->>'total' from benefit_results where name='literal-pattern'),'0','query metacharacters are treated as literal text');
 
 insert into benefit_results values ('page-one',public.search_benefit_companies_v1(null,null,null,null,null,false,1,null));

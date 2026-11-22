@@ -717,6 +717,7 @@
   color: var(--text-dark);
 }
 .benefits-page .domestic-directory__search { margin: 0 0 20px; }
+.benefits-page .domestic-directory__scope { margin: -6px 0 20px; padding-left: 12px; border-left: 3px solid #c6a45d; color: #53675f; font-size: 13px; line-height: 1.65; }
 .benefits-page .domestic-directory__search label { display: grid; gap: 8px; color: #17372e; font-size: 16px; font-weight: 800; }
 .benefits-page .domestic-directory__search input {
   box-sizing: border-box;
@@ -796,12 +797,14 @@
 .benefits-page .domestic-directory__result-section h2 { margin: 24px 0 0; color: #17372e; font-size: 16px; letter-spacing: -.01em; }
 .benefits-page .domestic-directory__list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; min-width: 0; }
 .benefits-page .domestic-directory__record { min-width: 0; padding: 20px 0; border: 0; border-bottom: 1px solid var(--border); box-shadow: none; overflow-wrap: anywhere; }
-.benefits-page .domestic-directory__identity { margin: 0 0 7px; color: #746850; font-size: 12px; font-weight: 800; }
-.benefits-page .domestic-directory__status { color: #70440e; font-size: 12px; font-weight: 800; }
+.benefits-page .domestic-directory__status { color: #70440e; font-size: 13px; font-weight: 800; }
+.benefits-page .domestic-directory__availability { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid #e0ded6; color: #365449; font-size: 13px; }
+.benefits-page .domestic-directory__availability p { margin: 0; }
+.benefits-page .domestic-directory__availability p + p { margin-top: 3px; color: #68766f; font-size: 12px; }
+.benefits-page .domestic-directory__availability--available { color: #125545; font-weight: 800; }
 .benefits-page .domestic-directory__record h3 { margin: 0 0 8px; color: #17372e; font-size: 20px; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .benefits-page .domestic-directory__record a { display: inline-flex; min-height: 44px; align-items: center; color: #125545; text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
-.benefits-page .domestic-directory__size,
-.benefits-page .domestic-directory__counts { margin: 0; color: #365449; font-size: 13px; }
+.benefits-page .domestic-directory__size { margin: 0; color: #365449; font-size: 13px; }
 .benefits-page .domestic-directory__badges { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; margin: 12px 0 0; padding: 0; list-style: none; }
 .benefits-page .domestic-directory__badges li { max-width: 100%; padding: 3px 8px; border: 1px solid #82988c; background: #e9efe9; font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
 .benefits-page .domestic-directory__error { margin: 16px 0; padding: 14px; border: 1px solid #9a513c; background: #fff1e9; overflow-wrap: anywhere; }

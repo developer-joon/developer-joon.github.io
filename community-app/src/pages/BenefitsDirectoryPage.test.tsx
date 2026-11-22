@@ -362,13 +362,15 @@ describe('dynamic benefit directory search', () => {
     expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'opaque' }), expect.any(AbortSignal))
   })
 
-  it('renders only public summary fields, exact zero-evidence wording, and the existing detail-link contract', async () => {
-    const zero = { ...baseItem, benefitCount: 0, officialCount: 0, communityCount: 0, categories: [], summary: null }
+  it('makes benefit availability explicit and removes editorial noise from zero-evidence cards', async () => {
+    const zero = { ...baseItem, benefitCount: 0, officialCount: 0, communityCount: 0, categories: [], summary: '검색 카드에 필요 없는 긴 기업 설명' }
     render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([zero]))))} />)
     const card = await screen.findByRole('article')
-    expect(card).toHaveTextContent('게시 가능한 공개 복지 근거 미확인')
-    expect(card).toHaveTextContent('법인')
+    expect(card).toHaveTextContent('공개 확인된 복지 정보 없음')
+    expect(card).toHaveTextContent('복지가 없다는 뜻은 아닙니다')
     expect(card).toHaveTextContent('소프트웨어 · 대기업 · 서울')
+    expect(card).not.toHaveTextContent('검색 카드에 필요 없는 긴 기업 설명')
+    expect(card).not.toHaveTextContent('법인')
     expect(screen.getByRole('link', { name: /가나다 공식/ })).toHaveAttribute('href', '/benefits/company/?id=KR-CRN-1101111111111')
     expect(card.textContent).not.toMatch(/source|verified|review|submitter|provenance|검토일|확인일/i)
     expect(within(card).queryByRole('status')).not.toBeInTheDocument()
@@ -380,7 +382,7 @@ describe('dynamic benefit directory search', () => {
     const secondZero = { ...zero, companyId: 'KR-BIZ-1234567890', displayName: '두번째 기업' }
     render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([zero, secondZero]))))} />)
 
-    const messages = await screen.findAllByText('게시 가능한 공개 복지 근거 미확인')
+    const messages = await screen.findAllByText('공개 확인된 복지 정보 없음')
     expect(messages).toHaveLength(2)
     messages.forEach(message => expect(message).toBeVisible())
     const cards = screen.getAllByRole('article')
@@ -392,5 +394,20 @@ describe('dynamic benefit directory search', () => {
     expect(statuses[0]).toHaveAttribute('aria-live', 'polite')
     expect(statuses[0]).toHaveAttribute('aria-atomic', 'true')
     expect(statuses[0]).toHaveTextContent('검색 결과 2개 기업')
+  })
+
+  it('states that the directory is a bounded index rather than every domestic company', async () => {
+    render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([baseItem]))))} />)
+    expect(await screen.findByText(/국내 전체 기업 명부가 아닙니다/)).toHaveTextContent('현재 확보된 40,053개 기업 인덱스')
+  })
+
+  it('leads benefit-positive cards with a direct availability status and categories', async () => {
+    render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([baseItem]))))} />)
+    const card = await screen.findByRole('article')
+    expect(card).toHaveTextContent('공개 확인된 복지 정보 있음')
+    expect(card).toHaveTextContent('휴가')
+    expect(card).toHaveTextContent('건강')
+    expect(card).not.toHaveTextContent('공식 확인 1건')
+    expect(card).not.toHaveTextContent('사용자 제보 1건')
   })
 })

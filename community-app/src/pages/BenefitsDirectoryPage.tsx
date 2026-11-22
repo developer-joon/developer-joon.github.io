@@ -18,6 +18,7 @@ import {
 } from '../types/benefitDirectory'
 
 const PAGE_SIZE = 50
+const DIRECTORY_IDENTITY_COUNT = 40_053
 
 const categoryLabels: Record<BenefitDirectoryCategory, string> = {
   leave: '휴가', family: '가족', health: '건강', growth: '성장', housing: '주거', commute: '통근',
@@ -55,13 +56,14 @@ function mergeItems(current: BenefitDirectorySearchItem[], next: BenefitDirector
 function DirectoryCard({ item }: { item: BenefitDirectorySearchItem }) {
   const facts = [item.industry, item.sizeLabel, item.region].filter(Boolean).join(' · ')
   return <article className="domestic-directory__record">
-    <p className="domestic-directory__identity">{item.identityLabel}</p>
     <h3><a href={detailLink(item.companyId)}>{item.displayName} <span aria-hidden="true">↗</span></a></h3>
     <p className="domestic-directory__size">{facts}</p>
-    {item.summary && <p>{item.summary}</p>}
     {item.benefitCount === 0
-      ? <p className="domestic-directory__status">게시 가능한 공개 복지 근거 미확인</p>
-      : <p className="domestic-directory__counts">복지 {item.benefitCount}건 · 공식 확인 {item.officialCount}건 · 사용자 제보 {item.communityCount}건</p>}
+      ? <div className="domestic-directory__availability domestic-directory__availability--empty">
+          <p className="domestic-directory__status">공개 확인된 복지 정보 없음</p>
+          <p>복지가 없다는 뜻은 아닙니다.</p>
+        </div>
+      : <p className="domestic-directory__availability domestic-directory__availability--available">공개 확인된 복지 정보 있음 · {item.benefitCount}건</p>}
     {item.categories.length > 0 && <ul className="domestic-directory__badges" aria-label="복지 범주">
       {item.categories.map(category => <li key={category}>{categoryLabels[category]}</li>)}
     </ul>}
@@ -207,6 +209,7 @@ export function BenefitsDirectoryPage({
           <input type="search" value={draft.q} maxLength={200} placeholder="기업명을 입력하세요" onChange={event => setDraft(current => ({ ...current, q: event.target.value.slice(0, 200) }))} onBlur={() => { applyTextDraft(draft); setDraft(current => ({ ...current, q: canonicalizeBenefitDirectoryQuery(current).q })) }} />
         </label>
       </div>
+      <p className="domestic-directory__scope">현재 확보된 {DIRECTORY_IDENTITY_COUNT.toLocaleString('ko-KR')}개 기업 인덱스입니다. 국내 전체 기업 명부가 아닙니다.</p>
       <div className="domestic-directory__filters">
         <fieldset><legend>복지 범주</legend><div className="domestic-directory__chips">
           {BENEFIT_DIRECTORY_CATEGORIES.map(category => <label key={category} className={draft.categories.includes(category) ? 'is-selected' : ''}>
