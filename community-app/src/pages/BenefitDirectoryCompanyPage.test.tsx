@@ -3,7 +3,7 @@ import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BenefitsApp } from '../BenefitsApp'
 import type { BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
-import type { BenefitCompanyDetail, Result } from '../types/benefitDirectory'
+import type { BenefitCompanyDetail, BenefitDirectoryErrorCode, Result } from '../types/benefitDirectory'
 import { BenefitDirectoryCompanyPage } from './BenefitDirectoryCompanyPage'
 
 const CRN_A = 'KR-CRN-1101111111111'
@@ -33,7 +33,7 @@ const detail = (id = CRN_A, publications: BenefitCompanyDetail['publications'] =
   publications,
 })
 const ok = (value: BenefitCompanyDetail): Result<BenefitCompanyDetail> => ({ ok: true, data: value })
-const failure = (code: 'network' | 'invalid_response' | 'not_found', message = 'raw internal message'): Result<BenefitCompanyDetail> => ({ ok: false, error: { code, message } })
+const failure = (code: BenefitDirectoryErrorCode, message = 'raw internal message'): Result<BenefitCompanyDetail> => ({ ok: false, error: { code, message } })
 function repository(load: BenefitDirectoryRepository['detail']): BenefitDirectoryRepository {
   return { search: vi.fn(), detail: load }
 }
@@ -135,12 +135,31 @@ describe('BenefitDirectoryCompanyPage', () => {
     ['not_found', '기업 정보를 찾을 수 없습니다.', false],
     ['invalid_response', '기업 정보를 표시할 수 없습니다.', true],
     ['network', '네트워크 연결을 확인한 뒤 다시 시도해 주세요.', true],
+    ['unknown', '기업 복지 정보를 불러오지 못했습니다.', true],
   ] as const)('keeps %s distinct and only retries recoverable failures', async (code, copy, canRetry) => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>().mockResolvedValue(failure(code))
     render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(load)} />)
     expect(await screen.findByRole('alert')).toHaveTextContent(copy)
     expect(screen.queryByText('raw internal message')).not.toBeInTheDocument()
     expect(Boolean(screen.queryByRole('button', { name: '다시 시도' }))).toBe(canRetry)
+  })
+
+  it('shows the shared preparation state for a production-shaped detail configuration failure', async () => {
+    const internalMessage = 'PGRST202 detail_benefit_company_v1 https://secret-project.supabase.co'
+    const load = vi.fn<BenefitDirectoryRepository['detail']>()
+      .mockResolvedValueOnce(failure('configuration', internalMessage))
+      .mockResolvedValueOnce(ok(detail(CRN_A, [])))
+    render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(load)} />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('기업 데이터를 준비하고 있습니다. 잠시 후 다시 확인해 주세요.')
+    expect(alert).not.toHaveTextContent('PGRST202')
+    expect(alert).not.toHaveTextContent('detail_benefit_company_v1')
+    expect(alert).not.toHaveTextContent('secret-project')
+
+    fireEvent.click(within(alert).getByRole('button', { name: '다시 시도' }))
+    expect(await screen.findByRole('heading', { name: '가 기업' })).toBeVisible()
+    expect(load).toHaveBeenCalledTimes(2)
   })
 
   it('hides loaded A at render time while B is pending', async () => {

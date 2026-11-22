@@ -145,6 +145,25 @@ describe('BenefitSubmissionPage',()=>{
     expect(await screen.findByText('테스트 기업')).toBeVisible()
   })
 
+  it('sanitizes directory detail failures while validating a URL company id',async()=>{
+    const raw=`PGRST116 RPC benefit_directory_detail https://project.supabase.co/rest/v1/rpc/${company.companyId} SQL select * from private.companies`
+    const companies=directory();companies.detail=vi.fn().mockResolvedValue({ok:false,error:{code:'invalid_response',message:raw}}) as never
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={companies} storage={storage()} sessionStorage={storage()} lockAdapter={locks()} search={`?companyId=${company.companyId}`} />,auth(null))
+    const alert=await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('기업 정보를 표시할 수 없습니다.')
+    expect(alert).not.toHaveTextContent(/PGRST|RPC|https?:\/\/|SQL|select \*|private\.companies|KR-BIZ-1234567890/i)
+  })
+
+  it('sanitizes directory search failures',async()=>{
+    const raw='PGRST301 RPC benefit_directory_search https://project.supabase.co/rest/v1/rpc/search SQL select * from private.company_directory'
+    const companies=directory();companies.search=vi.fn().mockResolvedValue({ok:false,error:{code:'unavailable',message:raw}}) as never
+    wrap(<BenefitSubmissionPage repository={submissions()} directoryRepository={companies} storage={storage()} sessionStorage={storage()} lockAdapter={locks()} search="" />,auth(null))
+    fireEvent.change(await screen.findByLabelText('기업 검색'),{target:{value:'테스트'}})
+    const alert=await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('기업 검색 서비스를 일시적으로 이용할 수 없습니다. 잠시 후 다시 시도해 주세요.')
+    expect(alert).not.toHaveTextContent(/PGRST|RPC|https?:\/\/|SQL|select \*|private\.company_directory/i)
+  })
+
   it('keeps a forged restored company unresolved when exact detail fails',async()=>{
     const local=storage(),draftRaw=JSON.stringify({version:1,accountScope:scope,clientKey:'11111111-1111-4111-8111-111111111111',companyId:company.companyId,companyName:'위조 이름',categoryId:'leave',benefitText:'복지',eligibilityText:'',conditionText:'',sourceUrl:'',updatedAt:new Date().toISOString()})
     local.values.set(`breadlab:benefit-submission:draft:v1:${scope}`,draftRaw)

@@ -106,9 +106,9 @@ function specificity(selector: string) {
   return (selector.match(/\.[\w-]+/g)?.length ?? 0) * 100 + (selector.match(/(?:^|\s)main\b/g)?.length ?? 0)
 }
 
-function computedDeclarations(classes: string[], tag: string, viewportWidth: number) {
+function computedDeclarationsFrom(rules: CssRule[], classes: string[], tag: string, viewportWidth: number) {
   const resolved: Record<string, { value: string; specificity: number; order: number }> = {}
-  for (const rule of cssRules) {
+  for (const rule of rules) {
     if (viewportWidth < rule.minWidth || viewportWidth > rule.maxWidth) continue
     for (const selector of rule.selectors) {
       const requiredClasses = [...selector.matchAll(/\.([\w-]+)/g)].map((match) => match[1])
@@ -126,6 +126,14 @@ function computedDeclarations(classes: string[], tag: string, viewportWidth: num
   return Object.fromEntries(Object.entries(resolved).map(([property, result]) => [property, result.value]))
 }
 
+function computedDeclarations(classes: string[], tag: string, viewportWidth: number) {
+  return computedDeclarationsFrom(cssRules, classes, tag, viewportWidth)
+}
+
+function computedBenefitDeclarations(classes: string[], tag = 'span') {
+  return computedDeclarationsFrom(benefitsRules, classes, tag, 1220)
+}
+
 function tokenValue(name: string) {
   return tokens.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6});`, 'i'))?.[1]
 }
@@ -141,6 +149,11 @@ function relativeLuminance(hex: string) {
 function contrastRatio(foreground: string, background: string) {
   const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a)
   return (lighter + 0.05) / (darker + 0.05)
+}
+
+function resolvedColor(value: string) {
+  const token = value.match(/^var\(--([\w-]+)\)$/)?.[1]
+  return token ? tokenValue(token)! : value
 }
 
 const allowedSvgAttributes: Record<string, readonly string[]> = {
@@ -526,6 +539,42 @@ describe('Jekyll visual contract', () => {
 })
 
 describe('shared shell contract', () => {
+  it('uses the Blog editorial surface, responsive wrap, bordered tabs, and touch targets', () => {
+    const pageMain = benefitRule('.community-page.benefits-page main')?.declarations
+    const workspace = benefitRule('.benefits-main > .benefits-workspace')?.declarations
+    const tabs = benefitRule('.benefits-tabs')?.declarations
+    const tabLink = benefitRule('.benefits-tabs a')?.declarations
+    const currentTab = benefitRule('.benefits-tabs a[aria-current]')?.declarations
+    const directory = benefitRule('.benefits-page .domestic-directory')?.declarations
+    const record = benefitRule('.benefits-page .domestic-directory__record')?.declarations
+
+    expect(pageMain?.background).toBe('var(--background)')
+    expect(pageMain?.color).toBe('var(--text-dark)')
+    expect(workspace?.['max-width']).toBe('500px')
+    expect(benefitsRules.find(rule => rule.selectors.includes('.benefits-main > .benefits-workspace') && rule.minWidth === 768)?.declarations['max-width']).toBe('680px')
+    expect(benefitsRules.find(rule => rule.selectors.includes('.benefits-main > .benefits-workspace') && rule.minWidth === 1024)?.declarations['max-width']).toBe('900px')
+    expect(benefitsRules.find(rule => rule.selectors.includes('.benefits-main > .benefits-workspace') && rule.minWidth === 1220)?.declarations['max-width']).toBe('1100px')
+    expect(tabs?.background).toBe('var(--background)')
+    expect(tabs?.border).toBeDefined()
+    expect(tabLink?.['min-height']).toBe('44px')
+    expect(currentTab?.['border-bottom']).toBeDefined()
+    expect(directory?.background).toBe('var(--background)')
+    expect(directory?.border).toBeDefined()
+    expect(record?.border).toBeDefined()
+    expect(record?.['box-shadow'] ?? 'none').not.toMatch(/(?:0\s+\d{2,}px|\d{2,}px\s+\d{2,}px)/)
+
+    for (const [viewportWidth, maxWidth, paddingInline] of [
+      [767, '500px', '20px'],
+      [768, '680px', '0'],
+      [1024, '900px', '0'],
+      [1220, '1100px', '0'],
+    ] as const) {
+      const wrap = computedDeclarations(['community-wrap', 'benefits-workspace'], 'div', viewportWidth)
+      expect(wrap['max-width'], `benefits wrap at ${viewportWidth}px`).toBe(maxWidth)
+      expect(wrap['padding-inline'], `benefits gutter at ${viewportWidth}px`).toBe(paddingInline)
+    }
+  })
+
   it('keeps the benefits discovery mobile contract scoped and accessible', () => {
     const summarySelector = '.benefits-page .domestic-directory__filter-details > summary'
     const openSummarySelector = '.benefits-page .domestic-directory__filter-details[open] > summary'
@@ -558,6 +607,49 @@ describe('shared shell contract', () => {
   it('keeps correction actions at the existing 56px touch target', () => {
     expect(benefitsCss).toMatch(/\.benefits-correction-link\s*\{[^}]*min-height:\s*56px;/)
     expect(benefitsCss).toMatch(/\.benefit-correction-form button,[\s\S]*\.benefit-corrections-list button\s*\{[^}]*min-height:\s*56px;/)
+  })
+
+  it('resolves every benefits state badge to a bright editorial palette after the cascade', () => {
+    const states = [
+      [['benefits-status', 'status-official_verified'], '#edf8f4', '#17624f', '#53bda8'],
+      [['benefits-status', 'status-reference'], '#edf5fc', '#285d86', '#89c3ff'],
+      [['benefits-status', 'status-community_report'], '#fff7e8', '#765015', '#d8a84f'],
+      [['benefits-status', 'status-no_public_info'], 'var(--background-alt)', 'var(--text-medium)', '#7c8ba0'],
+      [['benefits-status', 'status-0'], '#edf8f4', '#17624f', '#53bda8'],
+      [['benefits-status', 'status-1'], '#edf5fc', '#285d86', '#89c3ff'],
+      [['benefits-status', 'status-2'], '#fff7e8', '#765015', '#d8a84f'],
+      [['benefits-status', 'status-3'], '#fff7e8', '#765015', '#d8a84f'],
+      [['benefits-status', 'status-5'], '#fff0f2', '#9f2f3e', '#d96675'],
+      [['benefits-badge', 'badge-official_verified'], '#edf8f4', '#17624f', '#53bda8'],
+      [['benefits-badge', 'badge-reference'], '#edf5fc', '#285d86', '#89c3ff'],
+      [['benefits-badge', 'badge-community_report'], '#fff7e8', '#765015', '#d8a84f'],
+      [['benefits-badge', 'badge-no_public_info'], 'var(--background-alt)', 'var(--text-medium)', '#7c8ba0'],
+      [['benefits-badge', 'badge-warning'], '#fff0f2', '#9f2f3e', '#d96675'],
+      [['benefits-lineage-badge'], '#edf8f4', '#17624f', '#53bda8'],
+      [['benefits-lineage-pending'], 'var(--background-alt)', 'var(--text-medium)', '#7c8ba0'],
+    ] as const
+
+    for (const [classes, background, foreground, borderColor] of states) {
+      const computed = computedBenefitDeclarations([...classes])
+      expect(computed.background, `${classes.join('.')} background`).toBe(background)
+      expect(computed.color, `${classes.join('.')} foreground`).toBe(foreground)
+      expect(computed['border-color'], `${classes.join('.')} border`).toBe(borderColor)
+    }
+  })
+
+  it('keeps bright editorial card foregrounds at WCAG AA contrast after the cascade', () => {
+    const usages = [
+      ['research excerpt', ['benefits-research-card__excerpt'], 'p', ['benefits-research-card']],
+      ['research details summary', ['benefits-research-card__details'], 'summary', ['benefits-research-card']],
+      ['official tier', ['benefits-specific-card__tier'], 'p', ['benefits-specific-card']],
+      ['community tier', ['benefits-specific-card--community', 'benefits-specific-card__tier'], 'p', ['benefits-specific-card', 'benefits-specific-card--community']],
+    ] as const
+
+    for (const [usage, foregroundClasses, tag, backgroundClasses] of usages) {
+      const foreground = resolvedColor(computedBenefitDeclarations([...foregroundClasses], tag).color)
+      const background = resolvedColor(computedBenefitDeclarations([...backgroundClasses], 'article').background)
+      expect(contrastRatio(foreground, background), `${usage}: ${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5)
+    }
   })
 
   it('uses the Benefit Atlas brand in every explorer document title', () => {

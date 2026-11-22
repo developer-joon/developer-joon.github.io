@@ -212,7 +212,7 @@ describe('dynamic benefit directory search', () => {
     expect(screen.getByText('가나다 공식')).toBeInTheDocument()
     expect(screen.queryByText(/B 검색 결과 7개/)).not.toBeInTheDocument()
     b.resolve(fail('B 검색 실패')); await act(async () => { await b.promise })
-    expect(await screen.findByRole('alert')).toHaveTextContent('B 검색 실패')
+    expect(await screen.findByRole('alert')).toHaveTextContent('네트워크 연결을 확인한 뒤 다시 시도해 주세요.')
     expect(screen.getByText('가나다 공식')).toBeInTheDocument()
     fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: '다시 시도' }))
     expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ query: 'B' }), expect.any(AbortSignal))
@@ -234,7 +234,7 @@ describe('dynamic benefit directory search', () => {
     expect(screen.getByRole('status')).toHaveTextContent('기업을 검색하고 있습니다.')
 
     pending.resolve(fail('B 검색 실패')); await act(async () => { await pending.promise })
-    expect(await screen.findByRole('alert')).toHaveTextContent('B 검색 실패')
+    expect(await screen.findByRole('alert')).toHaveTextContent('네트워크 연결을 확인한 뒤 다시 시도해 주세요.')
     expect(screen.queryByText('A 기업')).not.toBeInTheDocument()
     fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: '다시 시도' }))
     expect(searchA).toHaveBeenCalledTimes(1)
@@ -276,10 +276,35 @@ describe('dynamic benefit directory search', () => {
     expect(await screen.findByText('활성 요청')).toBeInTheDocument()
   })
 
-  it('distinguishes first failure and honest empty state', async () => {
-    const search = vi.fn().mockResolvedValueOnce(fail()).mockResolvedValueOnce(ok(page([])))
+  it('shows a sanitized preparing-data alert for configuration failures and retries', async () => {
+    const internalMessage = 'PGRST202 search_benefit_companies_v1 https://secret-project.supabase.co'
+    const search = vi.fn()
+      .mockResolvedValueOnce({ ok: false, error: { code: 'configuration', message: internalMessage } } satisfies Result<BenefitDirectoryPage>)
+      .mockResolvedValueOnce(ok(page()))
+
     render(<BenefitsDirectoryPage search="" repository={repository(search)} />)
-    expect(await screen.findByRole('alert')).toHaveTextContent('검색 실패')
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('기업 데이터를 준비하고 있습니다. 잠시 후 다시 확인해 주세요.')
+    expect(alert).not.toHaveTextContent('PGRST202')
+    expect(alert).not.toHaveTextContent('search_benefit_companies_v1')
+    expect(alert).not.toHaveTextContent('secret-project')
+    expect(screen.queryByText('조건에 맞는 기업을 찾지 못했습니다')).not.toBeInTheDocument()
+
+    fireEvent.click(within(alert).getByRole('button', { name: '다시 시도' }))
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('가나다 공식')).toBeInTheDocument()
+  })
+
+  it('keeps a production-shaped initial search failure private and distinguishes an honest empty state', async () => {
+    const internalMessage = 'PGRST301 https://secret-project.supabase.co SQL select * from private_benefits'
+    const search = vi.fn().mockResolvedValueOnce(fail(internalMessage)).mockResolvedValueOnce(ok(page([])))
+    render(<BenefitsDirectoryPage search="" repository={repository(search)} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('네트워크 연결을 확인한 뒤 다시 시도해 주세요.')
+    expect(alert).not.toHaveTextContent('PGRST301')
+    expect(alert).not.toHaveTextContent('secret-project')
+    expect(alert).not.toHaveTextContent('private_benefits')
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
     expect(await screen.findByText('조건에 맞는 기업을 찾지 못했습니다')).toBeInTheDocument()
     expect(screen.queryByText(/복지 없음/)).not.toBeInTheDocument()
@@ -291,12 +316,18 @@ describe('dynamic benefit directory search', () => {
     const search = vi.fn<BenefitDirectoryRepository['search']>(async (input, signal) => {
       signals.push(signal!)
       if (input.cursor === null) return ok(page([baseItem], { total: 2, hasMore: true, nextCursor: 'opaque' }))
-      return signals.length === 2 ? fail('다음 페이지 실패') : ok(page([baseItem, second], { total: 2 }))
+      return signals.length === 2
+        ? fail('PGRST301 https://secret-project.supabase.co SQL select * from private_benefits')
+        : ok(page([baseItem, second], { total: 2 }))
     })
     const view = render(<BenefitsDirectoryPage search="" repository={repository(search)} />)
     expect(await screen.findByText('가나다 공식')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '더 불러오기' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('다음 페이지 실패')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('네트워크 연결을 확인한 뒤 다시 시도해 주세요.')
+    expect(alert).not.toHaveTextContent('PGRST301')
+    expect(alert).not.toHaveTextContent('secret-project')
+    expect(alert).not.toHaveTextContent('private_benefits')
     expect(screen.getByText('가나다 공식')).toBeInTheDocument()
     fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: '다시 시도' }))
     expect(await screen.findByText('두번째 기업')).toBeInTheDocument()
@@ -306,13 +337,40 @@ describe('dynamic benefit directory search', () => {
     expect(signals.at(-1)?.aborted).toBe(true)
   })
 
-  it('renders only public summary fields, exact zero-evidence wording, and the existing detail-link contract', async () => {
-    const zero = { ...baseItem, benefitCount: 0, officialCount: 0, communityCount: 0, categories: [], summary: null }
+  it('sanitizes configuration failures while loading the next page, preserves cards, and retries', async () => {
+    const internalMessage = 'PGRST202 search_benefit_companies_v1 https://secret-project.supabase.co'
+    const second = { ...baseItem, companyId: 'KR-BIZ-1234567890', displayName: '두번째 기업' }
+    const search = vi.fn<BenefitDirectoryRepository['search']>()
+      .mockResolvedValueOnce(ok(page([baseItem], { total: 2, hasMore: true, nextCursor: 'opaque' })))
+      .mockResolvedValueOnce({ ok: false, error: { code: 'configuration', message: internalMessage } })
+      .mockResolvedValueOnce(ok(page([second], { total: 2 })))
+
+    render(<BenefitsDirectoryPage search="" repository={repository(search)} />)
+    expect(await screen.findByText('가나다 공식')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '더 불러오기' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('기업 데이터를 준비하고 있습니다. 잠시 후 다시 확인해 주세요.')
+    expect(alert).not.toHaveTextContent('PGRST202')
+    expect(alert).not.toHaveTextContent('search_benefit_companies_v1')
+    expect(alert).not.toHaveTextContent('secret-project')
+    expect(screen.getByText('가나다 공식')).toBeInTheDocument()
+
+    fireEvent.click(within(alert).getByRole('button', { name: '다시 시도' }))
+    expect(await screen.findByText('두번째 기업')).toBeInTheDocument()
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'opaque' }), expect.any(AbortSignal))
+  })
+
+  it('makes benefit availability explicit and removes editorial noise from zero-evidence cards', async () => {
+    const zero = { ...baseItem, benefitCount: 0, officialCount: 0, communityCount: 0, categories: [], summary: '검색 카드에 필요 없는 긴 기업 설명' }
     render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([zero]))))} />)
     const card = await screen.findByRole('article')
-    expect(card).toHaveTextContent('게시 가능한 공개 복지 근거 미확인')
-    expect(card).toHaveTextContent('법인')
+    expect(card).toHaveTextContent('공개 확인된 복지 정보 없음')
+    expect(card).toHaveTextContent('복지가 없다는 뜻은 아닙니다')
     expect(card).toHaveTextContent('소프트웨어 · 대기업 · 서울')
+    expect(card).not.toHaveTextContent('검색 카드에 필요 없는 긴 기업 설명')
+    expect(card).not.toHaveTextContent('법인')
     expect(screen.getByRole('link', { name: /가나다 공식/ })).toHaveAttribute('href', '/benefits/company/?id=KR-CRN-1101111111111')
     expect(card.textContent).not.toMatch(/source|verified|review|submitter|provenance|검토일|확인일/i)
     expect(within(card).queryByRole('status')).not.toBeInTheDocument()
@@ -324,7 +382,7 @@ describe('dynamic benefit directory search', () => {
     const secondZero = { ...zero, companyId: 'KR-BIZ-1234567890', displayName: '두번째 기업' }
     render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([zero, secondZero]))))} />)
 
-    const messages = await screen.findAllByText('게시 가능한 공개 복지 근거 미확인')
+    const messages = await screen.findAllByText('공개 확인된 복지 정보 없음')
     expect(messages).toHaveLength(2)
     messages.forEach(message => expect(message).toBeVisible())
     const cards = screen.getAllByRole('article')
@@ -336,5 +394,20 @@ describe('dynamic benefit directory search', () => {
     expect(statuses[0]).toHaveAttribute('aria-live', 'polite')
     expect(statuses[0]).toHaveAttribute('aria-atomic', 'true')
     expect(statuses[0]).toHaveTextContent('검색 결과 2개 기업')
+  })
+
+  it('states that the directory is a bounded index rather than every domestic company', async () => {
+    render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([baseItem]))))} />)
+    expect(await screen.findByText(/국내 전체 기업 명부가 아닙니다/)).toHaveTextContent('현재 확보된 40,053개 기업 인덱스')
+  })
+
+  it('leads benefit-positive cards with a direct availability status and categories', async () => {
+    render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([baseItem]))))} />)
+    const card = await screen.findByRole('article')
+    expect(card).toHaveTextContent('공개 확인된 복지 정보 있음')
+    expect(card).toHaveTextContent('휴가')
+    expect(card).toHaveTextContent('건강')
+    expect(card).not.toHaveTextContent('공식 확인 1건')
+    expect(card).not.toHaveTextContent('사용자 제보 1건')
   })
 })
