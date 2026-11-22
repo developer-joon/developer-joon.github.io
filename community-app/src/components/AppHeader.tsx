@@ -4,7 +4,7 @@ const globalLinks = [
   { label: 'Revenue Lab', href: '/lab/' },
   { label: 'Blog', href: '/blog/' },
   { label: 'Community', href: '/community/' },
-  { label: '기업 복지', href: '/benefits/' },
+  { label: 'Benefits', href: '/benefits/' },
   { label: 'Shop', href: '/shop/' },
   { label: 'About', href: '/about' },
 ] as const

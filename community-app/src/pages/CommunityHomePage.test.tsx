@@ -72,8 +72,8 @@ describe('CommunityHomePage', () => {
     expect(writeLink.parentElement).toContainElement(screen.getByRole('group', { name: '게시글 정렬' }))
     expect(screen.getByRole('region', { name: '계정 작업' })).not.toContainElement(writeLink)
     const communityMain = screen.getByRole('main')
-    expect(within(communityMain).queryByRole('link', { name: /^(Benefit Atlas|기업 복지 탐색기)$/ })).not.toBeInTheDocument()
-    expect(within(screen.getByRole('navigation', { name: '주요 메뉴' })).getByRole('link', { name: '기업 복지' })).toHaveAttribute('href', '/benefits/')
+    expect(within(communityMain).queryByRole('link', { name: /^(Benefit Atlas|기업 복지 탐색기|Benefits)$/ })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('navigation', { name: '주요 메뉴' })).getByRole('link', { name: 'Benefits' })).toHaveAttribute('href', '/benefits/')
   })
 
   it('shows one accessible session-expiry notice for concurrent recovered public reads', async () => {
