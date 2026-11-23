@@ -103,7 +103,7 @@ end $$;
 
 create function private.benefit_claim_source_url(p_value text)
 returns text language plpgsql immutable set search_path='' as $$
-declare v text; v_authority text; v_host text; v_port text; v_query text;
+declare v text; v_authority text; v_host text; v_port text; v_query text; v_pair text; v_key text; v_key_lower text; v_value text; v_equals integer;
 begin
   if p_value is null or pg_catalog.btrim(p_value)='' then return null; end if;
   v:=pg_catalog.btrim(p_value);
@@ -114,7 +114,23 @@ begin
   if v_port is not null and v_port::integer not between 1 and 65535 then raise exception 'invalid claim source URL' using errcode='22023'; end if;
   if v_host='localhost' or v_host like '%.localhost' or v_host like '%.local' or v_host like '%.internal' or v_host like '%.test' or v_host like '%.invalid' or v_host ~ '^[0-9.]+$' or v_host ~ '^(?:[0-9]+|0x[0-9a-f]+)(?:\.(?:[0-9]+|0x[0-9a-f]+))*$' or v_host !~ '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$' then raise exception 'invalid claim source URL' using errcode='22023'; end if;
   v_query:=case when pg_catalog.strpos(v,'?')>0 then pg_catalog.substr(v,pg_catalog.strpos(v,'?')+1) else null end;
-  if v_query is not null and (v_query ~ '%' or v_query ~* '(^|&)(token|access_token|auth|authorization|api_?key|key|secret|signature|signed|sig|credential|password|x-amz-[^=]*)=') then raise exception 'invalid claim source URL' using errcode='22023'; end if;
+  if v_query is not null then
+    if v_query='' or pg_catalog.strpos(v_query,';')>0 then raise exception 'invalid claim source URL' using errcode='22023'; end if;
+    foreach v_pair in array pg_catalog.string_to_array(v_query,'&') loop
+      v_equals:=pg_catalog.strpos(v_pair,'=');
+      v_key:=case when v_equals>0 then pg_catalog.substr(v_pair,1,v_equals-1) else v_pair end;
+      v_value:=case when v_equals>0 then pg_catalog.substr(v_pair,v_equals+1) else null end;
+      if v_pair='' or v_key='' or v_key !~ '^[A-Za-z0-9._~-]+$' then raise exception 'invalid claim source URL' using errcode='22023'; end if;
+      v_key_lower:=pg_catalog.lower(v_key);
+      if v_key_lower ~ '(^|[._~-])(token|key|secret|password|passwd|signature|signed|sig|credential|auth|authorization)([._~-]|$)'
+         or v_key_lower ~ '^(accesstoken|refreshtoken|idtoken|apikey|clientsecret|secretkey|accesskey|privatekey|signingkey)$' then
+        raise exception 'invalid claim source URL' using errcode='22023';
+      end if;
+      if v_value is not null and (pg_catalog.strpos(pg_catalog.regexp_replace(v_value,'%[0-9A-Fa-f]{2}','','g'),'%')>0 or v_value ~* '%(?:[01][0-9a-f]|7f|23)') then
+        raise exception 'invalid claim source URL' using errcode='22023';
+      end if;
+    end loop;
+  end if;
   return v;
 end $$;
 
