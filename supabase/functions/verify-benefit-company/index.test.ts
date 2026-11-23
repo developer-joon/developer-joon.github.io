@@ -133,7 +133,9 @@ type Events = {
   auth: string[];
   reserve: unknown[][];
   finalize: unknown[];
+  finalizeSignals: AbortSignal[];
   fail: unknown[];
+  failSignals: AbortSignal[];
   fetch: Array<{ url: string; init: RequestInit }>;
   logs: unknown[];
   timers: number[];
@@ -147,7 +149,9 @@ function dependencies(
     auth: [],
     reserve: [],
     finalize: [],
+    finalizeSignals: [],
     fail: [],
+    failSignals: [],
     fetch: [],
     logs: [],
     timers: [],
@@ -168,8 +172,9 @@ function dependencies(
       events.reserve.push(args);
       return reserveResult();
     },
-    finalize: async (args) => {
+    finalize: async (args, signal) => {
       events.finalize.push(args);
+      events.finalizeSignals.push(signal);
       return reserveResult({
         verification_method: "nts_full",
         verification_status: "matched",
@@ -178,8 +183,9 @@ function dependencies(
         resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
       });
     },
-    fail: async (args) => {
+    fail: async (args, signal) => {
       events.fail.push(args);
+      events.failSignals.push(signal);
       return reserveResult({
         verification_method: "nts_full",
         verification_status: args.category,
@@ -693,6 +699,7 @@ Deno.test("terminal reservation replay returns safe existing result without NTS"
 Deno.test("RPC decoder rejects missing, extra, malformed, and impossible reservation states", async () => {
   const invalid = [
     reserveResult({ revision: 0 }),
+    reserveResult({ revision: 2 }),
     reserveResult({ created_at: "not-a-timestamp" }),
     reserveResult({ created_at: "2026-02-30T00:00:00.000Z" }),
     reserveResult({ resolved_company_id: "KR-CAN-safe" }),
@@ -704,6 +711,12 @@ Deno.test("RPC decoder rejects missing, extra, malformed, and impossible reserva
     })(),
     reserveResult({ status: "approved", verification_status: "pending" }),
     reserveResult({ status: "rejected", verification_status: "matched" }),
+    reserveResult({
+      status: "approved",
+      verification_status: "matched",
+      revision: 1,
+      resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
+    }),
     reserveResult({
       status: "approved",
       verification_status: "matched",
@@ -749,6 +762,36 @@ Deno.test("finalize and failure RPC responses require exact terminal state", asy
     (await handleVerifyBenefitCompany(request(), badFailure.deps)).status,
     502,
   );
+
+  for (const kind of ["finalize", "failure"] as const) {
+    const changes: Partial<VerificationDependencies> = kind === "finalize"
+      ? {
+        finalize: async () =>
+          reserveResult({
+            verification_method: "nts_full",
+            status: "approved",
+            verification_status: "matched",
+            revision: 1,
+            resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
+          }),
+      }
+      : {
+        fetch: async () => ntsResponse(validateEnvelope("02")),
+        fail: async () =>
+          reserveResult({
+            verification_method: "nts_full",
+            status: "rejected",
+            verification_status: "mismatched",
+            revision: 1,
+          }),
+      };
+    const scenario = dependencies(changes);
+    assert.equal(
+      (await handleVerifyBenefitCompany(request(), scenario.deps)).status,
+      502,
+      `${kind} revision 1`,
+    );
+  }
 });
 
 Deno.test("calls both official fixed NTS URLs with bounded safe options", async () => {
@@ -773,6 +816,7 @@ Deno.test("calls both official fixed NTS URLs with bounded safe options", async 
     );
     assert.ok(item.init.signal instanceof AbortSignal);
   }
+  assert.notEqual(events.fetch[0].init.signal, events.fetch[1].init.signal);
   assert.deepEqual(JSON.parse(String(events.fetch[0].init.body)), {
     businesses: [{
       b_no: "1234567890",
@@ -813,6 +857,8 @@ Deno.test("validate mismatch and official inactive statuses fail with safe categ
       scenario === "mismatch" ? "mismatched" : "rejected",
     );
     assert.equal(events.finalize.length, 0);
+    assert.equal(events.failSignals.length, 1);
+    assert.ok(events.failSignals[0] instanceof AbortSignal);
     assertNoSensitive(events.fail);
     assertNoSensitive(await body(response));
   }
@@ -896,7 +942,7 @@ Deno.test("NTS transport and decoder failures are unavailable and never finalize
   }
 });
 
-Deno.test("timeout aborts, clears timer, and cannot finalize late", async () => {
+Deno.test("NTS timeout persists exact revision-2 unavailable and never finalizes", async () => {
   let callback: (() => void) | undefined;
   let cleared = 0;
   const { deps, events } = dependencies({
@@ -919,7 +965,12 @@ Deno.test("timeout aborts, clears timer, and cannot finalize late", async () => 
   });
   const response = await handleVerifyBenefitCompany(request(), deps);
   assert.equal(response.status, 502);
-  assert.equal(cleared, 1);
+  assert.ok(cleared >= 1);
+  assert.equal(events.fail.length, 1);
+  assert.equal(
+    (events.fail[0] as Record<string, unknown>).category,
+    "unavailable",
+  );
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(events.finalize.length, 0);
 });
@@ -957,68 +1008,140 @@ Deno.test("deadline wins when an aborted fetch or response reader ignores its si
     });
     const response = await handleVerifyBenefitCompany(request(), deps);
     assert.equal(response.status, 502, boundary);
-    assert.equal(events.fail.length, 0, boundary);
+    assert.equal(events.fail.length, 1, boundary);
     assert.equal(events.finalize.length, 0, boundary);
   }
 });
 
-Deno.test("deadline prevents HMAC/finalize after the last NTS boundary", async () => {
-  let callback: (() => void) | undefined;
+Deno.test("external cutoff prevents finalize and persists unavailable", async () => {
   let call = 0;
+  let now = 0;
   const { deps, events } = dependencies({
-    setTimeout: (fn) => {
-      callback = fn;
-      return 11 as unknown as ReturnType<typeof setTimeout>;
-    },
-    clearTimeout: () => {},
+    monotonicNow: () => now,
     fetch: async () => {
       const response = ntsResponse(
         call++ === 0 ? validateEnvelope() : statusEnvelope(),
       );
-      if (call === 2) queueMicrotask(() => callback?.());
+      if (call === 2) now = 6_000;
       return response;
     },
   });
   const response = await handleVerifyBenefitCompany(request(), deps);
   assert.equal(response.status, 502);
-  assert.equal(events.fail.length, 0);
+  assert.equal(events.fail.length, 1);
+  assert.equal(
+    (events.fail[0] as Record<string, unknown>).category,
+    "unavailable",
+  );
   assert.equal(events.finalize.length, 0);
 });
 
-Deno.test("deadline covers reserve and finalize providers that ignore cancellation", async () => {
-  for (const boundary of ["reserve", "finalize"] as const) {
-    let callback: (() => void) | undefined;
-    const changes: Partial<VerificationDependencies> = {
-      setTimeout: (fn) => {
-        callback = fn;
-        return 13 as unknown as ReturnType<typeof setTimeout>;
-      },
-      clearTimeout: () => {},
-    };
-    if (boundary === "reserve") {
-      changes.reserve = async () => {
-        queueMicrotask(() => callback?.());
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        return reserveResult();
-      };
-    } else {
-      changes.finalize = async () => {
-        queueMicrotask(() => callback?.());
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        return reserveResult({
-          verification_method: "nts_full",
-          status: "approved",
-          verification_status: "matched",
-          revision: 2,
-          resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
-        });
-      };
-    }
-    const { deps, events } = dependencies(changes);
-    const response = await handleVerifyBenefitCompany(request(), deps);
-    assert.equal(response.status, 502, boundary);
-    assert.equal(events.finalize.length, 0, boundary);
-  }
+Deno.test("deadline covers reserve providers that ignore cancellation", async () => {
+  let callback: (() => void) | undefined;
+  const changes: Partial<VerificationDependencies> = {
+    setTimeout: (fn) => {
+      callback = fn;
+      return 13 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: () => {},
+    reserve: async () => {
+      queueMicrotask(() => callback?.());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return reserveResult();
+    },
+  };
+  const { deps, events } = dependencies(changes);
+  const response = await handleVerifyBenefitCompany(request(), deps);
+  assert.equal(response.status, 502);
+  assert.equal(events.finalize.length, 0);
+});
+
+Deno.test("delayed finalize is indeterminate and terminal replay converges without NTS", async () => {
+  let callback: (() => void) | undefined;
+  let committed = false;
+  let finalizeAborted = false;
+  const finalizeInvocations: unknown[] = [];
+  const first = dependencies({
+    setTimeout: (fn) => {
+      callback = fn;
+      return 17 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: () => {},
+    finalize: async (args, signal) => {
+      finalizeInvocations.push(args);
+      signal.addEventListener("abort", () => {
+        finalizeAborted = true;
+      }, { once: true });
+      queueMicrotask(() => callback?.());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      committed = true;
+      return reserveResult({
+        verification_method: "nts_full",
+        status: "approved",
+        verification_status: "matched",
+        revision: 2,
+        resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
+      });
+    },
+  });
+  const firstResponse = await handleVerifyBenefitCompany(request(), first.deps);
+  assert.equal(firstResponse.status, 202);
+  const firstBody = await body(firstResponse);
+  assert.deepEqual(firstBody, {
+    code: "verification_indeterminate",
+    requestId: REQUEST_ID,
+    message:
+      "처리 결과를 확인할 수 없습니다. 같은 멱등성 키로 다시 시도해 주세요.",
+  });
+  assert.equal(finalizeInvocations.length, 1);
+  assert.equal(finalizeAborted, true);
+  assertNoSensitive(firstBody);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(committed, true);
+
+  const replay = dependencies({
+    reserve: async () =>
+      reserveResult({
+        status: "approved",
+        verification_status: "matched",
+        revision: 2,
+        resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
+      }),
+  });
+  const replayResponse = await handleVerifyBenefitCompany(
+    request(),
+    replay.deps,
+  );
+  assert.equal(replayResponse.status, 200);
+  assert.equal(replay.events.fetch.length, 0);
+  assert.equal(replay.events.finalize.length, 0);
+});
+
+Deno.test("failure persistence timeout is safe indeterminate 503", async () => {
+  let callback: (() => void) | undefined;
+  const failInvocations: unknown[] = [];
+  const { deps } = dependencies({
+    fetch: async () => ntsResponse(validateEnvelope("02")),
+    setTimeout: (fn) => {
+      callback = fn;
+      return 19 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: () => {},
+    fail: async (args) => {
+      failInvocations.push(args);
+      queueMicrotask(() => callback?.());
+      await new Promise(() => {});
+    },
+  });
+  const response = await handleVerifyBenefitCompany(request(), deps);
+  assert.equal(response.status, 503);
+  assert.equal(failInvocations.length, 1);
+  assert.deepEqual(await body(response), {
+    code: "verification_indeterminate",
+    requestId: REQUEST_ID,
+    message:
+      "처리 결과를 확인할 수 없습니다. 같은 멱등성 키로 다시 시도해 주세요.",
+  });
 });
 
 Deno.test("success finalizes with digest and safe fields only", async () => {
@@ -1033,6 +1156,10 @@ Deno.test("success finalizes with digest and safe fields only", async () => {
     message: "사업자 확인이 완료되었습니다.",
   });
   assert.equal(events.finalize.length, 1);
+  assert.equal(events.finalizeSignals.length, 1);
+  assert.ok(events.finalizeSignals[0] instanceof AbortSignal);
+  assert.notEqual(events.finalizeSignals[0], events.fetch[0].init.signal);
+  assert.notEqual(events.finalizeSignals[0], events.fetch[1].init.signal);
   const final = events.finalize[0] as Record<string, unknown>;
   assert.equal(final.requestId, REQUEST_ID);
   assert.equal(final.expectedVerificationStatus, "pending");
@@ -1087,8 +1214,13 @@ Deno.test("failure RPC failure remains generic and all outputs and logs stay fre
     },
   });
   const response = await handleVerifyBenefitCompany(request(), deps);
-  assert.equal(response.status, 502);
-  assertNoIdentityOutput(await body(response));
+  assert.equal(response.status, 503);
+  assert.deepEqual(await body(response), {
+    code: "verification_indeterminate",
+    requestId: REQUEST_ID,
+    message:
+      "처리 결과를 확인할 수 없습니다. 같은 멱등성 키로 다시 시도해 주세요.",
+  });
   assertNoIdentityOutput(events.logs);
   assertNoSensitive(events.auth);
   assertNoSensitive(events.reserve);

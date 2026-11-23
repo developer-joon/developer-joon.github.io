@@ -3,6 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.117.0";
 const MAX_REQUEST_BYTES = 16_384;
 const MAX_NTS_RESPONSE_BYTES = 65_536;
 const OPERATION_DEADLINE_MS = 8_000;
+const PERSISTENCE_MARGIN_MS = 2_000;
 const MAX_HMAC_SECRET_BYTES = 8_192;
 const MAX_BEARER_BYTES = 4_096;
 const EXPECTED_PENDING = "pending";
@@ -85,8 +86,8 @@ export type VerificationDependencies = {
     idempotencyKey: string,
     fields: SafeCompanyFields,
   ): Promise<unknown>;
-  finalize(args: FinalizeArguments): Promise<unknown>;
-  fail(args: FailureArguments): Promise<unknown>;
+  finalize(args: FinalizeArguments, signal: AbortSignal): Promise<unknown>;
+  fail(args: FailureArguments, signal: AbortSignal): Promise<unknown>;
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
   now(): Date;
   monotonicNow(): number;
@@ -285,54 +286,90 @@ async function readRequestText(request: Request): Promise<string> {
 }
 
 class OperationDeadline {
-  readonly controller = new AbortController();
-  readonly expiresAt: number;
-  readonly timeout: Promise<never>;
-  #expired = false;
-  #timer: ReturnType<typeof setTimeout>;
-  #reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  readonly overallDeadline: number;
+  readonly externalCutoff: number;
+  #closed = false;
+  #controllers = new Set<AbortController>();
 
   constructor(
     private readonly deps: VerificationDependencies,
     milliseconds: number,
+    persistenceMargin: number,
   ) {
-    this.expiresAt = deps.monotonicNow() + milliseconds;
-    let rejectTimeout: (error: DeadlineExceededError) => void = () => {};
-    this.timeout = new Promise<never>((_resolve, reject) => {
-      rejectTimeout = reject;
-    });
-    this.#timer = deps.setTimeout(() => {
-      this.#expired = true;
-      this.controller.abort();
-      if (this.#reader) void this.#reader.cancel().catch(() => {});
-      rejectTimeout(new DeadlineExceededError());
-    }, milliseconds);
+    const started = deps.monotonicNow();
+    this.overallDeadline = started + milliseconds;
+    this.externalCutoff = this.overallDeadline - persistenceMargin;
   }
 
-  check(): void {
-    if (this.#expired || this.deps.monotonicNow() >= this.expiresAt) {
-      this.#expired = true;
-      this.controller.abort();
-      if (this.#reader) void this.#reader.cancel().catch(() => {});
+  checkExternal(): void {
+    this.#check(this.externalCutoff);
+  }
+
+  async runExternal<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    return await this.#runUntil(this.externalCutoff, operation);
+  }
+
+  async runPersistence<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    return await this.#runUntil(this.overallDeadline, operation);
+  }
+
+  async #runUntil<T>(
+    cutoff: number,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    this.#check(cutoff);
+    const controller = new AbortController();
+    this.#controllers.add(controller);
+    const remaining = cutoff - this.deps.monotonicNow();
+    const timeoutMarker = Symbol("deadline");
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<typeof timeoutMarker>((resolve) => {
+      timer = this.deps.setTimeout(() => {
+        resolve(timeoutMarker);
+        controller.abort();
+      }, remaining);
+    });
+    // Convert both branches to values so a transport settling after the race
+    // cannot become an unhandled rejection or mutate this request's state.
+    let operationPromise: Promise<T>;
+    try {
+      operationPromise = operation(controller.signal);
+    } catch (error) {
+      operationPromise = Promise.reject(error);
+    }
+    const settled = operationPromise.then(
+      (value) => ({ ok: true as const, value }),
+      (error) => ({ ok: false as const, error }),
+    );
+    try {
+      const result = await Promise.race([settled, timeout]);
+      if (result === timeoutMarker) {
+        void settled.then(() => undefined);
+        throw new DeadlineExceededError();
+      }
+      this.#check(cutoff);
+      if (!result.ok) throw result.error;
+      return result.value;
+    } finally {
+      if (timer !== null) this.deps.clearTimeout(timer);
+      this.#controllers.delete(controller);
+    }
+  }
+
+  #check(cutoff: number): void {
+    if (this.#closed || this.deps.monotonicNow() >= cutoff) {
       throw new DeadlineExceededError();
     }
   }
 
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    this.check();
-    const result = await Promise.race([operation(), this.timeout]);
-    this.check();
-    return result;
-  }
-
-  setReader(reader: ReadableStreamDefaultReader<Uint8Array> | null): void {
-    this.#reader = reader;
-    if (reader) this.check();
-  }
-
   close(): void {
-    this.#reader = null;
-    this.deps.clearTimeout(this.#timer);
+    this.#closed = true;
+    for (const controller of this.#controllers) controller.abort();
+    this.#controllers.clear();
   }
 }
 
@@ -651,6 +688,15 @@ function decodeReservation(
       String(value.verification_status),
     ) && value.resolved_company_id === null;
   if (!(pending || success || failure)) throw new Error("reservation");
+  if (kind === "reserve") {
+    if (
+      (pending && value.revision !== 1) || (!pending && value.revision !== 2)
+    ) {
+      throw new Error("reservation");
+    }
+  } else if (value.revision !== 2) {
+    throw new Error("reservation");
+  }
   if (kind === "finalize" && !success) throw new Error("reservation");
   if (
     kind === "failure" &&
@@ -673,6 +719,19 @@ function publicResult(reservation: Reservation, origin: string): Response {
     message: accepted
       ? "사업자 확인이 완료되었습니다."
       : "사업자 확인이 완료되지 않았습니다.",
+  }, origin);
+}
+
+function indeterminateResult(
+  status: 202 | 503,
+  requestId: string,
+  origin: string,
+): Response {
+  return jsonResponse(status, {
+    code: "verification_indeterminate",
+    requestId,
+    message:
+      "처리 결과를 확인할 수 없습니다. 같은 멱등성 키로 다시 시도해 주세요.",
   }, origin);
 }
 
@@ -711,7 +770,7 @@ const STATUS_KEYS = [
 
 async function readBoundedJson(
   response: Response,
-  deadline: OperationDeadline,
+  signal: AbortSignal,
 ): Promise<unknown> {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     throw new NtsError();
@@ -729,10 +788,11 @@ async function readBoundedJson(
   if (!reader) throw new NtsError();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  deadline.setReader(reader);
+  const cancel = () => void reader.cancel().catch(() => {});
+  signal.addEventListener("abort", cancel, { once: true });
   try {
     while (true) {
-      const { done, value } = await deadline.run(() => reader.read());
+      const { done, value } = await reader.read();
       if (done) break;
       if (total + value.byteLength > MAX_NTS_RESPONSE_BYTES) {
         void reader.cancel().catch(() => {});
@@ -742,7 +802,7 @@ async function readBoundedJson(
       chunks.push(value);
     }
   } finally {
-    deadline.setReader(null);
+    signal.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
   const bytes = new Uint8Array(total);
@@ -830,16 +890,16 @@ async function callNts(
   payload: unknown,
   deadline: OperationDeadline,
 ): Promise<unknown> {
-  const response = await deadline.run(() =>
-    deps.fetch(ntsUrl(endpoint, config.ntsServiceKey), {
+  return await deadline.runExternal(async (signal) => {
+    const response = await deps.fetch(ntsUrl(endpoint, config.ntsServiceKey), {
       method: "POST",
       redirect: "error",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
-      signal: deadline.controller.signal,
-    })
-  );
-  return await readBoundedJson(response, deadline);
+      signal,
+    });
+    return await readBoundedJson(response, signal);
+  });
 }
 
 function errorFromRpc(error: unknown): PublicError {
@@ -1053,10 +1113,16 @@ export async function handleVerifyBenefitCompany(
         origin,
       );
     }
-    deadline = new OperationDeadline(deps, OPERATION_DEADLINE_MS);
+    deadline = new OperationDeadline(
+      deps,
+      OPERATION_DEADLINE_MS,
+      PERSISTENCE_MARGIN_MS,
+    );
     let identity: AuthenticatedIdentity;
     try {
-      identity = await deadline.run(() => deps.authenticate(authorization!));
+      identity = await deadline.runExternal(() =>
+        deps.authenticate(authorization!)
+      );
     } catch (error) {
       if (error instanceof DeadlineExceededError) throw error;
       result = "authentication_required";
@@ -1090,13 +1156,13 @@ export async function handleVerifyBenefitCompany(
       industry: input.industry,
       website: input.website,
     };
-    const payloadFingerprint = await deadline.run(() =>
+    const payloadFingerprint = await deadline.runExternal(() =>
       safePayloadFingerprint(fields)
     );
     let reservation: Reservation;
     try {
       reservation = decodeReservation(
-        await deadline.run(() =>
+        await deadline.runExternal(() =>
           deps.reserve(authorization!, idempotencyKey, fields)
         ),
         "reserve",
@@ -1130,6 +1196,7 @@ export async function handleVerifyBenefitCompany(
     }
 
     let failureCategory: FailureArguments["category"] | null = null;
+    let digest: string | null = null;
     try {
       const validate = await callNts(deps, config, "validate", {
         businesses: [{
@@ -1155,20 +1222,41 @@ export async function handleVerifyBenefitCompany(
           failureCategory = "rejected";
         }
       }
+      if (!failureCategory) {
+        digest = await deadline.runExternal(() =>
+          businessNumberDigest(config.hmacSecret, input!.businessNumber)
+        );
+        deadline.checkExternal();
+      }
     } catch {
       failureCategory = "unavailable";
     }
+    if (!failureCategory) {
+      try {
+        deadline.checkExternal();
+      } catch {
+        failureCategory = "unavailable";
+      }
+    }
     if (failureCategory) {
+      let failed: unknown;
+      try {
+        failed = await deadline.runPersistence((signal) =>
+          deps.fail({
+            requestId: reservation.request_id,
+            expectedVerificationStatus: EXPECTED_PENDING,
+            payloadFingerprint,
+            category: failureCategory!,
+          }, signal)
+        );
+      } catch {
+        result = "verification_indeterminate";
+        statusCategory = "indeterminate";
+        return indeterminateResult(503, reservation.request_id, origin);
+      }
       try {
         decodeReservation(
-          await deadline.run(() =>
-            deps.fail({
-              requestId: reservation.request_id,
-              expectedVerificationStatus: EXPECTED_PENDING,
-              payloadFingerprint,
-              category: failureCategory!,
-            })
-          ),
+          failed,
           "failure",
           reservation.request_id,
           failureCategory,
@@ -1204,28 +1292,27 @@ export async function handleVerifyBenefitCompany(
         origin,
       );
     }
-    const digest = await deadline.run(() =>
-      businessNumberDigest(
-        config.hmacSecret,
-        input!.businessNumber,
-      )
-    );
     let finalized: Reservation;
     try {
       finalized = decodeReservation(
-        await deadline.run(() =>
+        await deadline.runPersistence((signal) =>
           deps.finalize({
             requestId: reservation.request_id,
             expectedVerificationStatus: EXPECTED_PENDING,
             payloadFingerprint,
-            businessNumberDigest: digest,
+            businessNumberDigest: digest!,
             externalVerifiedAt: deps.now().toISOString(),
-          })
+          }, signal)
         ),
         "finalize",
         reservation.request_id,
       );
     } catch (error) {
+      if (error instanceof DeadlineExceededError) {
+        result = "verification_indeterminate";
+        statusCategory = "indeterminate";
+        return indeterminateResult(202, reservation.request_id, origin);
+      }
       const safe = errorFromRpc(error);
       result = safe.code;
       statusCategory = safe.category;
@@ -1287,18 +1374,30 @@ function runtimeDependencies(): VerificationDependencies {
         detectSessionInUrl: false,
       },
     });
-  const serviceClient = () =>
-    createClient(
-      env("SUPABASE_URL") ?? "",
-      env("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+  const serviceRpc = async (
+    functionName: string,
+    payload: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> => {
+    const serviceRoleKey = env("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const response = await fetch(
+      `${env("SUPABASE_URL") ?? ""}/rest/v1/rpc/${functionName}`,
       {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false,
+        method: "POST",
+        redirect: "error",
+        headers: {
+          apikey: serviceRoleKey,
+          authorization: `Bearer ${serviceRoleKey}`,
+          "content-type": "application/json",
         },
+        body: JSON.stringify(payload),
+        signal,
       },
     );
+    const value = await response.json();
+    if (!response.ok) throw value;
+    return value;
+  };
   return {
     env,
     authenticate: async (authorization) => {
@@ -1326,8 +1425,8 @@ function runtimeDependencies(): VerificationDependencies {
       if (error) throw error;
       return data;
     },
-    finalize: async (args) => {
-      const { data, error } = await serviceClient().rpc(
+    finalize: async (args, signal) =>
+      await serviceRpc(
         "finalize_benefit_company_nts_request_v1",
         {
           p_request_id: args.requestId,
@@ -1336,12 +1435,10 @@ function runtimeDependencies(): VerificationDependencies {
           p_business_number_digest: args.businessNumberDigest,
           p_external_verified_at: args.externalVerifiedAt,
         },
-      );
-      if (error) throw error;
-      return data;
-    },
-    fail: async (args) => {
-      const { data, error } = await serviceClient().rpc(
+        signal,
+      ),
+    fail: async (args, signal) =>
+      await serviceRpc(
         "fail_benefit_company_nts_request_v1",
         {
           p_request_id: args.requestId,
@@ -1349,10 +1446,8 @@ function runtimeDependencies(): VerificationDependencies {
           p_payload_fingerprint: args.payloadFingerprint,
           p_failure_category: args.category,
         },
-      );
-      if (error) throw error;
-      return data;
-    },
+        signal,
+      ),
     fetch: (input, init) => fetch(input, init),
     now: () => new Date(),
     monotonicNow: () => performance.now(),

@@ -243,10 +243,28 @@ evidence and retains a dependency on GoTrue's identity timestamp semantics.
 The same bearer transport is used for `reserve_benefit_company_nts_request_v1`;
 a caller-supplied user ID is never accepted. The service-role client is separate
 and is used only for exact finalize/failure RPCs after reservation. One 8-second
-monotonic deadline covers authentication, reservation, both NTS calls and
-streams, HMAC, and finalize/failure persistence; timeout aborts and cancels the
-active reader, never finalizes late, and performs no cleanup beyond that same
-budget.
+monotonic budget is split into phases: authentication, reservation, both NTS
+fetch/stream/strict-decode operations, and HMAC must finish before the 6-second
+external cutoff. The final 2 seconds are reserved for persistence. Every
+transport receives its own AbortSignal; active response readers and timers are
+cancelled/cleared when their phase ends. If external verification reaches the
+cutoff after reservation, finalize is never invoked: the Function persists the
+exact revision-2 `rejected/unavailable` terminal result inside the reserved
+margin before returning the normal safe unavailable response. A failure-RPC
+transport timeout returns `503 verification_indeterminate`, because aborting
+HTTP cannot prove whether the database committed.
+
+Finalize may start only before the external cutoff and uses the reserved
+persistence margin. A finalize transport timeout returns bounded
+`202 verification_indeterminate` with only the safe code, request ID, and fixed
+Korean retry copy; it never claims that a company was or was not created. HTTP
+abort is transport cancellation, not transaction rollback. Retry the exact same payload
+with the same idempotency key: reserve terminal replay returns revision-2
+success without another NTS call if finalize committed, while a still-pending
+reservation safely retries verification. Pending reserve responses must be
+exactly revision 1; every terminal reserve replay, finalize response, and
+failure response must be exactly revision 2. Any impossible state/revision
+combination fails closed.
 
 Configure these exact secret names through the target's approved secret manager;
 never put their values in this repository, shell history, release evidence, a

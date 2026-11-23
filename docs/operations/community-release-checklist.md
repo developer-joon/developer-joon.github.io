@@ -23,7 +23,7 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Task 16 E2E passes against local Docker; no intentional sentinel remains.
 - [ ] Local stack and only this run's temporary directory are cleaned; local evidence is current, run-identified, and revision-bound.
 - [ ] Run the pinned Deno check/test/fmt commands for `verify-benefit-company` with injected mock transport only; confirm no local or hosted NTS request occurred.
-- [ ] Confirm the NTS matrix covers streaming ingress byte/cancel bounds, strict current-Google timestamp evidence, exact RPC state decoding, reserve-before-NTS, terminal replay, both official endpoint decoders (`01` active, `02` suspended, `03` closed), one hard total deadline with no late finalize, UTF-8-byte HMAC limits, finalize/failure privacy, and timer cleanup.
+- [ ] Confirm the NTS matrix covers streaming ingress byte/cancel bounds, strict current-Google timestamp evidence, exact revision matrix (pending reserve = 1; terminal reserve/finalize/failure = 2), reserve-before-NTS, terminal replay, both official endpoint decoders (`01` active, `02` suspended, `03` closed), the 8-second monotonic budget with a 6-second external cutoff and 2-second persistence margin, timeout-to-failure persistence before finalize, bounded `202` finalize indeterminate replay semantics, bounded `503` failure-persistence uncertainty, per-transport AbortSignals, UTF-8-byte HMAC limits, finalize/failure privacy, and reader/timer cleanup.
 
 ## 2. development cloud integration+cleanup
 
