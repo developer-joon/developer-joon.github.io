@@ -3,8 +3,8 @@ import { getSupabaseClient } from '../lib/supabase'
 import { isBenefitCompanyId } from '../lib/benefitCompanyId'
 import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
 import { comparePostgresTimestamps, parsePostgresTimestampMicros } from '../lib/postgresTimestamp'
-import { isBenefitDraftSourceUrl, validCalendarDate } from '../lib/benefitDraftSupport'
-import { createBenefitSubmissionSessionProvider, isStrictBenefitRpcEnvelope, isBenefitSubmissionSourceUrl, type BenefitSubmissionRpcResponse, type BenefitSubmissionSessionContext } from './benefitSubmissionRepository'
+import { isStrictBenefitClaimSourceUrl, validCalendarDate } from '../lib/benefitDraftSupport'
+import { createBenefitSubmissionSessionProvider, isStrictBenefitRpcEnvelope, type BenefitSubmissionRpcResponse, type BenefitSubmissionSessionContext } from './benefitSubmissionRepository'
 import { BENEFIT_DIRECTORY_CATEGORIES, type BenefitDirectoryCategory } from '../types/benefitDirectory'
 import { BENEFIT_CLAIM_STATUSES, type ActiveBenefitClaimStatus, type BenefitClaimAuditInput, type BenefitClaimAuditItem, type BenefitClaimCreateInput, type BenefitClaimCreateResult, type BenefitClaimErrorCode, type BenefitClaimEvidenceType, type BenefitClaimListInput, type BenefitClaimModerateInput, type BenefitClaimModerationResult, type BenefitClaimOfficialVerifyInput, type BenefitClaimOfficialVerifyResult, type BenefitClaimOwnerItem, type BenefitClaimPage, type BenefitClaimQueueInput, type BenefitClaimQueueItem, type BenefitClaimReactionInput, type BenefitClaimReactionResult, type BenefitClaimResult, type BenefitClaimStatus, type BenefitClaimWithdrawInput, type BenefitClaimWithdrawResult } from '../types/benefitClaims'
 
@@ -39,7 +39,7 @@ function category(v:unknown):v is BenefitDirectoryCategory{return typeof v==='st
 function status(v:unknown):v is BenefitClaimStatus{return typeof v==='string'&&statusValues.includes(v)}
 function activeStatus(v:unknown):v is ActiveBenefitClaimStatus{return typeof v==='string'&&(active as readonly string[]).includes(v)}
 function evidence(v:unknown):v is BenefitClaimEvidenceType{return typeof v==='string'&&(evidenceValues as readonly string[]).includes(v)}
-function url(v:unknown):v is string{return isBenefitSubmissionSourceUrl(v)&&isBenefitDraftSourceUrl(v)}
+function url(v:unknown):v is string{return isStrictBenefitClaimSourceUrl(v)}
 function chronology(a:string,b:string){return comparePostgresTimestamps(b,a)>=0}
 function decodeOwner(v:unknown):BenefitClaimOwnerItem{if(!record(v)||!exact(v,ownerKeys)||!uuid(v.claim_id)||!isBenefitCompanyId(v.company_id)||!text(v.company_name,200)||!category(v.category_id)||!text(v.title,200)||!text(v.description,1000)||!nullableText(v.eligibility_text,500)||!nullableText(v.condition_text,500)||!date(v.observed_on)||!status(v.status)||!integer(v.revision,1)||!timestamp(v.created_at)||!timestamp(v.updated_at)||(v.withdrawn_at!==null&&!timestamp(v.withdrawn_at)))throw Error();if(!chronology(v.created_at,v.updated_at)||(v.status==='withdrawn')!==(v.withdrawn_at!==null)||(v.withdrawn_at!==null&&(!chronology(v.created_at,v.withdrawn_at)||comparePostgresTimestamps(v.withdrawn_at,v.updated_at)!==0)))throw Error();return{claimId:v.claim_id.toLowerCase(),companyId:v.company_id,companyName:v.company_name,categoryId:v.category_id,title:v.title,description:v.description,eligibilityText:v.eligibility_text,conditionText:v.condition_text,observedOn:v.observed_on,status:v.status,revision:v.revision,createdAt:v.created_at,updatedAt:v.updated_at,withdrawnAt:v.withdrawn_at}}
 type Cursor={createdAt:string;id:string;kind?:string}

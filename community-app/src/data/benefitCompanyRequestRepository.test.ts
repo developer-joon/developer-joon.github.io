@@ -124,6 +124,26 @@ describe('benefit company request repository', () => {
     expect(invoke).toHaveBeenCalledTimes(1); expect(rpc).not.toHaveBeenCalled()
   })
 
+  it.each(['https://%65xample.com', 'https://예시.한국'])('manual requests reject raw-authority variant %s', async website => {
+    const rpc = vi.fn()
+    const repo = createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', rpc) })
+    await expect(repo.createManual({ ...manual, website })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['https://예시.한국', true],
+    ['https://%65xample.com', true],
+    ['https://user@example.com', false],
+    ['https://localhost/x', false],
+  ] as const)('NTS requests use the Edge website contract for %s', async (website, accepted) => {
+    const invoke = vi.fn(async () => new Response(JSON.stringify({ requestId, status: 'approved', verificationStatus: 'matched', message: '사업자 확인이 완료되었습니다.' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const repo = createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', vi.fn(), invoke) })
+    const result = await repo.verifyWithNts({ clientKey, businessName: '테스트 기업', businessNumber: '1234567890', openingDate: '20260131', representativeName: '홍길동', region: null, industry: null, website })
+    expect(result.ok).toBe(accepted)
+    expect(invoke).toHaveBeenCalledTimes(accepted ? 1 : 0)
+  })
+
   it.each([
     ['bad content type', new Response('{}', { status: 200, headers: { 'content-type': 'text/plain' } })],
     ['malformed body', new Response('{', { status: 200, headers: { 'content-type': 'application/json' } })],

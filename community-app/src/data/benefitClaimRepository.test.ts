@@ -99,11 +99,18 @@ describe('benefit claim repository', () => {
     expect(rpc).not.toHaveBeenCalled()
   })
 
-  it.each(['https://example.com/?sig=secret', 'https://example.com/?x=%23', 'https://example.com/?x=1;y=2', 'https://example.com/?%61uth=x', 'https://example.com/#fragment'])('rejects unsafe source URL %s', async sourceUrl => {
+  it.each(['https://%65xample.com', 'https://예시.한국/policy', 'https://example.com/?sig=secret', 'https://example.com/?x=%23', 'https://example.com/?x=1;y=2', 'https://example.com/?%61uth=x', 'https://example.com/#fragment'])('rejects unsafe source URL %s', async sourceUrl => {
     const rpc = vi.fn()
     const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
     await expect(repo.createClaim({ ...createInput, sourceUrl })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
     expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('accepts a safe ASCII FQDN source URL', async () => {
+    const rpc = vi.fn(async () => ok({ claim_id: claimId, outcome: 'created' }))
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
+    await expect(repo.createClaim({ ...createInput, sourceUrl: 'https://docs.example.com/policy?locale=ko' })).resolves.toMatchObject({ ok: true })
+    expect(rpc).toHaveBeenCalled()
   })
 
   it('requires the shared exact submission transport envelope', async () => {
