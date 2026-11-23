@@ -22,9 +22,9 @@ function source() {
 }
 
 async function fixture() {
-  const root = await mkdtemp(path.join(tmpdir(),'opendart-verifier-')); const sourceFile = path.join(root,'corp.zip'); const bundleDir = path.join(root,'bundle')
-  await writeFile(sourceFile, source()); await generateOpenDartBundle({ sourceFile, bundleDir, outputDir: bundleDir, ...options })
-  return { root, sourceFile, bundleDir }
+  const root = await mkdtemp(path.join(tmpdir(),'opendart-verifier-')); const sourceFile = path.join(root,'corp.zip'); const bundleDir = path.join(root,'bundle'); const authorityFile=path.join(root,'authority.json'); const bytes=source()
+  await writeFile(sourceFile, bytes); await writeFile(authorityFile,JSON.stringify({schema_version:'benefit-directory-opendart-authority-v1',source_edition:options.edition,official_url:options.sourceUrl,reuse_rights_note:options.reuseRights,source_sha256:sha(bytes),retrieved_at:options.retrievedAt})+'\n'); await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: bundleDir })
+  return { root, sourceFile, authorityFile, bundleDir }
 }
 
 async function rewriteManifest(bundleDir, updater) {
@@ -35,7 +35,7 @@ async function rewriteManifest(bundleDir, updater) {
 
 test('independent verifier accepts canonical source-bound bundle', async () => {
   const f = await fixture()
-  try { const result = await verifyOpenDartBundle({ sourceFile: f.sourceFile, bundleDir: f.bundleDir }); assert.equal(result.companyCount, 2); assert.equal(result.sourceSha256, sha(source())) } finally { await rm(f.root,{recursive:true,force:true}) }
+  try { const result = await verifyOpenDartBundle({ sourceFile: f.sourceFile, authorityFile:f.authorityFile, bundleDir: f.bundleDir }); assert.equal(result.companyCount, 2); assert.equal(result.sourceSha256, sha(source())) } finally { await rm(f.root,{recursive:true,force:true}) }
 })
 
 test('verifier rejects deletion even after mutable manifest digest/count recomputation', async () => {
@@ -43,7 +43,7 @@ test('verifier rejects deletion even after mutable manifest digest/count recompu
   try {
     const file = path.join(f.bundleDir,'companies.ndjson'); const rows = (await readFile(file,'utf8')).trim().split('\n'); rows.pop(); const bytes = Buffer.from(rows.join('\n')+'\n'); await writeFile(file,bytes)
     await rewriteManifest(f.bundleDir, manifest => { manifest.company_count--; manifest.outputs.companies.byte_count=bytes.length; manifest.outputs.companies.sha256=sha(bytes) })
-    await assert.rejects(verifyOpenDartBundle({ sourceFile:f.sourceFile,bundleDir:f.bundleDir }), /source authority|count|set|binding/i)
+    await assert.rejects(verifyOpenDartBundle({ sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir }), /source authority|count|set|binding/i)
   } finally { await rm(f.root,{recursive:true,force:true}) }
 })
 
@@ -55,17 +55,25 @@ test('verifier rejects substituted corp code, altered edition, and recomputed ou
       if (mutation === 'code') ids[0].identifier_digest_or_value='00123457'; else ids[0].source_edition='other-edition'
       const bytes=Buffer.from(ids.map(JSON.stringify).join('\n')+'\n'); await writeFile(idFile,bytes)
       await rewriteManifest(f.bundleDir, manifest => { manifest.outputs.identifiers.byte_count=bytes.length; manifest.outputs.identifiers.sha256=sha(bytes) })
-      await assert.rejects(verifyOpenDartBundle({ sourceFile:f.sourceFile,bundleDir:f.bundleDir }), /authority|edition|identifier|deterministic/i)
+      await assert.rejects(verifyOpenDartBundle({ sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir }), /authority|edition|identifier|deterministic/i)
     } finally { await rm(f.root,{recursive:true,force:true}) }
   }
+})
+
+test('verifier rejects self-consistently rehashed manifest authority changes while authority is fixed',async()=>{
+  const f=await fixture()
+  try{
+    await rewriteManifest(f.bundleDir,m=>{m.authority.source_edition='forged';m.source.edition='forged';m.authority.official_url='https://attacker.example/corpCode.xml';m.source.url=m.authority.official_url})
+    await assert.rejects(verifyOpenDartBundle({sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir}),/authority|binding/i)
+  }finally{await rm(f.root,{recursive:true,force:true})}
 })
 
 test('verifier rejects symlink bundle components and source', async () => {
   const f = await fixture()
   try {
     const copy = path.join(f.root,'companies.copy'); await cp(path.join(f.bundleDir,'companies.ndjson'),copy); await rm(path.join(f.bundleDir,'companies.ndjson')); await symlink(copy,path.join(f.bundleDir,'companies.ndjson'))
-    await assert.rejects(verifyOpenDartBundle({ sourceFile:f.sourceFile,bundleDir:f.bundleDir }), /symlink|regular|unsafe/i)
+    await assert.rejects(verifyOpenDartBundle({ sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir }), /symlink|regular|unsafe/i)
     const sourceLink=path.join(f.root,'source-link.zip'); await symlink(f.sourceFile,sourceLink)
-    await assert.rejects(verifyOpenDartBundle({ sourceFile:sourceLink,bundleDir:f.bundleDir }), /symlink|regular|unsafe/i)
+    await assert.rejects(verifyOpenDartBundle({ sourceFile:sourceLink,authorityFile:f.authorityFile,bundleDir:f.bundleDir }), /symlink|regular|unsafe/i)
   } finally { await rm(f.root,{recursive:true,force:true}) }
 })

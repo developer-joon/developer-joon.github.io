@@ -4,12 +4,13 @@ This pipeline adds official OpenDART corporation identities without modifying th
 
 ## Authority and acquisition
 
-The generator never fetches the network. Obtain the ZIP from the official OpenDART `corpCode.xml` API using an owner-managed `OPENDART_API_KEY` outside this command, retain the original response bytes, and record:
+The generator never fetches the network. Obtain the ZIP from the official OpenDART `corpCode.xml` API using an owner-managed `OPENDART_API_KEY` outside this command. An owner must then review and create a separate authority descriptor (the planned tracked production path is `supabase/fixtures/benefit-directory-opendart-authority.json`) with exactly these keys:
 
-- the exact edition assigned to those bytes;
-- an RFC 3339 UTC retrieval timestamp;
-- `https://opendart.fss.or.kr/api/corpCode.xml` as the official source URL;
-- the reviewed reuse-rights/attribution note.
+```json
+{"schema_version":"benefit-directory-opendart-authority-v1","source_edition":"<reviewed edition>","official_url":"https://opendart.fss.or.kr/api/corpCode.xml","reuse_rights_note":"<reviewed bounded note>","source_sha256":"<sha256 of retained ZIP>","retrieved_at":"<RFC3339 UTC>"}
+```
+
+The descriptor is caller/owner controlled, bounded, read without following symlinks, and is never generated or overwritten by the generator. The URL is an exact allowlist, not an arbitrary HTTPS URL. Do **not** create the planned production descriptor or bundle until authentic official bytes and reuse-rights review exist. That external source/review remains the production blocker.
 
 Do not put API keys, request URLs containing keys, or credentials in the repository, shell history, manifest, or logs. There is no acquisition command in this repository because no key is present and a source must not be fabricated or substituted.
 
@@ -17,26 +18,22 @@ The reader uses bounded no-follow descriptor reads. It validates one exact case-
 
 ## Generate, check, and verify
 
-Use a private owner-only output parent. Generation arguments are all explicit:
+Use a pre-existing caller-owned output parent that is not a symlink and is not group/world writable (`mode & 0022 == 0`; tracked `0755` fixture parents are valid). Generation arguments are explicit:
 
 ```bash
 node scripts/generate-opendart-benefit-directory.mjs \
   --source "$HOME/private/opendart/corpCode-2026-11-23.zip" \
-  --edition 2026-11-23 \
-  --retrieved-at 2026-11-23T00:00:00Z \
-  --source-url https://opendart.fss.or.kr/api/corpCode.xml \
-  --reuse-rights 'reviewed attribution note' \
+  --authority supabase/fixtures/benefit-directory-opendart-authority.json \
   --output supabase/fixtures/benefit-directory-opendart
 
 node scripts/generate-opendart-benefit-directory.mjs --check \
   --source "$HOME/private/opendart/corpCode-2026-11-23.zip" \
-  --edition 2026-11-23 --retrieved-at 2026-11-23T00:00:00Z \
-  --source-url https://opendart.fss.or.kr/api/corpCode.xml \
-  --reuse-rights 'reviewed attribution note' \
+  --authority supabase/fixtures/benefit-directory-opendart-authority.json \
   --output supabase/fixtures/benefit-directory-opendart
 
 node scripts/verify-opendart-benefit-directory.mjs \
   --source "$HOME/private/opendart/corpCode-2026-11-23.zip" \
+  --authority supabase/fixtures/benefit-directory-opendart-authority.json \
   --bundle supabase/fixtures/benefit-directory-opendart
 ```
 
@@ -55,9 +52,11 @@ export PSQL_BIN="$(realpath "$(command -v psql)")"
 export DATABASE_URL='postgresql://postgres:***@127.0.0.1:54322/postgres'
 node scripts/apply-opendart-benefit-directory.mjs \
   --source "$HOME/private/opendart/corpCode-2026-11-23.zip" \
+  --authority supabase/fixtures/benefit-directory-opendart-authority.json \
   --bundle supabase/fixtures/benefit-directory-opendart --dry-run
 node scripts/apply-opendart-benefit-directory.mjs \
   --source "$HOME/private/opendart/corpCode-2026-11-23.zip" \
+  --authority supabase/fixtures/benefit-directory-opendart-authority.json \
   --bundle supabase/fixtures/benefit-directory-opendart --apply
 ```
 

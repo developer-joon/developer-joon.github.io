@@ -11,6 +11,8 @@ const MAX_XML_BYTES = 64 * 1024 * 1024
 const MAX_ROWS = 200_000
 const MAX_RATIO = 200
 const BASE = Object.freeze({ company_count: 40053, source_sha256: 'b7e61860d69f289735f42a6ae275c8a5303cbde367036f77865c7b20de7b9594' })
+const AUTHORITY_KEYS = ['schema_version','source_edition','official_url','reuse_rights_note','source_sha256','retrieved_at']
+const OFFICIAL_URL = 'https://opendart.fss.or.kr/api/corpCode.xml'
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const crc32 = bytes => { let crc=0xffffffff; for(const byte of bytes){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^(0xedb88320&-(crc&1))}return(crc^0xffffffff)>>>0 }
 const compare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))
@@ -108,7 +110,29 @@ const requireMetadata = options => {
   bounded(options.reuseRights,'reuse-rights',1000)
 }
 
+export function validateOpenDartAuthority(authority, sourceBytes) {
+  if (!authority || typeof authority !== 'object' || Array.isArray(authority) || Object.keys(authority).sort().join('\0') !== [...AUTHORITY_KEYS].sort().join('\0')) throw Error('authority descriptor exact shape invalid')
+  if (authority.schema_version !== 'benefit-directory-opendart-authority-v1') throw Error('authority descriptor schema version invalid')
+  bounded(authority.source_edition,'authority source edition',100)
+  if (authority.official_url !== OFFICIAL_URL) throw Error('authority official URL is not allowlisted')
+  bounded(authority.reuse_rights_note,'authority reuse rights note',4000)
+  if (!/^[0-9a-f]{64}$/.test(authority.source_sha256) || authority.source_sha256 !== sha(sourceBytes)) throw Error('authority source sha256 mismatch')
+  bounded(authority.retrieved_at,'authority retrieval timestamp',64)
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(authority.retrieved_at) || !Number.isFinite(Date.parse(authority.retrieved_at))) throw Error('authority retrieval timestamp invalid')
+  return Object.freeze({...authority})
+}
+
+async function readAuthority(authorityFile, sourceBytes) {
+  if (!authorityFile) throw Error('--authority is required')
+  const bytes=await readNoFollow(authorityFile,16*1024,'OpenDART authority descriptor')
+  let authority
+  try { authority=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) } catch { throw Error('authority descriptor JSON invalid') }
+  return validateOpenDartAuthority(authority,sourceBytes)
+}
+
 export function buildOpenDartBundle(sourceBytes, options={}) {
+  const authority=options.schema_version==='benefit-directory-opendart-authority-v1'?validateOpenDartAuthority(options,sourceBytes):null
+  if(authority) options={edition:authority.source_edition,retrievedAt:authority.retrieved_at,sourceUrl:authority.official_url,reuseRights:authority.reuse_rights_note}
   requireMetadata(options); const sourceRows=parseCorpCodeZip(sourceBytes); const ids=new Set(); const identifierIds=new Set()
   const joined=sourceRows.map(row=>{
     const id=companyId(options.edition,row.corp_code), identifierId=identifierUuid(options.edition,row.corp_code)
@@ -118,7 +142,7 @@ export function buildOpenDartBundle(sourceBytes, options={}) {
   }).sort((a,b)=>compare(a.code,b.code))
   const companies=joined.map(x=>x.company), identifiers=joined.map(x=>x.identifier), companiesNdjson=jsonLines(companies), identifiersNdjson=jsonLines(identifiers)
   const ordered=Buffer.from(joined.map(x=>`${x.code}\0${x.company.company_id}\n`).join(''))
-  const manifest={ schema_version:'benefit-directory-opendart-v1', source:{ sha256:sha(sourceBytes), byte_count:sourceBytes.length, edition:options.edition, retrieved_at:options.retrievedAt, row_count:sourceRows.length, url:options.sourceUrl, reuse_rights:options.reuseRights, member:'CORPCODE.xml' }, company_count:companies.length, identifier_count:identifiers.length, ordered_code_company_sha256:sha(ordered), outputs:{ companies:{ path:'companies.ndjson', byte_count:companiesNdjson.length, sha256:sha(companiesNdjson) }, identifiers:{ path:'identifiers.ndjson', byte_count:identifiersNdjson.length, sha256:sha(identifiersNdjson) } }, base_seed_preservation:BASE, generation_contract:{ ordering:'UTF-8 byte order of corp_code', company_id:'SHA-256 domain benefit-directory-opendart-company-v1 over length-framed edition and corp_code; first 32 lowercase hex; collision checked', identifier_id:'RFC 4122-shaped deterministic UUID from separate SHA-256 domain; collision checked', line_format:'canonical JSON key insertion order, one record per LF-terminated line' } }
+  const manifest={ schema_version:'benefit-directory-opendart-v1', ...(authority?{authority}:{}), source:{ sha256:sha(sourceBytes), byte_count:sourceBytes.length, edition:options.edition, retrieved_at:options.retrievedAt, row_count:sourceRows.length, url:options.sourceUrl, reuse_rights:options.reuseRights, member:'CORPCODE.xml' }, company_count:companies.length, identifier_count:identifiers.length, ordered_code_company_sha256:sha(ordered), outputs:{ companies:{ path:'companies.ndjson', byte_count:companiesNdjson.length, sha256:sha(companiesNdjson) }, identifiers:{ path:'identifiers.ndjson', byte_count:identifiersNdjson.length, sha256:sha(identifiersNdjson) } }, base_seed_preservation:BASE, generation_contract:{ ordering:'UTF-8 byte order of corp_code', company_id:'SHA-256 domain benefit-directory-opendart-company-v1 over length-framed edition and corp_code; first 32 lowercase hex; collision checked', identifier_id:'RFC 4122-shaped deterministic UUID from separate SHA-256 domain; collision checked', line_format:'canonical JSON key insertion order, one record per LF-terminated line' } }
   return { manifest, companies, identifiers, companiesNdjson, identifiersNdjson, manifestBytes:Buffer.from(JSON.stringify(manifest)+'\n') }
 }
 
@@ -130,10 +154,10 @@ async function compareTracked(destination,built) {
   if(!actual[0].equals(built.manifestBytes)||!actual[1].equals(built.companiesNdjson)||!actual[2].equals(built.identifiersNdjson)) throw Error('tracked OpenDART bundle differs from source authority')
 }
 
-export async function generateOpenDartBundle({sourceFile,outputDir,check=false,edition,retrievedAt,sourceUrl,reuseRights,testOnly}={}) {
-  if(!sourceFile||!outputDir) throw Error('sourceFile and outputDir are required'); const sourceBytes=await readNoFollow(sourceFile,MAX_ZIP_BYTES,'OpenDART source'); const built=buildOpenDartBundle(sourceBytes,{edition,retrievedAt,sourceUrl,reuseRights}); const destination=path.resolve(outputDir)
+export async function generateOpenDartBundle({sourceFile,authorityFile,outputDir,check=false,testOnly}={}) {
+  if(!sourceFile||!outputDir) throw Error('sourceFile and outputDir are required'); const sourceBytes=await readNoFollow(sourceFile,MAX_ZIP_BYTES,'OpenDART source'); const authority=await readAuthority(authorityFile,sourceBytes); const built=buildOpenDartBundle(sourceBytes,authority); const destination=path.resolve(outputDir)
   if(check){ await compareTracked(destination,built); return built }
-  const parent=path.dirname(destination), stat=await lstat(parent); if(!stat.isDirectory()||stat.uid!==process.getuid()||(stat.mode&0o077)!==0) throw Error('output parent must be pre-existing, owner-only, and owned by current user')
+  const parent=path.dirname(destination), stat=await lstat(parent); if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||(stat.mode&0o022)!==0) throw Error('output parent must be pre-existing, caller-owned, non-symlink, and not group/world writable')
   const lockPath=`${destination}.generate.lock`; let lock
   try { lock=await open(lockPath,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600) } catch(error){ if(error?.code==='EEXIST') throw Error('OpenDART generation lock is held'); throw error }
   let stage,backupContainer
@@ -148,9 +172,9 @@ export async function generateOpenDartBundle({sourceFile,outputDir,check=false,e
   } finally { if(stage) await rm(stage,{recursive:true,force:true}); if(backupContainer) await rm(backupContainer,{recursive:true,force:true}); await lock.close(); await rm(lockPath,{force:true}) }
 }
 
-function cliArgs(args){ const result={check:false}; for(let i=0;i<args.length;i++){ const arg=args[i]; if(arg==='--check') result.check=true; else if(['--source','--output','--edition','--retrieved-at','--source-url','--reuse-rights'].includes(arg)){ if(!args[i+1]) throw Error(`missing value for ${arg}`); result[arg.slice(2).replaceAll('-','_')]=args[++i] } else throw Error('unknown argument '+arg) } return result }
+function cliArgs(args){ const result={check:false}; for(let i=0;i<args.length;i++){ const arg=args[i]; if(arg==='--check') result.check=true; else if(['--source','--authority','--output'].includes(arg)){ if(!args[i+1]) throw Error(`missing value for ${arg}`); result[arg.slice(2)]=args[++i] } else throw Error('unknown argument '+arg) } return result }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  const a=cliArgs(process.argv.slice(2)); const required=['source','edition','retrieved_at','source_url','reuse_rights']; for(const k of required) if(!a[k]) throw Error(`--${k.replaceAll('_','-')} is required`)
-  const repo=path.resolve(import.meta.dirname,'..'); const result=await generateOpenDartBundle({sourceFile:a.source,outputDir:a.output??path.join(repo,'supabase/fixtures/benefit-directory-opendart'),check:a.check,edition:a.edition,retrievedAt:a.retrieved_at,sourceUrl:a.source_url,reuseRights:a.reuse_rights})
+  const a=cliArgs(process.argv.slice(2)); for(const k of ['source','authority']) if(!a[k]) throw Error(`--${k} is required`)
+  const repo=path.resolve(import.meta.dirname,'..'); const result=await generateOpenDartBundle({sourceFile:a.source,authorityFile:a.authority,outputDir:a.output??path.join(repo,'supabase/fixtures/benefit-directory-opendart'),check:a.check})
   console.log(`OpenDART bundle ${a.check?'checked':'generated'}: ${result.manifest.company_count} companies; source sha256 ${result.manifest.source.sha256}`)
 }

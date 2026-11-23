@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { createHash } from 'node:crypto'
 import { deflateRawSync } from 'node:zlib'
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -84,14 +86,16 @@ test('pins source digest, edition, retrieval metadata, counts, and frozen base s
 test('normal generation is deterministic and check mode is read-only', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opendart-generator-'))
   try {
-    const source = path.join(root, 'corp.zip'); const output = path.join(root, 'bundle')
-    await writeFile(source, zip(xml()), { mode: 0o600 })
-    await generateOpenDartBundle({ sourceFile: source, outputDir: output, ...options })
+    const source = path.join(root, 'corp.zip'); const output = path.join(root, 'bundle'); const authority = path.join(root,'authority.json')
+    const sourceBytes=zip(xml())
+    await writeFile(source, sourceBytes, { mode: 0o600 })
+    await writeFile(authority,JSON.stringify({schema_version:'benefit-directory-opendart-authority-v1',source_edition:options.edition,official_url:options.sourceUrl,reuse_rights_note:options.reuseRights,source_sha256:sha(sourceBytes),retrieved_at:options.retrievedAt})+'\n')
+    await generateOpenDartBundle({ sourceFile: source, authorityFile:authority, outputDir: output })
     const before = [await readFile(path.join(output,'manifest.json')), await readFile(path.join(output,'companies.ndjson')), await readFile(path.join(output,'identifiers.ndjson'))]
-    await generateOpenDartBundle({ sourceFile: source, outputDir: output, check: true, ...options })
+    await generateOpenDartBundle({ sourceFile: source, authorityFile:authority, outputDir: output, check: true })
     assert.deepEqual([await readFile(path.join(output,'manifest.json')), await readFile(path.join(output,'companies.ndjson')), await readFile(path.join(output,'identifiers.ndjson'))], before)
     const absentParent = path.join(root, 'absent')
-    await assert.rejects(generateOpenDartBundle({ sourceFile: source, outputDir: path.join(absentParent,'bundle'), check: true, ...options }), /absent|missing|ENOENT/i)
+    await assert.rejects(generateOpenDartBundle({ sourceFile: source, authorityFile:authority, outputDir: path.join(absentParent,'bundle'), check: true }), /absent|missing|ENOENT/i)
     await assert.rejects(readdir(absentParent), error => error?.code === 'ENOENT')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
@@ -113,13 +117,55 @@ test('apply SQL uses framed UTF-8 digests, strong-code conflicts, exact preserva
 test('no-follow source and output reads reject symlinks and failed replacement preserves old bundle', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opendart-symlink-'))
   try {
-    const real = path.join(root,'real.zip'); const link = path.join(root,'link.zip'); const output = path.join(root,'bundle')
-    await writeFile(real, zip(xml())); await symlink(real, link)
-    await assert.rejects(generateOpenDartBundle({ sourceFile: link, outputDir: output, ...options }), /symlink|unsafe/i)
-    await generateOpenDartBundle({ sourceFile: real, outputDir: output, ...options })
+    const real = path.join(root,'real.zip'); const link = path.join(root,'link.zip'); const output = path.join(root,'bundle'); const authority=path.join(root,'authority.json')
+    const sourceBytes=zip(xml()); await writeFile(real, sourceBytes); await writeFile(authority,JSON.stringify({schema_version:'benefit-directory-opendart-authority-v1',source_edition:options.edition,official_url:options.sourceUrl,reuse_rights_note:options.reuseRights,source_sha256:sha(sourceBytes),retrieved_at:options.retrievedAt})+'\n'); await symlink(real, link)
+    await assert.rejects(generateOpenDartBundle({ sourceFile: link, authorityFile:authority, outputDir: output }), /symlink|unsafe/i)
+    await generateOpenDartBundle({ sourceFile: real, authorityFile:authority, outputDir: output })
     const before = await readFile(path.join(output,'manifest.json'))
-    await assert.rejects(generateOpenDartBundle({ sourceFile: real, outputDir: output, ...options, testOnly: { beforeInstall: () => { throw Error('injected replacement failure') } } }), /injected/)
+    await assert.rejects(generateOpenDartBundle({ sourceFile: real, authorityFile:authority, outputDir: output, testOnly: { beforeInstall: () => { throw Error('injected replacement failure') } } }), /injected/)
     assert.deepEqual(await readFile(path.join(output,'manifest.json')), before)
     await mkdir(path.join(root,'links')); await symlink(path.join(output,'companies.ndjson'), path.join(root,'links','companies.ndjson'))
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('requires a separate exact source-bound authority descriptor and permits a safe 0755 parent', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-authority-'))
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'source.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    await writeFile(sourceFile, sourceBytes)
+    await writeFile(authorityFile, JSON.stringify({
+      schema_version: 'benefit-directory-opendart-authority-v1',
+      source_edition: '2026-11-23',
+      official_url: 'https://opendart.fss.or.kr/api/corpCode.xml',
+      reuse_rights_note: 'Reviewed synthetic test fixture; not production authority.',
+      source_sha256: sha(sourceBytes),
+      retrieved_at: '2026-11-23T00:00:00Z',
+    }) + '\n')
+    await chmod(root,0o755)
+    await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: path.join(root, 'bundle') })
+    const manifest = JSON.parse(await readFile(path.join(root, 'bundle', 'manifest.json')))
+    assert.equal(manifest.authority.source_sha256, sha(sourceBytes))
+    const bad = { ...manifest.authority, official_url: 'https://attacker.example/corpCode.xml' }
+    await writeFile(authorityFile, JSON.stringify(bad) + '\n')
+    await assert.rejects(generateOpenDartBundle({ sourceFile, authorityFile, outputDir: path.join(root, 'bad') }), /authority|official|URL/i)
+    await writeFile(authorityFile,JSON.stringify(manifest.authority)+'\n');await chmod(root,0o775)
+    await assert.rejects(generateOpenDartBundle({sourceFile,authorityFile,outputDir:path.join(root,'writable')}),/writable|parent/i)
+  } finally { await chmod(root,0o700).catch(()=>{}); await rm(root, { recursive: true, force: true }) }
+})
+
+test('production apply CLI kills and reaps a TERM-ignoring psql group and removes temp custody', async () => {
+  const root=await mkdtemp(path.join(tmpdir(),'opendart-signal-'))
+  try {
+    const sourceBytes=zip(xml()),sourceFile=path.join(root,'source.zip'),authorityFile=path.join(root,'authority.json'),bundleDir=path.join(root,'bundle'),shim=path.join(root,'psql-shim'),pidFile=path.join(root,'child.pid'),applyTmp=path.join(root,'tmp')
+    await mkdir(applyTmp,{mode:0o700});await writeFile(sourceFile,sourceBytes);await writeFile(authorityFile,JSON.stringify({schema_version:'benefit-directory-opendart-authority-v1',source_edition:options.edition,official_url:options.sourceUrl,reuse_rights_note:options.reuseRights,source_sha256:sha(sourceBytes),retrieved_at:options.retrievedAt})+'\n')
+    await generateOpenDartBundle({sourceFile,authorityFile,outputDir:bundleDir})
+    await writeFile(shim,`#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'psql (PostgreSQL) 17.1'; exit 0; fi\ntrap '' TERM INT\necho $$ > '${pidFile}'\nwhile :; do sleep 1; done\n`,{mode:0o700})
+    const child=spawn(process.execPath,['scripts/apply-opendart-benefit-directory.mjs','--source',sourceFile,'--authority',authorityFile,'--bundle',bundleDir,'--dry-run'],{cwd:path.resolve(import.meta.dirname,'..'),env:{...process.env,TMPDIR:applyTmp,PSQL_BIN:shim,DATABASE_URL:'postgresql://user:secret@127.0.0.1:5432/test'}})
+    for(let i=0;i<100;i++){try{await readFile(pidFile);break}catch{await new Promise(r=>setTimeout(r,25))}}
+    const psqlPid=Number((await readFile(pidFile,'utf8')).trim());child.kill('SIGTERM');const [code]=await once(child,'close');assert.equal(code,143)
+    assert.throws(()=>process.kill(psqlPid,0),error=>error?.code==='ESRCH')
+    assert.deepEqual((await readdir(applyTmp)).filter(name=>name.startsWith('opendart-apply-')),[])
+  } finally {await rm(root,{recursive:true,force:true})}
 })

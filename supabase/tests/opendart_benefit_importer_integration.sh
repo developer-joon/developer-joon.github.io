@@ -12,7 +12,14 @@ xml='''<?xml version="1.0" encoding="UTF-8"?><result><list><corp_code>00123456</
 with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED) as z:z.writestr('CORPCODE.xml',xml)
 PY
 chmod 600 "$root/source.zip"
-node "$repo/scripts/generate-opendart-benefit-directory.mjs" --source "$root/source.zip" --output "$root/bundle" --edition 2026-11-23 --retrieved-at 2026-11-23T00:00:00Z --source-url https://opendart.fss.or.kr/api/corpCode.xml --reuse-rights 'OpenDART attribution required' >/dev/null
+python3 - "$root/source.zip" "$root/authority.json" <<'PY'
+import hashlib,json,sys
+source=open(sys.argv[1],'rb').read()
+a={'schema_version':'benefit-directory-opendart-authority-v1','source_edition':'2026-11-23','official_url':'https://opendart.fss.or.kr/api/corpCode.xml','reuse_rights_note':'Reviewed synthetic integration fixture; not production authority.','source_sha256':hashlib.sha256(source).hexdigest(),'retrieved_at':'2026-11-23T00:00:00Z'}
+open(sys.argv[2],'w').write(json.dumps(a,separators=(',',':'))+'\n')
+PY
+chmod 600 "$root/authority.json"
+node "$repo/scripts/generate-opendart-benefit-directory.mjs" --source "$root/source.zip" --authority "$root/authority.json" --output "$root/bundle" >/dev/null
 "$cli" start >/dev/null; started=1
 "$cli" db reset --local --no-seed >/dev/null
 eval "$("$cli" status -o env 2>/dev/null)"; export DATABASE_URL="$DB_URL"
@@ -28,9 +35,23 @@ else
   q(){ docker exec -i "$container" psql -U postgres -d postgres -X -v ON_ERROR_STOP=1 -Atqc "$1"; }
 fi
 base_before="$(q "select count(*)||':'||(select count(*) from public.benefit_publications)||':'||(select count(*) from private.benefit_import_receipts)")"
-args=(node "$repo/scripts/apply-opendart-benefit-directory.mjs" --source "$root/source.zip" --bundle "$root/bundle")
+args=(node "$repo/scripts/apply-opendart-benefit-directory.mjs" --source "$root/source.zip" --authority "$root/authority.json" --bundle "$root/bundle")
 "${args[@]}" --dry-run >/dev/null
 [[ "$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code')||':'||(select count(*) from private.benefit_import_receipts)")" == "${base_before%%:*}:0:${base_before##*:}" ]]
+# Every import-owned target is verified after triggers; rewrites must roll back.
+for target in company identifier source receipt; do
+  case "$target" in
+    company) table=public.benefit_companies; body="new.display_name:='trigger rewrite'; new.normalized_name:='trigger rewrite';" ;;
+    identifier) table=public.benefit_company_identifiers; body="new.source_edition:='trigger-rewrite';" ;;
+    source) table=private.benefit_company_sources; body="new.source_binding:=new.source_binding||'{\"trigger\":true}'::jsonb;" ;;
+    receipt) table=private.benefit_import_receipts; body="new.company_count:=new.company_count+1;" ;;
+  esac
+  q "create function private.test_opendart_${target}_rewrite() returns trigger language plpgsql set search_path='' as \$\$ begin ${body} return new; end \$\$; create trigger test_opendart_${target}_rewrite before insert on ${table} for each row execute function private.test_opendart_${target}_rewrite()"
+  if "${args[@]}" --apply >/dev/null 2>&1; then echo "$target trigger rewrite unexpectedly succeeded" >&2; exit 1; fi
+  q "drop trigger test_opendart_${target}_rewrite on ${table}; drop function private.test_opendart_${target}_rewrite()"
+  [[ "$(q "select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code'")" == 0 ]]
+  [[ "$(q "select count(*) from private.benefit_company_sources where source_contract='opendart-corp-code-v1'")" == 0 ]]
+done
 "${args[@]}" --apply >/dev/null
 [[ "$(q "select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code'")" == 2 ]]
 [[ "$(q "select count(*) from private.benefit_import_receipts")" == $(( ${base_before##*:} + 1 )) ]]
