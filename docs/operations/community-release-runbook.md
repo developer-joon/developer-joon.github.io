@@ -132,7 +132,7 @@ After a second explicit operator confirmation, remove `--dry-run`, then deploy e
 : "${DEVELOPMENT_MUTATION_APPROVAL:?approval is required}"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   db push --project-ref "$DEVELOPMENT_PROJECT_REF"
-for function_name in validate-upload cleanup-attachments public-attachment; do
+for function_name in validate-upload cleanup-attachments public-attachment verify-benefit-company; do
   ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
     functions deploy "$function_name" --project-ref "$DEVELOPMENT_PROJECT_REF"
 done
@@ -227,6 +227,78 @@ There is no destructive seed/schema down or bulk delete. A failed dry-run or fai
 
 `scripts/release-gate.mjs` never applies a hosted migration or seed, runs `db push`, deploys a Function or Pages, executes a canary, or writes to a hosted resource. Production-readiness remains revision-bound offline evidence aggregation.
 
+## NTS full business verification Function
+
+`verify-benefit-company` is a browser POST endpoint. Its gateway setting is
+`verify_jwt = false` by design: the handler bounds the bearer value, calls
+Supabase Auth `getUser` with `SUPABASE_URL` and `SUPABASE_ANON_KEY`, requires the
+current server-returned provider to be exactly `google`, and uses that same
+bearer transport for `reserve_benefit_company_nts_request_v1`. It never accepts
+a caller-supplied user ID. The service-role client is separate and is used only
+for the exact finalize/failure RPCs after reservation.
+
+Configure these exact secret names through the target's approved secret manager;
+never put their values in this repository, shell history, release evidence, a
+browser bundle, or logs:
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY` (or the target's compatible publishable key value)
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `NTS_SERVICE_KEY`
+- `BUSINESS_NUMBER_HMAC_SECRET` (at least 32 UTF-8 bytes, independently generated
+  per environment)
+- `BENEFIT_COMPANY_ALLOWED_ORIGINS` (one to ten comma-separated, exact HTTPS
+  origins; no wildcard, credentials, path, query, fragment, empty member, or
+  non-HTTPS development origin)
+
+The endpoint requires an `Origin` header even on POST and accepts only the exact
+configured allow-list. It requires `Authorization: Bearer ...`, canonical UUID
+`Idempotency-Key`, and `application/json`. Business numbers accept exactly ten
+digits or the user form `NNN-NN-NNNNN`; the NTS transport receives digits only.
+Opening dates are exact `YYYYMMDD` calendar dates. Raw business number,
+representative name, and opening date may cross the transient NTS request but
+must never enter an RPC payload, database row, response, error, or log. The only
+persistent identifier is lower-case
+`HMAC-SHA-256(BUSINESS_NUMBER_HMAC_SECRET,
+"breadlab:business-number:v1\\0" + ten_digits)`.
+
+Local validation is mock-only and must use the injected transport in
+`index.test.ts`; do not set an NTS key and do not make a real NTS request. Run:
+
+```bash
+npx --yes deno@2.9.6 check --lock=deno.lock --frozen-lockfile \
+  supabase/functions/verify-benefit-company/index.ts \
+  supabase/functions/verify-benefit-company/index.test.ts
+npx --yes deno@2.9.6 test --allow-env --allow-read \
+  --lock=deno.lock --frozen-lockfile \
+  supabase/functions/verify-benefit-company/index.test.ts
+npx --yes deno@2.9.6 fmt --check supabase/functions
+```
+
+Migration apply, Function secret configuration, and Function deployment are
+three separate hosted mutations and require target-specific approvals. A deploy
+success does not authorize an NTS request. After deployment, begin with
+configuration/read-only checks that do not submit identity data. A real NTS
+canary requires a separate recorded approval, a legitimate operator-controlled
+Google identity, a legally authorized real business verification case, the
+business owner's consent where required, and current NTS terms/quota review.
+Never fabricate a person, representative, opening date, Google identity, or
+business record for a canary. Record only safe status classes, timing buckets,
+and the opaque Edge request ID; never retain request/response bodies, bearer
+tokens, URLs containing the NTS service key, raw NTS details, or RPC errors.
+
+Kill switch: set both private feature flags `company_add_write_enabled` and
+`nts_verification_enabled` to disabled through a separately approved database
+operation; either flag makes reserve/finalize/failure fail closed. Also remove
+the Function route or its NTS secret only through an approved incident change.
+On NTS errors, malformed responses, timeout, status uncertainty, failure-RPC
+failure, or quota exhaustion, leave verification unavailable/rejected and do
+not manually finalize. Preserve sanitized evidence, disable the two write flags,
+forward-fix, rerun mock-only local tests, redeploy under fresh approval, and use
+the same idempotency key only for the exact same safe company payload. Do not
+claim JavaScript string zeroization; the handler only drops references and wipes
+mutable byte buffers where practical.
+
 ## Production backend, probes, Pages, and canary
 
 First complete [backup and recovery evidence](community-backup-restore.md). Only additive migrations are allowed. There is no destructive down migration: disable writes and forward-fix instead.
@@ -249,7 +321,7 @@ After approval, apply the same reviewed revision and explicit Function set:
 : "${PRODUCTION_BACKEND_APPROVAL:?approval is required}"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   db push --project-ref "$PRODUCTION_PROJECT_REF"
-for function_name in validate-upload cleanup-attachments public-attachment; do
+for function_name in validate-upload cleanup-attachments public-attachment verify-benefit-company; do
   ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
     functions deploy "$function_name" --project-ref "$PRODUCTION_PROJECT_REF"
 done

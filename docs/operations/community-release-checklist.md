@@ -22,12 +22,17 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Two fresh Docker site artifacts verify and reproduce byte-for-byte.
 - [ ] Task 16 E2E passes against local Docker; no intentional sentinel remains.
 - [ ] Local stack and only this run's temporary directory are cleaned; local evidence is current, run-identified, and revision-bound.
+- [ ] Run the pinned Deno check/test/fmt commands for `verify-benefit-company` with injected mock transport only; confirm no local or hosted NTS request occurred.
+- [ ] Confirm the NTS matrix covers strict origin/auth/body boundaries, reserve-before-NTS, terminal replay, both official endpoint decoders, timeout/transport failures, inactive status, HMAC/finalize privacy, failure-RPC privacy, and timer cleanup.
 
 ## 2. development cloud integration+cleanup
 
 - [ ] Read-only development gate passes against the dedicated hosted development ref.
 - [ ] Obtain development-only mutation approval; inspect migration dry run.
 - [ ] Apply reviewed development migration and deploy the explicit Function set to `--project-ref "$DEVELOPMENT_PROJECT_REF"`.
+- [ ] Separately approve and configure only the exact NTS Function names: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `NTS_SERVICE_KEY`, `BUSINESS_NUMBER_HMAC_SECRET`, and `BENEFIT_COMPANY_ALLOWED_ORIGINS`; record no values.
+- [ ] Confirm `verify-benefit-company` alone has its reviewed `verify_jwt = false` setting and performs server-side Auth `getUser`, exact current `google` provider enforcement, and bearer-bound reserve; no other Function setting is weakened.
+- [ ] Do not run a real development NTS call unless a distinct authorized-canary approval, legitimate consented business case, real operator-controlled Google identity, and quota/terms review are recorded. Never fabricate identity or business fields.
 - [ ] Verify the separate development Google OAuth client returns through `https://${DEVELOPMENT_PROJECT_REF}.supabase.co/auth/v1/callback`, then to `http://localhost:5173/community/auth/callback/`; confirm Kakao/GitHub remain disabled.
 - [ ] Run Task 16 development cloud integration for Auth, migration, Functions, OAuth, and private Storage.
 - [ ] Record every synthetic row/Auth user/object as operator-recorded fixture IDs.
@@ -74,6 +79,10 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Confirm every migration is additive; no destructive down migration exists.
 - [ ] Inspect `db push --dry-run` against the explicit production ref.
 - [ ] Apply the approved migration and deploy the exact reviewed Functions with explicit `--project-ref "$PRODUCTION_PROJECT_REF"`.
+- [ ] Treat migration apply, NTS secret configuration, and `verify-benefit-company` deployment as separately approved mutations; deployment does not authorize an NTS call.
+- [ ] Verify the exact HTTPS origin allow-list has no wildcard, empty member, credential, path/query/fragment, or HTTP origin; POST without `Origin` remains denied.
+- [ ] Confirm safe logs contain only opaque Edge request ID, result/status class, and timing bucket—no token, body, raw business/representative/date value, NTS URL/key/detail, Supabase ref, SQL, or RPC error.
+- [ ] Confirm the kill switch disables both `company_add_write_enabled` and `nts_verification_enabled`; recovery is forward-fix plus mock-only validation and fresh approvals, never manual finalize.
 - [ ] On failure, write-disable and forward-fix; do not destructively reverse an applied migration.
 
 ## 5. production read-only probes
