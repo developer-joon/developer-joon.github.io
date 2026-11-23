@@ -1,0 +1,68 @@
+#!/usr/bin/env node
+import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { constants } from 'node:fs'
+import { access, chmod, lstat, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { verifyOpenDartBundle } from './verify-opendart-benefit-directory.mjs'
+
+const literal=s=>`'${String(s).replaceAll("'","''")}'`
+const DOMAIN=Buffer.from('opendart-import-row-v1\0')
+export function computeOpenDartRowDigest(fields){const parts=[DOMAIN];for(const value of fields){if(value===null){parts.push(Buffer.from([0]));continue}const b=Buffer.from(value);const n=Buffer.alloc(8);n.writeBigUInt64BE(BigInt(b.length));parts.push(Buffer.from([1]),n,b)}return createHash('sha256').update(Buffer.concat(parts)).digest('hex')}
+const copyField=value=>value===null?'\\N':`"${String(value).replaceAll('"','""')}"`
+function tsvRows(companies,identifiers){const byCompany=new Map(identifiers.map(i=>[i.company_id,i]));return Buffer.from(companies.map(c=>{const i=byCompany.get(c.company_id);if(!i)throw Error('identifier/company exact set mismatch');const fields=[c.company_id,c.identity_class,c.display_name,c.normalized_name,c.industry,c.size_class,c.region,c.summary,String(c.is_searchable),c.source_edition,JSON.stringify(c.provenance),i.identifier_id,i.identifier_type,i.identifier_digest_or_value,i.source_edition,i.verified_at];return[...fields,computeOpenDartRowDigest(fields)].map(copyField).join('\t')}).join('\n')+'\n')}
+
+export function buildOpenDartImportSql({tsvPath,verified,dryRun,injectLateFailure=false}){
+ if(!path.isAbsolute(tsvPath)||/[\r\n\0]/.test(tsvPath))throw Error('unsafe TSV path');const m=verified.manifest,bundle=verified.bundleSha256,importKey=`${m.schema_version}:${m.source.sha256}:${m.source.edition}`;const ordered=m.ordered_code_company_sha256
+ return String.raw`\set ON_ERROR_STOP on
+BEGIN;
+SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-directory-opendart-import-v1',0));
+DO $preflight$ BEGIN
+ IF (SELECT count(*) FROM supabase_migrations.schema_migrations WHERE version IN ('202611210001','202611210004','202611230003'))<>3 THEN RAISE EXCEPTION 'required OpenDART import migrations unavailable'; END IF;
+ IF pg_catalog.pg_get_userbyid((SELECT relowner FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='benefit_company_identifiers'))<>'postgres' THEN RAISE EXCEPTION 'identifier table ownership mismatch'; END IF;
+END $preflight$;
+LOCK TABLE public.benefit_publications IN SHARE MODE;
+LOCK TABLE private.benefit_import_receipts IN SHARE ROW EXCLUSIVE MODE;
+CREATE TEMP TABLE prior_publications ON COMMIT DROP AS TABLE public.benefit_publications;
+CREATE TEMP TABLE prior_receipts ON COMMIT DROP AS TABLE private.benefit_import_receipts;
+CREATE TEMP TABLE dart_stage_raw(company_id text,identity_class text,display_name text,normalized_name text,industry text,size_class text,region text,summary text,is_searchable text,source_edition text,provenance_text text,identifier_id text,identifier_type text,identifier_value text,identifier_edition text,verified_at text,client_digest text) ON COMMIT DROP;
+\copy dart_stage_raw FROM ${literal(tsvPath)} WITH (FORMAT csv,DELIMITER E'\t',NULL '\N',QUOTE '"')
+CREATE FUNCTION pg_temp.frame(v text) RETURNS bytea LANGUAGE sql IMMUTABLE SET search_path='' AS $$SELECT CASE WHEN v IS NULL THEN decode('00','hex') ELSE decode('01','hex')||int8send(octet_length(convert_to(v,'UTF8'))::bigint)||convert_to(v,'UTF8') END$$;
+DO $digest$ BEGIN IF EXISTS(SELECT 1 FROM dart_stage_raw WHERE client_digest<>encode(extensions.digest(convert_to('opendart-import-row-v1','UTF8')||decode('00','hex')||pg_temp.frame(company_id)||pg_temp.frame(identity_class)||pg_temp.frame(display_name)||pg_temp.frame(normalized_name)||pg_temp.frame(industry)||pg_temp.frame(size_class)||pg_temp.frame(region)||pg_temp.frame(summary)||pg_temp.frame(is_searchable)||pg_temp.frame(source_edition)||pg_temp.frame(provenance_text)||pg_temp.frame(identifier_id)||pg_temp.frame(identifier_type)||pg_temp.frame(identifier_value)||pg_temp.frame(identifier_edition)||pg_temp.frame(verified_at),'sha256'),'hex')) THEN RAISE EXCEPTION 'OpenDART client/server UTF-8 digest mismatch'; END IF; END $digest$;
+CREATE TEMP TABLE dart_stage ON COMMIT DROP AS SELECT company_id,identity_class,display_name,normalized_name,industry,size_class,region,summary,is_searchable::boolean,source_edition,provenance_text::jsonb provenance,identifier_id::uuid,identifier_type,identifier_value,identifier_edition,verified_at::timestamptz FROM dart_stage_raw;
+CREATE UNIQUE INDEX ON dart_stage(company_id); CREATE UNIQUE INDEX ON dart_stage(identifier_type,identifier_value); CREATE UNIQUE INDEX ON dart_stage(identifier_id);
+DO $validate$ BEGIN
+ IF (SELECT count(*) FROM dart_stage)<>${m.company_count} THEN RAISE EXCEPTION 'OpenDART staged count mismatch'; END IF;
+ IF EXISTS(SELECT 1 FROM dart_stage s JOIN public.benefit_company_identifiers i ON i.identifier_type=s.identifier_type AND i.identifier_digest_or_value=s.identifier_value WHERE i.company_id<>s.company_id OR i.identifier_id<>s.identifier_id) THEN RAISE EXCEPTION 'OpenDART strong identifier collision'; END IF;
+ IF EXISTS(SELECT 1 FROM dart_stage s JOIN public.benefit_companies c USING(company_id) WHERE (c.identity_class,c.display_name,c.normalized_name,c.industry,c.size_class,c.region,c.summary,c.is_searchable,c.source_edition,c.provenance) IS DISTINCT FROM (s.identity_class,s.display_name,s.normalized_name,s.industry,s.size_class,s.region,s.summary,s.is_searchable,s.source_edition,s.provenance)) THEN RAISE EXCEPTION 'OpenDART deterministic company payload conflict'; END IF;
+ IF EXISTS(SELECT 1 FROM private.benefit_import_receipts WHERE import_key=${literal(importKey)} AND bundle_digest<>${literal(bundle)}) THEN RAISE EXCEPTION 'OpenDART import receipt conflict'; END IF;
+END $validate$;
+INSERT INTO public.benefit_companies(company_id,identity_class,display_name,normalized_name,industry,size_class,region,summary,is_searchable,source_edition,provenance)
+ SELECT company_id,identity_class,display_name,normalized_name,industry,size_class,region,summary,is_searchable,source_edition,provenance FROM dart_stage ON CONFLICT(company_id) DO NOTHING;
+INSERT INTO public.benefit_company_identifiers(identifier_id,company_id,identifier_type,identifier_digest_or_value,source_edition,verified_at)
+ SELECT identifier_id,company_id,identifier_type,identifier_value,identifier_edition,verified_at FROM dart_stage ON CONFLICT(identifier_id) DO NOTHING;
+INSERT INTO private.benefit_company_sources(company_id,source_contract,source_digest,source_binding,bundle_digest)
+ SELECT company_id,'opendart-corp-code-v1',${literal(m.source.sha256)},jsonb_build_object('corp_code',identifier_value,'corp_modify_date',provenance->>'corp_modify_date'),${literal(bundle)} FROM dart_stage ON CONFLICT(company_id) DO NOTHING;
+${injectLateFailure?"DO $$ BEGIN RAISE EXCEPTION 'injected late OpenDART failure'; END $$;":''}
+INSERT INTO private.benefit_import_receipts(bundle_digest,import_key,schema_version,source_digest,company_count,identity_counts,ordered_id_set_sha256)
+ VALUES(${literal(bundle)},${literal(importKey)},${literal(m.schema_version)},${literal(m.source.sha256)},${m.company_count},${literal(JSON.stringify({opendart_corp_code:m.identifier_count}))}::jsonb,${literal(ordered)}) ON CONFLICT(bundle_digest) DO NOTHING;
+DO $final$ BEGIN
+ IF EXISTS((SELECT * FROM prior_publications EXCEPT ALL SELECT * FROM public.benefit_publications) UNION ALL (SELECT * FROM public.benefit_publications EXCEPT ALL SELECT * FROM prior_publications)) THEN RAISE EXCEPTION 'OpenDART publication preservation failed'; END IF;
+ IF EXISTS(SELECT 1 FROM prior_receipts p LEFT JOIN private.benefit_import_receipts r USING(bundle_digest) WHERE r.bundle_digest IS NULL OR row_to_json(p)::jsonb<>row_to_json(r)::jsonb) THEN RAISE EXCEPTION 'OpenDART prior receipt preservation failed'; END IF;
+ IF (SELECT count(*) FROM public.benefit_company_identifiers i JOIN dart_stage s ON i.identifier_id=s.identifier_id WHERE (i.company_id,i.identifier_type,i.identifier_digest_or_value,i.source_edition,i.verified_at)=(s.company_id,s.identifier_type,s.identifier_value,s.identifier_edition,s.verified_at))<>${m.identifier_count} THEN RAISE EXCEPTION 'OpenDART identifier exact-state failed'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM private.benefit_import_receipts WHERE bundle_digest=${literal(bundle)} AND import_key=${literal(importKey)} AND company_count=${m.company_count}) THEN RAISE EXCEPTION 'OpenDART receipt exact-state failed'; END IF;
+END $final$;
+${dryRun?'ROLLBACK;':'COMMIT;'}
+`}
+
+async function trustedPsql(bin){if(typeof bin!=='string'||!path.isAbsolute(bin))throw Error('PSQL_BIN must be an explicit absolute path');const real=await realpath(bin),s=await lstat(real);if(!s.isFile()||![0,process.getuid()].includes(s.uid)||(s.mode&0o022)!==0)throw Error('PSQL_BIN custody invalid');await access(real,constants.X_OK);const p=spawnSync(real,['--version'],{encoding:'utf8',timeout:10000,env:{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C'}});if(p.status!==0||!/^psql \(PostgreSQL\) \d+/.test(p.stdout??''))throw Error('PSQL_BIN version probe failed');return real}
+function dbEnv(value,timeout){let u;try{u=new URL(value)}catch{throw Error('DATABASE_URL invalid')}if(!['postgres:','postgresql:'].includes(u.protocol)||!u.hostname||!u.username||u.pathname.length<2)throw Error('DATABASE_URL invalid');for(const k of u.searchParams.keys())if(k!=='sslmode')throw Error('DATABASE_URL query control forbidden');const decode=s=>decodeURIComponent(s);return{PATH:'/usr/bin:/bin',LANG:'C.UTF-8',LC_ALL:'C.UTF-8',PGHOST:u.hostname,PGPORT:u.port||'5432',PGDATABASE:decode(u.pathname.slice(1)),PGUSER:decode(u.username),PGPASSWORD:decode(u.password),PGCLIENTENCODING:'UTF8',PGCONNECT_TIMEOUT:'30',PGOPTIONS:`-c search_path=pg_catalog -c statement_timeout=${timeout-5000} -c lock_timeout=30000`,...(u.searchParams.has('sslmode')?{PGSSLMODE:u.searchParams.get('sslmode')}:{})}}
+async function run(exe,env,sql,timeout,sensitive){const child=spawn(exe,['-X','--no-psqlrc','-v','ON_ERROR_STOP=1','-f',sql],{env,detached:true,stdio:['ignore','pipe','pipe']});let out='',err='',bytes=0,reason='';const add=(which,chunk)=>{bytes+=chunk.length;if(which==='out')out=(out+chunk).slice(-16000);else err=(err+chunk).slice(-16000);if(bytes>1048576&&!reason){reason='output bound';process.kill(-child.pid,'SIGTERM')}};child.stdout.on('data',c=>add('out',c));child.stderr.on('data',c=>add('err',c));const timer=setTimeout(()=>{reason='timeout';try{process.kill(-child.pid,'SIGTERM')}catch{};setTimeout(()=>{try{process.kill(-child.pid,'SIGKILL')}catch{}},2000).unref()},timeout);const result=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(code,signal)=>resolve({code,signal}))});clearTimeout(timer);if(result.code!==0||reason){for(const secret of sensitive.filter(Boolean))err=err.replaceAll(secret,'<redacted>');throw Error(`psql OpenDART import failed ${reason||`exit ${result.code}`}: ${err.slice(-12000)}`)}if(out.trim())console.log(out.trim())}
+
+export async function applyOpenDart({databaseUrl,psqlBin,bundleDir,sourceFile,dryRun=false,apply=false,timeoutMs=1200000,injectLateFailure=false}={}){
+ if(dryRun===apply)throw Error('choose exactly one of dryRun or apply');const timeout=Number(timeoutMs);if(!Number.isSafeInteger(timeout)||timeout<30000||timeout>1800000)throw Error('timeout out of bounds');const executable=await trustedPsql(psqlBin),env=dbEnv(databaseUrl,timeout),verified=await verifyOpenDartBundle({sourceFile,bundleDir});const root=await realpath(tmpdir()),rs=await lstat(root);if(!rs.isDirectory()||rs.uid!==process.getuid()||(rs.mode&0o022)!==0)throw Error('TMPDIR custody invalid');const dir=await mkdtemp(path.join(root,'opendart-apply-'));await chmod(dir,0o700)
+ try{const tsv=path.join(dir,'rows.tsv'),sql=path.join(dir,'apply.sql'),bytes=tsvRows(verified.companies,verified.identifiers);const h=await open(tsv,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);try{await h.writeFile(bytes);await h.sync()}finally{await h.close()}await writeFile(sql,buildOpenDartImportSql({tsvPath:tsv,verified,dryRun,injectLateFailure}),{mode:0o600,flag:'wx'});await run(executable,env,sql,timeout,[databaseUrl,env.PGPASSWORD,dir]);return{companyCount:verified.companyCount,bundleSha256:verified.bundleSha256,dryRun}}finally{await rm(dir,{recursive:true,force:true})}}
+
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const args=process.argv.slice(2),get=k=>{const i=args.indexOf(k);return i<0?undefined:args[i+1]},known=new Set(['--source','--bundle','--dry-run','--apply']);for(let i=0;i<args.length;i++){if(!known.has(args[i]))throw Error('unknown argument '+args[i]);if(['--source','--bundle'].includes(args[i]))i++}const dryRun=args.includes('--dry-run'),apply=args.includes('--apply');const result=await applyOpenDart({databaseUrl:process.env.DATABASE_URL,psqlBin:process.env.PSQL_BIN,sourceFile:get('--source'),bundleDir:get('--bundle'),dryRun,apply,timeoutMs:process.env.OPENDART_IMPORT_TIMEOUT_MS??1200000,injectLateFailure:process.env.OPENDART_IMPORT_INJECT_LATE_FAILURE==='1'});console.log(`OpenDART import ${result.dryRun?'dry-run rolled back':'committed'}: ${result.companyCount} companies; bundle ${result.bundleSha256}`)}

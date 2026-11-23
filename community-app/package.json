@@ -21,12 +21,18 @@
     "db:test:benefit-title-upgrade": "bash ../supabase/tests/benefit_title_upgrade.sh",
     "db:test:benefit-title-upgrade-isolation": "bash ../supabase/tests/benefit_title_upgrade_isolation_test.sh",
     "db:test:benefit-seed-importer": "bash ../supabase/tests/benefit_seed_importer_integration.sh",
+    "db:test:opendart-benefit-importer": "bash ../supabase/tests/opendart_benefit_importer_integration.sh",
     "db:lint": "supabase db lint --level error",
     "db:stop": "supabase stop",
     "benefit-seed:generate": "node ../scripts/generate-benefit-directory-seed.mjs",
     "benefit-seed:check": "node ../scripts/generate-benefit-directory-seed.mjs --check",
     "benefit-seed:apply": "node ../scripts/apply-benefit-directory-seed.mjs",
     "benefit-seed:apply:dry-run": "node ../scripts/apply-benefit-directory-seed.mjs --dry-run",
+    "opendart-benefit:generate": "node ../scripts/generate-opendart-benefit-directory.mjs",
+    "opendart-benefit:check": "node ../scripts/generate-opendart-benefit-directory.mjs --check",
+    "opendart-benefit:verify": "node ../scripts/verify-opendart-benefit-directory.mjs",
+    "opendart-benefit:apply": "node ../scripts/apply-opendart-benefit-directory.mjs --apply",
+    "opendart-benefit:apply:dry-run": "node ../scripts/apply-opendart-benefit-directory.mjs --dry-run",
     "release:check": "node ../scripts/release-gate.mjs"
   },
   "dependencies": {
