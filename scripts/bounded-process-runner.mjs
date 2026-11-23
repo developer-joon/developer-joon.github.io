@@ -22,10 +22,21 @@ function redact(value, sensitiveValues, maximum) {
   return text.slice(-maximum)
 }
 
+const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+
+async function waitUntil(check, maximumMs) {
+  const deadline = Date.now() + maximumMs
+  do {
+    if (check()) return true
+    await delay(Math.min(10, Math.max(1, deadline - Date.now())))
+  } while (Date.now() < deadline)
+  return check()
+}
+
 export async function runBoundedProcess({
   executable, args = [], env = {}, stdin = 'ignore', timeoutMs, termGraceMs = 1000,
   pipeDrainMs = 250, stdoutLimitBytes, stderrLimitBytes, combinedLimitBytes,
-  diagnosticBytes = 12_000, sensitiveValues = [], label = 'child process', parentSignals = true,
+  diagnosticBytes = 12_000, sensitiveValues = [], label = 'child process',
 }) {
   if (typeof executable !== 'string' || !path.isAbsolute(executable)) throw Error('bounded process executable must be absolute')
   if (!Array.isArray(args) || args.some(value => typeof value !== 'string')) throw Error('bounded process arguments invalid')
@@ -35,11 +46,32 @@ export async function runBoundedProcess({
   if (combinedLimitBytes < Math.max(stdoutLimitBytes, stderrLimitBytes)) throw Error('combined output limit is impractical')
 
   const child = spawn(executable,args,{env,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']})
+  const processGroupId = child.pid
   let stdout=Buffer.alloc(0),stderr=Buffer.alloc(0),stdoutBytes=0,stderrBytes=0
   let reason=null,parentSignal=null,termTimer=null,timeoutTimer=null,spawnError=null,terminationStarted=false
+  let stdoutEnded=false,stderrEnded=false,groupIdentityLost=false
+
+  // On Linux the detached group ID is the direct child's PID. We only probe or
+  // signal it while this invocation retains that child handle. ESRCH permanently
+  // ends our authority, avoiding a later signal to a reused PGID. This assumes a
+  // cooperative child does not deliberately leave and recycle its launched group.
+  const groupAlive = () => {
+    if (!processGroupId || groupIdentityLost) return false
+    if (process.platform === 'win32') return child.exitCode === null && child.signalCode === null
+    try { process.kill(-processGroupId,0); return true }
+    catch (error) {
+      if (error.code === 'ESRCH') { groupIdentityLost=true; return false }
+      if (error.code === 'EPERM') return true
+      throw error
+    }
+  }
   const killGroup = signal => {
-    if (!child.pid) return
-    try { process.kill(process.platform==='win32'?child.pid:-child.pid,signal) } catch (error) { if (error.code!=='ESRCH') throw error }
+    if (!processGroupId || groupIdentityLost) return
+    try { process.kill(process.platform==='win32'?processGroupId:-processGroupId,signal) }
+    catch (error) {
+      if (error.code === 'ESRCH') groupIdentityLost=true
+      else throw error
+    }
   }
   const terminate = (why, signal=null) => {
     if (terminationStarted) return
@@ -56,9 +88,13 @@ export async function runBoundedProcess({
   }
   child.stdout.on('data',chunk=>consume('stdout',chunk))
   child.stderr.on('data',chunk=>consume('stderr',chunk))
+  child.stdout.once('end',()=>{stdoutEnded=true})
+  child.stderr.once('end',()=>{stderrEnded=true})
+  child.stdout.once('close',()=>{stdoutEnded=true})
+  child.stderr.once('close',()=>{stderrEnded=true})
   child.once('error',error=>{spawnError=error})
   const handlers=new Map()
-  if (parentSignals) for (const signal of Object.keys(SIGNAL_EXIT)) {
+  for (const signal of Object.keys(SIGNAL_EXIT)) {
     const handler=()=>{ process.exitCode=SIGNAL_EXIT[signal]; terminate(`interrupted by ${signal}`,signal) }
     handlers.set(signal,handler); process.once(signal,handler)
   }
@@ -71,16 +107,30 @@ export async function runBoundedProcess({
       child.once('exit',(code,signal)=>finish(code,signal))
       child.once('error',()=>finish(null,null))
     })
-    clearTimeout(timeoutTimer); if(termTimer!==null) clearTimeout(termTimer)
-    if (terminationStarted) { try { killGroup('SIGKILL') } catch {} }
-    if (!child.stdout.destroyed || !child.stderr.destroyed) await Promise.race([
-      new Promise(resolve=>child.once('close',resolve)),
-      new Promise(resolve=>setTimeout(resolve,pipeDrainMs)),
-    ])
+    clearTimeout(timeoutTimer)
+
+    if (!terminationStarted) {
+      const clean=await waitUntil(()=>{
+        const alive=groupAlive()
+        return stdoutEnded&&stderrEnded&&!alive
+      },pipeDrainMs)
+      if (!clean) terminate('lingering_process_group')
+    }
+    if (terminationStarted) {
+      const gone=await waitUntil(()=>!groupAlive(),termGraceMs)
+      if (!gone) { try { killGroup('SIGKILL') } catch {} }
+      await waitUntil(()=>!groupAlive(),pipeDrainMs)
+      await waitUntil(()=>stdoutEnded&&stderrEnded,pipeDrainMs)
+    }
+    if(termTimer!==null) clearTimeout(termTimer)
     child.stdout.destroy(); child.stderr.destroy()
     const detail=redact(stderr.length?stderr:stdout,sensitiveValues,diagnosticBytes).trim()
     if (spawnError) throw Error(`${label} failed to start: ${redact(spawnError.message,sensitiveValues,diagnosticBytes)}`,{cause:spawnError})
-    if (reason!==null) throw Error(`${label} ${reason}${detail?`: ${detail}`:''}`)
+    if (reason!==null) {
+      const error=Error(`${label} ${reason}${detail?`: ${detail}`:''}`)
+      if(reason==='lingering_process_group') error.code=reason
+      throw error
+    }
     if (result.code!==0) throw Error(`${label} failed exit ${result.code ?? `signal ${result.signal ?? 'unknown'}`}${detail?`: ${detail}`:''}`)
     return {code:result.code,signal:result.signal,stdout:stdout.toString('utf8'),stderr:stderr.toString('utf8'),stdoutBytes,stderrBytes}
   } finally {

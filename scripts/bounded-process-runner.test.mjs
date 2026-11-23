@@ -27,6 +27,38 @@ async function rejectedRun(script, overrides={}) {
   } finally { await rm(root,{recursive:true,force:true}) }
 }
 
+async function lingeringGroupRun({redirected=false}={}) {
+  const root=await mkdtemp(path.join(tmpdir(),'bounded-lingering-group-')); const descendantFile=path.join(root,'descendant')
+  const redirect=redirected?' >/dev/null 2>&1':''; const started=Date.now()
+  try {
+    let rejection
+    try { await runBoundedProcess({...options,args:['-c',`sleep 30${redirect} & echo $! > '${descendantFile}'; exit 0`],timeoutMs:1500,label:'successful child fixture'}); assert.fail('bounded process unexpectedly succeeded') }
+    catch (error) { rejection=error }
+    const elapsed=Date.now()-started; const descendantPid=Number(await readFile(descendantFile,'utf8'))
+    assert.ok(elapsed<2000,`elapsed ${elapsed}ms`)
+    assert.equal(rejection.code,'lingering_process_group')
+    assert.match(rejection.message,/lingering_process_group/)
+    await waitGone(descendantPid)
+  } finally { await rm(root,{recursive:true,force:true}) }
+}
+
+test('production runner rejects and reaps a successful child with an inherited-pipe descendant',async()=>{
+  await lingeringGroupRun()
+})
+
+test('production runner rejects and reaps a successful child with a closed-pipe descendant',async()=>{
+  await lingeringGroupRun({redirected:true})
+})
+
+test('production runner preserves ordinary success across repeated runs',async()=>{
+  for(let iteration=0;iteration<3;iteration++){
+    const result=await runBoundedProcess({...options,args:['-c',"printf 'ok'"]})
+    assert.equal(result.stdout,'ok')
+    assert.equal(result.code,0)
+  }
+  assert.deepEqual({SIGINT:process.listenerCount('SIGINT'),SIGTERM:process.listenerCount('SIGTERM')},baselineSignalListeners)
+})
+
 test('production runner bounds a TERM-ignoring version probe and redacts diagnostics', async()=>{
   const {rejection}=await rejectedRun("trap '' TERM; echo very-secret >&2; while :; do sleep 1; done",{label:'psql version probe'})
   assert.match(rejection.message,/version probe.*timed out/i)
@@ -50,9 +82,9 @@ test('production runner bounds a TERM-ignoring import timeout', async()=>{
   assert.match(rejection.message,/OpenDART import.*timed out/i)
 })
 
-test('production runner applies the same lifecycle on parent signal', async()=>{
+test('production runner cannot bypass the parent-signal lifecycle with a public option', async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'bounded-parent-signal-')); const groupFile=path.join(root,'group'); const helper=path.join(root,'helper.mjs')
-  await writeFile(helper,`import {realpath} from 'node:fs/promises'; import {runBoundedProcess} from ${JSON.stringify(new URL('./bounded-process-runner.mjs',import.meta.url).href)}; const sh=await realpath('/bin/sh'); try { await runBoundedProcess({executable:sh,args:['-c',"echo $$ > '${groupFile}'; trap '' TERM; while :; do sleep 1; done"],env:{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C'},stdin:'ignore',timeoutMs:5000,termGraceMs:100,pipeDrainMs:100,stdoutLimitBytes:4096,stderrLimitBytes:4096,combinedLimitBytes:6144,label:'parent signal fixture'}); } catch(e) { console.error(e.message); process.exit(process.exitCode||1) }`)
+  await writeFile(helper,`import {realpath} from 'node:fs/promises'; import {runBoundedProcess} from ${JSON.stringify(new URL('./bounded-process-runner.mjs',import.meta.url).href)}; const sh=await realpath('/bin/sh'); try { await runBoundedProcess({executable:sh,args:['-c',"echo $$ > '${groupFile}'; trap '' TERM; while :; do sleep 1; done"],env:{PATH:'/usr/bin:/bin',LANG:'C',LC_ALL:'C'},stdin:'ignore',timeoutMs:5000,termGraceMs:100,pipeDrainMs:100,stdoutLimitBytes:4096,stderrLimitBytes:4096,combinedLimitBytes:6144,label:'parent signal fixture',parentSignals:false}); } catch(e) { console.error(e.message); process.exit(process.exitCode||1) }`)
   const child=spawn(process.execPath,[helper],{stdio:['ignore','ignore','pipe']}); let diagnostics=''; child.stderr.on('data',c=>diagnostics+=c)
   try {
     const end=Date.now()+1500; while(Date.now()<end){try{await readFile(groupFile);break}catch{await new Promise(r=>setTimeout(r,20))}}
