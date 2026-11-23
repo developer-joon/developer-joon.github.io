@@ -147,9 +147,9 @@ select throws_ok($$truncate public.benefit_claim_official_reviews$$,'23514','ben
 select throws_ok($$update public.benefit_claim_moderation_requests set response='{}'$$,'23514','benefit claim moderation ledgers are append-only','request update rejected');
 select throws_ok($$delete from public.benefit_claim_moderation_requests$$,'23514','benefit claim moderation ledgers are append-only','request delete rejected');
 select throws_ok($$truncate public.benefit_claim_moderation_requests$$,'23514','benefit claim moderation ledgers are append-only','request truncate rejected');
-select throws_ok($$update public.benefit_claim_merges set reaction_lineage='[]'$$,'23514','benefit claim moderation ledgers are append-only','merge update rejected');
+select throws_ok($$update public.benefit_claim_merges set actor_snapshot=gen_random_uuid()$$,'23514','benefit claim moderation ledgers are append-only','merge update rejected');
 select throws_ok($$delete from public.benefit_claim_merges$$,'23514','benefit claim moderation ledgers are append-only','merge delete rejected');
-select throws_ok($$truncate public.benefit_claim_merges$$,'23514','benefit claim moderation ledgers are append-only','merge truncate rejected');
+select throws_ok($$truncate public.benefit_claim_merges cascade$$,'23514','benefit claim moderation ledgers are append-only','merge truncate rejected');
 
 select * from finish();
 rollback;

@@ -238,8 +238,8 @@ export type Database = {
       benefit_claim_merges: {
         Row: {
           actor_snapshot: string;
+          merge_id: string;
           merged_at: string;
-          reaction_lineage: NonNullable<Json>;
           request_client_key: string;
           source_claim_id: string;
           target_claim_id: string;
@@ -247,16 +247,16 @@ export type Database = {
         ComputedFields: never;
         Insert: {
           actor_snapshot: string;
+          merge_id?: string;
           merged_at?: string;
-          reaction_lineage: NonNullable<Json>;
           request_client_key: string;
           source_claim_id: string;
           target_claim_id: string;
         };
         Update: {
           actor_snapshot?: string;
+          merge_id?: string;
           merged_at?: string;
-          reaction_lineage?: NonNullable<Json>;
           request_client_key?: string;
           source_claim_id?: string;
           target_claim_id?: string;
@@ -264,6 +264,16 @@ export type Database = {
         Relationships: [
           { foreignKeyName: "benefit_claim_merges_source_claim_id_fkey"; columns: ["source_claim_id"]; isOneToOne: true; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
           { foreignKeyName: "benefit_claim_merges_target_claim_id_fkey"; columns: ["target_claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
+        ];
+      };
+      benefit_claim_merge_reactions: {
+        Row: { created_at: string; merge_id: string; origin_claim_id: string; reaction: "confirm" | "dispute"; updated_at: string; user_id: string };
+        ComputedFields: never;
+        Insert: { created_at: string; merge_id: string; origin_claim_id: string; reaction: "confirm" | "dispute"; updated_at: string; user_id: string };
+        Update: { created_at?: string; merge_id?: string; origin_claim_id?: string; reaction?: "confirm" | "dispute"; updated_at?: string; user_id?: string };
+        Relationships: [
+          { foreignKeyName: "benefit_claim_merge_reactions_merge_id_fkey"; columns: ["merge_id"]; isOneToOne: false; referencedRelation: "benefit_claim_merges"; referencedColumns: ["merge_id"] },
+          { foreignKeyName: "benefit_claim_merge_reactions_origin_claim_id_fkey"; columns: ["origin_claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
         ];
       };
       benefit_claim_moderation_requests: {
