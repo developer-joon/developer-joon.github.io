@@ -273,14 +273,27 @@ Deno.test("rejects oversized, wrong-length, and MIME-inconsistent Storage blobs"
 
 Deno.test("rejects malformed upstream status and headers before streaming", async () => {
   const cases: Array<[string, Response]> = [
-    ["non-success", storageResponse("private upstream detail", "text/plain", "23", 500)],
+    [
+      "non-success",
+      storageResponse("private upstream detail", "text/plain", "23", 500),
+    ],
     ["missing body", storageResponse(null)],
     ["missing length", storageResponse(IMAGE_BYTES, "image/png", "")],
     ["malformed length", storageResponse(IMAGE_BYTES, "image/png", "4.0")],
     ["wrong length", storageResponse(IMAGE_BYTES, "image/png", "5")],
-    ["oversized length", storageResponse(IMAGE_BYTES, "image/png", String(MAX_ATTACHMENT_BYTES + 1))],
+    [
+      "oversized length",
+      storageResponse(
+        IMAGE_BYTES,
+        "image/png",
+        String(MAX_ATTACHMENT_BYTES + 1),
+      ),
+    ],
     ["wrong MIME", storageResponse(IMAGE_BYTES, "image/jpeg")],
-    ["parameterized MIME", storageResponse(IMAGE_BYTES, "image/png; charset=utf-8")],
+    [
+      "parameterized MIME",
+      storageResponse(IMAGE_BYTES, "image/png; charset=utf-8"),
+    ],
   ];
 
   for (const [name, upstream] of cases) {
@@ -289,9 +302,17 @@ Deno.test("rejects malformed upstream status and headers before streaming", asyn
     const response = await handlePublicAttachment(request(), deps);
     assert.equal(response.status, 502, name);
     const body = await response.text();
-    assert.deepEqual(JSON.parse(body), { error: "attachment_unavailable" }, name);
+    assert.deepEqual(
+      JSON.parse(body),
+      { error: "attachment_unavailable" },
+      name,
+    );
     assert.equal(body.includes("private upstream detail"), false, name);
-    assert.equal(response.headers.get("cache-control")?.includes("no-store"), true, name);
+    assert.equal(
+      response.headers.get("cache-control")?.includes("no-store"),
+      true,
+      name,
+    );
   }
 });
 
@@ -312,7 +333,10 @@ Deno.test("aborts an upstream stream that exceeds its declared bound", async () 
 
   const response = await handlePublicAttachment(request(), deps);
   assert.equal(response.status, 200);
-  await assert.rejects(() => response.arrayBuffer(), /storage_metadata_mismatch/);
+  await assert.rejects(
+    () => response.arrayBuffer(),
+    /storage_metadata_mismatch/,
+  );
   assert.equal(signal?.aborted, true);
 });
 
@@ -326,7 +350,10 @@ Deno.test("aborts an upstream stream shorter than its declared length", async ()
 
   const response = await handlePublicAttachment(request(), deps);
   assert.equal(response.status, 200);
-  await assert.rejects(() => response.arrayBuffer(), /storage_metadata_mismatch/);
+  await assert.rejects(
+    () => response.arrayBuffer(),
+    /storage_metadata_mismatch/,
+  );
   assert.equal(signal?.aborted, true);
 });
 
@@ -379,15 +406,19 @@ Deno.test("redacts service and Storage failures from responses and logs", async 
     deps.log = (entry) => logs.push(entry);
     if (operation === "find") {
       deps.resolveAttachment = () => {
-        return Promise.reject(new Error(
-          `database failed storage_path=${STORAGE_PATH} secret=service-secret`,
-        ));
+        return Promise.reject(
+          new Error(
+            `database failed storage_path=${STORAGE_PATH} secret=service-secret`,
+          ),
+        );
       };
     } else {
       deps.fetchStorage = () => {
-        return Promise.reject(new Error(
-          `storage failed storage_path=${STORAGE_PATH} secret=service-secret`,
-        ));
+        return Promise.reject(
+          new Error(
+            `storage failed storage_path=${STORAGE_PATH} secret=service-secret`,
+          ),
+        );
       };
     }
 

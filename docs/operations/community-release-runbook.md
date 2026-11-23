@@ -240,31 +240,45 @@ caller-decoded JWT claims are not evidence. GoTrue does not expose a separate
 cryptographic per-session provider proof through this `getUser` response, so
 this strict server-validated timestamp correlation is the strongest available
 evidence and retains a dependency on GoTrue's identity timestamp semantics.
-The same bearer transport is used for `reserve_benefit_company_nts_request_v1`;
-a caller-supplied user ID is never accepted. The service-role client is separate
-and is used only for exact finalize/failure RPCs after reservation. One 8-second
-monotonic budget is split into phases: authentication, reservation, both NTS
-fetch/stream/strict-decode operations, and HMAC must finish before the 6-second
-external cutoff. The final 2 seconds are reserved for persistence. Every
+Only after Auth verifies the current session as Google may the handler pull the
+request body. The same bearer transport is then used for
+`reserve_benefit_company_nts_request_v1`; a caller-supplied user ID is never
+accepted. The service-role client is separate and is used only for exact
+finalize/failure RPCs after reservation. One 8-second monotonic budget starts
+after the syntactic origin/method/content-type/Bearer/idempotency/length checks
+and before the Auth request or first body read. Authentication, bounded body
+read/parse, reservation, both NTS fetch/stream/strict-decode operations, and
+HMAC must finish before the 6-second external cutoff. The final 2 seconds are
+reserved for persistence. Every
 transport receives its own AbortSignal; active response readers and timers are
 cancelled/cleared when their phase ends. If external verification reaches the
 cutoff after reservation, finalize is never invoked: the Function persists the
 exact revision-2 `rejected/unavailable` terminal result inside the reserved
 margin before returning the normal safe unavailable response. A failure-RPC
-transport timeout returns `503 verification_indeterminate`, because aborting
-HTTP cannot prove whether the database committed.
+transport timeout or ambiguous response returns
+`503 verification_indeterminate` with the known reservation request ID, because
+aborting HTTP or failing to decode its response cannot prove whether the
+database committed.
 
 Finalize may start only before the external cutoff and uses the reserved
-persistence margin. A finalize transport timeout returns bounded
-`202 verification_indeterminate` with only the safe code, request ID, and fixed
-Korean retry copy; it never claims that a company was or was not created. HTTP
-abort is transport cancellation, not transaction rollback. Retry the exact same payload
+persistence margin. A finalize transport/network abort, deadline, truncated or
+oversized JSON, wrong content type, malformed envelope, or invalid success
+envelope returns bounded `202 verification_indeterminate` with only the safe
+code, known request ID, and fixed Korean retry copy; it never claims that a
+company was or was not created. The same failures during reserve return `503
+reservation_indeterminate` without a request ID, because no server-confirmed ID
+is available. HTTP abort is transport cancellation, not transaction rollback.
+Retry the exact same payload
 with the same idempotency key: reserve terminal replay returns revision-2
 success without another NTS call if finalize committed, while a still-pending
 reservation safely retries verification. Pending reserve responses must be
 exactly revision 1; every terminal reserve replay, finalize response, and
 failure response must be exactly revision 2. Any impossible state/revision
-combination fails closed.
+combination is indeterminate after mutation dispatch. Only an exact, byte-
+bounded PostgREST error envelope with a recognized code and matching HTTP status
+is a definite rollback/rejection and maps to fixed public copy. Unknown status
+or code, malformed/extra envelope fields, and every response decode failure are
+conservatively indeterminate; raw RPC messages are never returned or logged.
 
 Configure these exact secret names through the target's approved secret manager;
 never put their values in this repository, shell history, release evidence, a
@@ -297,9 +311,10 @@ The only persistent strong identifier is lower-case
 `HMAC-SHA-256(BUSINESS_NUMBER_HMAC_SECRET,
 "breadlab:business-number:v1\\0" + ten_digits)`.
 
-Origin, method, content type, bounded Bearer syntax, and canonical idempotency
-UUID are rejected before the first request-body pull. The absolute request
-deadline starts before body consumption; each body read and every Auth, reserve,
+Origin, method, content type, bounded Bearer syntax, canonical idempotency UUID,
+and declared-length syntax are rejected before Auth and the first request-body
+pull. The absolute request deadline starts before Auth; successful current-
+Google Auth is required before body consumption. Each body read and every Auth, reserve,
 NTS, finalize, and failure transport receives an operation-local AbortSignal.
 Auth uses only the fixed `/auth/v1/user` endpoint, and reserve uses only the
 fixed PostgREST RPC endpoint; neither relies on an SDK call that drops the

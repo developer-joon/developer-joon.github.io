@@ -123,6 +123,12 @@ class PublicError extends Error {
 }
 
 class NtsError extends Error {}
+class RpcIndeterminateError extends Error {}
+class RpcDefiniteError extends Error {
+  constructor(readonly publicError: PublicError) {
+    super(publicError.code);
+  }
+}
 
 function utf8Length(value: string): number {
   return new TextEncoder().encode(value).byteLength;
@@ -1017,10 +1023,7 @@ async function callNts(
   });
 }
 
-function errorFromRpc(error: unknown): PublicError {
-  const code = isRecord(error) && typeof error.code === "string"
-    ? error.code
-    : "";
+function safeRpcRejection(code: string): PublicError {
   if (code === "PT429") {
     return new PublicError(
       429,
@@ -1029,7 +1032,7 @@ function errorFromRpc(error: unknown): PublicError {
       "rate_limited",
     );
   }
-  if (["22023", "23505", "40001"].includes(code)) {
+  if (["22023", "23505", "23514", "40001", "42501"].includes(code)) {
     return new PublicError(
       409,
       "request_conflict",
@@ -1038,11 +1041,15 @@ function errorFromRpc(error: unknown): PublicError {
     );
   }
   return new PublicError(
-    502,
+    503,
     "verification_unavailable",
     "사업자 확인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
     "unavailable",
   );
+}
+
+function definiteRpcError(error: unknown): PublicError | null {
+  return error instanceof RpcDefiniteError ? error.publicError : null;
 }
 
 function durationBucket(milliseconds: number): string {
@@ -1202,6 +1209,38 @@ export async function handleVerifyBenefitCompany(
       OPERATION_DEADLINE_MS,
       PERSISTENCE_MARGIN_MS,
     );
+    let identity: AuthenticatedIdentity;
+    try {
+      identity = await deadline.runExternal((signal) =>
+        deps.authenticate(authorization!, signal)
+      );
+    } catch (error) {
+      if (error instanceof DeadlineExceededError) throw error;
+      result = "authentication_required";
+      statusCategory = "unauthenticated";
+      return safeError(
+        new PublicError(
+          401,
+          "authentication_required",
+          "로그인이 필요합니다.",
+          "unauthenticated",
+        ),
+        origin,
+      );
+    }
+    if (!validUuid(identity.id) || !identity.currentGoogleIdentity) {
+      result = "google_identity_required";
+      statusCategory = "forbidden";
+      return safeError(
+        new PublicError(
+          403,
+          "google_identity_required",
+          "Google 로그인 사용자만 요청할 수 있습니다.",
+          "forbidden",
+        ),
+        origin,
+      );
+    }
     let raw: string;
     try {
       raw = await deadline.runExternal((signal) =>
@@ -1236,38 +1275,6 @@ export async function handleVerifyBenefitCompany(
         origin,
       );
     }
-    let identity: AuthenticatedIdentity;
-    try {
-      identity = await deadline.runExternal((signal) =>
-        deps.authenticate(authorization!, signal)
-      );
-    } catch (error) {
-      if (error instanceof DeadlineExceededError) throw error;
-      result = "authentication_required";
-      statusCategory = "unauthenticated";
-      return safeError(
-        new PublicError(
-          401,
-          "authentication_required",
-          "로그인이 필요합니다.",
-          "unauthenticated",
-        ),
-        origin,
-      );
-    }
-    if (!validUuid(identity.id) || !identity.currentGoogleIdentity) {
-      result = "google_identity_required";
-      statusCategory = "forbidden";
-      return safeError(
-        new PublicError(
-          403,
-          "google_identity_required",
-          "Google 로그인 사용자만 요청할 수 있습니다.",
-          "forbidden",
-        ),
-        origin,
-      );
-    }
     const fields: SafeCompanyFields = {
       proposedName: input.proposedName,
       region: input.region,
@@ -1286,12 +1293,12 @@ export async function handleVerifyBenefitCompany(
         "reserve",
       );
     } catch (error) {
-      if (error instanceof DeadlineExceededError) {
+      const safe = definiteRpcError(error);
+      if (!safe) {
         result = "reservation_indeterminate";
         statusCategory = "indeterminate";
         return reservationIndeterminateResult(origin);
       }
-      const safe = errorFromRpc(error);
       result = safe.code;
       statusCategory = safe.category;
       return safeError(safe, origin);
@@ -1372,7 +1379,13 @@ export async function handleVerifyBenefitCompany(
             category: failureCategory!,
           }, signal)
         );
-      } catch {
+      } catch (error) {
+        const safe = definiteRpcError(error);
+        if (safe) {
+          result = safe.code;
+          statusCategory = safe.category;
+          return safeError(safe, origin);
+        }
         result = "verification_indeterminate";
         statusCategory = "indeterminate";
         return indeterminateResult(503, reservation.request_id, origin);
@@ -1385,17 +1398,9 @@ export async function handleVerifyBenefitCompany(
           failureCategory,
         );
       } catch {
-        result = "verification_unavailable";
-        statusCategory = "unavailable";
-        return safeError(
-          new PublicError(
-            502,
-            "verification_unavailable",
-            "사업자 확인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
-            "unavailable",
-          ),
-          origin,
-        );
+        result = "verification_indeterminate";
+        statusCategory = "indeterminate";
+        return indeterminateResult(503, reservation.request_id, origin);
       }
       result = failureCategory;
       statusCategory = failureCategory;
@@ -1431,12 +1436,12 @@ export async function handleVerifyBenefitCompany(
         reservation.request_id,
       );
     } catch (error) {
-      if (error instanceof DeadlineExceededError) {
+      const safe = definiteRpcError(error);
+      if (!safe) {
         result = "verification_indeterminate";
         statusCategory = "indeterminate";
         return indeterminateResult(202, reservation.request_id, origin);
       }
-      const safe = errorFromRpc(error);
       result = safe.code;
       statusCategory = safe.category;
       return safeError(safe, origin);
@@ -1491,15 +1496,32 @@ type FetchLike = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-function decodePostgrestError(value: unknown): Record<string, unknown> {
+function decodePostgrestRejection(
+  status: number,
+  value: unknown,
+): PublicError | null {
   if (
     !isRecord(value) ||
     !exactKeys(value, ["code", "details", "hint", "message"]) ||
-    typeof value.code !== "string" || typeof value.message !== "string" ||
-    !(value.details === null || typeof value.details === "string") ||
-    !(value.hint === null || typeof value.hint === "string")
-  ) throw new Error("postgrest");
-  return value;
+    typeof value.code !== "string" || utf8Length(value.code) > 16 ||
+    typeof value.message !== "string" || utf8Length(value.message) > 4_096 ||
+    !(value.details === null ||
+      (typeof value.details === "string" &&
+        utf8Length(value.details) <= 4_096)) ||
+    !(value.hint === null ||
+      (typeof value.hint === "string" && utf8Length(value.hint) <= 4_096))
+  ) return null;
+  const expectedStatus: Record<string, number> = {
+    PT429: 429,
+    "22023": 400,
+    "23505": 409,
+    "23514": 409,
+    "40001": 500,
+    "42501": 403,
+    "55000": 500,
+  };
+  if (expectedStatus[value.code] !== status) return null;
+  return safeRpcRejection(value.code);
 }
 
 function decodeAuthError(value: unknown): void {
@@ -1533,23 +1555,37 @@ export function createRuntimeDependencies(
     apikey: string,
     signal: AbortSignal,
   ): Promise<unknown> => {
-    const response = await fetchImpl(
-      supabaseEndpoint(`/rest/v1/rpc/${functionName}`),
-      {
-        method: "POST",
-        redirect: "error",
-        headers: {
-          apikey,
-          Authorization: authorization,
-          "content-type": "application/json",
+    let response: Response;
+    try {
+      response = await fetchImpl(
+        supabaseEndpoint(`/rest/v1/rpc/${functionName}`),
+        {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            apikey,
+            Authorization: authorization,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal,
         },
-        body: JSON.stringify(payload),
-        signal,
-      },
-    );
-    const value = await runtimeJson(response, signal);
-    if (!response.ok) throw decodePostgrestError(value);
-    if (!isRecord(value)) throw new Error("postgrest");
+      );
+    } catch {
+      throw new RpcIndeterminateError();
+    }
+    let value: unknown;
+    try {
+      value = await runtimeJson(response, signal);
+    } catch {
+      throw new RpcIndeterminateError();
+    }
+    if (!response.ok) {
+      const rejection = decodePostgrestRejection(response.status, value);
+      if (!rejection) throw new RpcIndeterminateError();
+      throw new RpcDefiniteError(rejection);
+    }
+    if (!isRecord(value)) throw new RpcIndeterminateError();
     return value;
   };
   const serviceRpc = async (

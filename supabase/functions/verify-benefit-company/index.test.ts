@@ -481,7 +481,7 @@ Deno.test("rejects oversized wire body before parse, auth, reserve, or external 
   ], [0, 0, 0]);
 });
 
-Deno.test("streams chunked request bodies with a hard retained-byte cap", async () => {
+Deno.test("streams authenticated chunked request bodies with a hard retained-byte cap", async () => {
   let pulls = 0;
   let cancelled = 0;
   const chunks = [
@@ -521,10 +521,10 @@ Deno.test("streams chunked request bodies with a hard retained-byte cap", async 
     events.auth.length,
     events.reserve.length,
     events.fetch.length,
-  ], [0, 0, 0]);
+  ], [1, 0, 0]);
 });
 
-Deno.test("rejects invalid UTF-8 before JSON, auth, and reservation", async () => {
+Deno.test("rejects invalid UTF-8 after auth and before reservation", async () => {
   const invalidUtf8 = new Request("https://edge.test/verify-benefit-company", {
     method: "POST",
     headers: {
@@ -538,7 +538,7 @@ Deno.test("rejects invalid UTF-8 before JSON, auth, and reservation", async () =
   const { deps, events } = dependencies();
   const response = await handleVerifyBenefitCompany(invalidUtf8, deps);
   assert.equal(response.status, 400);
-  assert.deepEqual([events.auth.length, events.reserve.length], [0, 0]);
+  assert.deepEqual([events.auth.length, events.reserve.length], [1, 0]);
 });
 
 Deno.test("accepts a valid request body without Content-Length", async () => {
@@ -595,6 +595,45 @@ Deno.test("validates bearer and idempotency syntax before the first body pull", 
   }
 });
 
+Deno.test("rejects a fake bearer before pulling or capturing a sensitive body", async () => {
+  let pulls = 0;
+  let authCalls = 0;
+  let capturedDependencyInput = "";
+  const stream = new ReadableStream<Uint8Array>({
+    pull() {
+      pulls++;
+    },
+  }, { highWaterMark: 0 });
+  const { deps, events } = dependencies({
+    authenticate: async (authorization) => {
+      authCalls++;
+      capturedDependencyInput = authorization;
+      throw new Error("invalid session");
+    },
+  });
+  const started = performance.now();
+  const response = await handleVerifyBenefitCompany(
+    new Request("https://edge.test/verify-benefit-company", {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        authorization: "Bearer syntactically-valid-fake",
+        "idempotency-key": KEY,
+        "content-type": "application/json",
+      },
+      body: stream,
+    }),
+    deps,
+  );
+  assert.equal(response.status, 401);
+  assert.ok(performance.now() - started < 500);
+  assert.equal(authCalls, 1);
+  assert.equal(capturedDependencyInput, "Bearer syntactically-valid-fake");
+  assert.equal(pulls, 0);
+  assert.equal(events.reserve.length, 0);
+  assertNoSensitive(capturedDependencyInput);
+});
+
 Deno.test("bounds and cancels a request body that sends one chunk but never closes", async () => {
   let cancelled = 0;
   let timerCalls = 0;
@@ -609,7 +648,7 @@ Deno.test("bounds and cancels a request body that sends one chunk but never clos
   const { deps, events } = dependencies({
     setTimeout: (callback) => {
       timerCalls++;
-      queueMicrotask(callback);
+      if (timerCalls === 2) queueMicrotask(callback);
       return 23 as unknown as ReturnType<typeof setTimeout>;
     },
     clearTimeout: () => {},
@@ -628,13 +667,13 @@ Deno.test("bounds and cancels a request body that sends one chunk but never clos
     deps,
   );
   assert.equal(response.status, 502);
-  assert.equal(timerCalls, 1);
+  assert.equal(timerCalls, 2);
   assert.equal(cancelled, 1);
   assert.deepEqual([
     events.auth.length,
     events.reserve.length,
     events.fetch.length,
-  ], [0, 0, 0]);
+  ], [1, 0, 0]);
 });
 
 Deno.test("real clock enforces the ingress cutoff for a never-closing body", async () => {
@@ -698,7 +737,7 @@ Deno.test("real clock enforces the ingress cutoff for a never-closing body", asy
       events.fetch.length,
       events.finalize.length,
       events.fail.length,
-    ], [0, 0, 0, 0, 0]);
+    ], [1, 0, 0, 0, 0]);
   } finally {
     if (safetyTimer !== undefined) globalThis.clearTimeout(safetyTimer);
     client.abort();
@@ -804,12 +843,13 @@ Deno.test("measures HMAC secret strength in UTF-8 bytes", async () => {
   }
 });
 
-Deno.test("reserve receives authenticated bearer and safe fields, and maps rate/conflict/failure", async () => {
+Deno.test("reserve receives only authenticated bearer and safe fields", async () => {
   for (
-    const [error, status] of [[{ code: "PT429" }, 429], [
+    const error of [
+      { code: "PT429" },
       { code: "22023" },
-      409,
-    ], [new Error("private detail"), 502]] as const
+      new Error("private detail"),
+    ]
   ) {
     const { deps, events } = dependencies({
       reserve: async () => {
@@ -817,9 +857,9 @@ Deno.test("reserve receives authenticated bearer and safe fields, and maps rate/
       },
     });
     const response = await handleVerifyBenefitCompany(request(), deps);
-    assert.equal(response.status, status);
+    assert.equal(response.status, 503);
+    assert.equal((await body(response)).code, "reservation_indeterminate");
     assert.equal(events.fetch.length, 0);
-    assertNoSensitive(await body(response));
   }
   const { deps, events } = dependencies();
   await handleVerifyBenefitCompany(request(), deps);
@@ -894,7 +934,8 @@ Deno.test("RPC decoder rejects missing, extra, malformed, and impossible reserva
   for (const value of invalid) {
     const { deps, events } = dependencies({ reserve: async () => value });
     const response = await handleVerifyBenefitCompany(request(), deps);
-    assert.equal(response.status, 502);
+    assert.equal(response.status, 503);
+    assert.equal((await body(response)).code, "reservation_indeterminate");
     assert.equal(events.fetch.length, 0);
     assert.equal(events.finalize.length, 0);
   }
@@ -912,7 +953,7 @@ Deno.test("finalize and failure RPC responses require exact terminal state", asy
   });
   assert.equal(
     (await handleVerifyBenefitCompany(request(), badFinal.deps)).status,
-    502,
+    202,
   );
 
   const badFailure = dependencies({
@@ -928,7 +969,7 @@ Deno.test("finalize and failure RPC responses require exact terminal state", asy
   });
   assert.equal(
     (await handleVerifyBenefitCompany(request(), badFailure.deps)).status,
-    502,
+    503,
   );
 
   for (const kind of ["finalize", "failure"] as const) {
@@ -956,7 +997,7 @@ Deno.test("finalize and failure RPC responses require exact terminal state", asy
     const scenario = dependencies(changes);
     assert.equal(
       (await handleVerifyBenefitCompany(request(), scenario.deps)).status,
-      502,
+      kind === "finalize" ? 202 : 503,
       `${kind} revision 1`,
     );
   }
@@ -1467,6 +1508,210 @@ function runtimeUser() {
   };
 }
 
+function finalizedResult(status: "approved" | "rejected" = "approved") {
+  return reserveResult({
+    verification_method: "nts_full",
+    verification_status: status === "approved" ? "matched" : "unavailable",
+    status,
+    revision: 2,
+    resolved_company_id: status === "approved"
+      ? "KR-CAN-0123456789abcdef0123456789abcdef"
+      : null,
+  });
+}
+
+function terminalReserveResult(status: "approved" | "rejected" = "approved") {
+  return reserveResult({
+    verification_status: status === "approved" ? "matched" : "unavailable",
+    status,
+    revision: 2,
+    resolved_company_id: status === "approved"
+      ? "KR-CAN-0123456789abcdef0123456789abcdef"
+      : null,
+  });
+}
+
+type AmbiguousRpcResponse = () => Promise<Response>;
+
+function ambiguousRpcResponses(): Array<[string, AmbiguousRpcResponse]> {
+  return [
+    ["network loss", async () => {
+      throw new TypeError("network lost after dispatch");
+    }],
+    ["truncated JSON", async () =>
+      new Response('{"request_id":', {
+        headers: { "content-type": "application/json" },
+      })],
+    ["oversized JSON", async () =>
+      new Response(" ".repeat(65_537), {
+        headers: { "content-type": "application/json" },
+      })],
+    [
+      "wrong content type",
+      async () =>
+        new Response("{}", { headers: { "content-type": "text/html" } }),
+    ],
+    ["invalid success envelope", async () => ntsResponse({})],
+    [
+      "recognized code with wrong status",
+      async () =>
+        ntsResponse({
+          code: "22023",
+          details: null,
+          hint: null,
+          message: "wrong status",
+        }, { status: 409 }),
+    ],
+  ];
+}
+
+Deno.test("ambiguous reserve outcomes expose no invented ID and retry converges", async () => {
+  for (const [label, ambiguousResponse] of ambiguousRpcResponses()) {
+    let reservationCommitted = false;
+    let ntsCalls = 0;
+    const fetcher = async (input: string | URL | Request) => {
+      const pathname = new URL(String(input)).pathname;
+      if (pathname === "/auth/v1/user") return ntsResponse(runtimeUser());
+      if (pathname.includes("reserve_benefit_company_nts_request_v1")) {
+        if (reservationCommitted) return ntsResponse(reserveResult());
+        reservationCommitted = true;
+        return await ambiguousResponse();
+      }
+      if (pathname.endsWith("/validate")) {
+        ntsCalls++;
+        return ntsResponse(validateEnvelope());
+      }
+      if (pathname.endsWith("/status")) {
+        ntsCalls++;
+        return ntsResponse(statusEnvelope());
+      }
+      if (pathname.includes("finalize_benefit_company_nts_request_v1")) {
+        return ntsResponse(finalizedResult());
+      }
+      throw new Error(`unexpected endpoint: ${pathname}`);
+    };
+    const runtime = createRuntimeDependencies(
+      (name) => ENV[name as keyof typeof ENV],
+      fetcher,
+    );
+    runtime.log = () => {};
+    const first = await handleVerifyBenefitCompany(request(), runtime);
+    assert.equal(first.status, 503, label);
+    assert.deepEqual(await body(first), {
+      code: "reservation_indeterminate",
+      message:
+        "예약 결과를 확인할 수 없습니다. 같은 멱등성 키로 다시 시도해 주세요.",
+    }, label);
+    assert.equal(ntsCalls, 0, label);
+    const retry = await handleVerifyBenefitCompany(request(), runtime);
+    assert.equal(retry.status, 200, label);
+    assert.equal(ntsCalls, 2, label);
+  }
+});
+
+Deno.test("ambiguous finalize outcomes retain the known ID and retry converges", async () => {
+  for (const [label, ambiguousResponse] of ambiguousRpcResponses()) {
+    let finalized = false;
+    let ntsCalls = 0;
+    const fetcher = async (input: string | URL | Request) => {
+      const pathname = new URL(String(input)).pathname;
+      if (pathname === "/auth/v1/user") return ntsResponse(runtimeUser());
+      if (pathname.includes("reserve_benefit_company_nts_request_v1")) {
+        return ntsResponse(
+          finalized ? terminalReserveResult() : reserveResult(),
+        );
+      }
+      if (pathname.endsWith("/validate")) {
+        ntsCalls++;
+        return ntsResponse(validateEnvelope());
+      }
+      if (pathname.endsWith("/status")) {
+        ntsCalls++;
+        return ntsResponse(statusEnvelope());
+      }
+      if (pathname.includes("finalize_benefit_company_nts_request_v1")) {
+        finalized = true;
+        return await ambiguousResponse();
+      }
+      throw new Error(`unexpected endpoint: ${pathname}`);
+    };
+    const runtime = createRuntimeDependencies(
+      (name) => ENV[name as keyof typeof ENV],
+      fetcher,
+    );
+    runtime.log = () => {};
+    const first = await handleVerifyBenefitCompany(request(), runtime);
+    assert.equal(first.status, 202, label);
+    assert.deepEqual(await body(first), {
+      code: "verification_indeterminate",
+      requestId: REQUEST_ID,
+      message:
+        "처리 결과를 확인할 수 없습니다. 같은 멱등성 키로 다시 시도해 주세요.",
+    }, label);
+    assert.equal(ntsCalls, 2, label);
+    const retry = await handleVerifyBenefitCompany(request(), runtime);
+    assert.equal(retry.status, 200, label);
+    assert.equal(ntsCalls, 2, label);
+  }
+});
+
+Deno.test("ambiguous failure RPC is 503 with the known reservation ID", async () => {
+  let failed = false;
+  const fetcher = async (input: string | URL | Request) => {
+    const pathname = new URL(String(input)).pathname;
+    if (pathname === "/auth/v1/user") return ntsResponse(runtimeUser());
+    if (pathname.includes("reserve_benefit_company_nts_request_v1")) {
+      return ntsResponse(
+        failed ? terminalReserveResult("rejected") : reserveResult(),
+      );
+    }
+    if (pathname.endsWith("/validate")) {
+      return ntsResponse(validateEnvelope("02"));
+    }
+    if (pathname.includes("fail_benefit_company_nts_request_v1")) {
+      failed = true;
+      throw new TypeError("network lost after failure commit");
+    }
+    throw new Error(`unexpected endpoint: ${pathname}`);
+  };
+  const runtime = createRuntimeDependencies(
+    (name) => ENV[name as keyof typeof ENV],
+    fetcher,
+  );
+  runtime.log = () => {};
+  const first = await handleVerifyBenefitCompany(request(), runtime);
+  assert.equal(first.status, 503);
+  assert.equal((await body(first)).requestId, REQUEST_ID);
+  const retry = await handleVerifyBenefitCompany(request(), runtime);
+  assert.equal(retry.status, 200);
+});
+
+Deno.test("recognized exact PostgREST rejection is definite and safely mapped", async () => {
+  const privateMessage = `conflict ${REPRESENTATIVE}`;
+  const logs: unknown[] = [];
+  const runtime = createRuntimeDependencies(
+    (name) => ENV[name as keyof typeof ENV],
+    async (input) => {
+      const pathname = new URL(String(input)).pathname;
+      if (pathname === "/auth/v1/user") return ntsResponse(runtimeUser());
+      return ntsResponse({
+        code: "22023",
+        details: null,
+        hint: null,
+        message: privateMessage,
+      }, { status: 400 });
+    },
+  );
+  runtime.log = (entry) => logs.push(entry);
+  const response = await handleVerifyBenefitCompany(request(), runtime);
+  assert.equal(response.status, 409);
+  assert.deepEqual(await body(response), {
+    code: "request_conflict",
+    message: "요청 상태가 변경되었습니다. 새 요청으로 다시 시도해 주세요.",
+  });
+  assert.equal(JSON.stringify(logs).includes(privateMessage), false);
+});
+
 Deno.test("runtime adapters normalize Supabase URL variants for every fixed endpoint", async () => {
   const expectedOrigin = "https://project-ref.supabase.co";
   for (const supabaseUrl of [expectedOrigin, `${expectedOrigin}/`]) {
@@ -1596,7 +1841,8 @@ Deno.test("runtime adapters decode realistic errors and reject aborts and unsafe
         industry: null,
         website: null,
       }, new AbortController().signal),
-    (error) => (error as { code?: string }).code === "PT429",
+    (error: unknown) =>
+      error instanceof Error && error.message === "rate_limited",
   );
 
   const authErrorRuntime = createRuntimeDependencies(
@@ -1637,7 +1883,13 @@ Deno.test("runtime adapters decode realistic errors and reject aborts and unsafe
         website: null,
       }, controller.signal);
     controller.abort();
-    await assert.rejects(() => pending, DOMException);
+    await assert.rejects(
+      () => pending,
+      (error: unknown) =>
+        operation === "authenticate"
+          ? error instanceof DOMException
+          : error instanceof Error,
+    );
     assert.equal(observedSignal, controller.signal);
   }
 
