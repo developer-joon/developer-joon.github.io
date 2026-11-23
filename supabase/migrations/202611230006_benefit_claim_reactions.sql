@@ -64,38 +64,106 @@ create trigger benefit_claim_reaction_requests_append_only_truncate before trunc
 
 -- Deferred cross-table checks make claim.status, its community-only pointer, and
 -- the active claim publication one transaction-bound invariant.
-create function private.enforce_benefit_claim_publication()
-returns trigger language plpgsql set search_path='' as $$
-declare v_claim public.benefit_claims%rowtype; v_publication public.benefit_publications%rowtype;
+create function private.assert_benefit_claim_publication(p_claim_id uuid)
+returns void language plpgsql security definer set search_path='' as $$
+declare
+  v_claim public.benefit_claims%rowtype;
+  v_publication public.benefit_publications%rowtype;
 begin
-  select * into v_claim from public.benefit_claims where claim_id=new.claim_id;
-  if not found then return null; end if;
-  if v_claim.active_publication_id is not null then
-    select * into v_publication from public.benefit_publications where publication_id=v_claim.active_publication_id;
-    if not found or v_claim.status<>'community_confirmed'
-       or v_publication.status<>'active' or v_publication.trust_tier<>'community_reviewed'
-       or v_publication.source_type<>'claim_reaction'
-       or v_publication.provenance->>'claim_id'<>v_claim.claim_id::text
-       or v_publication.company_id<>v_claim.company_id or v_publication.category_id<>v_claim.category_id then
-      raise exception 'claim active publication must be its active community reaction publication' using errcode='23514';
+  select * into v_claim from public.benefit_claims where claim_id=p_claim_id;
+  if not found then return; end if;
+
+  if v_claim.active_publication_id is null then
+    if v_claim.status is not distinct from 'community_confirmed' then
+      raise exception 'community confirmed claim requires active community publication' using errcode='23514';
     end if;
-  elsif v_claim.status='community_confirmed' then
-    raise exception 'community confirmed claim requires active community publication' using errcode='23514';
+    return;
   end if;
+
+  select * into v_publication from public.benefit_publications
+  where publication_id=v_claim.active_publication_id;
+  if not found
+     or v_claim.status is distinct from 'community_confirmed'
+     or v_publication.status is distinct from 'active'
+     or v_publication.trust_tier is distinct from 'community_reviewed'
+     or v_publication.source_type is distinct from 'claim_reaction'
+     or v_publication.provenance is distinct from pg_catalog.jsonb_build_object('claim_id',v_claim.claim_id)
+     or v_publication.company_id is distinct from v_claim.company_id
+     or v_publication.category_id is distinct from v_claim.category_id
+     or v_publication.dedupe_key is distinct from 'claim-'||v_claim.claim_id::text then
+    raise exception 'claim active publication must be its active community reaction publication' using errcode='23514';
+  end if;
+end $$;
+
+create function private.require_active_benefit_claim_publication(p_claim_id uuid,p_publication_id uuid)
+returns void language plpgsql security definer set search_path='' as $$
+declare v_claim public.benefit_claims%rowtype;
+begin
+  select * into v_claim from public.benefit_claims where claim_id=p_claim_id;
+  if not found or v_claim.active_publication_id is distinct from p_publication_id then
+    raise exception 'claim publication lineage is invalid' using errcode='23514';
+  end if;
+  perform private.assert_benefit_claim_publication(p_claim_id);
+end $$;
+
+create function private.enforce_benefit_claim_publication()
+returns trigger language plpgsql security definer set search_path='' as $$
+begin
+  perform private.assert_benefit_claim_publication(new.claim_id);
   return null;
 end $$;
 
 create function private.enforce_benefit_publication_claim_lineage()
-returns trigger language plpgsql set search_path='' as $$
-declare v_claim public.benefit_claims%rowtype;
+returns trigger language plpgsql security definer set search_path='' as $$
+declare
+  v_claim public.benefit_claims%rowtype;
+  v_publication public.benefit_publications%rowtype;
+  v_claim_id uuid;
+  v_pointer_count integer;
 begin
-  if new.source_type<>'claim_reaction' then return null; end if;
-  select * into v_claim from public.benefit_claims where claim_id=(new.provenance->>'claim_id')::uuid;
-  if not found or v_claim.company_id<>new.company_id or v_claim.category_id<>new.category_id then
-    raise exception 'claim publication must bind to its immutable claim' using errcode='23514';
+  if tg_op='UPDATE' and old.source_type is not distinct from 'claim_reaction' and (
+       new.source_type is distinct from old.source_type
+       or new.provenance is distinct from old.provenance
+       or new.company_id is distinct from old.company_id
+       or new.category_id is distinct from old.category_id
+       or new.dedupe_key is distinct from old.dedupe_key
+     ) then
+    raise exception 'claim publication must preserve its immutable claim binding' using errcode='23514';
   end if;
-  if new.status='active' and (v_claim.status<>'community_confirmed' or v_claim.active_publication_id<>new.publication_id) then
-    raise exception 'active claim publication must be selected by its confirmed claim' using errcode='23514';
+
+  for v_claim_id in
+    select claim_id from public.benefit_claims
+    where active_publication_id=new.publication_id
+       or (tg_op='UPDATE' and active_publication_id=old.publication_id)
+  loop
+    perform private.assert_benefit_claim_publication(v_claim_id);
+  end loop;
+
+  select * into v_publication from public.benefit_publications
+  where publication_id=new.publication_id;
+  if not found or v_publication.source_type is distinct from 'claim_reaction' then return null; end if;
+
+  select * into v_claim from public.benefit_claims
+  where claim_id::text=v_publication.provenance->>'claim_id';
+  if not found
+     or v_publication.trust_tier is distinct from 'community_reviewed'
+     or v_publication.provenance is distinct from pg_catalog.jsonb_build_object('claim_id',v_claim.claim_id)
+     or v_publication.company_id is distinct from v_claim.company_id
+     or v_publication.category_id is distinct from v_claim.category_id
+     or v_publication.dedupe_key is distinct from 'claim-'||v_claim.claim_id::text then
+    raise exception 'claim publication must bind exactly to its immutable claim' using errcode='23514';
+  end if;
+
+  select pg_catalog.count(*)::integer into v_pointer_count
+  from public.benefit_claims where active_publication_id=v_publication.publication_id;
+  if v_publication.status is not distinct from 'active' then
+    if v_pointer_count is distinct from 1
+       or v_claim.status is distinct from 'community_confirmed'
+       or v_claim.active_publication_id is distinct from v_publication.publication_id then
+      raise exception 'active claim publication must be selected by its confirmed claim' using errcode='23514';
+    end if;
+  elsif v_pointer_count is distinct from 0 then
+    raise exception 'claim active publication must be its active community reaction publication' using errcode='23514';
   end if;
   return null;
 end $$;
@@ -161,9 +229,10 @@ begin
 
   if v_claim.active_publication_id is not null then
     select * into v_active from public.benefit_publications where publication_id=v_claim.active_publication_id for update;
-    if not found or v_active.source_type<>'claim_reaction' or v_active.trust_tier<>'community_reviewed' or v_active.provenance->>'claim_id'<>p_claim_id::text then
+    if not found then
       raise exception 'claim publication lineage is invalid' using errcode='23514';
     end if;
+    perform private.require_active_benefit_claim_publication(p_claim_id,v_claim.active_publication_id);
   end if;
 
   if v_new_status='community_confirmed' and v_claim.active_publication_id is null then
@@ -221,7 +290,8 @@ begin
  if v_claim.status is distinct from p_expected_status or v_claim.revision is distinct from p_expected_revision then raise exception 'benefit claim state changed' using errcode='40001'; end if;
  if v_claim.active_publication_id is not null then
    select * into v_publication from public.benefit_publications where publication_id=v_claim.active_publication_id for update;
-   if not found or v_publication.source_type<>'claim_reaction' or v_publication.trust_tier<>'community_reviewed' or v_publication.provenance->>'claim_id'<>p_claim_id::text then raise exception 'claim publication lineage is invalid' using errcode='23514'; end if;
+   if not found then raise exception 'claim publication lineage is invalid' using errcode='23514'; end if;
+   perform private.require_active_benefit_claim_publication(p_claim_id,v_claim.active_publication_id);
  end if;
  perform private.consume_rate_limit(v_actor,'benefit_claim.withdraw',p_client_key::text);
  v_now:=pg_catalog.clock_timestamp();
@@ -259,12 +329,14 @@ begin
 end $$;
 
 alter function private.reject_benefit_claim_reaction_request_change() owner to postgres;
+alter function private.assert_benefit_claim_publication(uuid) owner to postgres;
+alter function private.require_active_benefit_claim_publication(uuid,uuid) owner to postgres;
 alter function private.enforce_benefit_claim_publication() owner to postgres;
 alter function private.enforce_benefit_publication_claim_lineage() owner to postgres;
 alter function public.set_benefit_claim_reaction_v1(uuid,text,uuid) owner to postgres;
 alter function public.withdraw_benefit_claim_v1(uuid,uuid,text,bigint) owner to postgres;
 alter function public.get_benefit_company_v2(text) owner to postgres;
-revoke all on function private.reject_benefit_claim_reaction_request_change(),private.enforce_benefit_claim_publication(),private.enforce_benefit_publication_claim_lineage() from public,anon,authenticated,service_role;
+revoke all on function private.reject_benefit_claim_reaction_request_change(),private.assert_benefit_claim_publication(uuid),private.require_active_benefit_claim_publication(uuid,uuid),private.enforce_benefit_claim_publication(),private.enforce_benefit_publication_claim_lineage() from public,anon,authenticated,service_role;
 revoke all on function public.set_benefit_claim_reaction_v1(uuid,text,uuid) from public,anon,authenticated,service_role;
 grant execute on function public.set_benefit_claim_reaction_v1(uuid,text,uuid) to authenticated;
 
