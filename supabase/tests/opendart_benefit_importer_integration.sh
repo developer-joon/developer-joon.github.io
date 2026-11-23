@@ -75,6 +75,23 @@ for mutation in trigger_dropped trigger_disabled trigger_repointed trigger_repla
   [[ "$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code')||':'||(select count(*) from private.benefit_company_sources where source_contract='opendart-corp-code-v1')||':'||(select count(*) from private.benefit_import_receipts)")" == "$mutation_before" ]]
   q "$restore"
 done
+# Any non-internal target trigger is rejected from the complete pinned inventory
+# before it can mutate unrelated target or protected state.
+q "insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition,provenance) values('KR-BIZ-9999999999','registered_business','Trigger Sentinel','trigger sentinel',false,'integration','{}'); insert into public.benefit_publications(company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type) values('KR-BIZ-9999999999','health','Sentinel title','Sentinel description','community_reviewed','withdrawn','sentinel',0,'integration')"
+for target in company identifier source receipt; do
+  case "$target" in
+    company) table=public.benefit_companies; body="update public.benefit_companies set summary='mutated' where company_id='KR-BIZ-9999999999';" ;;
+    identifier) table=public.benefit_company_identifiers; body="insert into private.benefit_company_sources(company_id,source_contract,source_digest,source_binding,bundle_digest) values('KR-BIZ-9999999999','unexpected',repeat('a',64),'{}',repeat('b',64)) on conflict do nothing;" ;;
+    source) table=private.benefit_company_sources; body="insert into public.benefit_company_identifiers(identifier_id,company_id,identifier_type,identifier_digest_or_value,source_edition,verified_at) values('11111111-1111-4111-8111-111111111111','KR-BIZ-9999999999','opendart_corp_code','00888888','unexpected',pg_catalog.now()) on conflict do nothing;" ;;
+    receipt) table=private.benefit_import_receipts; body="update public.benefit_publications set title='mutated' where company_id='KR-BIZ-9999999999';" ;;
+  esac
+  q "create function private.test_opendart_${target}_unrelated() returns trigger language plpgsql set search_path='' as \$\$ begin ${body} return new; end \$\$; create trigger test_opendart_${target}_unrelated after insert on ${table} for each row execute function private.test_opendart_${target}_unrelated()"
+  inventory_before="$(q "select summary is null from public.benefit_companies where company_id='KR-BIZ-9999999999'; select title from public.benefit_publications where company_id='KR-BIZ-9999999999'; select count(*) from private.benefit_company_sources where company_id='KR-BIZ-9999999999'; select count(*) from public.benefit_company_identifiers where company_id='KR-BIZ-9999999999'")"
+  if "${args[@]}" --apply >/dev/null 2>&1; then echo "$target unexpected trigger unexpectedly succeeded" >&2; exit 1; fi
+  [[ "$(q "select summary is null from public.benefit_companies where company_id='KR-BIZ-9999999999'; select title from public.benefit_publications where company_id='KR-BIZ-9999999999'; select count(*) from private.benefit_company_sources where company_id='KR-BIZ-9999999999'; select count(*) from public.benefit_company_identifiers where company_id='KR-BIZ-9999999999'")" == "$inventory_before" ]]
+  [[ "$(q "select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code' and company_id<>'KR-BIZ-9999999999'")" == 0 ]]
+  q "drop trigger test_opendart_${target}_unrelated on ${table}; drop function private.test_opendart_${target}_unrelated()"
+done
 # Every import-owned target is verified after triggers; rewrites must roll back.
 for target in company identifier source receipt; do
   case "$target" in
@@ -89,6 +106,14 @@ for target in company identifier source receipt; do
   [[ "$(q "select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code'")" == 0 ]]
   [[ "$(q "select count(*) from private.benefit_company_sources where source_contract='opendart-corp-code-v1'")" == 0 ]]
 done
+# The locked protected snapshot preflight rejects the real production row cap
+# before COPY or import-owned writes and leaves protected state byte-for-byte intact.
+q "insert into public.benefit_publications(company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type) select 'KR-BIZ-9999999999','health','Snapshot '||g,'Snapshot bound fixture','community_reviewed','withdrawn','snapshot-bound',g,'integration' from generate_series(1,100000) g"
+snapshot_before="$(q "select count(*)||':'||encode(extensions.digest(convert_to(jsonb_agg(to_jsonb(p) order by publication_id)::text,'UTF8'),'sha256'),'hex') from public.benefit_publications p where company_id='KR-BIZ-9999999999'")"
+if "${args[@]}" --apply >/dev/null 2>&1; then echo 'oversized protected snapshot unexpectedly succeeded' >&2; exit 1; fi
+[[ "$(q "select count(*)||':'||encode(extensions.digest(convert_to(jsonb_agg(to_jsonb(p) order by publication_id)::text,'UTF8'),'sha256'),'hex') from public.benefit_publications p where company_id='KR-BIZ-9999999999'")" == "$snapshot_before" ]]
+[[ "$(q "select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code'")" == 0 ]]
+q "delete from public.benefit_publications where company_id='KR-BIZ-9999999999'; delete from public.benefit_companies where company_id='KR-BIZ-9999999999'"
 "${args[@]}" --apply >/dev/null
 [[ "$(q "select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code'")" == 2 ]]
 [[ "$(q "select count(*) from private.benefit_import_receipts")" == $(( ${base_before##*:} + 1 )) ]]
