@@ -40,6 +40,14 @@ const communityRoutes: Record<string, CommunityRouteState> = {
     statusTitle: '로그인 확인 화면을 준비하고 있습니다',
     statusDescription: '로그인 결과를 안전하게 확인하는 화면을 만들고 있습니다.',
   },
+  '/community/benefits/company-request': {
+    statusTitle: '기업 추가 요청 화면을 준비하고 있습니다',
+    statusDescription: '확인 가능한 기업 정보를 안전하게 접수하는 화면입니다.',
+  },
+  '/community/benefits/claim': {
+    statusTitle: '복지 제보 화면을 준비하고 있습니다',
+    statusDescription: '확인된 기업의 복지 내용을 구조화해 접수하는 화면입니다.',
+  },
 }
 
 export function resolveCommunityRoute(pathname: string): CommunityRouteState {

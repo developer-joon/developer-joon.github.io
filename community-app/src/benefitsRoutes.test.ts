@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { benefitSubmissionHref, benefitsRoute, legacyBenefitsRedirect } from './benefitsRoutes'
+import { benefitClaimHref, benefitCompanyRequestHref, benefitSubmissionHref, benefitsRoute, legacyBenefitsRedirect } from './benefitsRoutes'
+
+describe('Task 10 company and claim route contract',()=>{
+  it('builds canonical slash URLs and bounds the optional public company name',()=>{expect(benefitCompanyRequestHref(' 테스트 기업 ')).toBe('/community/benefits/company-request/?name=%ED%85%8C%EC%8A%A4%ED%8A%B8+%EA%B8%B0%EC%97%85');expect(benefitCompanyRequestHref('x'.repeat(101))).toBe('/community/benefits/company-request/');expect(benefitClaimHref('KR-BIZ-1234567890')).toBe('/community/benefits/claim/?company=KR-BIZ-1234567890')})
+  it('rejects a noncanonical claim company hint',()=>expect(()=>benefitClaimHref('KR-BIZ-123')).toThrow('Invalid canonical company ID'))
+})
 
 describe('Task 7 benefit submission route contract', () => {
   it('builds the canonical company-prefilled submission URL', () => {
@@ -60,6 +65,8 @@ describe('non-ranking benefits routes', () => {
   it.each([
     '/community/benefits/correction',
     '/community/benefits/my-corrections/',
+    '/community/benefits/company-request/',
+    '/community/benefits/claim/',
   ])('keeps authenticated route %s outside the public bundle', (path) => {
     expect(benefitsRoute(path)).toBe(null)
   })

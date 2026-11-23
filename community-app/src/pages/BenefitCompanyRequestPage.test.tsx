@@ -1,0 +1,12 @@
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
+import { BenefitCompanyRequestPage } from './BenefitCompanyRequestPage'
+import type { BenefitCompanyRequestRepository } from '../data/benefitCompanyRequestRepository'
+
+const base={loading:false,pending:false,session:null,user:null,error:null,signIn:vi.fn(),signOut:vi.fn(),invalidateStaleSession:vi.fn(()=>false)} satisfies AuthContextValue
+const repository={} as BenefitCompanyRequestRepository
+describe('BenefitCompanyRequestPage',()=>{
+ it('shows Google login before every company or sensitive input while signed out',()=>{render(<AuthContext.Provider value={base}><BenefitCompanyRequestPage repository={repository}/></AuthContext.Provider>);expect(screen.getAllByRole('heading',{level:1})).toHaveLength(1);expect(screen.getByRole('button',{name:'Google로 로그인하고 계속'})).toBeInTheDocument();expect(screen.queryByLabelText('사업자등록번호')).not.toBeInTheDocument();expect(screen.queryByLabelText('기업명')).not.toBeInTheDocument()})
+ it('separates NTS-only sensitive fields from the manual form and explains non-persistence',()=>{const auth={...base,session:{} as never,user:{id:'a2000000-0000-4000-8000-000000000001'} as never};render(<AuthContext.Provider value={auth}><BenefitCompanyRequestPage repository={repository}/></AuthContext.Provider>);expect(screen.getByLabelText('사업자등록번호')).toHaveAttribute('autocomplete','off');expect(screen.getByText(/국세청 사업자 확인에만 사용하며 브라우저 저장소에 저장하지 않습니다/)).toBeInTheDocument();fireEvent.click(screen.getByLabelText('사업자등록정보 없음'));expect(screen.queryByLabelText('사업자등록번호')).not.toBeInTheDocument();expect(screen.getByText(/민감한 사업자등록정보는 이 양식에 입력하지 않습니다/)).toBeInTheDocument()})
+})

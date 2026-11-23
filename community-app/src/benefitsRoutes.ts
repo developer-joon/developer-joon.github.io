@@ -1,6 +1,10 @@
 import { isBenefitCompanyId } from './lib/benefitCompanyId'
 export const BENEFIT_SUBMISSION_PATH = '/community/benefits/submit/'
 export const MY_BENEFIT_SUBMISSIONS_PATH = '/community/benefits/my-submissions/'
+export const BENEFIT_COMPANY_REQUEST_PATH = '/community/benefits/company-request/'
+export const BENEFIT_CLAIM_PATH = '/community/benefits/claim/'
+export function benefitCompanyRequestHref(name?:string):string{const value=name?.trim()??'';if(!value)return BENEFIT_COMPANY_REQUEST_PATH;if(Array.from(value).length>100||[...value].some(character=>{const code=character.charCodeAt(0);return code<=31||code===127}))return BENEFIT_COMPANY_REQUEST_PATH;return `${BENEFIT_COMPANY_REQUEST_PATH}?${new URLSearchParams({name:value})}`}
+export function benefitClaimHref(companyId:string):string{if(!isBenefitCompanyId(companyId))throw new Error('Invalid canonical company ID');return `${BENEFIT_CLAIM_PATH}?${new URLSearchParams({company:companyId})}`}
 
 export function benefitSubmissionHref(companyId: string): string {
   if (!isBenefitCompanyId(companyId)) throw new Error('Invalid canonical company ID')

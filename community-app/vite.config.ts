@@ -41,6 +41,8 @@ export default defineConfig({
         benefitsMyCorrections: page('./benefits/my-corrections/index.html'),
         benefitsSubmit: page('./benefits/submit/index.html'),
         benefitsMySubmissions: page('./benefits/my-submissions/index.html'),
+        benefitsCompanyRequest: page('./benefits/company-request/index.html'),
+        benefitsClaim: page('./benefits/claim/index.html'),
         write: page('./write/index.html'),
         post: page('./post/index.html'),
         edit: page('./edit/index.html'),

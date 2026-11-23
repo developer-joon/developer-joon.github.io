@@ -16,6 +16,7 @@ import {
   type BenefitDirectorySearchInput,
   type BenefitDirectorySearchItem,
 } from '../types/benefitDirectory'
+import { benefitCompanyRequestHref } from '../benefitsRoutes'
 
 const PAGE_SIZE = 50
 const DIRECTORY_IDENTITY_COUNT = 40_053
@@ -237,7 +238,7 @@ export function BenefitsDirectoryPage({
       </div>
 
       {activePhase === 'error' && <div className="domestic-directory__error" role="alert"><p>{refreshError}</p><button type="button" onClick={() => setRetry(value => value + 1)}>다시 시도</button></div>}
-      {currentResults && activePhase === 'ready' && activeVisible.items.length === 0 && <p role="status" className="domestic-directory__empty">조건에 맞는 기업을 찾지 못했습니다</p>}
+      {currentResults && activePhase === 'ready' && activeVisible.items.length === 0 && <div role="status" className="domestic-directory__empty"><p>조건에 맞는 기업을 찾지 못했습니다</p><p>현재 확보된 기업 인덱스의 결과이며, 국내 전체 기업에 없다는 뜻은 아닙니다.</p><a href={benefitCompanyRequestHref(applied.q)}>기업 추가 요청</a></div>}
       {activeVisible && activeVisible.items.length > 0 && <section className="domestic-directory__result-section" aria-labelledby="directory-results-heading">
         <h2 id="directory-results-heading">기업 검색 결과 목록</h2>
         <div className="domestic-directory__list">{activeVisible.items.map(item => <DirectoryCard key={item.companyId} item={item} />)}</div>
