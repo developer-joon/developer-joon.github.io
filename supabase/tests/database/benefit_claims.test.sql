@@ -18,6 +18,9 @@ select ok(has_function_privilege('anon','public.get_benefit_company_v2(text)','E
 select ok((select confdeltype='n' from pg_constraint where conrelid='public.benefit_claims'::regclass and conname='benefit_claims_submitter_id_fkey'),'claim survives profile deletion with SET NULL');
 select ok((select count(*)=0 from pg_constraint where conrelid='public.benefit_claim_events'::regclass and contype='f' and pg_get_constraintdef(oid) like '%actor%'),'event actor snapshot has no mutable profile FK');
 select ok((select exists(select 1 from pg_indexes where schemaname='public' and tablename='benefit_claims' and indexdef like 'CREATE UNIQUE INDEX%company_id, category_id, normalized_title, normalized_eligibility)%WHERE (status = ANY%')),'active exact duplicate authority is a partial unique index');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conrelid='public.benefit_claims'::regclass and conname='benefit_claims_task5_no_active_publication_check'),'CHECK ((active_publication_id IS NULL))','Task 5 explicitly forbids publication links');
+select is((select count(*)::integer from pg_trigger where tgrelid=any(array['public.benefit_claims'::regclass,'public.benefit_publications'::regclass]) and tgname in ('benefit_claims_publication_lineage','benefit_publications_claim_lineage')),0,'Task 5 installs no cross-table publication-lineage triggers');
+select ok(to_regprocedure('private.enforce_benefit_claim_publication()') is null and to_regprocedure('private.enforce_benefit_publication_claim_lineage()') is null,'Task 5 installs no unsupported publication-lineage functions');
 select ok((select pg_get_functiondef('public.get_benefit_company_v2(text)'::regprocedure) ~ 'limit 201' and pg_get_functiondef('public.get_benefit_company_v2(text)'::regprocedure) !~ 'source_url'),'public v2 bounds before aggregation and omits source URL');
 select is((select max_requests from public.rate_limit_rules where action='benefit_claim.create' and window_seconds=3600 and is_enabled),5,'claim create rate limit installed');
 select is((select max_requests from public.rate_limit_rules where action='benefit_claim.withdraw' and window_seconds=3600 and is_enabled),20,'claim withdraw rate limit installed');
@@ -38,6 +41,16 @@ insert into auth.identities(provider_id,user_id,identity_data,provider) values
 insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition) values
  ('KR-BIZ-9951000001','registered_business','Claim Company','claim company',true,'claim-test'),
  ('KR-BIZ-9951000002','registered_business','Hidden Claim Company','hidden claim company',false,'claim-test');
+insert into public.benefit_publications(publication_id,company_id,category_id,title,description,trust_tier,status,dedupe_key,revision,source_type)
+values ('b5300000-0000-4000-8000-000000000001','KR-BIZ-9951000001','health','Existing publication','Existing publication remains untouched','community_reviewed','active','claim-phase-fixture',1,'seed');
+
+select throws_ok($$insert into public.benefit_claims(claim_id,company_id,client_key,payload_fingerprint,category_id,title,normalized_title,description,normalized_eligibility,observed_on,status,active_publication_id) values ('b5400000-0000-4000-8000-000000000001','KR-BIZ-9951000001',gen_random_uuid(),repeat('a',64),'health','Unsupported direct link','unsupported direct link','Direct link fixture','',date '2026-01-01','community_confirmed','b5300000-0000-4000-8000-000000000001')$$,'23514','new row for relation "benefit_claims" violates check constraint "benefit_claims_task5_no_active_publication_check"','direct insert cannot create an unsupported publication link');
+delete from public.benefit_claims where claim_id='b5400000-0000-4000-8000-000000000001';
+insert into public.benefit_claims(claim_id,company_id,client_key,payload_fingerprint,category_id,title,normalized_title,description,normalized_eligibility,observed_on,status)
+values ('b5400000-0000-4000-8000-000000000002','KR-BIZ-9951000001',gen_random_uuid(),repeat('b',64),'health','Unsupported update link','unsupported update link','Update link fixture','',date '2026-01-01','submitted');
+select throws_ok($$update public.benefit_claims set status='community_confirmed',revision=2,active_publication_id='b5300000-0000-4000-8000-000000000001' where claim_id='b5400000-0000-4000-8000-000000000002'$$,'23514','new row for relation "benefit_claims" violates check constraint "benefit_claims_task5_no_active_publication_check"','direct update cannot create an unsupported publication link');
+delete from public.benefit_claims where claim_id='b5400000-0000-4000-8000-000000000002';
+select ok((select status='active' and title='Existing publication' from public.benefit_publications where publication_id='b5300000-0000-4000-8000-000000000001'),'Task 5 phase guard leaves existing publications untouched');
 
 set local role authenticated;
 set local request.jwt.claim.sub='b5100000-0000-4000-8000-000000000001';
@@ -65,6 +78,16 @@ select throws_ok($$select public.create_benefit_claim_v1(gen_random_uuid(),'KR-B
 select throws_ok($$select public.create_benefit_claim_v1(gen_random_uuid(),'KR-BIZ-9951000001','health','Valid','Description',null,null,current_date,'https://user:pass@example.com')$$,'22023','invalid claim source URL','userinfo rejected');
 select throws_ok($$select public.create_benefit_claim_v1(gen_random_uuid(),'KR-BIZ-9951000001','health','Valid','Description',null,null,current_date,'https://example.com/path#fragment')$$,'22023','invalid claim source URL','fragment rejected');
 select throws_ok($$select public.create_benefit_claim_v1(gen_random_uuid(),'KR-BIZ-9951000001','health','Valid','Description',null,null,current_date,'https://example.com/path?token=secret')$$,'22023','invalid claim source URL','credential-like query rejected');
+set local role postgres;
+select lives_ok($$select private.benefit_claim_source_url('https://3m.com/evidence')$$,'DNS labels may start with a digit');
+select lives_ok($$select private.benefit_claim_source_url('https://1password.com/evidence')$$,'digit-leading DNS product domains remain valid');
+select throws_ok($$select private.benefit_claim_source_url('https://127.0.0.1/evidence')$$,'22023','invalid claim source URL','IPv4 literal rejected');
+select throws_ok($$select private.benefit_claim_source_url('https://12345/evidence')$$,'22023','invalid claim source URL','numeric-only host rejected');
+select throws_ok($$select private.benefit_claim_source_url('https://[2001:db8::1]/evidence')$$,'22023','invalid claim source URL','IPv6 literal rejected');
+select throws_ok($$select private.benefit_claim_source_url('https://user@example.com/evidence')$$,'22023','invalid claim source URL','plain userinfo rejected');
+select throws_ok($$select private.benefit_claim_source_url('https://localhost/evidence')$$,'22023','invalid claim source URL','localhost rejected');
+select throws_ok($$select private.benefit_claim_source_url('https://intranet/evidence')$$,'22023','invalid claim source URL','non-FQDN host rejected');
+set local role authenticated;
 
 create temporary table claim_results(name text primary key,payload jsonb);
 insert into claim_results values ('created',public.create_benefit_claim_v1('b5200000-0000-4000-8000-000000000001','KR-BIZ-9951000001','health','  Health   stipend  ',' Monthly   health support ','   ',' Employees only ',date '2026-01-02','https://example.com/source?id=1'));
@@ -87,6 +110,17 @@ reset role;
 select is((select count(*)::integer from public.benefit_claims),1,'duplicate creates no second claim or reaction');
 select is((select count(*)::integer from public.benefit_claim_events where event_type='duplicate_directed'),1,'duplicate replay emits at most one safe event');
 select is((select count(*)::integer from public.rate_limit_events where user_id='b5100000-0000-4000-8000-000000000002' and action='benefit_claim.create'),1,'non-replay duplicate intent charges one rate slot');
+
+set local role authenticated;
+set local request.jwt.claim.sub='b5100000-0000-4000-8000-000000000002';
+insert into claim_results values
+ ('near-prefix',public.create_benefit_claim_v1('b5200000-0000-4000-8000-000000000007','KR-BIZ-9951000001','health','Health stipend plus','Similar prefix claim',null,'Employees only',date '2026-02-03',null)),
+ ('near-edit',public.create_benefit_claim_v1('b5200000-0000-4000-8000-000000000008','KR-BIZ-9951000001','health','Health stipned','Edit-distance-like claim',null,'Employees only',date '2026-02-04',null));
+reset role;
+select is((select jsonb_agg(payload->>'outcome' order by name) from claim_results where name in ('near-prefix','near-edit')),'["created", "created"]'::jsonb,'similar but non-equal normalized titles are both created');
+select isnt((select payload->>'claim_id' from claim_results where name='near-prefix'),(select payload->>'claim_id' from claim_results where name='near-edit'),'near-title claims have distinct identities');
+select is((select count(*)::integer from public.benefit_claims where claim_id in ((select (payload->>'claim_id')::uuid from claim_results where name='near-prefix'),(select (payload->>'claim_id')::uuid from claim_results where name='near-edit')) and status in ('submitted','community_confirmed','disputed')),2,'both near-title claims remain active');
+select is((select count(distinct normalized_title)::integer from public.benefit_claims where claim_id in ((select (payload->>'claim_id')::uuid from claim_results where name='near-prefix'),(select (payload->>'claim_id')::uuid from claim_results where name='near-edit'))),2,'near-title fixtures normalize to distinct exact keys');
 
 -- A late audit failure rolls back the claim and its rate charge atomically.
 create function pg_temp.reject_claim_event() returns trigger language plpgsql as $$begin raise exception 'injected claim event failure'; end$$;
@@ -132,7 +166,7 @@ select is(public.get_benefit_company_v2('KR-BIZ-9951000001')->'company',public.g
 select is(public.get_benefit_company_v2('KR-BIZ-9951000001')->'publications',public.get_benefit_company_v1('KR-BIZ-9951000001')->'publications','public v2 preserves publication projection and cap semantics');
 select is((select jsonb_object_agg(key,true order by key) from jsonb_object_keys(public.get_benefit_company_v2('KR-BIZ-9951000001')->'claims'->0) key),'{"category_id":true,"category_name":true,"claim_id":true,"condition_text":true,"confirm_count":true,"description":true,"dispute_count":true,"eligibility_text":true,"last_confirmation_at":true,"nickname":true,"observed_on":true,"status_code":true,"status_label":true,"submitted_at":true,"title":true}'::jsonb,'public claim has exact safe future-compatible keys');
 select ok((public.get_benefit_company_v2('KR-BIZ-9951000001')->'claims'->0)::text not like '%source_url%' and (public.get_benefit_company_v2('KR-BIZ-9951000001')->'claims'->0)::text not like '%submitter%' and (public.get_benefit_company_v2('KR-BIZ-9951000001')->'claims'->0)::text not like '%fingerprint%' and (public.get_benefit_company_v2('KR-BIZ-9951000001')->'claims'->0)::text not like '%client_key%','public claim leaks no internal identity or provenance');
-select ok((select item->>'status_code'='submitted' and item->>'status_label'='제보됨' and item->>'nickname'='제보자 둘' and (item->>'confirm_count')::integer=0 and (item->>'dispute_count')::integer=0 and item->'last_confirmation_at'='null'::jsonb from jsonb_array_elements(public.get_benefit_company_v2('KR-BIZ-9951000001')->'claims') item),'public status label, nickname and reaction placeholders are exact');
+select ok((select bool_and(item->>'status_code'='submitted' and item->>'status_label'='제보됨' and item->>'nickname'='제보자 둘' and (item->>'confirm_count')::integer=0 and (item->>'dispute_count')::integer=0 and item->'last_confirmation_at'='null'::jsonb) from jsonb_array_elements(public.get_benefit_company_v2('KR-BIZ-9951000001')->'claims') item),'public status label, nickname and reaction placeholders are exact');
 select is((select count(*)::integer from jsonb_array_elements(public.get_benefit_company_v2('KR-BIZ-9951000001')->'claims') item where item->>'status_code' in ('hidden','withdrawn')),0,'hidden and withdrawn claims are not public');
 select is(public.get_benefit_company_v2('KR-BIZ-9951000002'),'null'::jsonb,'non-searchable company is not disclosed by v2');
 

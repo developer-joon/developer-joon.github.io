@@ -40,9 +40,14 @@ create table public.benefit_claims (
   constraint benefit_claims_status_check check (status in ('submitted','community_confirmed','disputed','hidden','withdrawn')),
   constraint benefit_claims_revision_check check (revision>0),
   constraint benefit_claims_withdrawn_check check ((status='withdrawn')=(withdrawn_at is not null)),
-  constraint benefit_claims_publication_state_check check (active_publication_id is null or status='community_confirmed'),
+  constraint benefit_claims_task5_no_active_publication_check check (active_publication_id is null),
   constraint benefit_claims_timestamps_check check (pg_catalog.isfinite(created_at) and pg_catalog.isfinite(updated_at) and updated_at>=created_at and (withdrawn_at is null or (pg_catalog.isfinite(withdrawn_at) and withdrawn_at>=created_at and withdrawn_at=updated_at)))
 );
+
+-- Task 5 has no atomic claim/reaction/publication mutation. Task 6 must
+-- explicitly drop this phase constraint before it adds the locking protocol.
+comment on constraint benefit_claims_task5_no_active_publication_check on public.benefit_claims is
+  'Task 5 phase invariant: publication links are unsupported until Task 6 installs atomic locking.';
 
 create table public.benefit_claim_events (
   event_id uuid primary key default extensions.gen_random_uuid(),
@@ -107,7 +112,7 @@ begin
   if v_authority is null or pg_catalog.strpos(v_authority,'@')>0 or pg_catalog.strpos(v_authority,'[')>0 or pg_catalog.strpos(v_authority,']')>0 or v_authority !~ '^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$' then raise exception 'invalid claim source URL' using errcode='22023'; end if;
   v_host:=pg_catalog.lower(pg_catalog.split_part(v_authority,':',1)); v_port:=nullif(pg_catalog.split_part(v_authority,':',2),'');
   if v_port is not null and v_port::integer not between 1 and 65535 then raise exception 'invalid claim source URL' using errcode='22023'; end if;
-  if v_host='localhost' or v_host like '%.localhost' or v_host like '%.local' or v_host like '%.internal' or v_host like '%.test' or v_host like '%.invalid' or v_host ~ '^[0-9.]+' or v_host !~ '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$' then raise exception 'invalid claim source URL' using errcode='22023'; end if;
+  if v_host='localhost' or v_host like '%.localhost' or v_host like '%.local' or v_host like '%.internal' or v_host like '%.test' or v_host like '%.invalid' or v_host ~ '^[0-9.]+$' or v_host ~ '^(?:[0-9]+|0x[0-9a-f]+)(?:\.(?:[0-9]+|0x[0-9a-f]+))*$' or v_host !~ '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$' then raise exception 'invalid claim source URL' using errcode='22023'; end if;
   v_query:=case when pg_catalog.strpos(v,'?')>0 then pg_catalog.substr(v,pg_catalog.strpos(v,'?')+1) else null end;
   if v_query is not null and (v_query ~ '%' or v_query ~* '(^|&)(token|access_token|auth|authorization|api_?key|key|secret|signature|signed|sig|credential|password|x-amz-[^=]*)=') then raise exception 'invalid claim source URL' using errcode='22023'; end if;
   return v;
@@ -143,28 +148,6 @@ begin
  return new;
 end $$;
 create trigger benefit_claims_enforce_update before update on public.benefit_claims for each row execute function private.enforce_benefit_claim_update();
-
-create function private.enforce_benefit_claim_publication()
-returns trigger language plpgsql set search_path='' as $$
-declare v_company text; v_category text; v_status text;
-begin
- if new.active_publication_id is null then return null; end if;
- select p.company_id,p.category_id,p.status into v_company,v_category,v_status from public.benefit_publications p where p.publication_id=new.active_publication_id;
- if not found then raise exception 'active benefit publication does not exist' using errcode='23503'; end if;
- if v_company<>new.company_id or v_category<>new.category_id or v_status<>'active' then raise exception 'active publication must match claim company and category' using errcode='23514'; end if;
- return null;
-end $$;
-create constraint trigger benefit_claims_publication_lineage after insert or update of active_publication_id,company_id,category_id on public.benefit_claims deferrable initially deferred for each row execute function private.enforce_benefit_claim_publication();
-
-create function private.enforce_benefit_publication_claim_lineage()
-returns trigger language plpgsql set search_path='' as $$
-begin
- if exists(select 1 from public.benefit_claims c where c.active_publication_id=new.publication_id and (c.company_id<>new.company_id or c.category_id<>new.category_id or new.status<>'active')) then
-   raise exception 'active publication must match claim company and category' using errcode='23514';
- end if;
- return null;
-end $$;
-create constraint trigger benefit_publications_claim_lineage after update of company_id,category_id,status on public.benefit_publications deferrable initially deferred for each row execute function private.enforce_benefit_publication_claim_lineage();
 
 create function private.reject_benefit_claim_event_change()
 returns trigger language plpgsql set search_path='' as $$begin raise exception 'benefit claim events are append-only' using errcode='23514'; end$$;
@@ -264,15 +247,13 @@ alter function private.benefit_claim_source_url(text) owner to postgres;
 alter function private.benefit_claim_fingerprint(text,text,text,text,text,text,date,text) owner to postgres;
 alter function private.benefit_claim_owner_item(uuid) owner to postgres;
 alter function private.enforce_benefit_claim_update() owner to postgres;
-alter function private.enforce_benefit_claim_publication() owner to postgres;
-alter function private.enforce_benefit_publication_claim_lineage() owner to postgres;
 alter function private.reject_benefit_claim_event_change() owner to postgres;
 alter function public.create_benefit_claim_v1(uuid,text,text,text,text,text,text,date,text) owner to postgres;
 alter function public.withdraw_benefit_claim_v1(uuid,uuid,text,bigint) owner to postgres;
 alter function public.list_my_benefit_claims_v1(integer,timestamptz,uuid) owner to postgres;
 alter function public.get_benefit_company_v2(text) owner to postgres;
 
-revoke all on function private.benefit_claim_text(text,text,integer,boolean),private.benefit_claim_source_url(text),private.benefit_claim_fingerprint(text,text,text,text,text,text,date,text),private.benefit_claim_owner_item(uuid),private.enforce_benefit_claim_update(),private.enforce_benefit_claim_publication(),private.enforce_benefit_publication_claim_lineage(),private.reject_benefit_claim_event_change() from public,anon,authenticated,service_role;
+revoke all on function private.benefit_claim_text(text,text,integer,boolean),private.benefit_claim_source_url(text),private.benefit_claim_fingerprint(text,text,text,text,text,text,date,text),private.benefit_claim_owner_item(uuid),private.enforce_benefit_claim_update(),private.reject_benefit_claim_event_change() from public,anon,authenticated,service_role;
 revoke all on function public.create_benefit_claim_v1(uuid,text,text,text,text,text,text,date,text),public.withdraw_benefit_claim_v1(uuid,uuid,text,bigint),public.list_my_benefit_claims_v1(integer,timestamptz,uuid),public.get_benefit_company_v2(text) from public,anon,authenticated,service_role;
 grant execute on function public.create_benefit_claim_v1(uuid,text,text,text,text,text,text,date,text),public.withdraw_benefit_claim_v1(uuid,uuid,text,bigint),public.list_my_benefit_claims_v1(integer,timestamptz,uuid) to authenticated;
 grant execute on function public.get_benefit_company_v2(text) to anon,authenticated;
