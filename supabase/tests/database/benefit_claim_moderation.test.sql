@@ -5,7 +5,7 @@ select has_table('public','benefit_claim_official_reviews','private official evi
 select has_table('public','benefit_claim_moderation_requests','moderation idempotency ledger exists');
 select has_table('public','benefit_claim_merges','immutable merge ledger exists');
 select has_function('public','list_benefit_claim_moderation_queue_v1',array['text','integer','timestamptz','uuid'],'bounded moderation queue exists');
-select has_function('public','list_benefit_claim_audit_v1',array['uuid','integer','timestamptz','uuid'],'bounded audit exists');
+select has_function('public','list_benefit_claim_audit_v1',array['uuid','integer','timestamptz','text','uuid'],'bounded audit exists');
 select has_function('public','moderate_benefit_claim_v1',array['uuid','uuid','bigint','text','text','uuid','text','text','date','text'],'moderation mutation exists');
 select has_function('public','officially_verify_benefit_claim_v1',array['uuid','text','bigint','text','text','text','text','text','text','date','text','uuid'],'official verification mutation exists');
 select ok(exists(select 1 from information_schema.columns where table_schema='public' and table_name='benefit_claims' and column_name='official_publication_id'),'claim has separate official authority pointer');

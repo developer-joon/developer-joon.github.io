@@ -267,17 +267,17 @@ export type Database = {
         ];
       };
       benefit_claim_moderation_requests: {
-        Row: { action: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot: string; claim_id: string; client_key: string; created_at: string; payload_fingerprint: string; response: NonNullable<Json> };
+        Row: { action: "hide" | "restore" | "withdraw" | "user_withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot: string; claim_id: string; client_key: string; created_at: string; payload_fingerprint: string; response: NonNullable<Json> };
         ComputedFields: never;
-        Insert: { action: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot: string; claim_id: string; client_key: string; created_at?: string; payload_fingerprint: string; response: NonNullable<Json> };
-        Update: { action?: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot?: string; claim_id?: string; client_key?: string; created_at?: string; payload_fingerprint?: string; response?: NonNullable<Json> };
+        Insert: { action: "hide" | "restore" | "withdraw" | "user_withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot: string; claim_id: string; client_key: string; created_at?: string; payload_fingerprint: string; response: NonNullable<Json> };
+        Update: { action?: "hide" | "restore" | "withdraw" | "user_withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot?: string; claim_id?: string; client_key?: string; created_at?: string; payload_fingerprint?: string; response?: NonNullable<Json> };
         Relationships: [{ foreignKeyName: "benefit_claim_moderation_requests_claim_id_fkey"; columns: ["claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] }];
       };
       benefit_claim_official_reviews: {
-        Row: { action: "verify" | "reverify" | "withdraw_official"; claim_id: string; evidence_observed_on: string; evidence_source_url: string; evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id: string | null; publication_id: string | null; review_id: string; reviewed_at: string; reviewer_snapshot: string; successor_publication_id: string | null; verification_note: string };
+        Row: { action: "verify" | "reverify" | "withdraw_official"; claim_id: string; evidence_observed_on: string; evidence_source_url: string; evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id: string | null; publication_id: string; review_id: string; reviewed_at: string; reviewer_snapshot: string; successor_publication_id: string | null; verification_note: string };
         ComputedFields: never;
-        Insert: { action: "verify" | "reverify" | "withdraw_official"; claim_id: string; evidence_observed_on: string; evidence_source_url: string; evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id?: string | null; publication_id?: string | null; review_id?: string; reviewed_at?: string; reviewer_snapshot: string; successor_publication_id?: string | null; verification_note: string };
-        Update: { action?: "verify" | "reverify" | "withdraw_official"; claim_id?: string; evidence_observed_on?: string; evidence_source_url?: string; evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id?: string | null; publication_id?: string | null; review_id?: string; reviewed_at?: string; reviewer_snapshot?: string; successor_publication_id?: string | null; verification_note?: string };
+        Insert: { action: "verify" | "reverify" | "withdraw_official"; claim_id: string; evidence_observed_on: string; evidence_source_url: string; evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id?: string | null; publication_id: string; review_id?: string; reviewed_at?: string; reviewer_snapshot: string; successor_publication_id?: string | null; verification_note: string };
+        Update: { action?: "verify" | "reverify" | "withdraw_official"; claim_id?: string; evidence_observed_on?: string; evidence_source_url?: string; evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id?: string | null; publication_id?: string; review_id?: string; reviewed_at?: string; reviewer_snapshot?: string; successor_publication_id?: string | null; verification_note?: string };
         Relationships: [
           { foreignKeyName: "benefit_claim_official_reviews_claim_id_fkey"; columns: ["claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
           { foreignKeyName: "benefit_claim_official_reviews_predecessor_publication_id_fkey"; columns: ["predecessor_publication_id"]; isOneToOne: false; referencedRelation: "benefit_publications"; referencedColumns: ["publication_id"] },
@@ -369,6 +369,7 @@ export type Database = {
           normalized_title: string;
           observed_on: string;
           official_publication_id: string | null;
+          merged_into_claim_id: string | null;
           payload_fingerprint: string;
           revision: number;
           source_url: string | null;
@@ -393,6 +394,7 @@ export type Database = {
           normalized_title: string;
           observed_on: string;
           official_publication_id?: string | null;
+          merged_into_claim_id?: string | null;
           payload_fingerprint: string;
           revision?: number;
           source_url?: string | null;
@@ -416,6 +418,7 @@ export type Database = {
           normalized_title?: string;
           observed_on?: string;
           official_publication_id?: string | null;
+          merged_into_claim_id?: string | null;
           payload_fingerprint?: string;
           revision?: number;
           source_url?: string | null;
@@ -439,6 +442,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "benefit_companies";
             referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_claims_merged_into_claim_id_fkey";
+            columns: ["merged_into_claim_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_claims";
+            referencedColumns: ["claim_id"];
           },
           {
             foreignKeyName: "benefit_claims_official_publication_id_fkey";
@@ -1826,7 +1836,7 @@ export type Database = {
       get_public_post_v3: { Args: { p_post_id: string }; Returns: Json };
       is_admin: { Args: Record<PropertyKey, never>; Returns: boolean };
       list_benefit_claim_audit_v1: {
-        Args: { p_claim_id: string; p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number };
+        Args: { p_claim_id: string; p_cursor_created_at?: string; p_cursor_kind?: "claim_event" | "official_review" | "merge"; p_cursor_id?: string; p_limit?: number };
         Returns: Json;
       };
       list_benefit_claim_moderation_queue_v1: {
