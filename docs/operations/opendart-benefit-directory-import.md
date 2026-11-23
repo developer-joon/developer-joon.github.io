@@ -39,7 +39,9 @@ node scripts/verify-opendart-benefit-directory.mjs \
   --bundle supabase/fixtures/benefit-directory-opendart
 ```
 
-`--check` is strictly read-only: it creates no directory, lock, stage, backup, or temporary file. Missing production output fails with an actionable message. Normal generation uses an owner-only advisory lock, same-filesystem mode-0700 staging, mode-0600 fsynced files, exact inventory validation, and rollback-preserving directory replacement.
+`--check` is strictly read-only: it creates no directory, lock, stage, backup, or temporary file. Missing production output fails with an actionable message. Normal generation uses an owner-only protocol lock, same-filesystem mode-0700 staging, mode-0600 fsynced files, exact inventory validation, and rollback-preserving directory replacement.
+
+The supported lock threat model is cooperating concurrent generator invocations that honor that owner-only protocol. Cleanup compares the lock identity before unlinking as a best-effort check for ordinary stale or replaced paths, but `lstat` and `unlink` are not an atomic compare-and-unlink operation. Arbitrary code already running as the same UID can replace the path between those calls and can directly rewrite the repository, source, or authority descriptor; that actor is out of scope. Supporting it would require privilege separation or a kernel-backed transaction redesign, not additional pathname checks.
 
 The independent verifier does not import generator code. It parses the source and all bundle bytes independently, recomputes source/output hashes, row counts, deterministic IDs, aliases, provenance, ordering, and exact sets. Rewriting mutable manifest fields cannot make deletion or substitution pass.
 

@@ -217,6 +217,8 @@ export async function generateOpenDartBundle({sourceFile,authorityFile,outputDir
       try { await lock.close(); if(testOnly?.injectLockCloseFailure) await testOnly.injectLockCloseFailure() }
       catch { addResidue('generation-lock-close-failed') }
     }
+    // Best-effort for cooperating generators and ordinary stale/replaced paths: a
+    // same-UID process can race between this pathname check and unlink; it is out of scope.
     let current
     try { current=await lstat(lockPath,{bigint:true}) }
     catch(error){ if(error?.code==='ENOENT'){addResidue('generation-lock-missing');return}addResidue('generation-lock-inspection-failed');return }
@@ -262,7 +264,7 @@ export async function generateOpenDartBundle({sourceFile,authorityFile,outputDir
   }
   if(primaryError) throw primaryError
   if(!committed) throw Error('OpenDART generation failed before commit')
-  if(residues.includes('generation-lock-replaced')) console.warn('OpenDART bundle committed; generation lock replacement remains untouched')
+  if(residues.includes('generation-lock-replaced')) console.warn('OpenDART bundle committed; observed generation lock identity mismatch, so cleanup did not remove the path')
   else if(residues.some(value=>value.startsWith('generation-lock-'))) console.warn('OpenDART bundle committed; generation lock cleanup left bounded residue')
   built.cleanup=Object.freeze({status:residues.length?'committed-with-residue':'clean',residues:Object.freeze([...residues])})
   return built

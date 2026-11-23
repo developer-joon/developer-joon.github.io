@@ -174,7 +174,7 @@ test('normal generation is deterministic and check mode is read-only', async () 
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('lock allocation collision is fail-closed and concurrent generators serialize without residue', async () => {
+test('lock allocation collision is fail-closed and cooperating concurrent generators serialize without residue', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opendart-lock-collision-'))
   try {
     const sourceBytes = zip(xml())
@@ -322,7 +322,7 @@ test('post-commit backup cleanup failure reports committed success and retains o
   }
 })
 
-test('post-commit lock close failure returns committed success and removes the owned lock path', async () => {
+test('cooperative post-commit cleanup removes the owned lock path despite a reported close failure', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opendart-lock-close-'))
   const warnings = []
   const originalWarn = console.warn
@@ -375,7 +375,7 @@ test('post-commit lock path cleanup failure returns committed success with the o
 })
 
 for (const replacementType of ['directory', 'file', 'symlink']) {
-  test(`post-commit lock ${replacementType} replacement is untouched and reports committed residue`, async () => {
+  test(`lock ${replacementType} replacement present before cleanup inspection is left untouched and reported`, async () => {
     const root = await mkdtemp(path.join(tmpdir(), `opendart-lock-${replacementType}-`))
     const warnings = []
     const originalWarn = console.warn
@@ -407,7 +407,7 @@ for (const replacementType of ['directory', 'file', 'symlink']) {
       assert.deepEqual(await readFile(path.join(output, 'manifest.json')), expected.manifestBytes)
       assert.equal(result.cleanup.status, 'committed-with-residue')
       assert.deepEqual(result.cleanup.residues, ['generation-lock-replaced'])
-      assert.match(warnings.join('\n'), /committed.*lock.*replacement.*untouched/i)
+      assert.match(warnings.join('\n'), /committed.*lock identity mismatch.*did not remove/i)
       const replacement = await stat(lockPath)
       if (replacementType === 'directory') assert.ok(replacement.isDirectory())
       if (replacementType === 'file') assert.equal(await readFile(lockPath, 'utf8'), 'replacement lock file')
