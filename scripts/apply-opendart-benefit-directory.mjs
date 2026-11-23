@@ -27,7 +27,7 @@ const exactUtcSecond = value => {
  const days=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31]
  return month>=1&&month<=12&&day>=1&&day<=days[month-1]&&hour<=23&&minute<=59&&second<=59
 }
-const boundedApplyText=(value,label,maxCodePoints,maxUtf8Bytes)=>{if(typeof value!=='string'||value!==value.trim()||[...value].length<1||[...value].length>maxCodePoints||Buffer.byteLength(value,'utf8')>maxUtf8Bytes||/[\u0000-\u001f\u007f\u2028\u2029]/u.test(value))throw Error(`${label} invalid`);return value}
+const boundedApplyText=(value,label,maxCodePoints,maxUtf8Bytes)=>{if(typeof value!=='string'||value!==value.trim()||[...value].length<1||[...value].length>maxCodePoints||Buffer.byteLength(value,'utf8')>maxUtf8Bytes||/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value))throw Error(`${label} invalid`);return value}
 function validateApplyDescriptor(m){
  const a=m?.authority,s=m?.source
  boundedApplyText(a?.source_edition,'OpenDART authority edition',100,400)

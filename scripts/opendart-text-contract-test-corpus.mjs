@@ -4,6 +4,9 @@ const controls = Object.freeze([
   ['line-feed', '\n'],
   ['nul', '\u0000'],
   ['delete', '\u007f'],
+  ['c1-padding-character', '\u0080'],
+  ['c1-next-line', '\u0085'],
+  ['c1-application-program-command', '\u009f'],
   ['line-separator', '\u2028'],
   ['paragraph-separator', '\u2029'],
 ])
@@ -12,6 +15,7 @@ export function corporationTextCases(field) {
   const optional = field === 'corp_eng_name'
   return [
     { name: 'ordinary internal spaces', value: 'Alpha  Beta 주식회사', accept: true },
+    { name: 'ordinary Korean and Latin', value: '가나다 Alpha 주식회사', accept: true },
     { name: 'exact ASCII code-point boundary', value: 'A'.repeat(200), accept: true },
     { name: 'exact UTF-8 and code-point boundary', value: '😀'.repeat(200), accept: true },
     { name: 'whitespace only', value: '   ', accept: false },
@@ -29,11 +33,13 @@ export function authorityTextCases() {
   return [
     { name: 'edition exact ASCII boundary', field: 'source_edition', value: 'E'.repeat(100), accept: true },
     { name: 'edition exact UTF-8 boundary', field: 'source_edition', value: '😀'.repeat(100), accept: true },
+    { name: 'edition ordinary Korean and Latin', field: 'source_edition', value: '2026년 OpenDART edition', accept: true },
     { name: 'edition overlong ASCII', field: 'source_edition', value: 'E'.repeat(101), accept: false },
     { name: 'edition overlong Korean', field: 'source_edition', value: '판'.repeat(101), accept: false },
     { name: 'edition overlong emoji', field: 'source_edition', value: '😀'.repeat(101), accept: false },
     { name: 'rights exact ASCII boundary', field: 'reuse_rights_note', value: 'R'.repeat(1000), accept: true },
     { name: 'rights exact UTF-8 boundary', field: 'reuse_rights_note', value: '😀'.repeat(1000), accept: true },
+    { name: 'rights ordinary Korean and Latin', field: 'reuse_rights_note', value: 'OpenDART 출처 표시 필요', accept: true },
     { name: 'rights overlong ASCII', field: 'reuse_rights_note', value: 'R'.repeat(1001), accept: false },
     { name: 'rights overlong Korean', field: 'reuse_rights_note', value: '권'.repeat(1001), accept: false },
     { name: 'rights overlong emoji', field: 'reuse_rights_note', value: '😀'.repeat(1001), accept: false },

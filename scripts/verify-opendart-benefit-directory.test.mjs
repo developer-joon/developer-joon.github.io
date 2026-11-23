@@ -95,7 +95,7 @@ test('independent verifier separately enforces bounded control-free authority te
 })
 
 test('verifier and apply reject self-consistently rehashed bundles with invalid decoded names',async()=>{
-  for(const value of ['Alpha\tBeta','Alpha\u2028Beta','😀'.repeat(201)]){
+  for(const value of ['Alpha\tBeta','Alpha\u0080Beta','Alpha\u0085Beta','Alpha\u009fBeta','Alpha\u2028Beta','😀'.repeat(201)]){
     const f=await fixture()
     try{
       await rewriteSelfConsistentName(f,value)

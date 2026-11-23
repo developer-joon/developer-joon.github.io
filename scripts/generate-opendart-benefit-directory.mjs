@@ -32,7 +32,7 @@ const exactUtcSecond = value => {
 }
 const bounded = (value, label, maxCodePoints, maxUtf8Bytes, optional = false) => {
   if (optional && value === '') return ''
-  if (typeof value !== 'string' || value !== value.trim() || [...value].length < 1 || [...value].length > maxCodePoints || Buffer.byteLength(value,'utf8') > maxUtf8Bytes || /[\u0000-\u001f\u007f\u2028\u2029]/u.test(value)) throw Error(`${label} invalid`)
+  if (typeof value !== 'string' || value !== value.trim() || [...value].length < 1 || [...value].length > maxCodePoints || Buffer.byteLength(value,'utf8') > maxUtf8Bytes || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value)) throw Error(`${label} invalid`)
   return value
 }
 
