@@ -46,6 +46,7 @@ update private.benefit_feature_settings set enabled=true,updated_at=clock_timest
 -- User withdrawal must retain Task 6 guards and replay immutable response bytes.
 set local role authenticated;
 set local request.jwt.claim.sub='b9100000-0000-4000-8000-000000000002';
+select throws_ok($$select public.set_benefit_claim_reaction_v1('b9200000-0000-4000-8000-000000000001',repeat(' ',21)||'confirm',gen_random_uuid())$$,'22023','invalid claim reaction','Task 7 preserves the Task 6 pre-normalization reaction length guard');
 select throws_ok($$select public.withdraw_benefit_claim_v1(gen_random_uuid(),'b9200000-0000-4000-8000-000000000001','hidden',1)$$,'22023','invalid claim withdrawal request','user withdrawal rejects hidden expected status before lookup');
 select throws_ok($$select public.withdraw_benefit_claim_v1(gen_random_uuid(),'b9200000-0000-4000-8000-000000000001','submitted',0)$$,'22023','invalid claim withdrawal request','user withdrawal rejects nonpositive revision');
 create temporary table regression_results(name text primary key,payload jsonb);
@@ -98,6 +99,7 @@ select throws_ok($$insert into public.benefit_claim_official_reviews(claim_id,pu
 select throws_ok($$insert into public.benefit_claim_official_reviews(claim_id,publication_id,reviewer_snapshot,action,evidence_type,evidence_source_url,evidence_observed_on,verification_note,successor_publication_id) select claim_id,publication_id,'b9100000-0000-4000-8000-000000000001','verify','official_website',evidence_source_url,evidence_observed_on,' bad ',publication_id from public.benefit_claim_official_reviews limit 1$$,'23514',null,'direct review untrimmed note is rejected');
 select throws_ok($attack$do $x$ begin update public.benefit_publications set status='withdrawn' where publication_id=(select official_publication_id from public.benefit_claims where claim_id='b9200000-0000-4000-8000-000000000001'); set constraints all immediate; end$x$$attack$,'23514','claim official publication must be its active official authority','direct official publication retirement is rejected');
 select throws_ok($attack$do $x$ begin update public.benefit_claims set official_publication_id=null,revision=revision+1,updated_at=clock_timestamp() where claim_id='b9200000-0000-4000-8000-000000000001'; set constraints all immediate; end$x$$attack$,'23514','official claim publication requires one immutable verification review','direct claim pointer removal is rejected while official publication remains active');
+select throws_ok($attack$do $x$ declare p uuid; begin select official_publication_id into p from public.benefit_claims where claim_id='b9200000-0000-4000-8000-000000000001'; update public.benefit_publications set status='withdrawn' where publication_id=p; update public.benefit_claims set official_publication_id=null,revision=revision+1,updated_at=clock_timestamp() where claim_id='b9200000-0000-4000-8000-000000000001'; set constraints all immediate; end$x$$attack$,'23514','explicit official withdrawal requires one immutable withdrawal review','combined direct publication retirement and pointer clearing without a withdrawal review is rejected');
 
 -- Merge stores terminal truth and emits symmetric audit identities.
 set local role authenticated;
@@ -107,6 +109,10 @@ select throws_ok($$select public.moderate_benefit_claim_v1(gen_random_uuid(),'b9
 select throws_ok($$select public.set_benefit_claim_reaction_v1('b9200000-0000-4000-8000-000000000002','dispute',gen_random_uuid())$$,'22023','benefit claim is not visible','merged source cannot receive reactions');
 reset role;
 select ok((select status='merged' and merged_into_claim_id='b9200000-0000-4000-8000-000000000003' from public.benefit_claims where claim_id='b9200000-0000-4000-8000-000000000002'),'merged source is terminal and explicitly points to target');
+select is((select metadata->>'target_claim_id' from public.benefit_claim_events where claim_id='b9200000-0000-4000-8000-000000000002' and operation='moderate' and event_type='merged'),'b9200000-0000-4000-8000-000000000003','merged source event identifies its target');
+select is((select metadata->>'source_claim_id' from public.benefit_claim_events where claim_id='b9200000-0000-4000-8000-000000000003' and operation='merge_target' and event_type='merged'),'b9200000-0000-4000-8000-000000000002','merge target event identifies its source');
+select is((select item->>'related_claim_id' from jsonb_array_elements(public.list_benefit_claim_audit_v1('b9200000-0000-4000-8000-000000000002',100)->'items') item where item->>'event_kind'='claim_event' and item->>'action'='merged'),'b9200000-0000-4000-8000-000000000003','source claim audit hydrates the target from its claim event');
+select is((select item->>'related_claim_id' from jsonb_array_elements(public.list_benefit_claim_audit_v1('b9200000-0000-4000-8000-000000000003',100)->'items') item where item->>'event_kind'='claim_event' and item->>'action'='merged'),'b9200000-0000-4000-8000-000000000002','target claim audit hydrates the source from its claim event');
 
 set local role authenticated;
 set local request.jwt.claim.sub='b9100000-0000-4000-8000-000000000001';

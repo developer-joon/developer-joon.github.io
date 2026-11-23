@@ -170,7 +170,7 @@ export type Database = {
             | "reaction_recomputed";
           from_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
           metadata: NonNullable<Json>;
-          operation: "create" | "withdraw" | "moderate" | "promote" | "review";
+          operation: "create" | "withdraw" | "moderate" | "promote" | "review" | "merge_target";
           payload_fingerprint: string;
           to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
         };
@@ -196,7 +196,7 @@ export type Database = {
             | "reaction_recomputed";
           from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
           metadata?: NonNullable<Json>;
-          operation: "create" | "withdraw" | "moderate" | "promote" | "review";
+          operation: "create" | "withdraw" | "moderate" | "promote" | "review" | "merge_target";
           payload_fingerprint: string;
           to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
         };
@@ -221,7 +221,7 @@ export type Database = {
             | "reaction_recomputed";
           from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
           metadata?: NonNullable<Json>;
-          operation?: "create" | "withdraw" | "moderate" | "promote" | "review";
+          operation?: "create" | "withdraw" | "moderate" | "promote" | "review" | "merge_target";
           payload_fingerprint?: string;
           to_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
         };
@@ -2003,13 +2003,13 @@ export type Database = {
           p_action: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official";
           p_claim_id: string;
           p_client_key: string;
-          p_evidence_observed_on?: string;
-          p_evidence_source_url?: string;
-          p_evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official";
+          p_evidence_observed_on?: string | null;
+          p_evidence_source_url?: string | null;
+          p_evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official" | null;
           p_expected_revision: number;
           p_expected_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
-          p_reason?: string;
-          p_target_claim_id?: string;
+          p_reason?: string | null;
+          p_target_claim_id?: string | null;
         };
         Returns: Json;
       };
@@ -2046,7 +2046,7 @@ export type Database = {
           p_evidence_source_url: string;
           p_evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official";
           p_expected_revision: number;
-          p_expected_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          p_expected_status: "submitted" | "community_confirmed" | "disputed";
           p_title: string;
           p_verification_note: string;
         };
