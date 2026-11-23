@@ -1,5 +1,3 @@
-import { createClient } from "npm:@supabase/supabase-js@2.117.0";
-
 const MAX_REQUEST_BYTES = 16_384;
 const MAX_NTS_RESPONSE_BYTES = 65_536;
 const OPERATION_DEADLINE_MS = 8_000;
@@ -80,11 +78,15 @@ type FailureArguments = {
 
 export type VerificationDependencies = {
   env(name: string): string | undefined;
-  authenticate(authorization: string): Promise<AuthenticatedIdentity>;
+  authenticate(
+    authorization: string,
+    signal: AbortSignal,
+  ): Promise<AuthenticatedIdentity>;
   reserve(
     authorization: string,
     idempotencyKey: string,
     fields: SafeCompanyFields,
+    signal: AbortSignal,
   ): Promise<unknown>;
   finalize(args: FinalizeArguments, signal: AbortSignal): Promise<unknown>;
   fail(args: FailureArguments, signal: AbortSignal): Promise<unknown>;
@@ -198,7 +200,11 @@ function loadConfig(deps: VerificationDependencies): Config | null {
 }
 
 function corsHeaders(origin: string | null): Headers {
-  const headers = new Headers({ vary: "Origin" });
+  const headers = new Headers({
+    vary: "Origin",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
   if (origin) headers.set("access-control-allow-origin", origin);
   return headers;
 }
@@ -235,6 +241,11 @@ function validUuid(value: string | null): value is string {
 
 class BodyTooLargeError extends Error {}
 class DeadlineExceededError extends Error {}
+class StreamAbortedError extends Error {
+  constructor(readonly signal: AbortSignal) {
+    super("stream aborted");
+  }
+}
 
 function contentLengthHint(request: Request): number | null {
   const raw = request.headers.get("content-length");
@@ -247,19 +258,74 @@ function contentLengthHint(request: Request): number | null {
   return value;
 }
 
-async function readRequestText(request: Request): Promise<string> {
+async function readChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signals: readonly AbortSignal[],
+  onRead?: (value: ReadableStreamReadResult<Uint8Array>) => void,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  const alreadyAborted = signals.find((signal) => signal.aborted);
+  if (alreadyAborted) throw new StreamAbortedError(alreadyAborted);
+
+  const read = reader.read().then(
+    (value) => {
+      onRead?.(value);
+      return { kind: "read" as const, value };
+    },
+    (error) => ({ kind: "error" as const, error }),
+  );
+  let listeners: Array<[AbortSignal, () => void]> = [];
+  const aborted = new Promise<{ kind: "abort"; signal: AbortSignal }>(
+    (resolve) => {
+      listeners = signals.map((signal) => {
+        const listener = () => resolve({ kind: "abort", signal });
+        signal.addEventListener("abort", listener, { once: true });
+        return [signal, listener];
+      });
+    },
+  );
+  const result = await Promise.race([read, aborted]);
+  for (const [signal, listener] of listeners) {
+    signal.removeEventListener("abort", listener);
+  }
+  if (result.kind === "abort") {
+    // The underlying stream is allowed to ignore cancellation. Its eventual
+    // settlement is converted to a handled value and cannot reject unobserved.
+    void read.then(() => undefined);
+    throw new StreamAbortedError(result.signal);
+  }
+  if (result.kind === "error") throw result.error;
+  return result.value;
+}
+
+async function readRequestText(
+  request: Request,
+  deadlineSignal: AbortSignal,
+  clientSignal: AbortSignal,
+): Promise<string> {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("body");
   const chunks: Uint8Array[] = [];
   let total = 0;
   let cancelled = false;
+  const cancel = () => {
+    if (cancelled) return;
+    cancelled = true;
+    void reader.cancel().catch(() => {});
+  };
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readChunk(
+        reader,
+        [deadlineSignal, clientSignal],
+        (item) => {
+          if (!item.done && total + item.value.byteLength > MAX_REQUEST_BYTES) {
+            cancel();
+          }
+        },
+      );
       if (done) break;
       if (total + value.byteLength > MAX_REQUEST_BYTES) {
-        cancelled = true;
-        void reader.cancel().catch(() => {});
+        cancel();
         throw new BodyTooLargeError();
       }
       total += value.byteLength;
@@ -273,15 +339,26 @@ async function readRequestText(request: Request): Promise<string> {
     }
     try {
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (error) {
+      cancel();
+      throw error;
     } finally {
       bytes.fill(0);
     }
   } catch (error) {
-    if (!cancelled) void reader.cancel().catch(() => {});
+    cancel();
+    if (
+      error instanceof StreamAbortedError &&
+      error.signal === deadlineSignal
+    ) throw new DeadlineExceededError();
     throw error;
   } finally {
     chunks.length = 0;
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // A non-cooperative pending read keeps its lock until it settles.
+    }
   }
 }
 
@@ -735,6 +812,14 @@ function indeterminateResult(
   }, origin);
 }
 
+function reservationIndeterminateResult(origin: string): Response {
+  return jsonResponse(503, {
+    code: "reservation_indeterminate",
+    message:
+      "예약 결과를 확인할 수 없습니다. 같은 멱등성 키로 다시 시도해 주세요.",
+  }, origin);
+}
+
 const VALIDATE_KEYS = ["status_code", "request_cnt", "valid_cnt", "data"];
 const VALIDATE_DATA_KEYS = [
   "b_no",
@@ -768,13 +853,15 @@ const STATUS_KEYS = [
   "rbf_tax_type_cd",
 ];
 
-async function readBoundedJson(
+async function readBoundedJsonValue(
   response: Response,
   signal: AbortSignal,
+  requireSuccess: boolean,
 ): Promise<unknown> {
-  if (response.redirected || response.status < 200 || response.status >= 300) {
-    throw new NtsError();
-  }
+  if (
+    response.redirected ||
+    (requireSuccess && (response.status < 200 || response.status >= 300))
+  ) throw new NtsError();
   const contentType = response.headers.get("content-type") ?? "";
   if (
     !/^application\/json(?:\s*;\s*charset=(?:utf-8|UTF-8))?$/.test(contentType)
@@ -788,39 +875,60 @@ async function readBoundedJson(
   if (!reader) throw new NtsError();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  const cancel = () => void reader.cancel().catch(() => {});
-  signal.addEventListener("abort", cancel, { once: true });
+  let cancelled = false;
+  const cancel = () => {
+    if (cancelled) return;
+    cancelled = true;
+    void reader.cancel().catch(() => {});
+  };
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readChunk(reader, [signal]);
       if (done) break;
       if (total + value.byteLength > MAX_NTS_RESPONSE_BYTES) {
-        void reader.cancel().catch(() => {});
+        cancel();
         throw new NtsError();
       }
       total += value.byteLength;
       chunks.push(value);
     }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      rejectDuplicateJsonKeys(text);
+      return JSON.parse(text);
+    } catch {
+      cancel();
+      throw new NtsError();
+    } finally {
+      bytes.fill(0);
+    }
+  } catch (error) {
+    cancel();
+    if (error instanceof StreamAbortedError) {
+      throw new DOMException("aborted", "AbortError");
+    }
+    throw error;
   } finally {
-    signal.removeEventListener("abort", cancel);
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    rejectDuplicateJsonKeys(text);
-    return JSON.parse(text);
-  } catch {
-    throw new NtsError();
-  } finally {
-    bytes.fill(0);
     chunks.length = 0;
+    try {
+      reader.releaseLock();
+    } catch {
+      // A non-cooperative pending read keeps its lock until it settles.
+    }
   }
+}
+
+async function readBoundedJson(
+  response: Response,
+  signal: AbortSignal,
+): Promise<unknown> {
+  return await readBoundedJsonValue(response, signal, true);
 }
 
 function decodeValidate(
@@ -940,7 +1048,7 @@ function durationBucket(milliseconds: number): string {
 
 export async function handleVerifyBenefitCompany(
   request: Request,
-  deps: VerificationDependencies = runtimeDependencies(),
+  deps: VerificationDependencies = createRuntimeDependencies(),
 ): Promise<Response> {
   const started = performance.now();
   const edgeRequestId = deps.requestId();
@@ -1054,37 +1162,6 @@ export async function handleVerifyBenefitCompany(
         origin,
       );
     }
-    let raw: string;
-    try {
-      raw = await readRequestText(request);
-      input = parseInput(raw);
-      raw = "";
-    } catch (error) {
-      if (error instanceof BodyTooLargeError) {
-        result = "body_too_large";
-        statusCategory = "client_error";
-        return safeError(
-          new PublicError(
-            413,
-            "body_too_large",
-            "요청 본문이 너무 큽니다.",
-            "client_error",
-          ),
-          origin,
-        );
-      }
-      result = "invalid_request";
-      statusCategory = "client_error";
-      return safeError(
-        new PublicError(
-          400,
-          "invalid_request",
-          "요청 형식이 올바르지 않습니다.",
-          "client_error",
-        ),
-        origin,
-      );
-    }
     authorization = request.headers.get("authorization");
     if (!validBearer(authorization)) {
       result = "authentication_required";
@@ -1118,10 +1195,44 @@ export async function handleVerifyBenefitCompany(
       OPERATION_DEADLINE_MS,
       PERSISTENCE_MARGIN_MS,
     );
+    let raw: string;
+    try {
+      raw = await deadline.runExternal((signal) =>
+        readRequestText(request, signal, request.signal)
+      );
+      input = parseInput(raw);
+      raw = "";
+    } catch (error) {
+      if (error instanceof DeadlineExceededError) throw error;
+      if (error instanceof BodyTooLargeError) {
+        result = "body_too_large";
+        statusCategory = "client_error";
+        return safeError(
+          new PublicError(
+            413,
+            "body_too_large",
+            "요청 본문이 너무 큽니다.",
+            "client_error",
+          ),
+          origin,
+        );
+      }
+      result = "invalid_request";
+      statusCategory = "client_error";
+      return safeError(
+        new PublicError(
+          400,
+          "invalid_request",
+          "요청 형식이 올바르지 않습니다.",
+          "client_error",
+        ),
+        origin,
+      );
+    }
     let identity: AuthenticatedIdentity;
     try {
-      identity = await deadline.runExternal(() =>
-        deps.authenticate(authorization!)
+      identity = await deadline.runExternal((signal) =>
+        deps.authenticate(authorization!, signal)
       );
     } catch (error) {
       if (error instanceof DeadlineExceededError) throw error;
@@ -1162,12 +1273,17 @@ export async function handleVerifyBenefitCompany(
     let reservation: Reservation;
     try {
       reservation = decodeReservation(
-        await deadline.runExternal(() =>
-          deps.reserve(authorization!, idempotencyKey, fields)
+        await deadline.runExternal((signal) =>
+          deps.reserve(authorization!, idempotencyKey, fields, signal)
         ),
         "reserve",
       );
     } catch (error) {
+      if (error instanceof DeadlineExceededError) {
+        result = "reservation_indeterminate";
+        statusCategory = "indeterminate";
+        return reservationIndeterminateResult(origin);
+      }
       const safe = errorFromRpc(error);
       result = safe.code;
       statusCategory = safe.category;
@@ -1363,56 +1479,110 @@ export async function handleVerifyBenefitCompany(
   }
 }
 
-function runtimeDependencies(): VerificationDependencies {
-  const env = (name: string) => Deno.env.get(name);
-  const userClient = (authorization: string) =>
-    createClient(env("SUPABASE_URL") ?? "", env("SUPABASE_ANON_KEY") ?? "", {
-      global: { headers: { Authorization: authorization } },
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false,
-      },
-    });
-  const serviceRpc = async (
+type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
+function decodePostgrestError(value: unknown): Record<string, unknown> {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, ["code", "details", "hint", "message"]) ||
+    typeof value.code !== "string" || typeof value.message !== "string" ||
+    !(value.details === null || typeof value.details === "string") ||
+    !(value.hint === null || typeof value.hint === "string")
+  ) throw new Error("postgrest");
+  return value;
+}
+
+function decodeAuthError(value: unknown): void {
+  if (
+    !isRecord(value) ||
+    !(
+      (typeof value.code === "string" && typeof value.message === "string") ||
+      (typeof value.error_code === "string" && typeof value.msg === "string")
+    )
+  ) throw new Error("auth");
+  throw new Error("auth");
+}
+
+export function createRuntimeDependencies(
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+  fetchImpl: FetchLike = (input, init) => globalThis.fetch(input, init),
+): VerificationDependencies {
+  const runtimeJson = async (
+    response: Response,
+    signal: AbortSignal,
+  ): Promise<unknown> => await readBoundedJsonValue(response, signal, false);
+  const rpc = async (
     functionName: string,
     payload: Record<string, unknown>,
+    authorization: string,
+    apikey: string,
     signal: AbortSignal,
   ): Promise<unknown> => {
-    const serviceRoleKey = env("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-    const response = await fetch(
+    const response = await fetchImpl(
       `${env("SUPABASE_URL") ?? ""}/rest/v1/rpc/${functionName}`,
       {
         method: "POST",
         redirect: "error",
         headers: {
-          apikey: serviceRoleKey,
-          authorization: `Bearer ${serviceRoleKey}`,
+          apikey,
+          Authorization: authorization,
           "content-type": "application/json",
         },
         body: JSON.stringify(payload),
         signal,
       },
     );
-    const value = await response.json();
-    if (!response.ok) throw value;
+    const value = await runtimeJson(response, signal);
+    if (!response.ok) throw decodePostgrestError(value);
+    if (!isRecord(value)) throw new Error("postgrest");
     return value;
+  };
+  const serviceRpc = async (
+    functionName: string,
+    payload: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<unknown> => {
+    const serviceRoleKey = env("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    return await rpc(
+      functionName,
+      payload,
+      `Bearer ${serviceRoleKey}`,
+      serviceRoleKey,
+      signal,
+    );
   };
   return {
     env,
-    authenticate: async (authorization) => {
-      const token = authorization.slice(7);
-      const { data, error } = await userClient(authorization).auth.getUser(
-        token,
+    authenticate: async (authorization, signal) => {
+      const response = await fetchImpl(
+        `${env("SUPABASE_URL") ?? ""}/auth/v1/user`,
+        {
+          method: "GET",
+          redirect: "error",
+          headers: {
+            apikey: env("SUPABASE_ANON_KEY") ?? "",
+            Authorization: authorization,
+          },
+          signal,
+        },
       );
-      if (error || !data.user) throw new Error("auth");
+      const value = await runtimeJson(response, signal);
+      if (!response.ok) decodeAuthError(value);
+      if (
+        !isRecord(value) || !validUuid(
+          typeof value.id === "string" ? value.id : null,
+        )
+      ) throw new Error("auth");
       return {
-        id: data.user.id,
-        currentGoogleIdentity: hasCurrentGoogleIdentity(data.user),
+        id: value.id as string,
+        currentGoogleIdentity: hasCurrentGoogleIdentity(value),
       };
     },
-    reserve: async (authorization, idempotencyKey, fields) => {
-      const { data, error } = await userClient(authorization).rpc(
+    reserve: async (authorization, idempotencyKey, fields, signal) =>
+      await rpc(
         "reserve_benefit_company_nts_request_v1",
         {
           p_client_key: idempotencyKey,
@@ -1421,10 +1591,10 @@ function runtimeDependencies(): VerificationDependencies {
           p_industry: fields.industry,
           p_website: fields.website,
         },
-      );
-      if (error) throw error;
-      return data;
-    },
+        authorization,
+        env("SUPABASE_ANON_KEY") ?? "",
+        signal,
+      ),
     finalize: async (args, signal) =>
       await serviceRpc(
         "finalize_benefit_company_nts_request_v1",
@@ -1448,7 +1618,7 @@ function runtimeDependencies(): VerificationDependencies {
         },
         signal,
       ),
-    fetch: (input, init) => fetch(input, init),
+    fetch: fetchImpl,
     now: () => new Date(),
     monotonicNow: () => performance.now(),
     requestId: () => crypto.randomUUID(),

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   businessNumberDigest,
+  createRuntimeDependencies,
   handleVerifyBenefitCompany,
   hasCurrentGoogleIdentity,
   type VerificationDependencies,
@@ -131,7 +132,9 @@ function ntsResponse(value: unknown, init: ResponseInit = {}) {
 
 type Events = {
   auth: string[];
+  authSignals: AbortSignal[];
   reserve: unknown[][];
+  reserveSignals: AbortSignal[];
   finalize: unknown[];
   finalizeSignals: AbortSignal[];
   fail: unknown[];
@@ -147,7 +150,9 @@ function dependencies(
 ): { deps: VerificationDependencies; events: Events } {
   const events: Events = {
     auth: [],
+    authSignals: [],
     reserve: [],
+    reserveSignals: [],
     finalize: [],
     finalizeSignals: [],
     fail: [],
@@ -160,16 +165,18 @@ function dependencies(
   const env = { ...ENV, ...envChanges } as Record<string, string | undefined>;
   const deps: VerificationDependencies = {
     env: (name) => env[name],
-    authenticate: async (authorization) => {
+    authenticate: async (authorization, signal) => {
       events.auth.push(authorization);
+      events.authSignals.push(signal);
       return {
         id: "323e4567-e89b-42d3-a456-426614174000",
         providers: ["google"],
         currentGoogleIdentity: true,
       };
     },
-    reserve: async (...args) => {
-      events.reserve.push(args);
+    reserve: async (authorization, idempotencyKey, fields, signal) => {
+      events.reserve.push([authorization, idempotencyKey, fields]);
+      events.reserveSignals.push(signal);
       return reserveResult();
     },
     finalize: async (args, signal) => {
@@ -490,7 +497,9 @@ Deno.test("streams chunked request bodies with a hard retained-byte cap", async 
   const { deps, events } = dependencies();
   const response = await handleVerifyBenefitCompany(streamed, deps);
   assert.equal(response.status, 413);
-  assert.ok(pulls <= 2, `unexpected pulls: ${pulls}`);
+  // A web stream may prefetch one queued chunk before cancellation becomes
+  // observable; no prefetched bytes are retained by the handler.
+  assert.ok(pulls <= 3, `unexpected pulls: ${pulls}`);
   assert.equal(cancelled, 1);
   assert.deepEqual([
     events.auth.length,
@@ -535,6 +544,81 @@ Deno.test("accepts a valid request body without Content-Length", async () => {
   });
   const { deps } = dependencies();
   assert.equal((await handleVerifyBenefitCompany(streamed, deps)).status, 200);
+});
+
+Deno.test("validates bearer and idempotency syntax before the first body pull", async () => {
+  for (const options of [{ authorization: null }, { key: "not-uuid" }]) {
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(BODY)));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const headers = new Headers({
+      origin: ORIGIN,
+      "content-type": "application/json",
+      "idempotency-key": options.key ?? KEY,
+    });
+    if (options.authorization !== null) {
+      headers.set("authorization", "Bearer user-token-value");
+    }
+    const { deps, events } = dependencies();
+    const response = await handleVerifyBenefitCompany(
+      new Request("https://edge.test/verify-benefit-company", {
+        method: "POST",
+        headers,
+        body: stream,
+      }),
+      deps,
+    );
+    assert.equal(response.status, options.authorization === null ? 401 : 400);
+    assert.equal(pulls, 0);
+    assert.deepEqual([events.auth.length, events.reserve.length], [0, 0]);
+  }
+});
+
+Deno.test("bounds and cancels a request body that sends one chunk but never closes", async () => {
+  let cancelled = 0;
+  let timerCalls = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("{"));
+    },
+    cancel() {
+      cancelled++;
+    },
+  });
+  const { deps, events } = dependencies({
+    setTimeout: (callback) => {
+      timerCalls++;
+      queueMicrotask(callback);
+      return 23 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: () => {},
+  });
+  const response = await handleVerifyBenefitCompany(
+    new Request("https://edge.test/verify-benefit-company", {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        authorization: "Bearer user-token-value",
+        "idempotency-key": KEY,
+        "content-type": "application/json",
+      },
+      body: stream,
+    }),
+    deps,
+  );
+  assert.equal(response.status, 502);
+  assert.equal(timerCalls, 1);
+  assert.equal(cancelled, 1);
+  assert.deepEqual([
+    events.auth.length,
+    events.reserve.length,
+    events.fetch.length,
+  ], [0, 0, 0]);
 });
 
 Deno.test("accepts omission of all optional company fields", async () => {
@@ -1052,7 +1136,8 @@ Deno.test("deadline covers reserve providers that ignore cancellation", async ()
   };
   const { deps, events } = dependencies(changes);
   const response = await handleVerifyBenefitCompany(request(), deps);
-  assert.equal(response.status, 502);
+  assert.equal(response.status, 503);
+  assert.equal((await body(response)).code, "reservation_indeterminate");
   assert.equal(events.finalize.length, 0);
 });
 
@@ -1086,6 +1171,8 @@ Deno.test("delayed finalize is indeterminate and terminal replay converges witho
   });
   const firstResponse = await handleVerifyBenefitCompany(request(), first.deps);
   assert.equal(firstResponse.status, 202);
+  assert.equal(firstResponse.headers.get("cache-control"), "no-store");
+  assert.equal(firstResponse.headers.get("x-content-type-options"), "nosniff");
   const firstBody = await body(firstResponse);
   assert.deepEqual(firstBody, {
     code: "verification_indeterminate",
@@ -1135,6 +1222,8 @@ Deno.test("failure persistence timeout is safe indeterminate 503", async () => {
   });
   const response = await handleVerifyBenefitCompany(request(), deps);
   assert.equal(response.status, 503);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(failInvocations.length, 1);
   assert.deepEqual(await body(response), {
     code: "verification_indeterminate",
@@ -1156,6 +1245,11 @@ Deno.test("success finalizes with digest and safe fields only", async () => {
     message: "사업자 확인이 완료되었습니다.",
   });
   assert.equal(events.finalize.length, 1);
+  assert.equal(events.authSignals.length, 1);
+  assert.equal(events.reserveSignals.length, 1);
+  assert.ok(events.authSignals[0] instanceof AbortSignal);
+  assert.ok(events.reserveSignals[0] instanceof AbortSignal);
+  assert.notEqual(events.authSignals[0], events.reserveSignals[0]);
   assert.equal(events.finalizeSignals.length, 1);
   assert.ok(events.finalizeSignals[0] instanceof AbortSignal);
   assert.notEqual(events.finalizeSignals[0], events.fetch[0].init.signal);
@@ -1232,4 +1326,266 @@ Deno.test("failure RPC failure remains generic and all outputs and logs stay fre
     ["durationBucket", "requestId", "result", "statusCategory"].sort(),
   );
   assert.equal(log.requestId, "edge-request-id");
+});
+
+Deno.test("all response classes are no-store and nosniff with CORS only for an allowed origin", async () => {
+  const { deps } = dependencies();
+  const responses = [
+    await handleVerifyBenefitCompany(request(), deps),
+    await handleVerifyBenefitCompany(
+      request(BODY, { authorization: null }),
+      deps,
+    ),
+    await handleVerifyBenefitCompany(
+      request(BODY, { origin: "https://evil.example" }),
+      deps,
+    ),
+    await handleVerifyBenefitCompany(
+      new Request("https://edge.test", {
+        method: "OPTIONS",
+        headers: {
+          origin: ORIGIN,
+          "access-control-request-method": "POST",
+          "access-control-request-headers": CORS_HEADERS_FOR_TEST,
+        },
+      }),
+      deps,
+    ),
+  ];
+  for (const response of responses) {
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  }
+  assert.equal(responses[2].headers.get("access-control-allow-origin"), null);
+  assert.equal(responses[0].headers.get("access-control-allow-origin"), ORIGIN);
+  assert.equal(responses[1].headers.get("access-control-allow-origin"), ORIGIN);
+  assert.equal(responses[3].headers.get("access-control-allow-origin"), ORIGIN);
+});
+
+const CORS_HEADERS_FOR_TEST = "authorization, content-type, idempotency-key";
+
+function runtimeUser() {
+  const timestamp = "2026-11-23T00:00:00.000Z";
+  return {
+    id: "323e4567-e89b-42d3-a456-426614174000",
+    last_sign_in_at: timestamp,
+    app_metadata: { provider: "google", providers: ["google"] },
+    identities: [{
+      id: "identity-id",
+      user_id: "323e4567-e89b-42d3-a456-426614174000",
+      identity_data: {},
+      provider: "google",
+      last_sign_in_at: timestamp,
+      created_at: timestamp,
+      updated_at: timestamp,
+    }],
+  };
+}
+
+Deno.test("runtime Auth and reserve adapters use exact fixed fetch contracts and immutable signals", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetcher = async (
+    input: string | URL | Request,
+    init: RequestInit = {},
+  ) => {
+    calls.push({ url: String(input), init });
+    const value = calls.length === 1 ? runtimeUser() : reserveResult();
+    return ntsResponse(value);
+  };
+  const runtime = createRuntimeDependencies(
+    (name) => ENV[name as keyof typeof ENV],
+    fetcher,
+  );
+  const authSignal = new AbortController().signal;
+  const reserveSignal = new AbortController().signal;
+  assert.deepEqual(
+    await runtime.authenticate("Bearer runtime-token", authSignal),
+    {
+      id: "323e4567-e89b-42d3-a456-426614174000",
+      currentGoogleIdentity: true,
+    },
+  );
+  assert.deepEqual(
+    await runtime.reserve("Bearer runtime-token", KEY, {
+      proposedName: BUSINESS_NAME,
+      region: "서울",
+      industry: "소프트웨어",
+      website: "https://example.com",
+    }, reserveSignal),
+    reserveResult(),
+  );
+  assert.equal(calls[0].url, `${ENV.SUPABASE_URL}/auth/v1/user`);
+  assert.deepEqual(calls[0].init, {
+    method: "GET",
+    redirect: "error",
+    headers: {
+      apikey: ENV.SUPABASE_ANON_KEY,
+      Authorization: "Bearer runtime-token",
+    },
+    signal: authSignal,
+  });
+  assert.equal(
+    calls[1].url,
+    `${ENV.SUPABASE_URL}/rest/v1/rpc/reserve_benefit_company_nts_request_v1`,
+  );
+  assert.deepEqual(calls[1].init, {
+    method: "POST",
+    redirect: "error",
+    headers: {
+      apikey: ENV.SUPABASE_ANON_KEY,
+      Authorization: "Bearer runtime-token",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      p_client_key: KEY,
+      p_proposed_name: BUSINESS_NAME,
+      p_region: "서울",
+      p_industry: "소프트웨어",
+      p_website: "https://example.com",
+    }),
+    signal: reserveSignal,
+  });
+  assert.notEqual(authSignal, reserveSignal);
+});
+
+Deno.test("runtime adapters decode realistic errors and reject aborts and unsafe JSON responses", async () => {
+  const postgrestError = {
+    code: "PT429",
+    details: null,
+    hint: null,
+    message: "rate limit exceeded",
+  };
+  const errorRuntime = createRuntimeDependencies(
+    (name) => ENV[name as keyof typeof ENV],
+    async () => ntsResponse(postgrestError, { status: 429 }),
+  );
+  await assert.rejects(
+    () =>
+      errorRuntime.reserve("Bearer runtime-token", KEY, {
+        proposedName: BUSINESS_NAME,
+        region: null,
+        industry: null,
+        website: null,
+      }, new AbortController().signal),
+    (error) => (error as { code?: string }).code === "PT429",
+  );
+
+  const authErrorRuntime = createRuntimeDependencies(
+    (name) => ENV[name as keyof typeof ENV],
+    async () =>
+      ntsResponse({
+        code: "bad_jwt",
+        message: "invalid JWT",
+      }, { status: 401 }),
+  );
+  await assert.rejects(() =>
+    authErrorRuntime.authenticate(
+      "Bearer runtime-token",
+      new AbortController().signal,
+    )
+  );
+
+  for (const operation of ["authenticate", "reserve"] as const) {
+    let observedSignal: AbortSignal | undefined;
+    const abortRuntime = createRuntimeDependencies(
+      (name) => ENV[name as keyof typeof ENV],
+      async (_input, init) => {
+        observedSignal = init?.signal ?? undefined;
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          }, { once: true });
+        });
+      },
+    );
+    const controller = new AbortController();
+    const pending = operation === "authenticate"
+      ? abortRuntime.authenticate("Bearer runtime-token", controller.signal)
+      : abortRuntime.reserve("Bearer runtime-token", KEY, {
+        proposedName: BUSINESS_NAME,
+        region: null,
+        industry: null,
+        website: null,
+      }, controller.signal);
+    controller.abort();
+    await assert.rejects(() => pending, DOMException);
+    assert.equal(observedSignal, controller.signal);
+  }
+
+  const unsafe = [
+    new Response("{}", { headers: { "content-type": "text/html" } }),
+    new Response("{".repeat(65_537), {
+      headers: { "content-type": "application/json" },
+    }),
+    new Response("{", { headers: { "content-type": "application/json" } }),
+  ];
+  for (const response of unsafe) {
+    const runtime = createRuntimeDependencies(
+      (name) => ENV[name as keyof typeof ENV],
+      async () => response,
+    );
+    await assert.rejects(() =>
+      runtime.authenticate(
+        "Bearer runtime-token",
+        new AbortController().signal,
+      )
+    );
+  }
+});
+
+Deno.test("runtime finalize and fail transports use bounded JSON instead of Response.json", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const runtime = createRuntimeDependencies(
+    (name) => ENV[name as keyof typeof ENV],
+    async (input, init = {}) => {
+      calls.push({ url: String(input), init });
+      return ntsResponse(reserveResult({
+        verification_method: "nts_full",
+        verification_status: calls.length === 1 ? "matched" : "unavailable",
+        status: calls.length === 1 ? "approved" : "rejected",
+        revision: 2,
+        resolved_company_id: calls.length === 1
+          ? "KR-CAN-0123456789abcdef0123456789abcdef"
+          : null,
+      }));
+    },
+  );
+  const firstSignal = new AbortController().signal;
+  const secondSignal = new AbortController().signal;
+  await runtime.finalize({
+    requestId: REQUEST_ID,
+    expectedVerificationStatus: "pending",
+    payloadFingerprint: "a".repeat(64),
+    businessNumberDigest: "b".repeat(64),
+    externalVerifiedAt: "2026-11-23T00:00:01.000Z",
+  }, firstSignal);
+  await runtime.fail({
+    requestId: REQUEST_ID,
+    expectedVerificationStatus: "pending",
+    payloadFingerprint: "a".repeat(64),
+    category: "unavailable",
+  }, secondSignal);
+  assert.deepEqual(calls.map((call) => call.url), [
+    `${ENV.SUPABASE_URL}/rest/v1/rpc/finalize_benefit_company_nts_request_v1`,
+    `${ENV.SUPABASE_URL}/rest/v1/rpc/fail_benefit_company_nts_request_v1`,
+  ]);
+  assert.equal(calls[0].init.signal, firstSignal);
+  assert.equal(calls[1].init.signal, secondSignal);
+
+  const malformed = createRuntimeDependencies(
+    (name) => ENV[name as keyof typeof ENV],
+    async () =>
+      new Response("{", {
+        headers: { "content-type": "application/json" },
+      }),
+  );
+  await assert.rejects(() =>
+    malformed.finalize({
+      requestId: REQUEST_ID,
+      expectedVerificationStatus: "pending",
+      payloadFingerprint: "a".repeat(64),
+      businessNumberDigest: "b".repeat(64),
+      externalVerifiedAt: "2026-11-23T00:00:01.000Z",
+    }, new AbortController().signal)
+  );
 });

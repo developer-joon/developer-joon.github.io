@@ -296,6 +296,16 @@ The only persistent strong identifier is lower-case
 `HMAC-SHA-256(BUSINESS_NUMBER_HMAC_SECRET,
 "breadlab:business-number:v1\\0" + ten_digits)`.
 
+Origin, method, content type, bounded Bearer syntax, and canonical idempotency
+UUID are rejected before the first request-body pull. The absolute request
+deadline starts before body consumption; each body read and every Auth, reserve,
+NTS, finalize, and failure transport receives an operation-local AbortSignal.
+Auth uses only the fixed `/auth/v1/user` endpoint, and reserve uses only the
+fixed PostgREST RPC endpoint; neither relies on an SDK call that drops the
+signal. All transport JSON, including finalize/failure responses, is content-
+type checked and byte bounded. Every response is `no-store` and `nosniff`, and
+CORS is returned only for an allowed origin.
+
 Local validation is mock-only and must use the injected transport in
 `index.test.ts`; do not set an NTS key and do not make a real NTS request. Run:
 
@@ -332,6 +342,12 @@ forward-fix, rerun mock-only local tests, redeploy under fresh approval, and use
 the same idempotency key only for the exact same safe company payload. Do not
 claim JavaScript string zeroization; the handler only drops references and wipes
 mutable byte buffers where practical.
+
+Abort is a bounded local observation, not proof that a dispatched remote write
+did not commit. In particular, a reserve timeout is returned as reservation
+indeterminate; retry only the identical safe payload with the same idempotency
+key. Finalize/failure timeout responses likewise describe uncertainty and must
+not be reported as “no request” or “no write.”
 
 ## Production backend, probes, Pages, and canary
 
