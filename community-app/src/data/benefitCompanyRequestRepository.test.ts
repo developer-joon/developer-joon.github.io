@@ -178,4 +178,14 @@ describe('benefit company request repository', () => {
     await expect(createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', rpc) }).createManual(input)).resolves.toMatchObject({ ok: true })
     expect(input).toEqual(manual); expect(wire).toEqual(item)
   })
+
+  it.each([
+    { ...ok(item), extra: 'private' },
+    { data: null, error: { code: 'XX000', message: 'private', details: null, hint: null, reviewer_id: actor }, status: 500, statusText: 'Error' },
+    { data: null, error: { code: 'XX000', message: 'private', details: { nested: true }, hint: null }, status: 500, statusText: 'Error' },
+  ])('rejects outer and nested transport leak keys', async envelope => {
+    const result = await createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', vi.fn(async () => envelope)) }).createManual(manual)
+    expect(result).toEqual({ ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } })
+    expect(JSON.stringify(result)).not.toContain('private')
+  })
 })

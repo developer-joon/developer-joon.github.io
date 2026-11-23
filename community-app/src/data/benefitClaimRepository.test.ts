@@ -99,13 +99,32 @@ describe('benefit claim repository', () => {
     expect(rpc).not.toHaveBeenCalled()
   })
 
-  it('accepts the client count field and rejects contradictory transport envelopes', async () => {
-    for (const [envelope, expected] of [[{ ...ok({ claim_id: claimId, outcome: 'created' }), count: null }, true], [{ data: { claim_id: claimId }, error: { code: 'XX000', message: 'secret' }, status: 500, statusText: '' }, false]] as const) {
+  it('requires the shared exact submission transport envelope', async () => {
+    for (const envelope of [{ ...ok({ claim_id: claimId, outcome: 'created' }), count: null }, { data: { claim_id: claimId }, error: { code: 'XX000', message: 'secret' }, status: 500, statusText: '' }]) {
       const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => envelope)) })
       const result = await repo.createClaim(createInput)
-      expect(result.ok).toBe(expected)
-      if (!expected) expect(result).toMatchObject({ error: { code: 'invalid_response' } })
+      expect(result).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
     }
+  })
+
+  it.each([
+    { ...ok({ claim_id: claimId, outcome: 'created' }), extra: 'private' },
+    { data: null, error: { code: 'XX000', message: 'private', details: null, hint: null, reviewer_id: actor }, status: 500, statusText: 'Error' },
+    { data: null, error: { code: 'XX000', message: 'private', details: { nested: true }, hint: null }, status: 500, statusText: 'Error' },
+  ])('rejects outer and nested transport leak keys', async envelope => {
+    const result = await createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => envelope)) }).createClaim(createInput)
+    expect(result).toEqual({ ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } })
+    expect(JSON.stringify(result)).not.toContain('private')
+  })
+
+  it.each([
+    '2026-01-01T00:30:00.000Z', // UTC-12 is still on the preceding local day.
+    '2026-01-01T23:30:00.000Z', // UTC+14 is already on the following local day.
+  ])('uses injected UTC instant %s independently of an extreme local date', async instant => {
+    const rpc = vi.fn(async () => ok({ claim_id: claimId, outcome: 'created' }))
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc), now: () => new Date(instant) })
+    await expect(repo.createClaim({ ...createInput, observedOn: '2026-01-01' })).resolves.toMatchObject({ ok: true })
+    await expect(repo.createClaim({ ...createInput, observedOn: '2026-01-02' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
   })
 
   it('sends exact create args and decodes the exact outcome', async () => {
@@ -209,7 +228,7 @@ describe('benefit claim repository', () => {
   })
 
   it('maps backend errors without leaking raw details', async () => {
-    const rpc = vi.fn(async () => ({ data: null, error: { code: 'XX000', message: 'secret SQL https://project.supabase.co/rest/v1/rpc/create_benefit_claim_v1' }, status: 500, statusText: 'secret' }))
+    const rpc = vi.fn(async () => ({ data: null, error: { code: 'XX000', message: 'secret SQL https://project.supabase.co/rest/v1/rpc/create_benefit_claim_v1', details: null, hint: null }, status: 500, statusText: 'secret' }))
     const result = await createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) }).createClaim(createInput)
     expect(result).toMatchObject({ ok: false, error: { code: 'unavailable' } }); expect(JSON.stringify(result)).not.toMatch(/secret|SQL|supabase|rpc/i)
   })

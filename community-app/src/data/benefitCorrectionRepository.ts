@@ -59,6 +59,20 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   const actual = Object.keys(value).sort(); const wanted = [...expected].sort()
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index])
 }
+function boundedTransportScalar(value: unknown, max: number) {
+  return value === null || (typeof value === 'string' && new TextEncoder().encode(value).length <= max)
+}
+function validPostgrestError(value: unknown, withStatus: boolean): value is Record<string, unknown> {
+  if (!isRecord(value) || !hasExactKeys(value, withStatus ? ['code','message','details','hint','status'] : ['code','message','details','hint'])) return false
+  return typeof value.code === 'string' && value.code.length > 0 && new TextEncoder().encode(value.code).length <= 100
+    && typeof value.message === 'string' && value.message.length > 0 && new TextEncoder().encode(value.message).length <= 4000
+    && boundedTransportScalar(value.details,4000) && boundedTransportScalar(value.hint,4000)
+    && (!withStatus || (Number.isInteger(value.status) && (value.status as number) >= 400 && (value.status as number) <= 599))
+}
+function validCorrectionEnvelope(value: unknown): value is BenefitCorrectionRpcResponse {
+  return isRecord(value) && hasExactKeys(value,['data','error'])
+    && (value.error === null || (value.data === null && validPostgrestError(value.error,true)))
+}
 function isLeapYear(year: number) { return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) }
 function daysInMonth(year: number, month: number) { return month === 2 ? (isLeapYear(year) ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31 }
 export function isBenefitCorrectionTimestamp(value: unknown): value is string {
@@ -293,7 +307,9 @@ export function createBenefitCorrectionSessionProvider(
         const payload: unknown = await response.json()
         return response.ok
           ? { data: payload, error: null }
-          : { data: null, error: isRecord(payload) ? { ...payload, status: response.status } : { status: response.status } }
+          : { data: null, error: validPostgrestError(payload, false) ? {
+            code: payload.code, message: payload.message, details: payload.details, hint: payload.hint, status: response.status,
+          } : payload }
       },
     }
   }
@@ -363,6 +379,7 @@ export function createBenefitCorrectionRepository(options: { getSessionContext: 
     const after = await captureSession(signal)
     if (!after.ok) return after
     if (!sameSession(initial.data, after.data)) return stale('로그인 세션이 변경되어 이전 응답을 폐기했습니다.')
+    if (!validCorrectionEnvelope(response)) return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } }
     if (response.error) return mapRpcError(response.error)
     try { return { ok: true, data: decode(response.data) } }
     catch { return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } } }

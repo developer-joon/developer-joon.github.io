@@ -140,14 +140,25 @@ describe('benefit submission repository', () => {
   })
 
   it.each([
-    [{ status: 401, code: 'PGRST303', message: 'jwt expired' }, 'auth_required'],
-    [{ status: 429, code: 'PGRST429', message: 'limit' }, 'rate_limited'],
-    [{ status: 400, code: '22023', message: 'client key reused with different payload' }, 'idempotency_mismatch'],
-    [{ status: 409, code: '40001', message: 'conflict' }, 'conflict'],
-  ])('maps transport errors without exposing server detail', async (error, code) => {
-    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(vi.fn().mockResolvedValue({ data: null, error, status: error.status, statusText: 'Error' })) })
+    [401, { code: 'PGRST303', message: 'jwt expired', details: null, hint: null }, 'auth_required'],
+    [429, { code: 'PGRST429', message: 'limit', details: null, hint: null }, 'rate_limited'],
+    [400, { code: '22023', message: 'client key reused with different payload', details: null, hint: null }, 'idempotency_mismatch'],
+    [409, { code: '40001', message: 'conflict', details: null, hint: null }, 'conflict'],
+  ])('maps transport errors without exposing server detail', async (status, error, code) => {
+    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(vi.fn().mockResolvedValue({ data: null, error, status, statusText: 'Error' })) })
     const result = await repository.createSubmission(input)
     expect(result).toMatchObject({ ok: false, error: { code } })
     if (!result.ok) expect(result.error.message).not.toContain(error.message)
+  })
+
+  it.each([
+    { data: wire, error: null, status: 200, statusText: 'OK', extra: 'private' },
+    { data: null, error: { code: 'XX000', message: 'private', details: null, hint: null, reviewer_id: actor }, status: 500, statusText: 'Error' },
+    { data: null, error: { code: 'XX000', message: 'private', details: { nested: true }, hint: null }, status: 500, statusText: 'Error' },
+  ])('rejects outer and nested transport leak keys', async envelope => {
+    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(vi.fn().mockResolvedValue(envelope)) })
+    const result = await repository.createSubmission(input)
+    expect(result).toEqual({ ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } })
+    expect(JSON.stringify(result)).not.toContain('private')
   })
 })

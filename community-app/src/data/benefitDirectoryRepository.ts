@@ -20,6 +20,10 @@ import {
   type BenefitDirectorySearchItem,
   type Result,
 } from '../types/benefitDirectory'
+import type { Database } from '../types/database'
+
+type SearchRpcArgs = Database['public']['Functions']['search_benefit_companies_v1']['Args']
+type DetailRpcArgs = Database['public']['Functions']['get_benefit_company_v2']['Args']
 
 export interface BenefitDirectoryRepository {
   search(input: BenefitDirectorySearchInput, signal?: AbortSignal): Promise<Result<BenefitDirectoryPage>>
@@ -27,7 +31,7 @@ export interface BenefitDirectoryRepository {
 }
 
 const searchPageKeys = ['items', 'has_more', 'next_cursor', 'total'] as const
-const searchItemKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary', 'benefit_count', 'official_count', 'community_count', 'categories'] as const
+const searchItemKeys = ['company_id', 'sort_key', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary', 'benefit_count', 'official_count', 'community_count', 'categories'] as const
 const detailKeys = ['company', 'publications', 'claims'] as const
 const companyKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary'] as const
 const publicationKeys = ['publication_id', 'category_id', 'title', 'description', 'eligibility_text', 'condition_text', 'trust_label', 'revision'] as const
@@ -91,10 +95,12 @@ function decodeCompany(value: unknown): BenefitDirectoryCompanySummary {
   }
 }
 
-function decodeSearchItem(value: unknown): BenefitDirectorySearchItem {
+type DecodedSearchItem = BenefitDirectorySearchItem & { sortKey: string }
+function decodeSearchItem(value: unknown): DecodedSearchItem {
   if (!isRecord(value) || !hasExactKeys(value, searchItemKeys)) throw new Error('invalid search item keys')
   const company = decodeCompany(Object.fromEntries(companyKeys.map(key => [key, value[key]])))
-  if (!nonnegativeInteger(value.benefit_count) || !nonnegativeInteger(value.official_count)
+  if (typeof value.sort_key !== 'string' || !/^(?:[0-9a-f]{2}){1,800}$/.test(value.sort_key)
+    || !nonnegativeInteger(value.benefit_count) || !nonnegativeInteger(value.official_count)
     || !nonnegativeInteger(value.community_count) || !Array.isArray(value.categories)
     || value.categories.length > BENEFIT_DIRECTORY_CATEGORIES.length || !isDenseArray(value.categories)
     || value.categories.some(category => !isCategory(category))) throw new Error('invalid search aggregates')
@@ -107,7 +113,7 @@ function decodeSearchItem(value: unknown): BenefitDirectorySearchItem {
     || categories.length > value.benefit_count) throw new Error('inconsistent search aggregates')
   return {
     ...company, benefitCount: value.benefit_count, officialCount: value.official_count,
-    communityCount: value.community_count, categories,
+    communityCount: value.community_count, categories, sortKey: value.sort_key,
   }
 }
 
@@ -121,12 +127,14 @@ function decodePage(value: unknown, input: BenefitDirectorySearchInput): Benefit
     || typeof value.has_more !== 'boolean' || !nonnegativeInteger(value.total)) throw new Error('invalid search page')
   if ((value.has_more && (!validOpaqueCursor(value.next_cursor) || value.items.length !== input.pageSize))
     || (!value.has_more && value.next_cursor !== null)) throw new Error('invalid search cursor state')
-  const items = value.items.map(decodeSearchItem)
-  if (new Set(items.map(item => item.companyId)).size !== items.length || value.total < items.length
-    || (value.has_more && value.total <= items.length)
-    || ((input.cursor === null || input.cursor === undefined) && !value.has_more && value.total !== items.length)) {
+  const decodedItems = value.items.map(decodeSearchItem)
+  if (new Set(decodedItems.map(item => item.companyId)).size !== decodedItems.length || value.total < decodedItems.length
+    || !orderedTuples(decodedItems)
+    || (value.has_more && value.total <= decodedItems.length)
+    || ((input.cursor === null || input.cursor === undefined) && !value.has_more && value.total !== decodedItems.length)) {
     throw new Error('inconsistent search page')
   }
+  const items = decodedItems.map(({sortKey,...item})=>{void sortKey;return item})
   return { items, hasMore: value.has_more, nextCursor: value.next_cursor as string | null, total: value.total }
 }
 
@@ -187,7 +195,8 @@ function decodeDetail(value: unknown, requestedCompanyId: string): BenefitCompan
   const claims = value.claims.map(decodePublicClaim)
   if (company.companyId !== requestedCompanyId
     || new Set(publications.map(publication => publication.publicationId.toLowerCase())).size !== publications.length
-    || new Set(claims.map(claim => claim.claimId)).size !== claims.length) {
+    || new Set(claims.map(claim => claim.claimId)).size !== claims.length
+    || !orderedDetail(publications,item=>item.publicationId) || !orderedDetail(claims,item=>item.claimId)) {
     throw new Error('inconsistent detail projection')
   }
   return { company, publications, claims }
@@ -213,9 +222,6 @@ function responseStatus(status: unknown) {
     ? status as number
     : undefined
 }
-function hasOwn(value: Record<string, unknown>, key: string) {
-  return Object.prototype.hasOwnProperty.call(value, key)
-}
 function validStatusText(value: unknown): value is string {
   return typeof value === 'string' && byteLength(value) <= 800
     && !Array.from(value).some(character => {
@@ -231,11 +237,16 @@ function validTransportError(value: unknown): value is Record<string, unknown> {
   } catch {
     return false
   }
-  return typeof value.code === 'string' && byteLength(value.code) <= 100
-    && typeof value.message === 'string' && byteLength(value.message) <= 4000
-    && (value.details === undefined || value.details === null || (typeof value.details === 'string' && byteLength(value.details) <= 4000))
-    && (value.hint === undefined || value.hint === null || (typeof value.hint === 'string' && byteLength(value.hint) <= 4000))
+  return hasExactKeys(value,['code','message','details','hint'])
+    && typeof value.code === 'string' && value.code.length>=1 && byteLength(value.code) <= 100
+    && typeof value.message === 'string' && value.message.length>=1 && byteLength(value.message) <= 4000
+    && (value.details === null || (typeof value.details === 'string' && byteLength(value.details) <= 4000))
+    && (value.hint === null || (typeof value.hint === 'string' && byteLength(value.hint) <= 4000))
 }
+
+function compareUtf8(left:string,right:string){const a=new TextEncoder().encode(left),b=new TextEncoder().encode(right),limit=Math.min(a.length,b.length);for(let i=0;i<limit;i+=1){if(a[i]!==b[i])return a[i]-b[i]}return a.length-b.length}
+function orderedTuples(items:readonly {companyId:string;sortKey:string}[]){return items.every((item,index)=>index===0||compareUtf8(items[index-1].sortKey,item.sortKey)<0||(items[index-1].sortKey===item.sortKey&&compareUtf8(items[index-1].companyId,item.companyId)<0))}
+function orderedDetail<T extends {categoryId:string;title:string}>(items:readonly T[],id:(item:T)=>string){return items.every((item,index)=>index===0||compareUtf8(items[index-1].categoryId,item.categoryId)<0||(items[index-1].categoryId===item.categoryId&&(compareUtf8(items[index-1].title,item.title)<0||(items[index-1].title===item.title&&compareUtf8(id(items[index-1]),id(item))<0))))}
 function mapTransportError<T>(
   transport: { error: unknown; status?: unknown; statusText?: unknown },
   operation?: 'search_benefit_companies_v1' | 'get_benefit_company_v2',
@@ -293,12 +304,14 @@ export function createBenefitDirectoryRepository(): BenefitDirectoryRepository {
     if (!clientResult.ok) return failure('configuration', '서비스 설정을 확인할 수 없습니다.')
     const client = clientResult.client
     try {
-      const request = client.rpc(name, args as never)
+      const request = name === 'search_benefit_companies_v1'
+        ? client.rpc(name, args as SearchRpcArgs)
+        : client.rpc(name, args as DetailRpcArgs)
       const response = signal ? await request.abortSignal(signal) : await request
       if (signal?.aborted) return aborted()
       if (!isRecord(response)
-        || !['data', 'error', 'status', 'statusText'].every(key => hasOwn(response, key))
-        || (hasOwn(response, 'count') && response.count !== null && !nonnegativeInteger(response.count))
+        || !hasExactKeys(response,['data','error','count','status','statusText'])
+        || response.count !== null
         || responseStatus(response.status) === undefined || !validStatusText(response.statusText)) {
         return failure('invalid_response', '서버 응답을 확인할 수 없습니다.')
       }

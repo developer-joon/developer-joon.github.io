@@ -2145,14 +2145,14 @@ export type Database = {
       };
       search_benefit_companies_v1: {
         Args: {
-          p_categories?: string[];
-          p_cursor?: string;
+          p_categories?: ("leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion")[] | null;
+          p_cursor?: string | null;
           p_has_benefits_only?: boolean;
-          p_industry?: string;
+          p_industry?: string | null;
           p_page_size?: number;
-          p_query?: string;
-          p_region?: string;
-          p_size?: string;
+          p_query?: string | null;
+          p_region?: string | null;
+          p_size?: "large" | "medium" | "small" | "large_affiliate" | "unclassified" | null;
         };
         Returns: Json;
       };

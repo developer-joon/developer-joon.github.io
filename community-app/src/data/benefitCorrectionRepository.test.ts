@@ -329,22 +329,28 @@ describe('benefit correction repository RPC contract', () => {
   })
 
   it.each([
-    [{ code: 'PGRST', message: '{"code":"rate_limit_exceeded","message":"Too many requests","details":null,"hint":null}', details: null, hint: null }, 'rate_limited', 'rate_limit_exceeded'],
-    [{ code: 'PGRST204', message: 'Too many requests', status: 429 }, 'rate_limited', 'PGRST204'],
-    [{ code: 'FETCH_ERROR', message: 'Failed to fetch' }, 'network', 'NETWORK_ERROR'],
-    [{ message: 'NetworkError when attempting to fetch resource.' }, 'network', 'NETWORK_ERROR'],
+    [{ code: 'PGRST', message: '{"code":"rate_limit_exceeded","message":"Too many requests","details":null,"hint":null}', details: null, hint: null, status: 429 }, 'rate_limited', 'rate_limit_exceeded'],
+    [{ code: 'PGRST204', message: 'Too many requests', details: null, hint: null, status: 429 }, 'rate_limited', 'PGRST204'],
   ] as const)('maps realistic Supabase error envelope %#', async (error, code, sourceCode) => {
     const value = setup({ data: null, error })
     await expect(value.repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code, sourceCode } })
   })
 
   it.each([
-    { code: 'PGRST', message: '{not-json' },
-    { code: 'PGRST', message: '{"code":42}' },
-    { code: 'PGRST', message: '{"message":"rate_limit_exceeded"}' },
-  ])('fails malformed PostgREST envelopes closed as unknown: %#', async error => {
-    const value = setup({ data: null, error })
-    await expect(value.repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'unknown', sourceCode: 'PGRST' } })
+    { data: ownerItem, error: null, extra: 'private' },
+    { data: null, error: { code: 'PGRST', message: '{not-json', details: null, hint: null, status: 400, reviewer_id: accountAId } },
+    { data: null, error: { code: 'PGRST', message: 'private', details: { sql: 'secret' }, hint: null, status: 500 } },
+  ])('fails extra outer and nested transport keys closed: %#', async envelope => {
+    const value = setup(envelope)
+    const result = await value.repository.listMyRequests({ limit: 25 })
+    expect(result).toEqual({ ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } })
+    expect(JSON.stringify(result)).not.toMatch(/private|secret/)
+  })
+
+  it('maps thrown network failures rather than accepting network-shaped server errors', async () => {
+    const rpc = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    const repository = createBenefitCorrectionRepository({ getSessionContext: () => ({ actorId: accountAId, sessionFingerprint: 'session-a-1', rpc }) })
+    await expect(repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR' } })
   })
 
   it('validates inputs before RPC and never accepts client actor or review identity fields', async () => {

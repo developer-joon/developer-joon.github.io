@@ -58,9 +58,24 @@ type CompanyStatusExact = Expect<Equal<Database['public']['Tables']['benefit_com
 type CompanyQueueStatusExact = Expect<Equal<Database['public']['Functions']['list_benefit_company_request_queue_v1']['Args']['p_status'], 'pending_review' | 'approved' | 'rejected' | 'merged' | 'all' | undefined>>
 type CompanyReviewActionExact = Expect<Equal<Database['public']['Functions']['review_benefit_company_request_v1']['Args']['p_action'], 'approve' | 'reject' | 'merge'>>
 type CompanyDestinationExact = Expect<Equal<Database['public']['Functions']['review_benefit_company_request_v1']['Args']['p_destination_company_id'], string | null | undefined>>
+type SearchBenefitCompaniesArgs = Database['public']['Functions']['search_benefit_companies_v1']['Args']
+type SearchBenefitCompaniesArgsExact = Expect<Equal<SearchBenefitCompaniesArgs, {
+  p_categories?: ('leave' | 'family' | 'health' | 'growth' | 'housing' | 'commute' | 'remote' | 'retirement' | 'meals' | 'inclusion')[] | null
+  p_cursor?: string | null
+  p_has_benefits_only?: boolean
+  p_industry?: string | null
+  p_page_size?: number
+  p_query?: string | null
+  p_region?: string | null
+  p_size?: 'large' | 'medium' | 'small' | 'large_affiliate' | 'unclassified' | null
+}>>
+type SearchBenefitCompaniesExplicitNulls = Expect<Equal<{
+  [Key in keyof SearchBenefitCompaniesArgs]-?: null extends SearchBenefitCompaniesArgs[Key] ? Key : never
+}[keyof SearchBenefitCompaniesArgs], 'p_categories' | 'p_cursor' | 'p_industry' | 'p_query' | 'p_region' | 'p_size'>>
 
 export type ProfileTypeAssertions = [
   CompanyStatusExact, CompanyQueueStatusExact, CompanyReviewActionExact, CompanyDestinationExact,
+  SearchBenefitCompaniesArgsExact, SearchBenefitCompaniesExplicitNulls,
   ProfileRowHasNullableGithubId,
   ProfileInsertMayOmitOrNullGithubId,
   ProfileUpdateMayNullGithubId,

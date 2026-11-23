@@ -160,10 +160,23 @@ describe('admin benefit submission repository', () => {
     const value=setup(reviewing)
     await expect(value.repository.review({submissionId:id,expectedStatus:'submitted',action:'approve',adminResponse:'승인',clientKey:'40000000-0000-4000-8000-000000000001',publicTitle:'제목',publicDescription:'설명',publicEligibility:null,publicCondition:null,existingPublicationId:null} as never)).resolves.toMatchObject({ok:false,error:{code:'invalid_argument'}})
     expect(value.rpc).not.toHaveBeenCalled()
-    const conflict=setup(null); conflict.rpc.mockResolvedValue({data:null,error:{code:'40001',message:'state changed'},status:409,statusText:'Conflict'})
+    const conflict=setup(null); conflict.rpc.mockResolvedValue({data:null,error:{code:'40001',message:'state changed',details:null,hint:null},status:409,statusText:'Conflict'})
     await expect(conflict.repository.review({submissionId:id,expectedStatus:'submitted',action:'start_review',adminResponse:'검토',clientKey:'40000000-0000-4000-8000-000000000001'})).resolves.toMatchObject({ok:false,error:{code:'conflict'}})
-    const mismatch=setup(null); mismatch.rpc.mockResolvedValue({data:null,error:{code:'22023',message:'client key reused with different payload'},status:400,statusText:'Bad Request'})
+    const mismatch=setup(null); mismatch.rpc.mockResolvedValue({data:null,error:{code:'22023',message:'client key reused with different payload',details:null,hint:null},status:400,statusText:'Bad Request'})
     await expect(mismatch.repository.review({submissionId:id,expectedStatus:'submitted',action:'start_review',adminResponse:'검토',clientKey:'40000000-0000-4000-8000-000000000001'})).resolves.toMatchObject({ok:false,error:{code:'idempotency_mismatch'}})
+  })
+
+  it.each([
+    {data:submitted,error:null,status:200,statusText:'OK',extra:'private'},
+    {data:null,error:{code:'XX000',message:'private',details:null,hint:null,reviewer_id:actor},status:500,statusText:'Error'},
+    {data:null,error:{code:'XX000',message:'private',details:{sql:'secret'},hint:null},status:500,statusText:'Error'},
+  ])('rejects outer and nested admin transport leak keys', async envelope => {
+    const value=setup(null)
+    value.rpc.mockResolvedValue(envelope)
+    const result=await value.repository.listQueue({status:'all',limit:10})
+    expect(result).toEqual({ok:false,error:{code:'invalid_response',message:'서버 응답을 확인할 수 없습니다.'}})
+    expect(JSON.stringify(result)).not.toContain('private')
+    expect(JSON.stringify(result)).not.toContain('secret')
   })
 
   it('rejects A-B-A preflight and aborts without RPC', async () => {
