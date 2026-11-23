@@ -157,7 +157,7 @@ update company_add_race_fixture set second_pid=(select pid from extensions.dblin
 select extensions.dblink_send_query('ca_two',format($q$select pg_temp.try_create(%L,'Killed Co')$q$,kill_key)) from company_add_race_fixture;
 select ok((select pg_temp.wait_for_lock(second_pid) from company_add_race_fixture),'mutation waits behind feature-setting update');
 select extensions.dblink_exec('ca_one','commit');
-create temporary table kill_result(value text); insert into kill_result select * from extensions.dblink_get_result('ca_two') r(value text); select count(*) from extensions.dblink_get_result('ca_two') r(value text); select extensions.dblink_exec('ca_two','rollback');
+create temporary table kill_result(value text); insert into kill_result select * from extensions.dblink_get_result('ca_two') r(value text); select count(*) from extensions.dblink_get_result('ca_two') r(value text); select extensions.dblink_exec('ca_two','commit');
 select is((select value from kill_result),'55000','waiting mutation fails closed with exact switch-off SQLSTATE');
 select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select request_id from public.benefit_company_add_requests where proposed_name='Killed Co'$$) r(request_id uuid)),0,'no write occurs after switch-off commit');
 select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select e.event_id from public.benefit_company_add_events e join public.benefit_company_add_requests r using(request_id) where r.proposed_name='Killed Co'$$) r(event_id uuid)),0,'switch-off loser leaves no request event');
