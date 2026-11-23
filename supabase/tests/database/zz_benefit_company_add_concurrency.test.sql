@@ -44,7 +44,7 @@ select extensions.dblink_connect('ca_one',connection_string),extensions.dblink_c
 select extensions.dblink_exec('ca_two',$fn$
  create or replace function pg_temp.try_review(p_request uuid,p_action text,p_destination text default null)
  returns text language plpgsql as $body$ begin
-  perform public.review_benefit_company_request_v1(p_request,'pending_review',p_action,'race review',p_destination);
+  perform public.review_benefit_company_request_v1(p_request,'pending_review',1,p_action,'race review',p_destination);
   return 'ok'; exception when others then return sqlstate; end $body$;
  grant execute on function pg_temp.try_review(uuid,text,text) to authenticated;
  create or replace function pg_temp.try_finalize(p_request uuid,p_fingerprint text,p_digest text)
@@ -56,7 +56,7 @@ $fn$);
 select extensions.dblink_exec('ca_one',$fn$
  create or replace function pg_temp.try_review(p_request uuid,p_action text,p_destination text default null)
  returns text language plpgsql as $body$ begin
-  perform public.review_benefit_company_request_v1(p_request,'pending_review',p_action,'race review',p_destination);
+  perform public.review_benefit_company_request_v1(p_request,'pending_review',1,p_action,'race review',p_destination);
   return 'ok'; exception when others then return sqlstate; end $body$;
  grant execute on function pg_temp.try_review(uuid,text,text) to authenticated;
  create or replace function pg_temp.try_create(p_key uuid,p_name text)
@@ -70,7 +70,7 @@ $fn$);
 select extensions.dblink_exec('ca_one','begin');
 select extensions.dblink_exec('ca_one','set local role authenticated');
 select extensions.dblink_exec('ca_one',format('set local request.jwt.claim.sub=%L',admin_one_id)) from company_add_race_fixture;
-select * from company_add_race_fixture f cross join lateral extensions.dblink('ca_one',format('select public.review_benefit_company_request_v1(%L,''pending_review'',''approve'',''winner'',null)::text',f.request_id)) r(value text);
+select * from company_add_race_fixture f cross join lateral extensions.dblink('ca_one',format('select public.review_benefit_company_request_v1(%L,''pending_review'',1,''approve'',''winner'',null)::text',f.request_id)) r(value text);
 select extensions.dblink_exec('ca_two','begin');
 select extensions.dblink_exec('ca_two','set local role authenticated');
 select extensions.dblink_exec('ca_two',format('set local request.jwt.claim.sub=%L',admin_two_id)) from company_add_race_fixture;
@@ -83,6 +83,7 @@ insert into approve_loser select * from extensions.dblink_get_result('ca_two') r
 select count(*) from extensions.dblink_get_result('ca_two') r(value text);
 select extensions.dblink_exec('ca_two','commit');
 select is((select value from approve_loser),'40001','two admins approving one request has a 40001 loser');
+select is((select revision from extensions.dblink((select connection_string from company_add_race_fixture),format('select revision from public.benefit_company_add_requests where request_id=%L',(select request_id from company_add_race_fixture))) r(revision bigint)),2::bigint,'two-admin race leaves the exact current revision');
 select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),format('select company_id from public.benefit_companies where company_id=(select resolved_company_id from public.benefit_company_add_requests where request_id=%L)',(select request_id from company_add_race_fixture))) r(company_id text)),1,'two-admin approval creates one company');
 
 -- 2: approve versus merge has one terminal winner and a 40001 loser.
@@ -90,7 +91,7 @@ update company_add_race_fixture set destination=(select company_id from extensio
 select extensions.dblink_exec('ca_one','begin');
 select extensions.dblink_exec('ca_one','set local role authenticated');
 select extensions.dblink_exec('ca_one',format('set local request.jwt.claim.sub=%L',admin_one_id)) from company_add_race_fixture;
-select * from company_add_race_fixture f cross join lateral extensions.dblink('ca_one',format('select public.review_benefit_company_request_v1(%L,''pending_review'',''approve'',''winner'',null)::text',f.merge_request_id)) r(value text);
+select * from company_add_race_fixture f cross join lateral extensions.dblink('ca_one',format('select public.review_benefit_company_request_v1(%L,''pending_review'',1,''approve'',''winner'',null)::text',f.merge_request_id)) r(value text);
 select extensions.dblink_exec('ca_two','begin');
 select extensions.dblink_exec('ca_two','set local role authenticated');
 select extensions.dblink_exec('ca_two',format('set local request.jwt.claim.sub=%L',admin_two_id)) from company_add_race_fixture;
@@ -103,6 +104,7 @@ insert into merge_loser select * from extensions.dblink_get_result('ca_two') r(v
 select count(*) from extensions.dblink_get_result('ca_two') r(value text);
 select extensions.dblink_exec('ca_two','commit');
 select is((select value from merge_loser),'40001','approve versus merge has a 40001 loser');
+select is((select revision from extensions.dblink((select connection_string from company_add_race_fixture),format('select revision from public.benefit_company_add_requests where request_id=%L',(select merge_request_id from company_add_race_fixture))) r(revision bigint)),2::bigint,'approve-versus-merge race increments revision once');
 
 -- 3: two NTS finalizers with one strong digest converge on one canonical company.
 select extensions.dblink_exec('ca_setup',format($q$
@@ -119,8 +121,13 @@ select extensions.dblink_send_query('ca_two',format('select pg_temp.try_finalize
 select ok((select pg_temp.wait_for_lock(second_pid) from company_add_race_fixture),'same-digest NTS finalizer waits on strong identifier boundary');
 select extensions.dblink_exec('ca_one','commit');
 create temporary table nts_second(value text); insert into nts_second select * from extensions.dblink_get_result('ca_two') r(value text); select count(*) from extensions.dblink_get_result('ca_two') r(value text); select extensions.dblink_exec('ca_two','commit');
+select is((select value from nts_second),'ok','same-digest second finalizer completes successfully');
 select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),format('select company_id from public.benefit_company_identifiers where identifier_type=''business_number_hmac_v1'' and identifier_digest_or_value=%L',(select digest from company_add_race_fixture))) r(company_id text)),1,'same digest has one identifier and canonical company');
 select is((select count(distinct company_id)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select resolved_company_id company_id from public.benefit_company_add_requests where proposed_name like 'NTS Race %'$$) r(company_id text)),1,'duplicate digest requests resolve to one company');
+select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select request_id from public.benefit_company_add_requests where proposed_name like 'NTS Race %' and verification_status='matched' and revision=2$$) r(request_id uuid)),2,'both same-digest requests are matched at exact revision two');
+select is((select array_agg(status order by status) from extensions.dblink((select connection_string from company_add_race_fixture),$$select status from public.benefit_company_add_requests where proposed_name like 'NTS Race %'$$) r(status text)),array['approved','merged']::text[],'same-digest requests end as exactly one approved and one merged');
+select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select e.event_id from public.benefit_company_add_events e join public.benefit_company_add_requests r using(request_id) where r.proposed_name like 'NTS Race %' and ((r.status='approved' and e.action='approved') or (r.status='merged' and e.action='merged'))$$) r(event_id uuid)),2,'each same-digest request has one matching safe terminal event');
+select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select r.request_id from public.benefit_company_add_requests r where r.proposed_name like 'NTS Race %' and (r.status='pending_review' or r.verification_status='pending' or r.resolved_company_id is null or (select count(*) from public.benefit_company_add_events e where e.request_id=r.request_id and e.action in ('approved','merged'))<>1)$$) r(request_id uuid)),0,'same-digest race leaves no pending or terminal-event orphan');
 
 -- 4/5: same actor/key same payload converges; changed payload rejects without a second mutation.
 select extensions.dblink_exec('ca_one','begin'); select extensions.dblink_exec('ca_one','set local role authenticated'); select extensions.dblink_exec('ca_one',format('set local request.jwt.claim.sub=%L',requester_id)) from company_add_race_fixture;
@@ -159,7 +166,7 @@ select extensions.dblink_exec('ca_one',$fn$create function pg_temp.fail_company_
 select extensions.dblink_exec('ca_one','begin'); select extensions.dblink_exec('ca_one','set local role authenticated'); select extensions.dblink_exec('ca_one',format('set local request.jwt.claim.sub=%L',admin_one_id)) from company_add_race_fixture;
 create temporary table rollback_result(value text); insert into rollback_result select value from rollback_request_id i cross join lateral extensions.dblink('ca_one',format('select pg_temp.try_review(%L,''approve'',null)',i.request_id)) r(value text); select extensions.dblink_exec('ca_one','rollback');
 select is((select value from rollback_result),'P0001','injected late event failure is surfaced');
-select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select request_id from public.benefit_company_add_requests where proposed_name='Rollback Co' and status='pending_review' and resolved_company_id is null$$) r(request_id uuid)),1,'late failure rolls back earlier company and request writes');
+select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select request_id from public.benefit_company_add_requests where proposed_name='Rollback Co' and status='pending_review' and revision=1 and resolved_company_id is null$$) r(request_id uuid)),1,'late failure rolls back company, request, and revision writes');
 select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select company_id from public.benefit_companies where display_name='Rollback Co'$$) r(company_id text)),0,'late failure leaves no orphan company');
 
 -- 8: explicit cleanup, zero exact fixture residue, and all dblink handles close.

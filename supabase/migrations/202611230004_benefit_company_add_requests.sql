@@ -37,6 +37,7 @@ create table public.benefit_company_add_requests (
   business_number_digest text,
   external_verified_at timestamptz,
   status text not null default 'pending_review',
+  revision bigint not null default 1,
   resolved_company_id text references public.benefit_companies(company_id) on delete restrict,
   reviewer_id uuid references public.profiles(id) on delete restrict,
   processed_at timestamptz,
@@ -53,6 +54,7 @@ create table public.benefit_company_add_requests (
   constraint benefit_company_add_requests_verification_check check (verification_status in ('pending','matched','mismatched','unavailable','rejected')),
   constraint benefit_company_add_requests_digest_check check (business_number_digest is null or business_number_digest ~ '^[0-9a-f]{64}$'),
   constraint benefit_company_add_requests_status_check check (status in ('pending_review','approved','rejected','merged')),
+  constraint benefit_company_add_requests_revision_check check (revision>0),
   constraint benefit_company_add_requests_state_check check (
     (status='pending_review' and verification_status='pending' and business_number_digest is null and external_verified_at is null and resolved_company_id is null and reviewer_id is null and processed_at is null)
     or (status='approved' and verification_status='matched' and resolved_company_id is not null and processed_at is not null
@@ -175,7 +177,7 @@ $$;
 
 create function private.benefit_company_request_owner_item(p_request_id uuid)
 returns jsonb language sql stable security definer set search_path='' as $$
- select pg_catalog.jsonb_build_object('request_id',r.request_id,'proposed_name',r.proposed_name,'region',r.region,'industry',r.industry,'website',r.website,'verification_status',r.verification_status,'status',r.status,'resolved_company_id',r.resolved_company_id,'created_at',r.created_at,'updated_at',r.updated_at)
+ select pg_catalog.jsonb_build_object('request_id',r.request_id,'proposed_name',r.proposed_name,'region',r.region,'industry',r.industry,'website',r.website,'verification_status',r.verification_status,'status',r.status,'revision',r.revision,'resolved_company_id',r.resolved_company_id,'created_at',r.created_at,'updated_at',r.updated_at)
  from public.benefit_company_add_requests r where r.request_id=p_request_id
 $$;
 
@@ -195,6 +197,11 @@ begin
   end if;
   if old.status<>'pending_review' and new is distinct from old then raise exception 'terminal benefit company request is immutable' using errcode='23514'; end if;
   if new.status is distinct from old.status and not (old.status='pending_review' and new.status in ('approved','rejected','merged')) then raise exception 'illegal benefit company request transition' using errcode='23514'; end if;
+  if new.status is distinct from old.status then
+    if new.revision<>old.revision+1 then raise exception 'benefit company request revision must increment once' using errcode='23514'; end if;
+  elsif new.revision is distinct from old.revision then
+    raise exception 'benefit company request revision changes only on transition' using errcode='23514';
+  end if;
   return new;
 end $$;
 create trigger benefit_company_add_requests_enforce_update before update on public.benefit_company_add_requests for each row execute function private.enforce_benefit_company_add_request_update();
@@ -268,18 +275,19 @@ end$$;
 create function private.new_opaque_benefit_company_id()
 returns text language sql volatile set search_path='' as $$select 'KR-CAN-'||pg_catalog.encode(extensions.gen_random_bytes(16),'hex')$$;
 
-create function public.review_benefit_company_request_v1(p_request_id uuid,p_expected_status text,p_action text,p_reason text,p_destination_company_id text default null)
+create function public.review_benefit_company_request_v1(p_request_id uuid,p_expected_status text,p_expected_revision bigint,p_action text,p_reason text,p_destination_company_id text default null)
 returns jsonb language plpgsql volatile security definer set search_path='' as $$
 declare v_actor uuid; v_request public.benefit_company_add_requests%rowtype; v_reason text; v_company text; v_now timestamptz; v_action text;
 begin
  perform private.require_read_committed(); perform private.require_benefit_features(array['company_add_write_enabled']); v_actor:=private.require_admin();
  if p_request_id is null then raise exception 'request id is required' using errcode='22023'; end if;
  if p_expected_status is null or p_expected_status<>'pending_review' then raise exception 'invalid expected company request status' using errcode='22023'; end if;
+ if p_expected_revision is null or p_expected_revision<1 then raise exception 'invalid expected company request revision' using errcode='22023'; end if;
  if p_action is null or p_action not in ('approve','reject','merge') then raise exception 'company request review action not allowed' using errcode='22023'; end if;
  v_reason:=private.benefit_company_add_text(p_reason,'review reason',1000,false);
  select * into v_request from public.benefit_company_add_requests where request_id=p_request_id for update;
  if not found then raise exception 'benefit company request not found' using errcode='22023'; end if;
- if v_request.status is distinct from p_expected_status then raise exception 'benefit company request state changed' using errcode='40001'; end if;
+ if v_request.status is distinct from p_expected_status or v_request.revision is distinct from p_expected_revision then raise exception 'benefit company request state changed' using errcode='40001'; end if;
  if v_request.verification_method<>'manual' then raise exception 'NTS requests require service finalization' using errcode='42501'; end if;
  perform private.consume_rate_limit(v_actor,'benefit_company_add.review',p_request_id::text||':'||p_action);
  v_now:=pg_catalog.clock_timestamp();
@@ -295,7 +303,7 @@ begin
  else
    if p_destination_company_id is not null then raise exception 'rejection destination must be null' using errcode='22023'; end if; v_action:='rejected';
  end if;
- update public.benefit_company_add_requests set verification_status=case when p_action='reject' then 'rejected' else 'matched' end,status=v_action,resolved_company_id=v_company,reviewer_id=v_actor,processed_at=v_now,updated_at=v_now where request_id=p_request_id;
+ update public.benefit_company_add_requests set verification_status=case when p_action='reject' then 'rejected' else 'matched' end,status=v_action,revision=revision+1,resolved_company_id=v_company,reviewer_id=v_actor,processed_at=v_now,updated_at=v_now where request_id=p_request_id;
  insert into public.benefit_company_add_events(request_id,actor_kind,actor_id,action,from_status,to_status,resolved_company_id,verification_category,metadata)
  values(p_request_id,'admin',v_actor,v_action,'pending_review',v_action,v_company,case when p_action='reject' then 'rejected' end,pg_catalog.jsonb_build_object('reason',v_reason));
  return private.benefit_company_request_admin_item(p_request_id);
@@ -336,24 +344,26 @@ begin
    insert into public.benefit_company_identifiers(company_id,identifier_type,identifier_digest_or_value,source_edition,verified_at)
    values(v_company,'business_number_hmac_v1',p_business_number_digest,'nts-verification-v1',p_external_verified_at);
  end if;
- update public.benefit_company_add_requests set verification_status='matched',business_number_digest=p_business_number_digest,external_verified_at=p_external_verified_at,status=v_status,resolved_company_id=v_company,processed_at=v_now,updated_at=v_now where request_id=p_request_id;
+ update public.benefit_company_add_requests set verification_status='matched',business_number_digest=p_business_number_digest,external_verified_at=p_external_verified_at,status=v_status,revision=revision+1,resolved_company_id=v_company,processed_at=v_now,updated_at=v_now where request_id=p_request_id;
  insert into public.benefit_company_add_events(request_id,actor_kind,action,from_status,to_status,resolved_company_id,metadata)
  values(p_request_id,'service_role',case when v_status='approved' then 'approved' else 'merged' end,'pending_review',v_status,v_company,'{}');
  return private.benefit_company_request_admin_item(p_request_id);
 end$$;
 
-create function public.fail_benefit_company_nts_request_v1(p_request_id uuid,p_expected_verification_status text,p_failure_category text)
+create function public.fail_benefit_company_nts_request_v1(p_request_id uuid,p_expected_verification_status text,p_payload_fingerprint text,p_failure_category text)
 returns jsonb language plpgsql volatile security definer set search_path='' as $$
 declare v_request public.benefit_company_add_requests%rowtype; v_now timestamptz;
 begin
  perform private.require_read_committed(); perform private.require_service_role(); perform private.require_benefit_features(array['company_add_write_enabled','nts_verification_enabled']);
  if p_request_id is null or p_expected_verification_status is null or p_expected_verification_status<>'pending' then raise exception 'invalid expected NTS state' using errcode='22023'; end if;
+ if p_payload_fingerprint is null or p_payload_fingerprint !~ '^[0-9a-f]{64}$' then raise exception 'invalid safe payload fingerprint' using errcode='22023'; end if;
  if p_failure_category is null or p_failure_category not in ('mismatched','unavailable','rejected') then raise exception 'invalid NTS failure category' using errcode='22023'; end if;
  select * into v_request from public.benefit_company_add_requests where request_id=p_request_id for update;
  if not found then raise exception 'benefit company request not found' using errcode='22023'; end if;
  if v_request.verification_method<>'nts_full' or v_request.status<>'pending_review' or v_request.verification_status is distinct from p_expected_verification_status then raise exception 'benefit company request state changed' using errcode='40001'; end if;
+ if v_request.payload_fingerprint<>p_payload_fingerprint then raise exception 'safe payload fingerprint mismatch' using errcode='22023'; end if;
  v_now:=pg_catalog.clock_timestamp();
- update public.benefit_company_add_requests set verification_status=p_failure_category,status='rejected',processed_at=v_now,updated_at=v_now where request_id=p_request_id;
+ update public.benefit_company_add_requests set verification_status=p_failure_category,status='rejected',revision=revision+1,processed_at=v_now,updated_at=v_now where request_id=p_request_id;
  insert into public.benefit_company_add_events(request_id,actor_kind,action,from_status,to_status,verification_category,metadata) values(p_request_id,'service_role','verification_failed','pending_review','rejected',p_failure_category,'{}');
  return private.benefit_company_request_admin_item(p_request_id);
 end$$;
@@ -374,13 +384,13 @@ alter function public.create_manual_benefit_company_request_v1(uuid,text,text,te
 alter function public.reserve_benefit_company_nts_request_v1(uuid,text,text,text,text) owner to postgres;
 alter function public.list_my_benefit_company_requests_v1(integer,timestamptz,uuid) owner to postgres;
 alter function public.list_benefit_company_request_queue_v1(text,integer,timestamptz,uuid) owner to postgres;
-alter function public.review_benefit_company_request_v1(uuid,text,text,text,text) owner to postgres;
+alter function public.review_benefit_company_request_v1(uuid,text,bigint,text,text,text) owner to postgres;
 alter function public.finalize_benefit_company_nts_request_v1(uuid,text,text,text,timestamptz) owner to postgres;
-alter function public.fail_benefit_company_nts_request_v1(uuid,text,text) owner to postgres;
+alter function public.fail_benefit_company_nts_request_v1(uuid,text,text,text) owner to postgres;
 
 revoke all on function private.require_benefit_features(text[]),private.require_google_user(),private.benefit_company_add_text(text,text,integer,boolean),private.benefit_company_add_website(text),private.benefit_company_add_fingerprint(text,text,text,text,text),private.benefit_company_request_owner_item(uuid),private.benefit_company_request_admin_item(uuid),private.enforce_benefit_company_add_request_update(),private.reject_benefit_company_add_event_change(),private.create_benefit_company_request(text,uuid,text,text,text,text),private.new_opaque_benefit_company_id(),private.require_service_role() from public,anon,authenticated,service_role;
-revoke all on function public.create_manual_benefit_company_request_v1(uuid,text,text,text,text),public.reserve_benefit_company_nts_request_v1(uuid,text,text,text,text),public.list_my_benefit_company_requests_v1(integer,timestamptz,uuid),public.list_benefit_company_request_queue_v1(text,integer,timestamptz,uuid),public.review_benefit_company_request_v1(uuid,text,text,text,text),public.finalize_benefit_company_nts_request_v1(uuid,text,text,text,timestamptz),public.fail_benefit_company_nts_request_v1(uuid,text,text) from public,anon,authenticated,service_role;
-grant execute on function public.create_manual_benefit_company_request_v1(uuid,text,text,text,text),public.reserve_benefit_company_nts_request_v1(uuid,text,text,text,text),public.list_my_benefit_company_requests_v1(integer,timestamptz,uuid),public.list_benefit_company_request_queue_v1(text,integer,timestamptz,uuid),public.review_benefit_company_request_v1(uuid,text,text,text,text) to authenticated;
-grant execute on function public.finalize_benefit_company_nts_request_v1(uuid,text,text,text,timestamptz),public.fail_benefit_company_nts_request_v1(uuid,text,text) to service_role;
+revoke all on function public.create_manual_benefit_company_request_v1(uuid,text,text,text,text),public.reserve_benefit_company_nts_request_v1(uuid,text,text,text,text),public.list_my_benefit_company_requests_v1(integer,timestamptz,uuid),public.list_benefit_company_request_queue_v1(text,integer,timestamptz,uuid),public.review_benefit_company_request_v1(uuid,text,bigint,text,text,text),public.finalize_benefit_company_nts_request_v1(uuid,text,text,text,timestamptz),public.fail_benefit_company_nts_request_v1(uuid,text,text,text) from public,anon,authenticated,service_role;
+grant execute on function public.create_manual_benefit_company_request_v1(uuid,text,text,text,text),public.reserve_benefit_company_nts_request_v1(uuid,text,text,text,text),public.list_my_benefit_company_requests_v1(integer,timestamptz,uuid),public.list_benefit_company_request_queue_v1(text,integer,timestamptz,uuid),public.review_benefit_company_request_v1(uuid,text,bigint,text,text,text) to authenticated;
+grant execute on function public.finalize_benefit_company_nts_request_v1(uuid,text,text,text,timestamptz),public.fail_benefit_company_nts_request_v1(uuid,text,text,text) to service_role;
 
 commit;

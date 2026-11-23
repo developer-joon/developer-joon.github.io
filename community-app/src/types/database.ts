@@ -43,6 +43,7 @@ export type Database = {
           status: string;
           storage_path: string;
         };
+        ComputedFields: never;
         Insert: {
           attached_at?: string | null;
           byte_size: number;
@@ -109,12 +110,12 @@ export type Database = {
           normalized_name: string;
           provenance: NonNullable<Json>;
           region: string | null;
-          search_name: string | null;
           size_class: string | null;
           source_edition: string;
           summary: string | null;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           company_id: string;
           created_at?: string;
@@ -125,7 +126,6 @@ export type Database = {
           normalized_name: string;
           provenance?: NonNullable<Json>;
           region?: string | null;
-          search_name?: never;
           size_class?: string | null;
           source_edition: string;
           summary?: string | null;
@@ -141,7 +141,6 @@ export type Database = {
           normalized_name?: string;
           provenance?: NonNullable<Json>;
           region?: string | null;
-          search_name?: never;
           size_class?: string | null;
           source_edition?: string;
           summary?: string | null;
@@ -163,6 +162,7 @@ export type Database = {
           to_status: string;
           verification_category: string | null;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           actor_id?: string | null;
@@ -228,6 +228,7 @@ export type Database = {
           request_id: string;
           requester_id: string;
           resolved_company_id: string | null;
+          revision: number;
           reviewer_id: string | null;
           status: string;
           updated_at: string;
@@ -235,6 +236,7 @@ export type Database = {
           verification_status: string;
           website: string | null;
         };
+        ComputedFields: never;
         Insert: {
           business_number_digest?: string | null;
           client_key: string;
@@ -249,6 +251,7 @@ export type Database = {
           request_id?: string;
           requester_id: string;
           resolved_company_id?: string | null;
+          revision?: number;
           reviewer_id?: string | null;
           status?: string;
           updated_at?: string;
@@ -270,6 +273,7 @@ export type Database = {
           request_id?: string;
           requester_id?: string;
           resolved_company_id?: string | null;
+          revision?: number;
           reviewer_id?: string | null;
           status?: string;
           updated_at?: string;
@@ -301,23 +305,26 @@ export type Database = {
           },
         ];
       };
+      // Project-owned tightening: Supabase generation widens CHECK-constrained text to string;
+      // keep the migration 003 identifier contract exact and guard it with database.identifier-types.test-d.ts.
       benefit_company_identifiers: {
         Row: {
           company_id: string;
           created_at: string;
           identifier_digest_or_value: string;
           identifier_id: string;
-          identifier_type: string;
+          identifier_type: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
           source_edition: string;
           updated_at: string;
           verified_at: string;
         };
+        ComputedFields: never;
         Insert: {
           company_id: string;
           created_at?: string;
           identifier_digest_or_value: string;
           identifier_id?: string;
-          identifier_type: string;
+          identifier_type: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
           source_edition: string;
           updated_at?: string;
           verified_at: string;
@@ -327,7 +334,7 @@ export type Database = {
           created_at?: string;
           identifier_digest_or_value?: string;
           identifier_id?: string;
-          identifier_type?: string;
+          identifier_type?: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
           source_edition?: string;
           updated_at?: string;
           verified_at?: string;
@@ -351,6 +358,7 @@ export type Database = {
           reason: string;
           source_company_id: string;
         };
+        ComputedFields: never;
         Insert: {
           actor_id: string;
           created_at?: string;
@@ -408,6 +416,7 @@ export type Database = {
           response_text: string | null;
           to_status: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           actor_id?: string | null;
@@ -465,6 +474,7 @@ export type Database = {
           idempotency_key: string;
           occurred_at: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           actor_snapshot: string;
@@ -503,6 +513,7 @@ export type Database = {
           submitter_id: string;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           admin_response?: string | null;
           applied_at?: string | null;
@@ -585,6 +596,7 @@ export type Database = {
           updated_at: string;
           verified_at: string | null;
         };
+        ComputedFields: never;
         Insert: {
           category_id: string;
           company_id: string;
@@ -661,6 +673,7 @@ export type Database = {
           submission_id: string;
           to_status: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           actor_id: string;
@@ -733,6 +746,7 @@ export type Database = {
           submitter_id: string;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           admin_response?: string | null;
           benefit_text: string;
@@ -809,6 +823,7 @@ export type Database = {
           id: string;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           comment_id: string;
           created_at?: string;
@@ -850,6 +865,7 @@ export type Database = {
           status: string;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           author_id: string;
           body_markdown: string;
@@ -908,6 +924,7 @@ export type Database = {
           resource_type: string | null;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           created_at?: string;
           expires_at: string;
@@ -951,6 +968,7 @@ export type Database = {
           target_id: string;
           target_type: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           actor_id?: string | null;
@@ -988,6 +1006,7 @@ export type Database = {
           post_id: string;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           created_at?: string;
           id?: string;
@@ -1022,6 +1041,7 @@ export type Database = {
           post_id: string;
           tag_id: string;
         };
+        ComputedFields: never;
         Insert: {
           post_id: string;
           tag_id: string;
@@ -1060,6 +1080,7 @@ export type Database = {
           title: string;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           author_id: string;
           body_markdown: string;
@@ -1105,6 +1126,7 @@ export type Database = {
           metadata_provider: string | null;
           updated_at: string;
         };
+        ComputedFields: never;
         Insert: {
           avatar_url?: string | null;
           created_at?: string;
@@ -1136,6 +1158,7 @@ export type Database = {
           upload_reservation_id: string | null;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           id?: string;
@@ -1172,6 +1195,7 @@ export type Database = {
           updated_at: string;
           window_seconds: number;
         };
+        ComputedFields: never;
         Insert: {
           action: string;
           created_at?: string;
@@ -1205,6 +1229,7 @@ export type Database = {
           target_id: string;
           target_type: string;
         };
+        ComputedFields: never;
         Insert: {
           created_at?: string;
           detail?: string | null;
@@ -1254,6 +1279,7 @@ export type Database = {
           slug: string;
           sort_order: number;
         };
+        ComputedFields: never;
         Insert: {
           id?: string;
           is_active?: boolean;
@@ -1277,6 +1303,7 @@ export type Database = {
           role: string;
           user_id: string;
         };
+        ComputedFields: never;
         Insert: {
           granted_at?: string;
           granted_by?: string | null;
@@ -1436,6 +1463,7 @@ export type Database = {
         Args: {
           p_expected_verification_status: string;
           p_failure_category: string;
+          p_payload_fingerprint: string;
           p_request_id: string;
         };
         Returns: Json;
@@ -1696,6 +1724,7 @@ export type Database = {
         Args: {
           p_action: string;
           p_destination_company_id?: string;
+          p_expected_revision: number;
           p_expected_status: string;
           p_reason: string;
           p_request_id: string;
@@ -1794,12 +1823,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
       DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
@@ -1819,11 +1848,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
       Insert: infer I;
@@ -1842,11 +1871,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
       Update: infer U;
@@ -1865,11 +1894,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
   : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
@@ -1880,11 +1909,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
   : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
