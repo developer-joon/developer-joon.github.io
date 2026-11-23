@@ -168,6 +168,20 @@ function parseOriginList(raw: string): Set<string> | null {
   return result.size === values.length ? result : null;
 }
 
+function normalizeSupabaseOrigin(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (
+      url.protocol !== "https:" || url.username || url.password ||
+      url.pathname !== "/" || url.search || url.hash || !url.hostname
+    ) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 function loadConfig(deps: VerificationDependencies): Config | null {
   const values = Object.fromEntries(
     ENV_NAMES.map((name) => [name, deps.env(name)]),
@@ -175,22 +189,15 @@ function loadConfig(deps: VerificationDependencies): Config | null {
   if (
     ENV_NAMES.some((name) => !values[name] || utf8Length(values[name]!) > 8_192)
   ) return null;
-  let supabase: URL;
-  try {
-    supabase = new URL(values.SUPABASE_URL!);
-  } catch {
-    return null;
-  }
+  const supabaseOrigin = normalizeSupabaseOrigin(values.SUPABASE_URL);
   const origins = parseOriginList(values.BENEFIT_COMPANY_ALLOWED_ORIGINS!);
   if (
-    !origins || supabase.protocol !== "https:" || supabase.username ||
-    supabase.password ||
-    supabase.pathname !== "/" || supabase.search || supabase.hash ||
+    !origins || !supabaseOrigin ||
     utf8Length(values.BUSINESS_NUMBER_HMAC_SECRET!) < 32 ||
     utf8Length(values.BUSINESS_NUMBER_HMAC_SECRET!) > MAX_HMAC_SECRET_BYTES
   ) return null;
   return {
-    supabaseUrl: supabase.origin,
+    supabaseUrl: supabaseOrigin,
     anonKey: values.SUPABASE_ANON_KEY!,
     serviceRoleKey: values.SUPABASE_SERVICE_ROLE_KEY!,
     ntsServiceKey: values.NTS_SERVICE_KEY!,
@@ -1510,6 +1517,11 @@ export function createRuntimeDependencies(
   env: (name: string) => string | undefined = (name) => Deno.env.get(name),
   fetchImpl: FetchLike = (input, init) => globalThis.fetch(input, init),
 ): VerificationDependencies {
+  const supabaseOrigin = normalizeSupabaseOrigin(env("SUPABASE_URL"));
+  const supabaseEndpoint = (pathname: string): URL => {
+    if (!supabaseOrigin) throw new Error("supabase config");
+    return new URL(pathname, `${supabaseOrigin}/`);
+  };
   const runtimeJson = async (
     response: Response,
     signal: AbortSignal,
@@ -1522,7 +1534,7 @@ export function createRuntimeDependencies(
     signal: AbortSignal,
   ): Promise<unknown> => {
     const response = await fetchImpl(
-      `${env("SUPABASE_URL") ?? ""}/rest/v1/rpc/${functionName}`,
+      supabaseEndpoint(`/rest/v1/rpc/${functionName}`),
       {
         method: "POST",
         redirect: "error",
@@ -1558,7 +1570,7 @@ export function createRuntimeDependencies(
     env,
     authenticate: async (authorization, signal) => {
       const response = await fetchImpl(
-        `${env("SUPABASE_URL") ?? ""}/auth/v1/user`,
+        supabaseEndpoint("/auth/v1/user"),
         {
           method: "GET",
           redirect: "error",

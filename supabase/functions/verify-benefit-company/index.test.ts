@@ -341,6 +341,22 @@ Deno.test("fails closed for absent or malformed origin configuration", async () 
   }
 });
 
+Deno.test("stores the Supabase project URL as an origin for either slash form", async () => {
+  for (
+    const supabaseUrl of [
+      "https://project-ref.supabase.co",
+      "https://project-ref.supabase.co/",
+    ]
+  ) {
+    const { deps } = dependencies({}, { SUPABASE_URL: supabaseUrl });
+    assert.equal(
+      (await handleVerifyBenefitCompany(request(), deps)).status,
+      200,
+      supabaseUrl,
+    );
+  }
+});
+
 Deno.test("rejects wrong method, anonymous, malformed bearer, and invalid idempotency key", async () => {
   const { deps, events } = dependencies();
   assert.equal(
@@ -619,6 +635,74 @@ Deno.test("bounds and cancels a request body that sends one chunk but never clos
     events.reserve.length,
     events.fetch.length,
   ], [0, 0, 0]);
+});
+
+Deno.test("real clock enforces the ingress cutoff for a never-closing body", async () => {
+  let cancelled = 0;
+  let streamController: ReadableStreamDefaultController<Uint8Array> | null =
+    null;
+  const client = new AbortController();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+      controller.enqueue(new TextEncoder().encode("{"));
+    },
+    cancel() {
+      cancelled++;
+    },
+  });
+  const { deps, events } = dependencies({
+    monotonicNow: () => performance.now(),
+    setTimeout: (callback, delay) => globalThis.setTimeout(callback, delay),
+    clearTimeout: (id) => globalThis.clearTimeout(id),
+  });
+  const started = performance.now();
+  let safetyTimer: ReturnType<typeof setTimeout> | undefined;
+  const safety = new Promise<Response>((_resolve, reject) => {
+    safetyTimer = globalThis.setTimeout(() => {
+      client.abort();
+      try {
+        streamController?.close();
+      } catch {
+        // The handler may have cancelled between the safety check and cleanup.
+      }
+      reject(new Error("real-clock ingress timeout test exceeded 9 seconds"));
+    }, 9_000);
+  });
+  try {
+    const response = await Promise.race([
+      handleVerifyBenefitCompany(
+        new Request("https://edge.test/verify-benefit-company", {
+          method: "POST",
+          headers: {
+            origin: ORIGIN,
+            authorization: "Bearer user-token-value",
+            "idempotency-key": KEY,
+            "content-type": "application/json",
+          },
+          body: stream,
+          signal: client.signal,
+        }),
+        deps,
+      ),
+      safety,
+    ]);
+    const elapsed = performance.now() - started;
+    assert.equal(response.status, 502);
+    assert.ok(elapsed >= 5_500, `completed too early: ${elapsed}ms`);
+    assert.ok(elapsed < 8_500, `completed too late: ${elapsed}ms`);
+    assert.equal(cancelled, 1);
+    assert.deepEqual([
+      events.auth.length,
+      events.reserve.length,
+      events.fetch.length,
+      events.finalize.length,
+      events.fail.length,
+    ], [0, 0, 0, 0, 0]);
+  } finally {
+    if (safetyTimer !== undefined) globalThis.clearTimeout(safetyTimer);
+    client.abort();
+  }
 });
 
 Deno.test("accepts omission of all optional company fields", async () => {
@@ -1136,6 +1220,7 @@ Deno.test("deadline covers reserve providers that ignore cancellation", async ()
   };
   const { deps, events } = dependencies(changes);
   const response = await handleVerifyBenefitCompany(request(), deps);
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(response.status, 503);
   assert.equal((await body(response)).code, "reservation_indeterminate");
   assert.equal(events.finalize.length, 0);
@@ -1381,6 +1466,50 @@ function runtimeUser() {
     }],
   };
 }
+
+Deno.test("runtime adapters normalize Supabase URL variants for every fixed endpoint", async () => {
+  const expectedOrigin = "https://project-ref.supabase.co";
+  for (const supabaseUrl of [expectedOrigin, `${expectedOrigin}/`]) {
+    const calls: string[] = [];
+    const runtime = createRuntimeDependencies(
+      (name) =>
+        name === "SUPABASE_URL" ? supabaseUrl : ENV[name as keyof typeof ENV],
+      async (input) => {
+        calls.push(String(input));
+        return ntsResponse(
+          calls.length === 1 ? runtimeUser() : reserveResult(),
+        );
+      },
+    );
+    const signal = new AbortController().signal;
+    await runtime.authenticate("Bearer runtime-token", signal);
+    await runtime.reserve("Bearer runtime-token", KEY, {
+      proposedName: BUSINESS_NAME,
+      region: null,
+      industry: null,
+      website: null,
+    }, signal);
+    await runtime.finalize({
+      requestId: REQUEST_ID,
+      expectedVerificationStatus: "pending",
+      payloadFingerprint: "a".repeat(64),
+      businessNumberDigest: "b".repeat(64),
+      externalVerifiedAt: "2026-11-23T00:00:01.000Z",
+    }, signal);
+    await runtime.fail({
+      requestId: REQUEST_ID,
+      expectedVerificationStatus: "pending",
+      payloadFingerprint: "a".repeat(64),
+      category: "unavailable",
+    }, signal);
+    assert.deepEqual(calls, [
+      `${expectedOrigin}/auth/v1/user`,
+      `${expectedOrigin}/rest/v1/rpc/reserve_benefit_company_nts_request_v1`,
+      `${expectedOrigin}/rest/v1/rpc/finalize_benefit_company_nts_request_v1`,
+      `${expectedOrigin}/rest/v1/rpc/fail_benefit_company_nts_request_v1`,
+    ], supabaseUrl);
+  }
+});
 
 Deno.test("runtime Auth and reserve adapters use exact fixed fetch contracts and immutable signals", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];

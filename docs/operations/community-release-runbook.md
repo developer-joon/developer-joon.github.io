@@ -270,7 +270,8 @@ Configure these exact secret names through the target's approved secret manager;
 never put their values in this repository, shell history, release evidence, a
 browser bundle, or logs:
 
-- `SUPABASE_URL`
+- `SUPABASE_URL` (the HTTPS project origin, accepted with or without one trailing
+  slash; credentials, path, query, and fragment are rejected)
 - `SUPABASE_ANON_KEY` (or the target's compatible publishable key value)
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `NTS_SERVICE_KEY` (the decoded key value; the Function percent-encodes it once
