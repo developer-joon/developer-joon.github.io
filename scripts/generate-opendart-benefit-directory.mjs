@@ -170,16 +170,44 @@ export async function generateOpenDartBundle({sourceFile,authorityFile,outputDir
   const parent=path.dirname(destination), stat=await lstat(parent); if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||(stat.mode&0o022)!==0) throw Error('output parent must be pre-existing, caller-owned, non-symlink, and not group/world writable')
   const lockPath=`${destination}.generate.lock`; let lock
   try { lock=await open(lockPath,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600) } catch(error){ if(error?.code==='EEXIST') throw Error('OpenDART generation lock is held'); throw error }
-  let stage,backupContainer
+  let stage=null,stageOwned=false,backupContainer=null,backupOwned=false,retainBackup=false
   try {
-    stage=await mkdtemp(path.join(parent,'.opendart-stage-')); await chmod(stage,0o700)
+    stage=await mkdtemp(path.join(parent,'.opendart-stage-')); stageOwned=true; await chmod(stage,0o700)
     await writeSynced(path.join(stage,'manifest.json'),built.manifestBytes); await writeSynced(path.join(stage,'companies.ndjson'),built.companiesNdjson); await writeSynced(path.join(stage,'identifiers.ndjson'),built.identifiersNdjson)
     const dh=await open(stage,constants.O_RDONLY|constants.O_DIRECTORY); await dh.sync(); await dh.close()
-    backupContainer=await mkdtemp(path.join(parent,'.opendart-previous-')); await chmod(backupContainer,0o700); const backup=path.join(backupContainer,'bundle'); let moved=false
-    try { try { await rename(destination,backup); moved=true } catch(error){ if(error?.code!=='ENOENT') throw error } if(testOnly?.beforeInstall) await testOnly.beforeInstall(); await rename(stage,destination); stage=null }
-    catch(error){ if(moved) await rename(backup,destination); throw error }
-    await rm(backupContainer,{recursive:true,force:true}); backupContainer=null; return built
-  } finally { if(stage) await rm(stage,{recursive:true,force:true}); if(backupContainer) await rm(backupContainer,{recursive:true,force:true}); await lock.close(); await rm(lockPath,{force:true}) }
+    backupContainer=await mkdtemp(path.join(parent,'.opendart-previous-')); backupOwned=true; await chmod(backupContainer,0o700)
+    const backup=path.join(backupContainer,'bundle'); let oldMoved=false,stageInstalled=false
+    try {
+      try { await rename(destination,backup); oldMoved=true } catch(error){ if(error?.code!=='ENOENT') throw error }
+      if(testOnly?.beforeInstall) await testOnly.beforeInstall()
+      await rename(stage,destination); stageInstalled=true; stage=null; stageOwned=false
+    } catch(error) {
+      if(oldMoved&&!stageInstalled) {
+        let destinationAbsent=false
+        try { await lstat(destination) } catch(destinationError) { if(destinationError?.code==='ENOENT') destinationAbsent=true }
+        if(destinationAbsent) {
+          try { await rename(backup,destination); oldMoved=false }
+          catch { retainBackup=true; throw Error(`OpenDART bundle install failed; automatic restore failed; preserved prior bundle at ${path.basename(backupContainer)}/bundle`) }
+        } else {
+          retainBackup=true
+          throw Error(`OpenDART bundle install failed; automatic restore failed; preserved prior bundle at ${path.basename(backupContainer)}/bundle`)
+        }
+      }
+      throw error
+    }
+    try {
+      if(testOnly?.injectBackupCleanupFailure) await testOnly.injectBackupCleanupFailure()
+      await rm(backupContainer,{recursive:true,force:true}); backupContainer=null; backupOwned=false
+    } catch {
+      retainBackup=true
+      console.warn(`OpenDART bundle committed; stale backup remains at ${path.basename(backupContainer)}/bundle and may be removed after verification`)
+    }
+    return built
+  } finally {
+    if(stageOwned&&stage!==null) await rm(stage,{recursive:true,force:true})
+    if(backupOwned&&backupContainer!==null&&!retainBackup) await rm(backupContainer,{recursive:true,force:true})
+    await lock.close(); await rm(lockPath,{force:true})
+  }
 }
 
 function cliArgs(args){ const result={check:false}; for(let i=0;i<args.length;i++){ const arg=args[i]; if(arg==='--check') result.check=true; else if(['--source','--authority','--output'].includes(arg)){ if(!args[i+1]) throw Error(`missing value for ${arg}`); result[arg.slice(2)]=args[++i] } else throw Error('unknown argument '+arg) } return result }

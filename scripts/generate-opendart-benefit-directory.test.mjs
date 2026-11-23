@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createHash } from 'node:crypto'
 import { deflateRawSync } from 'node:zlib'
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -43,6 +43,16 @@ const build = (rows, overrides = {}) => {
   const source = zip(xml(rows))
   return buildOpenDartBundle(source, { ...options, ...overrides })
 }
+const authorityFor = (sourceBytes, overrides = {}) => ({
+  schema_version: 'benefit-directory-opendart-authority-v1',
+  source_edition: overrides.edition ?? options.edition,
+  official_url: options.sourceUrl,
+  reuse_rights_note: options.reuseRights,
+  source_sha256: sha(sourceBytes),
+  retrieved_at: overrides.retrievedAt ?? options.retrievedAt,
+})
+const transactionResidue = async root => (await readdir(root)).filter(name =>
+  name.startsWith('.opendart-stage-') || name.startsWith('.opendart-previous-') || name.endsWith('.generate.lock'))
 
 test('builds canonical deterministic companies and identifiers without merging equal names', () => {
   const source = zip(xml())
@@ -117,6 +127,122 @@ test('normal generation is deterministic and check mode is read-only', async () 
     await assert.rejects(generateOpenDartBundle({ sourceFile: source, authorityFile:authority, outputDir: path.join(absentParent,'bundle'), check: true }), /absent|missing|ENOENT/i)
     await assert.rejects(readdir(absentParent), error => error?.code === 'ENOENT')
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('competing destination preserves the prior bundle in reported owner-only recovery custody', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-retained-backup-'))
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'corp.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    const output = path.join(root, 'bundle')
+    await writeFile(sourceFile, sourceBytes, { mode: 0o600 })
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n', { mode: 0o600 })
+    await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output })
+    const prior = Object.fromEntries(await Promise.all(['manifest.json', 'companies.ndjson', 'identifiers.ndjson'].map(async name => [name, await readFile(path.join(output, name))])))
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes, { edition: '2026-11-24', retrievedAt: '2026-11-24T00:00:00Z' })) + '\n')
+
+    let failure
+    try {
+      await generateOpenDartBundle({
+        sourceFile, authorityFile, outputDir: output,
+        testOnly: { beforeInstall: async () => {
+          await mkdir(output)
+          await writeFile(path.join(output, 'intruder.txt'), 'do not overwrite')
+        } },
+      })
+      assert.fail('generation unexpectedly succeeded')
+    } catch (error) { failure = error }
+
+    assert.match(failure.message, /automatic restore failed; preserved prior bundle at \.opendart-previous-[^/]+\/bundle/i)
+    assert.doesNotMatch(failure.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.equal(await readFile(path.join(output, 'intruder.txt'), 'utf8'), 'do not overwrite')
+    const retained = (await readdir(root)).filter(name => name.startsWith('.opendart-previous-'))
+    assert.equal(retained.length, 1)
+    assert.ok(failure.message.includes(`${retained[0]}/bundle`))
+    assert.equal((await stat(path.join(root, retained[0]))).mode & 0o777, 0o700)
+    for (const [name, bytes] of Object.entries(prior)) assert.deepEqual(await readFile(path.join(root, retained[0], 'bundle', name)), bytes)
+    assert.deepEqual((await transactionResidue(root)).filter(name => !name.startsWith('.opendart-previous-')), [])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('ordinary install failure atomically restores exact prior bytes without transaction residue', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-restored-backup-'))
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'corp.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    const output = path.join(root, 'bundle')
+    await writeFile(sourceFile, sourceBytes)
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n')
+    await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output })
+    const prior = Object.fromEntries(await Promise.all(['manifest.json', 'companies.ndjson', 'identifiers.ndjson'].map(async name => [name, await readFile(path.join(output, name))])))
+
+    await assert.rejects(generateOpenDartBundle({
+      sourceFile, authorityFile, outputDir: output,
+      testOnly: { beforeInstall: () => { throw Error('injected ordinary install failure') } },
+    }), /injected ordinary install failure/)
+
+    for (const [name, bytes] of Object.entries(prior)) assert.deepEqual(await readFile(path.join(output, name)), bytes)
+    assert.deepEqual(await transactionResidue(root), [])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('successful replacement installs exact new bundle and removes the old backup', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-successful-replacement-'))
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'corp.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    const output = path.join(root, 'bundle')
+    await writeFile(sourceFile, sourceBytes)
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n')
+    await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output })
+    const nextAuthority = authorityFor(sourceBytes, { edition: '2026-11-24', retrievedAt: '2026-11-24T00:00:00Z' })
+    await writeFile(authorityFile, JSON.stringify(nextAuthority) + '\n')
+    const expected = buildOpenDartBundle(sourceBytes, nextAuthority)
+
+    await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output })
+
+    assert.deepEqual(await readFile(path.join(output, 'manifest.json')), expected.manifestBytes)
+    assert.deepEqual(await readFile(path.join(output, 'companies.ndjson')), expected.companiesNdjson)
+    assert.deepEqual(await readFile(path.join(output, 'identifiers.ndjson')), expected.identifiersNdjson)
+    assert.deepEqual(await transactionResidue(root), [])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('post-commit backup cleanup failure reports committed success and retains owner-only garbage', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-committed-cleanup-'))
+  const warnings = []
+  const originalWarn = console.warn
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'corp.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    const output = path.join(root, 'bundle')
+    await writeFile(sourceFile, sourceBytes)
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n')
+    await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output })
+    const nextAuthority = authorityFor(sourceBytes, { edition: '2026-11-24', retrievedAt: '2026-11-24T00:00:00Z' })
+    await writeFile(authorityFile, JSON.stringify(nextAuthority) + '\n')
+    const expected = buildOpenDartBundle(sourceBytes, nextAuthority)
+    console.warn = message => warnings.push(String(message))
+
+    const result = await generateOpenDartBundle({
+      sourceFile, authorityFile, outputDir: output,
+      testOnly: { injectBackupCleanupFailure: () => { throw Error('cleanup unavailable') } },
+    })
+
+    assert.deepEqual(result.manifest, expected.manifest)
+    assert.deepEqual(await readFile(path.join(output, 'manifest.json')), expected.manifestBytes)
+    assert.match(warnings.join('\n'), /committed; stale backup remains at \.opendart-previous-[^/]+\/bundle/)
+    const retained = (await readdir(root)).filter(name => name.startsWith('.opendart-previous-'))
+    assert.equal(retained.length, 1)
+    assert.equal((await stat(path.join(root, retained[0]))).mode & 0o777, 0o700)
+  } finally {
+    console.warn = originalWarn
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('apply SQL uses framed UTF-8 digests, strong-code conflicts, exact preservation, and explicit rollback', () => {
