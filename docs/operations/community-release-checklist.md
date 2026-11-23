@@ -23,7 +23,7 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Task 16 E2E passes against local Docker; no intentional sentinel remains.
 - [ ] Local stack and only this run's temporary directory are cleaned; local evidence is current, run-identified, and revision-bound.
 - [ ] Run the pinned Deno check/test/fmt commands for `verify-benefit-company` with injected mock transport only; confirm no local or hosted NTS request occurred.
-- [ ] Confirm the NTS matrix covers strict origin/auth/body boundaries, reserve-before-NTS, terminal replay, both official endpoint decoders, timeout/transport failures, inactive status, HMAC/finalize privacy, failure-RPC privacy, and timer cleanup.
+- [ ] Confirm the NTS matrix covers streaming ingress byte/cancel bounds, strict current-Google timestamp evidence, exact RPC state decoding, reserve-before-NTS, terminal replay, both official endpoint decoders (`01` active, `02` suspended, `03` closed), one hard total deadline with no late finalize, UTF-8-byte HMAC limits, finalize/failure privacy, and timer cleanup.
 
 ## 2. development cloud integration+cleanup
 
@@ -31,7 +31,7 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Obtain development-only mutation approval; inspect migration dry run.
 - [ ] Apply reviewed development migration and deploy the explicit Function set to `--project-ref "$DEVELOPMENT_PROJECT_REF"`.
 - [ ] Separately approve and configure only the exact NTS Function names: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `NTS_SERVICE_KEY`, `BUSINESS_NUMBER_HMAC_SECRET`, and `BENEFIT_COMPANY_ALLOWED_ORIGINS`; record no values.
-- [ ] Confirm `verify-benefit-company` alone has its reviewed `verify_jwt = false` setting and performs server-side Auth `getUser`, exact current `google` provider enforcement, and bearer-bound reserve; no other Function setting is weakened.
+- [ ] Confirm `verify-benefit-company` alone has its reviewed `verify_jwt = false` setting and performs server-side Auth `getUser`, unique current-`google` identity timestamp correlation (rejecting linked-but-current-non-Google, missing, and ambiguous evidence), and bearer-bound reserve; record the GoTrue per-session-provider proof limitation and do not weaken any other Function setting.
 - [ ] Do not run a real development NTS call unless a distinct authorized-canary approval, legitimate consented business case, real operator-controlled Google identity, and quota/terms review are recorded. Never fabricate identity or business fields.
 - [ ] Verify the separate development Google OAuth client returns through `https://${DEVELOPMENT_PROJECT_REF}.supabase.co/auth/v1/callback`, then to `http://localhost:5173/community/auth/callback/`; confirm Kakao/GitHub remain disabled.
 - [ ] Run Task 16 development cloud integration for Auth, migration, Functions, OAuth, and private Storage.

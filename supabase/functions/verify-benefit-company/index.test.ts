@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   businessNumberDigest,
   handleVerifyBenefitCompany,
+  hasCurrentGoogleIdentity,
   type VerificationDependencies,
 } from "./index.ts";
 
@@ -18,6 +19,7 @@ const RAW_SENTINELS = [
   REPRESENTATIVE,
   OPENING_DATE,
 ];
+const OUTPUT_SENTINELS = [...RAW_SENTINELS, BUSINESS_NAME];
 const SECRET = "0123456789abcdef0123456789abcdef";
 const EXPECTED_DIGEST =
   "46e79edee22e59af16114ef95c5753e3354b0d29eb83a5fc5b8e261cbea7ee91";
@@ -94,19 +96,22 @@ function validateEnvelope(valid = "01") {
 }
 
 function statusEnvelope(code = "01") {
+  const labels: Record<string, string> = {
+    "01": "계속사업자",
+    "02": "휴업자",
+    "03": "폐업자",
+  };
   return {
     status_code: "OK",
     request_cnt: 1,
     match_cnt: 1,
     data: [{
       b_no: "1234567890",
-      b_stt: code === "01" ? "계속사업자" : "폐업자",
+      b_stt: labels[code] ?? "",
       b_stt_cd: code,
-      tax_type: code === "01"
-        ? "부가가치세 일반과세자"
-        : "국세청에 등록되지 않은 사업자등록번호입니다.",
-      tax_type_cd: code === "01" ? "01" : "99",
-      end_dt: code === "01" ? "" : "20220101",
+      tax_type: "부가가치세 일반과세자",
+      tax_type_cd: "01",
+      end_dt: code === "03" ? "20220101" : "",
       utcc_yn: "Y",
       tax_type_change_dt: "",
       invoice_apply_dt: "",
@@ -156,6 +161,7 @@ function dependencies(
       return {
         id: "323e4567-e89b-42d3-a456-426614174000",
         providers: ["google"],
+        currentGoogleIdentity: true,
       };
     },
     reserve: async (...args) => {
@@ -165,6 +171,7 @@ function dependencies(
     finalize: async (args) => {
       events.finalize.push(args);
       return reserveResult({
+        verification_method: "nts_full",
         verification_status: "matched",
         status: "approved",
         revision: 2,
@@ -174,7 +181,8 @@ function dependencies(
     fail: async (args) => {
       events.fail.push(args);
       return reserveResult({
-        verification_status: "rejected",
+        verification_method: "nts_full",
+        verification_status: args.category,
         status: "rejected",
         revision: 2,
       });
@@ -184,6 +192,7 @@ function dependencies(
       return ntsResponse(call++ === 0 ? validateEnvelope() : statusEnvelope());
     },
     now: () => new Date("2026-11-23T00:00:01.000Z"),
+    monotonicNow: () => performance.now(),
     requestId: () => "edge-request-id",
     log: (entry) => events.logs.push(entry),
     setTimeout: (callback, _delay) => {
@@ -236,6 +245,13 @@ async function body(response: Response): Promise<Record<string, unknown>> {
 function assertNoSensitive(value: unknown) {
   const encoded = JSON.stringify(value);
   for (const sentinel of RAW_SENTINELS) {
+    assert.equal(encoded.includes(sentinel), false, sentinel);
+  }
+}
+
+function assertNoIdentityOutput(value: unknown) {
+  const encoded = JSON.stringify(value);
+  for (const sentinel of OUTPUT_SENTINELS) {
     assert.equal(encoded.includes(sentinel), false, sentinel);
   }
 }
@@ -355,28 +371,61 @@ Deno.test("rejects wrong method, anonymous, malformed bearer, and invalid idempo
   assert.equal(events.fetch.length, 0);
 });
 
-Deno.test("requires a current Google provider from server-authenticated identity", async () => {
+Deno.test("requires server-validated evidence that the current session is Google", async () => {
   for (
-    const providers of [[], ["github"], ["Google"], [
-      "google",
-      "github",
-      "unexpected",
-    ]]
+    const [label, providers, currentGoogleIdentity, expected] of [
+      ["current google", ["google"], true, 200],
+      ["linked google but current github", ["google", "github"], false, 403],
+      ["metadata spoof", ["google"], false, 403],
+      ["missing timestamp evidence", ["google"], false, 403],
+      ["ambiguous timestamp evidence", ["google", "github"], false, 403],
+    ] as const
   ) {
     const { deps, events } = dependencies({
       authenticate: async () => ({
         id: "323e4567-e89b-42d3-a456-426614174000",
-        providers,
+        providers: [...providers],
+        currentGoogleIdentity,
       }),
     });
     const response = await handleVerifyBenefitCompany(request(), deps);
-    assert.equal(
-      response.status,
-      providers.length === 1 && providers[0] === "google" ? 200 : 403,
-    );
-    if (!(providers.length === 1 && providers[0] === "google")) {
-      assert.equal(events.reserve.length, 0);
-    }
+    assert.equal(response.status, expected, label);
+    if (expected === 403) assert.equal(events.reserve.length, 0, label);
+  }
+});
+
+Deno.test("derives current Google evidence from validated user and identity timestamps", () => {
+  const current = "2026-11-23T00:00:00.000Z";
+  const older = "2026-11-22T00:00:00.000Z";
+  assert.equal(
+    hasCurrentGoogleIdentity({
+      last_sign_in_at: current,
+      app_metadata: { provider: "github" },
+      identities: [{ provider: "google", last_sign_in_at: current }],
+    }),
+    true,
+  );
+  for (
+    const fixture of [{
+      last_sign_in_at: current,
+      identities: [
+        { provider: "google", last_sign_in_at: older },
+        { provider: "github", last_sign_in_at: current },
+      ],
+    }, {
+      last_sign_in_at: current,
+      identities: [
+        { provider: "google", last_sign_in_at: current },
+        { provider: "github", last_sign_in_at: current },
+      ],
+    }, {
+      last_sign_in_at: current,
+      identities: [{ provider: "google" }],
+    }, {
+      identities: [{ provider: "google", last_sign_in_at: current }],
+    }]
+  ) {
+    assert.equal(hasCurrentGoogleIdentity(fixture), false);
   }
 });
 
@@ -401,6 +450,85 @@ Deno.test("rejects oversized wire body before parse, auth, reserve, or external 
     events.reserve.length,
     events.fetch.length,
   ], [0, 0, 0]);
+});
+
+Deno.test("streams chunked request bodies with a hard retained-byte cap", async () => {
+  let pulls = 0;
+  let cancelled = 0;
+  const chunks = [
+    new TextEncoder().encode(JSON.stringify(BODY)),
+    new Uint8Array(16_384),
+    new Uint8Array(16_384),
+  ];
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = chunks[pulls++];
+      if (chunk) controller.enqueue(chunk);
+      else controller.close();
+    },
+    cancel() {
+      cancelled++;
+    },
+  });
+  const streamed = new Request("https://edge.test/verify-benefit-company", {
+    method: "POST",
+    headers: {
+      origin: ORIGIN,
+      authorization: "Bearer user-token-value",
+      "idempotency-key": KEY,
+      "content-type": "application/json",
+      "content-length": "1",
+    },
+    body: stream,
+  });
+  const { deps, events } = dependencies();
+  const response = await handleVerifyBenefitCompany(streamed, deps);
+  assert.equal(response.status, 413);
+  assert.ok(pulls <= 2, `unexpected pulls: ${pulls}`);
+  assert.equal(cancelled, 1);
+  assert.deepEqual([
+    events.auth.length,
+    events.reserve.length,
+    events.fetch.length,
+  ], [0, 0, 0]);
+});
+
+Deno.test("rejects invalid UTF-8 before JSON, auth, and reservation", async () => {
+  const invalidUtf8 = new Request("https://edge.test/verify-benefit-company", {
+    method: "POST",
+    headers: {
+      origin: ORIGIN,
+      authorization: "Bearer user-token-value",
+      "idempotency-key": KEY,
+      "content-type": "application/json",
+    },
+    body: new Uint8Array([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xff, 0x7d]),
+  });
+  const { deps, events } = dependencies();
+  const response = await handleVerifyBenefitCompany(invalidUtf8, deps);
+  assert.equal(response.status, 400);
+  assert.deepEqual([events.auth.length, events.reserve.length], [0, 0]);
+});
+
+Deno.test("accepts a valid request body without Content-Length", async () => {
+  const raw = JSON.stringify(BODY);
+  const streamed = new Request("https://edge.test/verify-benefit-company", {
+    method: "POST",
+    headers: {
+      origin: ORIGIN,
+      authorization: "Bearer user-token-value",
+      "idempotency-key": KEY,
+      "content-type": "application/json",
+    },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(raw));
+        controller.close();
+      },
+    }),
+  });
+  const { deps } = dependencies();
+  assert.equal((await handleVerifyBenefitCompany(streamed, deps)).status, 200);
 });
 
 Deno.test("accepts omission of all optional company fields", async () => {
@@ -481,6 +609,27 @@ Deno.test("fails safely when any required environment value is missing or HMAC s
   assert.equal((await handleVerifyBenefitCompany(request(), deps)).status, 503);
 });
 
+Deno.test("measures HMAC secret strength in UTF-8 bytes", async () => {
+  for (const secret of ["🔐".repeat(16), "🔐".repeat(8)]) {
+    const accepted = dependencies({}, {
+      BUSINESS_NUMBER_HMAC_SECRET: secret,
+    });
+    assert.equal(
+      (await handleVerifyBenefitCompany(request(), accepted.deps)).status,
+      200,
+    );
+  }
+  for (const secret of ["a".repeat(31), "🔐".repeat(7)]) {
+    const { deps } = dependencies({}, {
+      BUSINESS_NUMBER_HMAC_SECRET: secret,
+    });
+    assert.equal(
+      (await handleVerifyBenefitCompany(request(), deps)).status,
+      503,
+    );
+  }
+});
+
 Deno.test("reserve receives authenticated bearer and safe fields, and maps rate/conflict/failure", async () => {
   for (
     const [error, status] of [[{ code: "PT429" }, 429], [
@@ -522,7 +671,9 @@ Deno.test("terminal reservation replay returns safe existing result without NTS"
           status,
           verification_status,
           revision: 2,
-          resolved_company_id: status === "rejected" ? null : "KR-CAN-safe",
+          resolved_company_id: status === "rejected"
+            ? null
+            : "KR-CAN-0123456789abcdef0123456789abcdef",
         }),
     });
     const response = await handleVerifyBenefitCompany(request(), deps);
@@ -537,6 +688,67 @@ Deno.test("terminal reservation replay returns safe existing result without NTS"
         : "사업자 확인이 완료되었습니다.",
     });
   }
+});
+
+Deno.test("RPC decoder rejects missing, extra, malformed, and impossible reservation states", async () => {
+  const invalid = [
+    reserveResult({ revision: 0 }),
+    reserveResult({ created_at: "not-a-timestamp" }),
+    reserveResult({ created_at: "2026-02-30T00:00:00.000Z" }),
+    reserveResult({ resolved_company_id: "KR-CAN-safe" }),
+    reserveResult({ extra: true }),
+    (() => {
+      const value = reserveResult();
+      delete (value as Record<string, unknown>).updated_at;
+      return value;
+    })(),
+    reserveResult({ status: "approved", verification_status: "pending" }),
+    reserveResult({ status: "rejected", verification_status: "matched" }),
+    reserveResult({
+      status: "approved",
+      verification_status: "matched",
+      resolved_company_id: null,
+    }),
+  ];
+  for (const value of invalid) {
+    const { deps, events } = dependencies({ reserve: async () => value });
+    const response = await handleVerifyBenefitCompany(request(), deps);
+    assert.equal(response.status, 502);
+    assert.equal(events.fetch.length, 0);
+    assert.equal(events.finalize.length, 0);
+  }
+});
+
+Deno.test("finalize and failure RPC responses require exact terminal state", async () => {
+  const badFinal = dependencies({
+    finalize: async () =>
+      reserveResult({
+        verification_method: "nts_full",
+        status: "rejected",
+        verification_status: "mismatched",
+        revision: 2,
+      }),
+  });
+  assert.equal(
+    (await handleVerifyBenefitCompany(request(), badFinal.deps)).status,
+    502,
+  );
+
+  const badFailure = dependencies({
+    fetch: async () => ntsResponse(validateEnvelope("02")),
+    fail: async () =>
+      reserveResult({
+        verification_method: "nts_full",
+        status: "approved",
+        verification_status: "matched",
+        revision: 2,
+        resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
+      }),
+  });
+  assert.equal(
+    (await handleVerifyBenefitCompany(request(), badFailure.deps)).status,
+    502,
+  );
 });
 
 Deno.test("calls both official fixed NTS URLs with bounded safe options", async () => {
@@ -580,15 +792,17 @@ Deno.test("calls both official fixed NTS URLs with bounded safe options", async 
   assert.equal(events.timers.length, 0);
 });
 
-Deno.test("validate mismatch and inactive status fail with safe categories", async () => {
-  for (const scenario of ["mismatch", "inactive"] as const) {
+Deno.test("validate mismatch and official inactive statuses fail with safe categories", async () => {
+  for (const scenario of ["mismatch", "suspended", "closed"] as const) {
     let call = 0;
     const { deps, events } = dependencies({
       fetch: async () =>
         scenario === "mismatch"
           ? ntsResponse(validateEnvelope("02"))
           : ntsResponse(
-            call++ === 0 ? validateEnvelope() : statusEnvelope("02"),
+            call++ === 0
+              ? validateEnvelope()
+              : statusEnvelope(scenario === "suspended" ? "02" : "03"),
           ),
     });
     const response = await handleVerifyBenefitCompany(request(), deps);
@@ -602,6 +816,23 @@ Deno.test("validate mismatch and inactive status fail with safe categories", asy
     assertNoSensitive(events.fail);
     assertNoSensitive(await body(response));
   }
+});
+
+Deno.test("rejects inconsistent NTS status code and official Korean label", async () => {
+  let call = 0;
+  const inconsistent = statusEnvelope("02");
+  inconsistent.data[0].b_stt = "폐업자";
+  const { deps, events } = dependencies({
+    fetch: async () =>
+      ntsResponse(call++ === 0 ? validateEnvelope() : inconsistent),
+  });
+  const response = await handleVerifyBenefitCompany(request(), deps);
+  assert.equal(response.status, 502);
+  assert.equal(
+    (events.fail[0] as Record<string, unknown>).category,
+    "unavailable",
+  );
+  assert.equal(events.finalize.length, 0);
 });
 
 Deno.test("NTS transport and decoder failures are unavailable and never finalize", async () => {
@@ -693,6 +924,103 @@ Deno.test("timeout aborts, clears timer, and cannot finalize late", async () => 
   assert.equal(events.finalize.length, 0);
 });
 
+Deno.test("deadline wins when an aborted fetch or response reader ignores its signal", async () => {
+  for (const boundary of ["fetch", "reader"] as const) {
+    let callback: (() => void) | undefined;
+    let call = 0;
+    const { deps, events } = dependencies({
+      setTimeout: (fn) => {
+        callback = fn;
+        return 9 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimeout: () => {},
+      fetch: async () => {
+        if (call++ > 0) return ntsResponse(statusEnvelope());
+        if (boundary === "fetch") {
+          queueMicrotask(() => callback?.());
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return ntsResponse(validateEnvelope());
+        }
+        return new Response(
+          new ReadableStream({
+            pull(controller) {
+              queueMicrotask(() => callback?.());
+              controller.enqueue(
+                new TextEncoder().encode(JSON.stringify(validateEnvelope())),
+              );
+              controller.close();
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+    const response = await handleVerifyBenefitCompany(request(), deps);
+    assert.equal(response.status, 502, boundary);
+    assert.equal(events.fail.length, 0, boundary);
+    assert.equal(events.finalize.length, 0, boundary);
+  }
+});
+
+Deno.test("deadline prevents HMAC/finalize after the last NTS boundary", async () => {
+  let callback: (() => void) | undefined;
+  let call = 0;
+  const { deps, events } = dependencies({
+    setTimeout: (fn) => {
+      callback = fn;
+      return 11 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: () => {},
+    fetch: async () => {
+      const response = ntsResponse(
+        call++ === 0 ? validateEnvelope() : statusEnvelope(),
+      );
+      if (call === 2) queueMicrotask(() => callback?.());
+      return response;
+    },
+  });
+  const response = await handleVerifyBenefitCompany(request(), deps);
+  assert.equal(response.status, 502);
+  assert.equal(events.fail.length, 0);
+  assert.equal(events.finalize.length, 0);
+});
+
+Deno.test("deadline covers reserve and finalize providers that ignore cancellation", async () => {
+  for (const boundary of ["reserve", "finalize"] as const) {
+    let callback: (() => void) | undefined;
+    const changes: Partial<VerificationDependencies> = {
+      setTimeout: (fn) => {
+        callback = fn;
+        return 13 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimeout: () => {},
+    };
+    if (boundary === "reserve") {
+      changes.reserve = async () => {
+        queueMicrotask(() => callback?.());
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return reserveResult();
+      };
+    } else {
+      changes.finalize = async () => {
+        queueMicrotask(() => callback?.());
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return reserveResult({
+          verification_method: "nts_full",
+          status: "approved",
+          verification_status: "matched",
+          revision: 2,
+          resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
+        });
+      };
+    }
+    const { deps, events } = dependencies(changes);
+    const response = await handleVerifyBenefitCompany(request(), deps);
+    assert.equal(response.status, 502, boundary);
+    assert.equal(events.finalize.length, 0, boundary);
+  }
+});
+
 Deno.test("success finalizes with digest and safe fields only", async () => {
   const { deps, events } = dependencies();
   const response = await handleVerifyBenefitCompany(request(), deps);
@@ -712,17 +1040,18 @@ Deno.test("success finalizes with digest and safe fields only", async () => {
   assert.equal(typeof final.payloadFingerprint, "string");
   assert.equal(final.externalVerifiedAt, "2026-11-23T00:00:01.000Z");
   assertNoSensitive(final);
-  assertNoSensitive(responseBody);
+  assertNoIdentityOutput(responseBody);
 });
 
 Deno.test("finalize duplicate digest conflict returns a safe replay result", async () => {
   const { deps, events } = dependencies({
     finalize: async () =>
       reserveResult({
+        verification_method: "nts_full",
         verification_status: "matched",
         status: "merged",
         revision: 2,
-        resolved_company_id: "KR-CAN-safe",
+        resolved_company_id: "KR-CAN-0123456789abcdef0123456789abcdef",
       }),
   });
   const response = await handleVerifyBenefitCompany(request(), deps);
@@ -759,8 +1088,8 @@ Deno.test("failure RPC failure remains generic and all outputs and logs stay fre
   });
   const response = await handleVerifyBenefitCompany(request(), deps);
   assert.equal(response.status, 502);
-  assertNoSensitive(await body(response));
-  assertNoSensitive(events.logs);
+  assertNoIdentityOutput(await body(response));
+  assertNoIdentityOutput(events.logs);
   assertNoSensitive(events.auth);
   assertNoSensitive(events.reserve);
   assertNoSensitive(events.fail);

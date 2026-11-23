@@ -230,12 +230,23 @@ There is no destructive seed/schema down or bulk delete. A failed dry-run or fai
 ## NTS full business verification Function
 
 `verify-benefit-company` is a browser POST endpoint. Its gateway setting is
-`verify_jwt = false` by design: the handler bounds the bearer value, calls
-Supabase Auth `getUser` with `SUPABASE_URL` and `SUPABASE_ANON_KEY`, requires the
-current server-returned provider to be exactly `google`, and uses that same
-bearer transport for `reserve_benefit_company_nts_request_v1`. It never accepts
-a caller-supplied user ID. The service-role client is separate and is used only
-for the exact finalize/failure RPCs after reservation.
+`verify_jwt = false` by design: the handler bounds the bearer value and calls
+Supabase Auth `getUser` with `SUPABASE_URL` and `SUPABASE_ANON_KEY`. A current
+Google sign-in requires exactly one returned identity whose validated
+`last_sign_in_at` instant equals the returned user's `last_sign_in_at`, and that
+identity must have provider `google`; missing timestamps, ambiguous matches, and
+a newer linked non-Google identity fail closed. `app_metadata.provider` and
+caller-decoded JWT claims are not evidence. GoTrue does not expose a separate
+cryptographic per-session provider proof through this `getUser` response, so
+this strict server-validated timestamp correlation is the strongest available
+evidence and retains a dependency on GoTrue's identity timestamp semantics.
+The same bearer transport is used for `reserve_benefit_company_nts_request_v1`;
+a caller-supplied user ID is never accepted. The service-role client is separate
+and is used only for exact finalize/failure RPCs after reservation. One 8-second
+monotonic deadline covers authentication, reservation, both NTS calls and
+streams, HMAC, and finalize/failure persistence; timeout aborts and cancels the
+active reader, never finalizes late, and performs no cleanup beyond that same
+budget.
 
 Configure these exact secret names through the target's approved secret manager;
 never put their values in this repository, shell history, release evidence, a
@@ -244,8 +255,9 @@ browser bundle, or logs:
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY` (or the target's compatible publishable key value)
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `NTS_SERVICE_KEY`
-- `BUSINESS_NUMBER_HMAC_SECRET` (at least 32 UTF-8 bytes, independently generated
+- `NTS_SERVICE_KEY` (the decoded key value; the Function percent-encodes it once
+  when constructing each fixed NTS URL)
+- `BUSINESS_NUMBER_HMAC_SECRET` (32 to 8,192 UTF-8 bytes, independently generated
   per environment)
 - `BENEFIT_COMPANY_ALLOWED_ORIGINS` (one to ten comma-separated, exact HTTPS
   origins; no wildcard, credentials, path, query, fragment, empty member, or
@@ -255,10 +267,14 @@ The endpoint requires an `Origin` header even on POST and accepts only the exact
 configured allow-list. It requires `Authorization: Bearer ...`, canonical UUID
 `Idempotency-Key`, and `application/json`. Business numbers accept exactly ten
 digits or the user form `NNN-NN-NNNNN`; the NTS transport receives digits only.
-Opening dates are exact `YYYYMMDD` calendar dates. Raw business number,
-representative name, and opening date may cross the transient NTS request but
-must never enter an RPC payload, database row, response, error, or log. The only
-persistent identifier is lower-case
+Opening dates are exact `YYYYMMDD` calendar dates. The NTS outbound verification
+requires all four submitted identity values: business number, opening date,
+representative name, and business name. Public responses and logs include none
+of those four. The reserve/finalize database boundary may persist the proposed
+business name as the company field (plus bounded optional region, industry, and
+website); that company name is not classified as a sensitive DB field. It must
+never persist the raw business number, opening date, or representative name.
+The only persistent strong identifier is lower-case
 `HMAC-SHA-256(BUSINESS_NUMBER_HMAC_SECRET,
 "breadlab:business-number:v1\\0" + ten_digits)`.
 

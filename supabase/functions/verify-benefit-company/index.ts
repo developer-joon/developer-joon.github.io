@@ -2,7 +2,8 @@ import { createClient } from "npm:@supabase/supabase-js@2.117.0";
 
 const MAX_REQUEST_BYTES = 16_384;
 const MAX_NTS_RESPONSE_BYTES = 65_536;
-const NTS_TIMEOUT_MS = 8_000;
+const OPERATION_DEADLINE_MS = 8_000;
+const MAX_HMAC_SECRET_BYTES = 8_192;
 const MAX_BEARER_BYTES = 4_096;
 const EXPECTED_PENDING = "pending";
 const UUID_PATTERN =
@@ -42,13 +43,25 @@ type Input = SafeCompanyFields & {
   openingDate: string;
   representativeName: string;
 };
-type AuthenticatedIdentity = { id: string; providers: string[] };
+type AuthenticatedIdentity = { id: string; currentGoogleIdentity: boolean };
 type Reservation = {
   request_id: string;
-  verification_status: string;
-  status: string;
+  proposed_name: string;
+  region: string | null;
+  industry: string | null;
+  website: string | null;
+  verification_status:
+    | "pending"
+    | "matched"
+    | "mismatched"
+    | "unavailable"
+    | "rejected";
+  status: "pending_review" | "approved" | "merged" | "rejected";
+  revision: number;
   resolved_company_id: string | null;
-  [key: string]: unknown;
+  created_at: string;
+  updated_at: string;
+  verification_method?: "nts_full";
 };
 type FinalizeArguments = {
   requestId: string;
@@ -76,6 +89,7 @@ export type VerificationDependencies = {
   fail(args: FailureArguments): Promise<unknown>;
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
   now(): Date;
+  monotonicNow(): number;
   requestId(): string;
   log(entry: Record<string, unknown>): void;
   setTimeout(
@@ -169,8 +183,8 @@ function loadConfig(deps: VerificationDependencies): Config | null {
     !origins || supabase.protocol !== "https:" || supabase.username ||
     supabase.password ||
     supabase.pathname !== "/" || supabase.search || supabase.hash ||
-    values.BUSINESS_NUMBER_HMAC_SECRET!.length < 32 ||
-    utf8Length(values.BUSINESS_NUMBER_HMAC_SECRET!) < 32
+    utf8Length(values.BUSINESS_NUMBER_HMAC_SECRET!) < 32 ||
+    utf8Length(values.BUSINESS_NUMBER_HMAC_SECRET!) > MAX_HMAC_SECRET_BYTES
   ) return null;
   return {
     supabaseUrl: supabase.origin,
@@ -218,13 +232,108 @@ function validUuid(value: string | null): value is string {
     value !== "00000000-0000-0000-0000-000000000000";
 }
 
-function parseContentLength(request: Request): number | null {
+class BodyTooLargeError extends Error {}
+class DeadlineExceededError extends Error {}
+
+function contentLengthHint(request: Request): number | null {
   const raw = request.headers.get("content-length");
-  if (!raw || !/^(0|[1-9][0-9]*)$/.test(raw)) return null;
+  if (raw === null) return null;
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) throw new BodyTooLargeError();
   const value = Number(raw);
-  return Number.isSafeInteger(value) && value <= MAX_REQUEST_BYTES
-    ? value
-    : null;
+  if (!Number.isSafeInteger(value) || value > MAX_REQUEST_BYTES) {
+    throw new BodyTooLargeError();
+  }
+  return value;
+}
+
+async function readRequestText(request: Request): Promise<string> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("body");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let cancelled = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (total + value.byteLength > MAX_REQUEST_BYTES) {
+        cancelled = true;
+        void reader.cancel().catch(() => {});
+        throw new BodyTooLargeError();
+      }
+      total += value.byteLength;
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } finally {
+      bytes.fill(0);
+    }
+  } catch (error) {
+    if (!cancelled) void reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    chunks.length = 0;
+    reader.releaseLock();
+  }
+}
+
+class OperationDeadline {
+  readonly controller = new AbortController();
+  readonly expiresAt: number;
+  readonly timeout: Promise<never>;
+  #expired = false;
+  #timer: ReturnType<typeof setTimeout>;
+  #reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+  constructor(
+    private readonly deps: VerificationDependencies,
+    milliseconds: number,
+  ) {
+    this.expiresAt = deps.monotonicNow() + milliseconds;
+    let rejectTimeout: (error: DeadlineExceededError) => void = () => {};
+    this.timeout = new Promise<never>((_resolve, reject) => {
+      rejectTimeout = reject;
+    });
+    this.#timer = deps.setTimeout(() => {
+      this.#expired = true;
+      this.controller.abort();
+      if (this.#reader) void this.#reader.cancel().catch(() => {});
+      rejectTimeout(new DeadlineExceededError());
+    }, milliseconds);
+  }
+
+  check(): void {
+    if (this.#expired || this.deps.monotonicNow() >= this.expiresAt) {
+      this.#expired = true;
+      this.controller.abort();
+      if (this.#reader) void this.#reader.cancel().catch(() => {});
+      throw new DeadlineExceededError();
+    }
+  }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    this.check();
+    const result = await Promise.race([operation(), this.timeout]);
+    this.check();
+    return result;
+  }
+
+  setReader(reader: ReadableStreamDefaultReader<Uint8Array> | null): void {
+    this.#reader = reader;
+    if (reader) this.check();
+  }
+
+  close(): void {
+    this.#reader = null;
+    this.deps.clearTimeout(this.#timer);
+  }
 }
 
 // JSON.parse accepts duplicate names. This scanner rejects them at every object depth.
@@ -317,6 +426,49 @@ function boundedText(
     /\s{2,}/u.test(value)
   ) throw new Error("field");
   return value;
+}
+
+function strictTimestamp(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|([+-])(\d{2}):(\d{2}))$/
+      .exec(value);
+  if (!match) return null;
+  const [
+    ,
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    zone,
+    ,
+    zoneHour,
+    zoneMinute,
+  ] = match;
+  if (
+    !validCalendarDate(`${year}${month}${day}`) || Number(hour) > 23 ||
+    Number(minute) > 59 || Number(second) > 59 ||
+    (zone !== "Z" &&
+      (Number(zoneHour) > 14 || Number(zoneMinute) > 59 ||
+        (Number(zoneHour) === 14 && Number(zoneMinute) !== 0)))
+  ) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function hasCurrentGoogleIdentity(user: {
+  last_sign_in_at?: unknown;
+  identities?: unknown;
+  app_metadata?: unknown;
+}): boolean {
+  const current = strictTimestamp(user.last_sign_in_at);
+  if (current === null || !Array.isArray(user.identities)) return false;
+  const matching = user.identities.filter((identity) =>
+    isRecord(identity) && strictTimestamp(identity.last_sign_in_at) === current
+  );
+  return matching.length === 1 && matching[0].provider === "google";
 }
 
 function validCalendarDate(value: string): boolean {
@@ -450,31 +602,65 @@ export async function businessNumberDigest(
   return hex(new Uint8Array(digest));
 }
 
-function decodeReservation(value: unknown): Reservation {
+const COMPANY_ID_PATTERN =
+  /^(?:KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10}|KR-CAN-[0-9a-f]{32})$/;
+
+type RpcResultKind = "reserve" | "finalize" | "failure";
+
+function decodeReservation(
+  value: unknown,
+  kind: RpcResultKind,
+  expectedRequestId?: string,
+  expectedFailure?: FailureArguments["category"],
+): Reservation {
   if (!isRecord(value)) throw new Error("reservation");
-  const keys = Object.keys(value).sort();
-  if (
-    !(keys.length === OWNER_KEYS.length ||
-      (keys.length === OWNER_KEYS.length + 1 &&
-        keys.includes("verification_method")))
-  ) throw new Error("reservation");
-  if (!OWNER_KEYS.every((key) => keys.includes(key))) {
-    throw new Error("reservation");
-  }
+  const expectedKeys = kind === "reserve"
+    ? OWNER_KEYS
+    : [...OWNER_KEYS, "verification_method"];
+  if (!exactKeys(value, expectedKeys)) throw new Error("reservation");
+  const created = strictTimestamp(value.created_at);
+  const updated = strictTimestamp(value.updated_at);
+  const nullableText = (item: unknown) =>
+    item === null || (typeof item === "string" && utf8Length(item) <= 8_192);
   if (
     !validUuid(
       typeof value.request_id === "string" ? value.request_id : null,
     ) ||
-    typeof value.verification_status !== "string" ||
-    typeof value.status !== "string" ||
+    (expectedRequestId !== undefined &&
+      value.request_id !== expectedRequestId) ||
+    typeof value.proposed_name !== "string" || value.proposed_name.length < 1 ||
+    utf8Length(value.proposed_name) > 800 ||
+    !nullableText(value.region) || !nullableText(value.industry) ||
+    !nullableText(value.website) ||
+    !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 ||
+    created === null || updated === null || updated < created ||
     !(value.resolved_company_id === null ||
-      typeof value.resolved_company_id === "string")
+      (typeof value.resolved_company_id === "string" &&
+        COMPANY_ID_PATTERN.test(value.resolved_company_id))) ||
+    (kind !== "reserve" && value.verification_method !== "nts_full")
+  ) throw new Error("reservation");
+
+  const pending = value.status === "pending_review" &&
+    value.verification_status === "pending" &&
+    value.resolved_company_id === null;
+  const success = (value.status === "approved" || value.status === "merged") &&
+    value.verification_status === "matched" &&
+    typeof value.resolved_company_id === "string";
+  const failure = value.status === "rejected" &&
+    ["mismatched", "unavailable", "rejected"].includes(
+      String(value.verification_status),
+    ) && value.resolved_company_id === null;
+  if (!(pending || success || failure)) throw new Error("reservation");
+  if (kind === "finalize" && !success) throw new Error("reservation");
+  if (
+    kind === "failure" &&
+    (!failure || value.verification_status !== expectedFailure)
   ) throw new Error("reservation");
   return value as Reservation;
 }
 
 function terminalReplay(reservation: Reservation): boolean {
-  return ["approved", "merged", "rejected"].includes(reservation.status);
+  return reservation.status !== "pending_review";
 }
 
 function publicResult(reservation: Reservation, origin: string): Response {
@@ -523,7 +709,10 @@ const STATUS_KEYS = [
   "rbf_tax_type_cd",
 ];
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+async function readBoundedJson(
+  response: Response,
+  deadline: OperationDeadline,
+): Promise<unknown> {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     throw new NtsError();
   }
@@ -540,15 +729,20 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   if (!reader) throw new NtsError();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  deadline.setReader(reader);
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await deadline.run(() => reader.read());
       if (done) break;
+      if (total + value.byteLength > MAX_NTS_RESPONSE_BYTES) {
+        void reader.cancel().catch(() => {});
+        throw new NtsError();
+      }
       total += value.byteLength;
-      if (total > MAX_NTS_RESPONSE_BYTES) throw new NtsError();
       chunks.push(value);
     }
   } finally {
+    deadline.setReader(null);
     reader.releaseLock();
   }
   const bytes = new Uint8Array(total);
@@ -612,7 +806,15 @@ function decodeStatus(value: unknown, businessNumber: string): boolean {
     row.b_no !== businessNumber || typeof row.b_stt !== "string" ||
     typeof row.b_stt_cd !== "string"
   ) throw new NtsError();
-  return row.b_stt_cd === "01" && row.b_stt === "계속사업자";
+  const labels: Record<string, string> = {
+    "01": "계속사업자",
+    "02": "휴업자",
+    "03": "폐업자",
+  };
+  if (!(row.b_stt_cd in labels) || row.b_stt !== labels[row.b_stt_cd]) {
+    throw new NtsError();
+  }
+  return row.b_stt_cd === "01";
 }
 
 function ntsUrl(endpoint: "validate" | "status", serviceKey: string): string {
@@ -626,16 +828,18 @@ async function callNts(
   config: Config,
   endpoint: "validate" | "status",
   payload: unknown,
-  signal: AbortSignal,
+  deadline: OperationDeadline,
 ): Promise<unknown> {
-  const response = await deps.fetch(ntsUrl(endpoint, config.ntsServiceKey), {
-    method: "POST",
-    redirect: "error",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-    signal,
-  });
-  return await readBoundedJson(response);
+  const response = await deadline.run(() =>
+    deps.fetch(ntsUrl(endpoint, config.ntsServiceKey), {
+      method: "POST",
+      redirect: "error",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: deadline.controller.signal,
+    })
+  );
+  return await readBoundedJson(response, deadline);
 }
 
 function errorFromRpc(error: unknown): PublicError {
@@ -684,8 +888,8 @@ export async function handleVerifyBenefitCompany(
   let statusCategory = "internal";
   let allowedOrigin: string | null = null;
   let input: Input | null = null;
-  let authorization: string | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let authorization: ReturnType<Headers["get"]> = null;
+  let deadline: OperationDeadline | null = null;
   try {
     const config = loadConfig(deps);
     if (!config) {
@@ -775,8 +979,9 @@ export async function handleVerifyBenefitCompany(
         origin,
       );
     }
-    const length = parseContentLength(request);
-    if (length === null || length > MAX_REQUEST_BYTES) {
+    try {
+      contentLengthHint(request);
+    } catch {
       result = "body_too_large";
       statusCategory = "client_error";
       return safeError(
@@ -791,15 +996,23 @@ export async function handleVerifyBenefitCompany(
     }
     let raw: string;
     try {
-      const bytes = new Uint8Array(await request.arrayBuffer());
-      if (bytes.byteLength !== length || bytes.byteLength > MAX_REQUEST_BYTES) {
-        throw new Error("size");
-      }
-      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      bytes.fill(0);
+      raw = await readRequestText(request);
       input = parseInput(raw);
       raw = "";
-    } catch {
+    } catch (error) {
+      if (error instanceof BodyTooLargeError) {
+        result = "body_too_large";
+        statusCategory = "client_error";
+        return safeError(
+          new PublicError(
+            413,
+            "body_too_large",
+            "요청 본문이 너무 큽니다.",
+            "client_error",
+          ),
+          origin,
+        );
+      }
       result = "invalid_request";
       statusCategory = "client_error";
       return safeError(
@@ -840,10 +1053,12 @@ export async function handleVerifyBenefitCompany(
         origin,
       );
     }
+    deadline = new OperationDeadline(deps, OPERATION_DEADLINE_MS);
     let identity: AuthenticatedIdentity;
     try {
-      identity = await deps.authenticate(authorization);
-    } catch {
+      identity = await deadline.run(() => deps.authenticate(authorization!));
+    } catch (error) {
+      if (error instanceof DeadlineExceededError) throw error;
       result = "authentication_required";
       statusCategory = "unauthenticated";
       return safeError(
@@ -856,10 +1071,7 @@ export async function handleVerifyBenefitCompany(
         origin,
       );
     }
-    if (
-      !validUuid(identity.id) || identity.providers.length !== 1 ||
-      identity.providers[0] !== "google"
-    ) {
+    if (!validUuid(identity.id) || !identity.currentGoogleIdentity) {
       result = "google_identity_required";
       statusCategory = "forbidden";
       return safeError(
@@ -878,11 +1090,16 @@ export async function handleVerifyBenefitCompany(
       industry: input.industry,
       website: input.website,
     };
-    const payloadFingerprint = await safePayloadFingerprint(fields);
+    const payloadFingerprint = await deadline.run(() =>
+      safePayloadFingerprint(fields)
+    );
     let reservation: Reservation;
     try {
       reservation = decodeReservation(
-        await deps.reserve(authorization, idempotencyKey, fields),
+        await deadline.run(() =>
+          deps.reserve(authorization!, idempotencyKey, fields)
+        ),
+        "reserve",
       );
     } catch (error) {
       const safe = errorFromRpc(error);
@@ -912,8 +1129,6 @@ export async function handleVerifyBenefitCompany(
       );
     }
 
-    const controller = new AbortController();
-    timer = deps.setTimeout(() => controller.abort(), NTS_TIMEOUT_MS);
     let failureCategory: FailureArguments["category"] | null = null;
     try {
       const validate = await callNts(deps, config, "validate", {
@@ -928,36 +1143,48 @@ export async function handleVerifyBenefitCompany(
           b_type: "",
           b_adr: "",
         }],
-      }, controller.signal);
+      }, deadline);
       if (decodeValidate(validate, input) === "mismatched") {
         failureCategory = "mismatched";
       }
       if (!failureCategory) {
         const status = await callNts(deps, config, "status", {
           b_no: [input.businessNumber],
-        }, controller.signal);
+        }, deadline);
         if (!decodeStatus(status, input.businessNumber)) {
           failureCategory = "rejected";
         }
       }
     } catch {
       failureCategory = "unavailable";
-    } finally {
-      if (timer !== null) {
-        deps.clearTimeout(timer);
-        timer = null;
-      }
     }
     if (failureCategory) {
       try {
-        await deps.fail({
-          requestId: reservation.request_id,
-          expectedVerificationStatus: EXPECTED_PENDING,
-          payloadFingerprint,
-          category: failureCategory,
-        });
+        decodeReservation(
+          await deadline.run(() =>
+            deps.fail({
+              requestId: reservation.request_id,
+              expectedVerificationStatus: EXPECTED_PENDING,
+              payloadFingerprint,
+              category: failureCategory!,
+            })
+          ),
+          "failure",
+          reservation.request_id,
+          failureCategory,
+        );
       } catch {
-        // Failure persistence is best effort; the public result remains fail-closed.
+        result = "verification_unavailable";
+        statusCategory = "unavailable";
+        return safeError(
+          new PublicError(
+            502,
+            "verification_unavailable",
+            "사업자 확인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+            "unavailable",
+          ),
+          origin,
+        );
       }
       result = failureCategory;
       statusCategory = failureCategory;
@@ -977,20 +1204,26 @@ export async function handleVerifyBenefitCompany(
         origin,
       );
     }
-    const digest = await businessNumberDigest(
-      config.hmacSecret,
-      input.businessNumber,
+    const digest = await deadline.run(() =>
+      businessNumberDigest(
+        config.hmacSecret,
+        input!.businessNumber,
+      )
     );
     let finalized: Reservation;
     try {
       finalized = decodeReservation(
-        await deps.finalize({
-          requestId: reservation.request_id,
-          expectedVerificationStatus: EXPECTED_PENDING,
-          payloadFingerprint,
-          businessNumberDigest: digest,
-          externalVerifiedAt: deps.now().toISOString(),
-        }),
+        await deadline.run(() =>
+          deps.finalize({
+            requestId: reservation.request_id,
+            expectedVerificationStatus: EXPECTED_PENDING,
+            payloadFingerprint,
+            businessNumberDigest: digest,
+            externalVerifiedAt: deps.now().toISOString(),
+          })
+        ),
+        "finalize",
+        reservation.request_id,
       );
     } catch (error) {
       const safe = errorFromRpc(error);
@@ -1005,7 +1238,20 @@ export async function handleVerifyBenefitCompany(
     result = "verified";
     statusCategory = finalized.status;
     return publicResult(finalized, origin);
-  } catch {
+  } catch (error) {
+    if (error instanceof DeadlineExceededError) {
+      result = "verification_unavailable";
+      statusCategory = "unavailable";
+      return safeError(
+        new PublicError(
+          502,
+          "verification_unavailable",
+          "사업자 확인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+          "unavailable",
+        ),
+        allowedOrigin,
+      );
+    }
     result = "internal_error";
     statusCategory = "internal";
     return safeError(
@@ -1018,7 +1264,7 @@ export async function handleVerifyBenefitCompany(
       allowedOrigin,
     );
   } finally {
-    if (timer !== null) deps.clearTimeout(timer);
+    deadline?.close();
     authorization = null;
     input = null;
     deps.log({
@@ -1061,10 +1307,9 @@ function runtimeDependencies(): VerificationDependencies {
         token,
       );
       if (error || !data.user) throw new Error("auth");
-      const provider = data.user.app_metadata?.provider;
       return {
         id: data.user.id,
-        providers: typeof provider === "string" ? [provider] : [],
+        currentGoogleIdentity: hasCurrentGoogleIdentity(data.user),
       };
     },
     reserve: async (authorization, idempotencyKey, fields) => {
@@ -1110,6 +1355,7 @@ function runtimeDependencies(): VerificationDependencies {
     },
     fetch: (input, init) => fetch(input, init),
     now: () => new Date(),
+    monotonicNow: () => performance.now(),
     requestId: () => crypto.randomUUID(),
     log: (entry) => console.log(JSON.stringify(entry)),
     setTimeout: (callback, delay) => globalThis.setTimeout(callback, delay),
