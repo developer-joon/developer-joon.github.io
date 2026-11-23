@@ -9,6 +9,7 @@ import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from '
 import { createBenefitCorrectionDraft, loadBenefitCorrectionDraft, saveBenefitCorrectionDraft, submitBenefitCorrectionDraft, type BenefitCorrectionDraftStorage } from '../lib/benefitCorrectionDraftStore'
 import { isBenefitCompanyId, isLegacyBenefitArtifactCompanyId } from '../lib/benefitCompanyId'
 import { BENEFIT_CATEGORIES, type BenefitCorrectionDraft } from '../types/benefitCorrections'
+import type { BenefitDirectoryPublication } from '../types/benefitDirectory'
 import { categoryLabels, isResearchedOutcome, researchStateLabels, type CompanyListing } from '../types/benefits'
 
 interface Props {
@@ -19,7 +20,7 @@ interface Props {
   currentPath?: string
 }
 
-type CorrectionCompany = { companyId: string; displayName: string; artifact?: CompanyListing }
+type CorrectionCompany = { companyId: string; displayName: string; artifact?: CompanyListing; publications?: BenefitDirectoryPublication[] }
 
 
 const correctionBasePath = '/community/benefits/correction/'
@@ -34,6 +35,26 @@ function displayedValue(company: CompanyListing, category: BenefitCorrectionDraf
   if (!outcome) return '근거 부족'
   if (isResearchedOutcome(outcome)) return researchStateLabels[outcome.state]
   return outcome.kind === 'evidenced' ? (outcome.status === 'confirmed' ? '공식 확인' : '범위 제한 확인') : '근거 부족'
+}
+function displayedPublications(publications: BenefitDirectoryPublication[], category: BenefitCorrectionDraft['categoryId']) {
+  if (!category) return ''
+  const matching = publications.filter(publication => publication.categoryId === category)
+  if (matching.length === 0) return null
+  return matching.map(publication => [
+    `${publication.title} — ${publication.description}`,
+    publication.eligibilityText && `대상: ${publication.eligibilityText}`,
+    publication.conditionText && `조건: ${publication.conditionText}`,
+    publication.trustLabel,
+  ].filter(Boolean).join(' · ')).join(' / ')
+}
+function correctionCurrentText(company: CorrectionCompany | undefined, category: BenefitCorrectionDraft['categoryId']) {
+  if (!company || !category) return ''
+  if (company.publications) {
+    const published = displayedPublications(company.publications, category)
+    if (published !== null) return published
+  }
+  if (company.artifact) return displayedValue(company.artifact, category)
+  return '공개 확인된 복지 정보 없음'
 }
 function safeCorrectionPath(path: string) {
   try {
@@ -97,8 +118,8 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
         if (companyId && isBenefitCompanyId(companyId)) {
           const detail = await directoryRepository.detail(companyId, controller.signal)
           if (generation !== lifecycle.current || controller.signal.aborted) return
-          if (!detail.ok) { setLoadError(detail.error.message); return }
-          const dynamic = { companyId: detail.data.company.companyId, displayName: detail.data.company.displayName }
+          if (!detail.ok) { setLoadError('기업 복지 기준 정보를 불러오지 못했습니다.'); return }
+          const dynamic = { companyId: detail.data.company.companyId, displayName: detail.data.company.displayName, publications: detail.data.publications }
           const existing = options.findIndex(value => value.companyId === dynamic.companyId)
           if (existing >= 0) options[existing] = { ...dynamic, artifact: options[existing].artifact }
           else options.push(dynamic)
@@ -108,7 +129,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
           ...base,
           companyId,
           categoryId,
-          currentText: base.currentText || (selectedCompany?.artifact ? displayedValue(selectedCompany.artifact, categoryId) : selectedCompany ? '공개 확인된 복지 정보 없음' : ''),
+          currentText: base.currentText || correctionCurrentText(selectedCompany, categoryId),
           observedDataVersion: base.observedDataVersion || artifacts.manifest.data_version,
         }
         saveBenefitCorrectionDraft(accountScope, next, draftStorage)
@@ -129,7 +150,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
     let next = { ...draft, ...patch, updatedAt: new Date().toISOString() }
     if (patch.companyId !== undefined || patch.categoryId !== undefined) {
       const company = companies?.find(value => value.companyId === next.companyId)
-      next = { ...next, currentText: company?.artifact ? displayedValue(company.artifact, next.categoryId) : company ? '공개 확인된 복지 정보 없음' : '' }
+      next = { ...next, currentText: correctionCurrentText(company, next.categoryId) }
     }
     saveBenefitCorrectionDraft(next.accountScope, next, draftStorage)
     setDraft(next)
