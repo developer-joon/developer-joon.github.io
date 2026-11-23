@@ -8,7 +8,7 @@ const now = '2026-11-23T01:00:00.000000+00:00'
 const later = '2026-11-23T02:00:00.000000+00:00'
 const owner = { claim_id: claimId, company_id: 'KR-BIZ-1234567890', company_name: '테스트', category_id: 'health', title: '건강 검진', description: '매년 검진', eligibility_text: null, condition_text: null, observed_on: '2026-11-22', status: 'submitted', revision: 1, created_at: now, updated_at: now, withdrawn_at: null }
 const page = { items: [owner], has_more: false, next_cursor: null }
-const ok = (data: unknown) => ({ data, error: null, status: 200, statusText: 'OK' })
+const ok = (data: unknown) => ({ data, error: null, count: null, status: 200, statusText: 'OK' })
 function context(fingerprint = 'token-1', rpc: BenefitClaimSessionContext['rpc'] = vi.fn(async () => ok(page))): BenefitClaimSessionContext { return { actorId: actor, sessionFingerprint: fingerprint, rpc } }
 
 const createInput = { clientKey: 'd1000000-0000-4000-8000-000000000001', companyId: 'KR-BIZ-1234567890', categoryId: 'health' as const, title: '건강 검진', description: '매년 검진', eligibilityText: null, conditionText: null, observedOn: '2026-11-22', sourceUrl: null }
@@ -85,6 +85,13 @@ describe('benefit claim repository', () => {
     expect(rpc).not.toHaveBeenCalled()
   })
 
+  it('returns aborted when a fulfilled RPC settles after cancellation', async () => {
+    const controller = new AbortController()
+    const rpc = vi.fn(async () => { controller.abort(); return ok({ claim_id: claimId, outcome: 'created' }) })
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
+    await expect(repo.createClaim(createInput, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
+  })
+
   it('rejects future observations before transport', async () => {
     const rpc = vi.fn()
     const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
@@ -100,8 +107,8 @@ describe('benefit claim repository', () => {
   })
 
   it('requires the shared exact submission transport envelope', async () => {
-    for (const envelope of [{ ...ok({ claim_id: claimId, outcome: 'created' }), count: null }, { data: { claim_id: claimId }, error: { code: 'XX000', message: 'secret' }, status: 500, statusText: '' }]) {
-      const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => envelope)) })
+    for (const envelope of [{ data:{claim_id:claimId,outcome:'created'},error:null,status:200,statusText:'OK' }, { data: { claim_id: claimId }, error: { code: 'XX000', message: 'secret' }, count:null, status: 500, statusText: '' }]) {
+      const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => envelope) as never) })
       const result = await repo.createClaim(createInput)
       expect(result).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
     }
@@ -109,8 +116,8 @@ describe('benefit claim repository', () => {
 
   it.each([
     { ...ok({ claim_id: claimId, outcome: 'created' }), extra: 'private' },
-    { data: null, error: { code: 'XX000', message: 'private', details: null, hint: null, reviewer_id: actor }, status: 500, statusText: 'Error' },
-    { data: null, error: { code: 'XX000', message: 'private', details: { nested: true }, hint: null }, status: 500, statusText: 'Error' },
+    { data: null, error: { code: 'XX000', message: 'private', details: null, hint: null, reviewer_id: actor }, count:null, status: 500, statusText: 'Error' },
+    { data: null, error: { code: 'XX000', message: 'private', details: { nested: true }, hint: null }, count:null, status: 500, statusText: 'Error' },
   ])('rejects outer and nested transport leak keys', async envelope => {
     const result = await createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => envelope)) }).createClaim(createInput)
     expect(result).toEqual({ ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } })
@@ -228,7 +235,7 @@ describe('benefit claim repository', () => {
   })
 
   it('maps backend errors without leaking raw details', async () => {
-    const rpc = vi.fn(async () => ({ data: null, error: { code: 'XX000', message: 'secret SQL https://project.supabase.co/rest/v1/rpc/create_benefit_claim_v1', details: null, hint: null }, status: 500, statusText: 'secret' }))
+    const rpc = vi.fn(async () => ({ data: null, error: { code: 'XX000', message: 'secret SQL https://project.supabase.co/rest/v1/rpc/create_benefit_claim_v1', details: null, hint: null }, count:null, status: 500, statusText: 'secret' }))
     const result = await createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) }).createClaim(createInput)
     expect(result).toMatchObject({ ok: false, error: { code: 'unavailable' } }); expect(JSON.stringify(result)).not.toMatch(/secret|SQL|supabase|rpc/i)
   })

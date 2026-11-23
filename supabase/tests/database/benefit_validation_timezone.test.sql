@@ -3,10 +3,14 @@ select no_plan();
 
 select ok((select bool_and(p.proconfig @> array['TimeZone=UTC']) from pg_catalog.pg_proc p where p.oid=any(array[
   'public.create_benefit_claim_v1(uuid,text,text,text,text,text,text,date,text)'::regprocedure,
+  'private.create_benefit_claim_impl_v1(uuid,text,text,text,text,text,text,date,text)'::regprocedure,
   'private.validate_benefit_claim_official_review()'::regprocedure,
   'public.officially_verify_benefit_claim_v1(uuid,text,bigint,text,text,text,text,text,text,date,text,uuid)'::regprocedure,
   'public.moderate_benefit_claim_v1(uuid,uuid,bigint,text,text,uuid,text,text,date,text)'::regprocedure
 ])),'all current-date benefit validators pin UTC in function configuration');
+select is((select pronargdefaults::integer from pg_catalog.pg_proc where oid='public.create_benefit_claim_v1(uuid,text,text,text,text,text,text,date,text)'::regprocedure),0,'public create claim RPC has no caller-evaluated defaults');
+select ok((select prosecdef and proconfig @> array['search_path=""','TimeZone=UTC'] from pg_catalog.pg_proc where oid='public.create_benefit_claim_v1(uuid,text,text,text,text,text,text,date,text)'::regprocedure),'public create claim wrapper is security definer with empty search path and UTC');
+select ok(not has_function_privilege('anon','private.create_benefit_claim_impl_v1(uuid,text,text,text,text,text,text,date,text)','execute') and not has_function_privilege('authenticated','private.create_benefit_claim_impl_v1(uuid,text,text,text,text,text,text,date,text)','execute') and not has_function_privilege('service_role','private.create_benefit_claim_impl_v1(uuid,text,text,text,text,text,text,date,text)','execute'),'hidden implementation is not executable by Data API roles');
 
 insert into auth.users(id,aud,role,email) values
  ('bc100000-0000-4000-8000-000000000001','authenticated','authenticated','utc-member@example.test'),
@@ -27,6 +31,7 @@ update private.benefit_feature_settings set enabled=true,updated_at=clock_timest
 set local role authenticated;
 set local request.jwt.claim.sub='bc100000-0000-4000-8000-000000000001';
 set local timezone='Pacific/Kiritimati';
+select throws_ok($$select public.create_benefit_claim_v1('bc200000-0000-4000-8000-000000000000','KR-BIZ-9910000001','health','Missing explicit fields','Must fail')$$,'42883','function public.create_benefit_claim_v1(unknown, unknown, unknown, unknown, unknown) does not exist','claim creation rejects omission instead of evaluating a caller-local date default');
 select lives_ok($$select public.create_benefit_claim_v1('bc200000-0000-4000-8000-000000000001','KR-BIZ-9910000001','health','UTC plus fourteen','UTC date accepted',null,null,pg_catalog.timezone('UTC',pg_catalog.statement_timestamp())::date,null)$$,'claim creation accepts the UTC day in UTC+14');
 select throws_ok($$select public.create_benefit_claim_v1('bc200000-0000-4000-8000-000000000002','KR-BIZ-9910000001','health','UTC future plus fourteen','UTC future rejected',null,null,pg_catalog.timezone('UTC',pg_catalog.statement_timestamp())::date+1,null)$$,'22023','invalid observed date','claim creation rejects the next UTC day in UTC+14');
 set local timezone='Etc/GMT+12';

@@ -25,7 +25,7 @@ import {
   type ReviewBenefitCorrectionInput,
 } from '../types/benefitCorrections'
 
-export interface BenefitCorrectionRpcResponse { data: unknown; error: unknown }
+export interface BenefitCorrectionRpcResponse { data: unknown; error: unknown; count: null; status: number; statusText: string }
 export interface BenefitCorrectionRpcClient {
   rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<BenefitCorrectionRpcResponse>
 }
@@ -62,16 +62,20 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
 function boundedTransportScalar(value: unknown, max: number) {
   return value === null || (typeof value === 'string' && new TextEncoder().encode(value).length <= max)
 }
-function validPostgrestError(value: unknown, withStatus: boolean): value is Record<string, unknown> {
-  if (!isRecord(value) || !hasExactKeys(value, withStatus ? ['code','message','details','hint','status'] : ['code','message','details','hint'])) return false
+function validPostgrestError(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !hasExactKeys(value, ['code','message','details','hint'])) return false
   return typeof value.code === 'string' && value.code.length > 0 && new TextEncoder().encode(value.code).length <= 100
     && typeof value.message === 'string' && value.message.length > 0 && new TextEncoder().encode(value.message).length <= 4000
     && boundedTransportScalar(value.details,4000) && boundedTransportScalar(value.hint,4000)
-    && (!withStatus || (Number.isInteger(value.status) && (value.status as number) >= 400 && (value.status as number) <= 599))
 }
 function validCorrectionEnvelope(value: unknown): value is BenefitCorrectionRpcResponse {
-  return isRecord(value) && hasExactKeys(value,['data','error'])
-    && (value.error === null || (value.data === null && validPostgrestError(value.error,true)))
+  if (!isRecord(value) || !hasExactKeys(value,['data','error','count','status','statusText']) || value.count !== null
+    || !Number.isInteger(value.status) || (value.status as number) < 100 || (value.status as number) > 599
+    || typeof value.statusText !== 'string' || new TextEncoder().encode(value.statusText).length > 800
+    || Array.from(value.statusText).some(character => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127)) return false
+  return value.error === null
+    ? (value.status as number) >= 200 && (value.status as number) < 300 && value.status !== 204
+    : value.data === null && (value.status as number) >= 400 && validPostgrestError(value.error)
 }
 function isLeapYear(year: number) { return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) }
 function daysInMonth(year: number, month: number) { return month === 2 ? (isLeapYear(year) ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31 }
@@ -144,10 +148,24 @@ function decodeCursor(value: unknown): BenefitCorrectionCursor {
   if (!isRecord(value) || !hasExactKeys(value, ['created_at', 'id']) || !isBenefitCorrectionTimestamp(value.created_at) || !isCanonicalUuid(value.id)) throw new Error('invalid cursor')
   return { createdAt: value.created_at, id: value.id.toLowerCase() }
 }
-function decodePage<T extends BenefitCorrectionItem>(value: unknown, admin: boolean): BenefitCorrectionPage<T> {
-  if (!isRecord(value) || !hasExactKeys(value, ['items', 'has_more', 'next_cursor']) || !Array.isArray(value.items) || typeof value.has_more !== 'boolean') throw new Error('invalid page')
+function isDenseArray(value: unknown[]) {
+  for (let index=0; index<value.length; index+=1) if (!Object.prototype.hasOwnProperty.call(value,index)) return false
+  return true
+}
+function decodePage<T extends BenefitCorrectionItem>(value: unknown, input: BenefitCorrectionListInput, admin: boolean): BenefitCorrectionPage<T> {
+  if (!isRecord(value) || !hasExactKeys(value, ['items', 'has_more', 'next_cursor']) || !Array.isArray(value.items) || !isDenseArray(value.items) || value.items.length > input.limit || typeof value.has_more !== 'boolean' || (value.has_more&&value.items.length!==input.limit)) throw new Error('invalid page')
   if ((value.has_more && value.next_cursor === null) || (!value.has_more && value.next_cursor !== null)) throw new Error('invalid page cursor state')
-  return { items: value.items.map(item => decodeBenefitCorrectionItem(item, admin) as T), hasMore: value.has_more, nextCursor: value.next_cursor === null ? null : decodeCursor(value.next_cursor) }
+  const items=value.items.map(item => decodeBenefitCorrectionItem(item, admin) as T)
+  if (new Set(items.map(item=>item.id)).size!==items.length || !items.every((item,index)=>index===0||compareCorrectionTuple(items[index-1],item)>0)
+    || (input.cursor&&items.some(item=>compareCorrectionTuple(item,input.cursor!)>=0))) throw new Error('invalid page order')
+  const nextCursor=value.next_cursor===null?null:decodeCursor(value.next_cursor)
+  if (nextCursor&&(items.length===0||compareCorrectionTuple(items[items.length-1],nextCursor)!==0)) throw new Error('invalid page cursor')
+  return { items, hasMore: value.has_more, nextCursor }
+}
+
+function compareCorrectionTuple(left:{createdAt:string;id:string},right:{createdAt:string;id:string}) {
+  const time=auditTimestampMicros(left.createdAt)-auditTimestampMicros(right.createdAt)
+  return time<0n?-1:time>0n?1:left.id<right.id?-1:left.id>right.id?1:0
 }
 
 function isCorrectionStatus(value: unknown): value is BenefitCorrectionItem['status'] {
@@ -198,11 +216,10 @@ function compareAuditTuple(left: { createdAt: string; sequence: string }, right:
 }
 
 function decodeAuditPage(value: unknown, input: BenefitCorrectionAuditInput): BenefitCorrectionAuditPage {
-  if (!isRecord(value) || !hasExactKeys(value, ['items', 'has_more', 'next_cursor']) || !Array.isArray(value.items) || typeof value.has_more !== 'boolean') throw new Error('invalid audit page')
+  if (!isRecord(value) || !hasExactKeys(value, ['items', 'has_more', 'next_cursor']) || !Array.isArray(value.items) || !isDenseArray(value.items) || value.items.length > input.limit || typeof value.has_more !== 'boolean' || (value.has_more&&value.items.length!==input.limit)) throw new Error('invalid audit page')
   if ((value.has_more && value.next_cursor === null) || (!value.has_more && value.next_cursor !== null)) throw new Error('invalid audit page cursor state')
   const items = value.items.map(decodeAuditEvent)
-  if (items.length > input.limit || (value.has_more && items.length === 0)
-    || new Set(items.map(item => item.sequence)).size !== items.length
+  if (new Set(items.map(item => item.sequence)).size !== items.length
     || !items.every((item, index) => index === 0 || compareAuditTuple(items[index - 1], item) < 0)
     || (input.cursor && items.length > 0 && compareAuditTuple(input.cursor, items[0]) >= 0)) throw new Error('invalid audit page order')
   const nextCursor = value.next_cursor === null ? null : decodeAuditCursor(value.next_cursor)
@@ -221,7 +238,7 @@ function sourceCodeFrom(error: unknown): string | undefined {
   }
   return typeof error.code === 'string' ? error.code : undefined
 }
-function mapRpcError(error: unknown): BenefitCorrectionResult<never> {
+function mapRpcError(error: unknown, statusValue?: number): BenefitCorrectionResult<never> {
   if (error instanceof TypeError) return { ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR', message: '네트워크 요청에 실패했습니다.' } }
   if (!isRecord(error)) return { ok: false, error: { code: 'unknown', message: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' } }
   if ((error.code === undefined || error.code === 'FETCH_ERROR') && typeof error.message === 'string'
@@ -229,7 +246,7 @@ function mapRpcError(error: unknown): BenefitCorrectionResult<never> {
     return { ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR', message: '네트워크 요청에 실패했습니다.' } }
   }
   const sourceCode = sourceCodeFrom(error)
-  const status = typeof error.status === 'number' ? error.status : undefined
+  const status = statusValue
   const code = status === 429 || sourceCode === 'rate_limit_exceeded' ? 'rate_limited'
     : status === 401 || sourceCode === 'PGRST303' ? 'auth_required'
       : status === 403 || sourceCode === '42501' ? 'forbidden'
@@ -306,10 +323,8 @@ export function createBenefitCorrectionSessionProvider(
         })
         const payload: unknown = await response.json()
         return response.ok
-          ? { data: payload, error: null }
-          : { data: null, error: validPostgrestError(payload, false) ? {
-            code: payload.code, message: payload.message, details: payload.details, hint: payload.hint, status: response.status,
-          } : payload }
+          ? { data: payload, error: null, count: null, status: response.status, statusText: response.statusText }
+          : { data: null, error: payload, count: null, status: response.status, statusText: response.statusText }
       },
     }
   }
@@ -368,19 +383,16 @@ export function createBenefitCorrectionRepository(options: { getSessionContext: 
     if (!preflight.ok) return preflight
     if (!sameSession(initial.data, preflight.data)) return stale('로그인 세션이 변경되어 요청을 중단했습니다.')
 
-    let response: BenefitCorrectionRpcResponse
+    let response: BenefitCorrectionRpcResponse | undefined
+    let transportError: unknown
     try { response = await initial.data.rpc(name, args, signal) }
-    catch (error) {
-      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) return aborted()
-      return mapRpcError(error)
-    }
+    catch (error) { transportError=error }
+    const after = await captureSession()
+    if (!after.ok || !sameSession(initial.data, after.data)) return stale('로그인 세션이 변경되어 이전 응답을 폐기했습니다.')
+    if (transportError !== undefined) return signal?.aborted || (transportError instanceof DOMException && transportError.name === 'AbortError') ? aborted() : mapRpcError(transportError)
     if (signal?.aborted) return aborted()
-
-    const after = await captureSession(signal)
-    if (!after.ok) return after
-    if (!sameSession(initial.data, after.data)) return stale('로그인 세션이 변경되어 이전 응답을 폐기했습니다.')
     if (!validCorrectionEnvelope(response)) return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } }
-    if (response.error) return mapRpcError(response.error)
+    if (response.error) return mapRpcError(response.error,response.status)
     try { return { ok: true, data: decode(response.data) } }
     catch { return { ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } } }
   }
@@ -398,13 +410,13 @@ export function createBenefitCorrectionRepository(options: { getSessionContext: 
       if (!validListInput(input)) return Promise.resolve(invalidArgument())
       return execute('list_my_benefit_correction_requests_v1', {
         p_limit: input.limit, p_cursor_created_at: input.cursor?.createdAt, p_cursor_id: input.cursor?.id,
-      }, value => decodePage<BenefitCorrectionItem>(value, false), signal)
+      }, value => decodePage<BenefitCorrectionItem>(value, input, false), signal)
     },
     listAdminQueue(input, signal) {
       if (!validListInput(input) || !(BENEFIT_CORRECTION_QUEUE_FILTERS as readonly string[]).includes(input.status)) return Promise.resolve(invalidArgument())
       return execute('list_benefit_correction_queue_v1', {
         p_status: input.status, p_limit: input.limit, p_cursor_created_at: input.cursor?.createdAt, p_cursor_id: input.cursor?.id,
-      }, value => decodePage<AdminBenefitCorrectionItem>(value, true), signal)
+      }, value => decodePage<AdminBenefitCorrectionItem>(value, input, true), signal)
     },
     listAdminAudit(input, signal) {
       if (!validAuditInput(input)) return Promise.resolve(invalidArgument())

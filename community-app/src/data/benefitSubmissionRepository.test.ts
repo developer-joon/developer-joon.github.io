@@ -28,7 +28,7 @@ const input: CreateBenefitSubmissionInput = {
   companyId: 'KR-BIZ-1234567890', categoryId: 'leave', benefitText: wire.benefit_text,
   eligibilityText: null, conditionText: null, sourceUrl: null,
 }
-function context(rpc = vi.fn().mockResolvedValue({ data: wire, error: null, status: 200, statusText: 'OK' })): BenefitSubmissionSessionContext {
+function context(rpc = vi.fn().mockResolvedValue({ data: wire, error: null, count: null, status: 200, statusText: 'OK' })): BenefitSubmissionSessionContext {
   return { actorId: actor, sessionFingerprint: 'session-a', rpc }
 }
 
@@ -41,7 +41,7 @@ describe('benefit submission repository', () => {
   })
 
   it('sends the exact nullable create RPC args and binds completion to one immutable session', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: wire, error: null, status: 200, statusText: 'OK' })
+    const rpc = vi.fn().mockResolvedValue({ data: wire, error: null, count: null, status: 200, statusText: 'OK' })
     const getSessionContext = vi.fn().mockResolvedValue(context(rpc))
     const repository = createBenefitSubmissionRepository({ getSessionContext })
     await expect(repository.createSubmission(input)).resolves.toEqual({ ok: true, data: decodeBenefitSubmissionItem(wire) })
@@ -53,7 +53,7 @@ describe('benefit submission repository', () => {
   })
 
   it('normalizes an optional empty source URL to null', async () => {
-    const rpc = vi.fn().mockResolvedValue({ data: wire, error: null, status: 200, statusText: 'OK' })
+    const rpc = vi.fn().mockResolvedValue({ data: wire, error: null, count: null, status: 200, statusText: 'OK' })
     const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(rpc) })
     await expect(repository.createSubmission({ ...input, sourceUrl: '' })).resolves.toMatchObject({ ok: true })
     expect(rpc).toHaveBeenCalledWith('create_benefit_submission_v1', expect.objectContaining({ p_source_url: null }), undefined)
@@ -62,7 +62,7 @@ describe('benefit submission repository', () => {
   it('accepts and preserves opaque canonical company IDs through create and decode', async () => {
     const companyId = `KR-CAN-${'b'.repeat(32)}`
     const opaqueWire = { ...wire, company_id: companyId }
-    const rpc = vi.fn().mockResolvedValue({ data: opaqueWire, error: null, status: 200, statusText: 'OK' })
+    const rpc = vi.fn().mockResolvedValue({ data: opaqueWire, error: null, count: null, status: 200, statusText: 'OK' })
     const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(rpc) })
     await expect(repository.createSubmission({ ...input, companyId })).resolves.toMatchObject({ ok: true, data: { companyId } })
     expect(rpc).toHaveBeenCalledWith('create_benefit_submission_v1', expect.objectContaining({ p_company_id: companyId }), undefined)
@@ -80,6 +80,14 @@ describe('benefit submission repository', () => {
       .mockResolvedValueOnce(original).mockResolvedValueOnce(original)
       .mockResolvedValueOnce({ ...original, sessionFingerprint: 'session-a-generation-2' }) })
     await expect(repository.createSubmission(input)).resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
+  })
+
+  it('prefers a post-rejection stale session over the transport error', async () => {
+    const original=context(vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+    const repository=createBenefitSubmissionRepository({getSessionContext:vi.fn()
+      .mockResolvedValueOnce(original).mockResolvedValueOnce(original)
+      .mockResolvedValueOnce({...original,sessionFingerprint:'session-a-generation-2'})})
+    await expect(repository.createSubmission(input)).resolves.toMatchObject({ok:false,error:{code:'stale_response'}})
   })
 
   it('advances the immutable session fingerprint across A-B-A auth events', async () => {
@@ -109,26 +117,26 @@ describe('benefit submission repository', () => {
 
   it('decodes bounded dense duplicate-free list pages and exact cursors', async () => {
     const second = { ...wire, id: '44444444-4444-4444-8444-444444444444', created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:00Z' }
-    const rpc = vi.fn().mockResolvedValue({ data: { items: [wire, second], has_more: true, next_cursor: { created_at: second.created_at, id: second.id } }, error: null, status: 200, statusText: 'OK' })
+    const rpc = vi.fn().mockResolvedValue({ data: { items: [wire, second], has_more: true, next_cursor: { created_at: second.created_at, id: second.id } }, error: null, count: null, status: 200, statusText: 'OK' })
     const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(rpc) })
     await expect(repository.listMySubmissions({ limit: 2 })).resolves.toMatchObject({ ok: true, data: { hasMore: true, items: [{ id: wire.id }, { id: second.id }] } })
-    rpc.mockResolvedValueOnce({ data: { items: [wire, wire], has_more: false, next_cursor: null }, error: null, status: 200, statusText: 'OK' })
+    rpc.mockResolvedValueOnce({ data: { items: [wire, wire], has_more: false, next_cursor: null }, error: null, count: null, status: 200, statusText: 'OK' })
     await expect(repository.listMySubmissions({ limit: 2 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
   it('rejects owner pages that replay or cross the request boundary or claim a short next page', async () => {
     const boundary=JSON.stringify({created_at:'2026-11-21T00:00:00Z',id:'55555555-5555-4555-8555-555555555555'})
     const above={...wire,id:'66666666-6666-4666-8666-666666666666'}
-    const rpc=vi.fn().mockResolvedValue({data:{items:[above],has_more:false,next_cursor:null},error:null,status:200,statusText:'OK'})
+    const rpc=vi.fn().mockResolvedValue({data:{items:[above],has_more:false,next_cursor:null},error:null,count:null,status:200,statusText:'OK'})
     const repository=createBenefitSubmissionRepository({getSessionContext:async()=>context(rpc)})
     await expect(repository.listMySubmissions({limit:2,cursor:boundary as never})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
-    rpc.mockResolvedValueOnce({data:{items:[{...wire,created_at:'2026-11-20T00:00:00Z',updated_at:'2026-11-20T00:00:00Z'}],has_more:true,next_cursor:{created_at:'2026-11-20T00:00:00Z',id:wire.id}},error:null,status:200,statusText:'OK'})
+    rpc.mockResolvedValueOnce({data:{items:[{...wire,created_at:'2026-11-20T00:00:00Z',updated_at:'2026-11-20T00:00:00Z'}],has_more:true,next_cursor:{created_at:'2026-11-20T00:00:00Z',id:wire.id}},error:null,count:null,status:200,statusText:'OK'})
     await expect(repository.listMySubmissions({limit:2,cursor:boundary as never})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
   })
 
   it('forwards a valid opaque cursor literal without normalizing its timestamp or UUID',async()=>{
     const literal='{"created_at":"2026-11-21T09:00:00+09:00","id":"55555555-5555-4555-8555-AAAAAAAAAAAA"}'
-    const rpc=vi.fn().mockResolvedValue({data:{items:[],has_more:false,next_cursor:null},error:null,status:200,statusText:'OK'}),repository=createBenefitSubmissionRepository({getSessionContext:async()=>context(rpc)})
+    const rpc=vi.fn().mockResolvedValue({data:{items:[],has_more:false,next_cursor:null},error:null,count:null,status:200,statusText:'OK'}),repository=createBenefitSubmissionRepository({getSessionContext:async()=>context(rpc)})
     await expect(repository.listMySubmissions({limit:2,cursor:literal})).resolves.toMatchObject({ok:true})
     expect(rpc).toHaveBeenCalledWith('list_my_benefit_submissions_v1',{p_limit:2,p_cursor_created_at:'2026-11-21T09:00:00+09:00',p_cursor_id:'55555555-5555-4555-8555-AAAAAAAAAAAA'},undefined)
   })
@@ -145,14 +153,14 @@ describe('benefit submission repository', () => {
     [400, { code: '22023', message: 'client key reused with different payload', details: null, hint: null }, 'idempotency_mismatch'],
     [409, { code: '40001', message: 'conflict', details: null, hint: null }, 'conflict'],
   ])('maps transport errors without exposing server detail', async (status, error, code) => {
-    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(vi.fn().mockResolvedValue({ data: null, error, status, statusText: 'Error' })) })
+    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(vi.fn().mockResolvedValue({ data: null, error, count: null, status, statusText: 'Error' })) })
     const result = await repository.createSubmission(input)
     expect(result).toMatchObject({ ok: false, error: { code } })
     if (!result.ok) expect(result.error.message).not.toContain(error.message)
   })
 
   it.each([
-    { data: wire, error: null, status: 200, statusText: 'OK', extra: 'private' },
+    { data: wire, error: null, count: null, status: 200, statusText: 'OK', extra: 'private' },
     { data: null, error: { code: 'XX000', message: 'private', details: null, hint: null, reviewer_id: actor }, status: 500, statusText: 'Error' },
     { data: null, error: { code: 'XX000', message: 'private', details: { nested: true }, hint: null }, status: 500, statusText: 'Error' },
   ])('rejects outer and nested transport leak keys', async envelope => {

@@ -6,7 +6,7 @@ const requestId = 'b1000000-0000-4000-8000-000000000001'
 const clientKey = 'c1000000-0000-4000-8000-000000000001'
 const created = '2026-11-23T01:00:00.000000+00:00'
 const item = { request_id: requestId, proposed_name: '테스트 기업', region: '서울', industry: '소프트웨어', website: 'https://example.com', verification_status: 'pending', status: 'pending_review', revision: 1, resolved_company_id: null, created_at: created, updated_at: created }
-const ok = (data: unknown) => ({ data, error: null, status: 200, statusText: 'OK' })
+const ok = (data: unknown) => ({ data, error: null, count: null, status: 200, statusText: 'OK' })
 function ctx(fingerprint = 'one', rpc: BenefitCompanyRequestSessionContext['rpc'] = vi.fn(async () => ok(item)), invoke: BenefitCompanyRequestSessionContext['invokeFunction'] = vi.fn(async () => new Response(JSON.stringify({ requestId, status: 'approved', verificationStatus: 'matched', message: '사업자 확인이 완료되었습니다.' }), { status: 200, headers: { 'content-type': 'application/json; charset=utf-8' } }))): BenefitCompanyRequestSessionContext { return { actorId: actor, sessionFingerprint: fingerprint, rpc, invokeFunction: invoke } }
 const manual = { clientKey, proposedName: '테스트 기업', region: '서울', industry: '소프트웨어', website: 'https://example.com' }
 
@@ -58,6 +58,21 @@ describe('benefit company request repository', () => {
     const controller = new AbortController()
     const repo = createBenefitCompanyRequestRepository({ getSessionContext: async () => { controller.abort(); throw new TypeError('secret') } })
     await expect(repo.createManual(manual, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
+  })
+
+  it('returns aborted when fulfilled RPC and Edge transports settle after cancellation', async () => {
+    const rpcController = new AbortController()
+    const rpc = vi.fn(async () => { rpcController.abort(); return ok(item) })
+    const rpcRepo = createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', rpc) })
+    await expect(rpcRepo.createManual(manual, rpcController.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
+
+    const edgeController = new AbortController()
+    const invoke = vi.fn(async () => {
+      edgeController.abort()
+      return new Response(JSON.stringify({ requestId, status: 'approved', verificationStatus: 'matched', message: '사업자 확인이 완료되었습니다.' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    const edgeRepo = createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', vi.fn(), invoke) })
+    await expect(edgeRepo.verifyWithNts({ clientKey, businessName: '테스트 기업', businessNumber: '1234567890', openingDate: '20260131', representativeName: '홍길동', region: null, industry: null, website: null }, edgeController.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
   })
 
   it('lists owner requests with exact bounded page contract', async () => {
@@ -181,8 +196,8 @@ describe('benefit company request repository', () => {
 
   it.each([
     { ...ok(item), extra: 'private' },
-    { data: null, error: { code: 'XX000', message: 'private', details: null, hint: null, reviewer_id: actor }, status: 500, statusText: 'Error' },
-    { data: null, error: { code: 'XX000', message: 'private', details: { nested: true }, hint: null }, status: 500, statusText: 'Error' },
+    { data: null, error: { code: 'XX000', message: 'private', details: null, hint: null, reviewer_id: actor }, count:null, status: 500, statusText: 'Error' },
+    { data: null, error: { code: 'XX000', message: 'private', details: { nested: true }, hint: null }, count:null, status: 500, statusText: 'Error' },
   ])('rejects outer and nested transport leak keys', async envelope => {
     const result = await createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', vi.fn(async () => envelope)) }).createManual(manual)
     expect(result).toEqual({ ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } })

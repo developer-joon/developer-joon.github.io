@@ -9,9 +9,8 @@ const company = {
   company_id: 'KR-CRN-1101111111111', display_name: '가나다 공식', identity_label: '법인',
   industry: 'software', size_label: '대기업', region: '서울', summary: '공식 기업',
 }
-const sortKey = (value:string) => Array.from(new TextEncoder().encode(value), byte => byte.toString(16).padStart(2,'0')).join('')
 const searchItem = {
-  ...company, sort_key: sortKey(company.display_name.toLowerCase()), benefit_count: 1, official_count: 1, community_count: 0, categories: ['health'],
+  ...company, benefit_count: 1, official_count: 1, community_count: 0, categories: ['health'],
 }
 const publication = {
   publication_id: 'b1000000-0000-0000-0000-000000000001', category_id: 'health', title: '건강검진',
@@ -111,6 +110,16 @@ describe('benefit directory repository', () => {
     expect(transport.rpc).toHaveBeenCalledWith('search_benefit_companies_v1', expect.objectContaining({
       p_categories: ['health', 'leave', 'health'],
     }))
+  })
+
+  it('dispatches every search RPC argument and explicit nulls for omitted filters', async () => {
+    const transport = rpcClient(success(page))
+    getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    await expect(createBenefitDirectoryRepository().search({ pageSize: 20 })).resolves.toMatchObject({ ok: true })
+    expect(transport.rpc).toHaveBeenCalledWith('search_benefit_companies_v1', {
+      p_query:null,p_categories:null,p_industry:null,p_size:null,p_region:null,
+      p_has_benefits_only:false,p_page_size:20,p_cursor:null,
+    })
   })
 
   it.each([
@@ -460,18 +469,18 @@ describe('benefit directory repository', () => {
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toEqual({ ok: false, error: { code: 'not_found', message: '기업 정보를 찾을 수 없습니다.' } })
   })
 
-  it('rejects search items outside exact normalized-name and company-id order', async () => {
+  it('accepts database-provided search order without exposing or reimplementing collation', async () => {
     const wires = [
-      { ...page, items: [{ ...searchItem, company_id: 'KR-BIZ-0000000002', display_name: 'beta', sort_key: sortKey('beta') }, { ...searchItem, company_id: 'KR-BIZ-0000000001', display_name: 'alpha', sort_key: sortKey('alpha') }], total: 2 },
-      { ...page, items: [{ ...searchItem, company_id: 'KR-BIZ-0000000002', display_name: 'same', sort_key: sortKey('same') }, { ...searchItem, company_id: 'KR-BIZ-0000000001', display_name: 'same', sort_key: sortKey('same') }], total: 2 },
+      { ...page, items: [{ ...searchItem, company_id: 'KR-BIZ-0000000002', display_name: 'beta' }, { ...searchItem, company_id: 'KR-BIZ-0000000001', display_name: 'alpha' }], total: 2 },
+      { ...page, items: [{ ...searchItem, company_id: 'KR-BIZ-0000000002', display_name: 'same' }, { ...searchItem, company_id: 'KR-BIZ-0000000001', display_name: 'same' }], total: 2 },
     ]
     for (const wire of wires) {
       const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
-      await expect(createBenefitDirectoryRepository().search({ pageSize: 20 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+      await expect(createBenefitDirectoryRepository().search({ pageSize: 20 })).resolves.toMatchObject({ ok: true })
     }
   })
 
-  it('rejects publications and public claims outside exact category-title-id order', async () => {
+  it('accepts database-provided publication and claim order without a portable collation contract', async () => {
     const publication2 = { ...publication, publication_id: 'b1000000-0000-0000-0000-000000000002', title: '가나다' }
     const claim2 = { ...publicClaim, claim_id: 'b2000000-0000-0000-0000-000000000002', title: '가나다' }
     for (const wire of [
@@ -481,7 +490,7 @@ describe('benefit directory repository', () => {
       { ...detailV2, claims: [{ ...publicClaim, title: '같음', claim_id: claim2.claim_id }, { ...publicClaim, title: '같음' }] },
     ]) {
       const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
-      await expect(createBenefitDirectoryRepository().detail(company.company_id)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+      await expect(createBenefitDirectoryRepository().detail(company.company_id)).resolves.toMatchObject({ ok: true })
     }
   })
 

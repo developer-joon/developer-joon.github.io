@@ -15,7 +15,7 @@ const urlFixtures = [
 
 describe('Task8 shared input parity fixtures', () => {
   it.each(urlFixtures)('claim source %s accepted=%s', async (sourceUrl, valid) => {
-    const rpc = vi.fn(async () => ({ data: { claim_id: actorId, outcome: 'created' }, error: null, status: 200, statusText: 'OK' }))
+    const rpc = vi.fn(async () => ({ data: { claim_id: actorId, outcome: 'created' }, error: null, count: null, status: 200, statusText: 'OK' }))
     const repo = createBenefitClaimRepository({ getSessionContext: async () => ({ actorId, sessionFingerprint: 'x', rpc }) })
     const result = await repo.createClaim({ ...claim, sourceUrl })
     expect(result.ok).toBe(valid)

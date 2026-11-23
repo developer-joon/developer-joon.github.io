@@ -11,7 +11,7 @@ const rejected = { ...reviewing, status:'rejected', admin_response:'반려', upd
 const approved = { ...reviewing, status:'approved', admin_response:'승인', publication_id:publicationId, updated_at:'2026-11-21T02:00:00Z' }
 
 function setup(data: unknown) {
-  const rpc = vi.fn().mockResolvedValue({ data, error:null, status:200, statusText:'OK' })
+  const rpc = vi.fn().mockResolvedValue({ data, error:null, count:null, status:200, statusText:'OK' })
   const context = ():AdminBenefitSubmissionSessionContext => ({ actorId:actor, sessionFingerprint:'session-a', rpc })
   return { repository:createAdminBenefitSubmissionRepository({ getSessionContext:context }), rpc }
 }
@@ -160,9 +160,9 @@ describe('admin benefit submission repository', () => {
     const value=setup(reviewing)
     await expect(value.repository.review({submissionId:id,expectedStatus:'submitted',action:'approve',adminResponse:'승인',clientKey:'40000000-0000-4000-8000-000000000001',publicTitle:'제목',publicDescription:'설명',publicEligibility:null,publicCondition:null,existingPublicationId:null} as never)).resolves.toMatchObject({ok:false,error:{code:'invalid_argument'}})
     expect(value.rpc).not.toHaveBeenCalled()
-    const conflict=setup(null); conflict.rpc.mockResolvedValue({data:null,error:{code:'40001',message:'state changed',details:null,hint:null},status:409,statusText:'Conflict'})
+    const conflict=setup(null); conflict.rpc.mockResolvedValue({data:null,error:{code:'40001',message:'state changed',details:null,hint:null},count:null,status:409,statusText:'Conflict'})
     await expect(conflict.repository.review({submissionId:id,expectedStatus:'submitted',action:'start_review',adminResponse:'검토',clientKey:'40000000-0000-4000-8000-000000000001'})).resolves.toMatchObject({ok:false,error:{code:'conflict'}})
-    const mismatch=setup(null); mismatch.rpc.mockResolvedValue({data:null,error:{code:'22023',message:'client key reused with different payload',details:null,hint:null},status:400,statusText:'Bad Request'})
+    const mismatch=setup(null); mismatch.rpc.mockResolvedValue({data:null,error:{code:'22023',message:'client key reused with different payload',details:null,hint:null},count:null,status:400,statusText:'Bad Request'})
     await expect(mismatch.repository.review({submissionId:id,expectedStatus:'submitted',action:'start_review',adminResponse:'검토',clientKey:'40000000-0000-4000-8000-000000000001'})).resolves.toMatchObject({ok:false,error:{code:'idempotency_mismatch'}})
   })
 
@@ -186,5 +186,13 @@ describe('admin benefit submission repository', () => {
     expect(rpc).not.toHaveBeenCalled()
     const controller=new AbortController();controller.abort()
     await expect(repository.listQueue({status:'active',limit:10},controller.signal)).resolves.toMatchObject({ok:false,error:{code:'aborted'}})
+  })
+
+  it('prefers logout observed after RPC rejection over the transport error', async () => {
+    const rpc=vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    const stable={actorId:actor,sessionFingerprint:'session-a',rpc}
+    const getSessionContext=vi.fn().mockResolvedValueOnce(stable).mockResolvedValueOnce(stable).mockResolvedValueOnce(null)
+    const repository=createAdminBenefitSubmissionRepository({getSessionContext})
+    await expect(repository.listQueue({status:'active',limit:10})).resolves.toMatchObject({ok:false,error:{code:'stale_response'}})
   })
 })

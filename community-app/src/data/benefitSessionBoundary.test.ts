@@ -21,7 +21,7 @@ const companyCalls = [
 describe('authenticated response boundaries', () => {
   it.each(claimCalls)('%s discards response when an envelope getter changes session', async (method, input) => {
     let fingerprint = 'a'
-    const rpc = vi.fn(async () => ({ get data() { fingerprint = 'b'; return {} }, error:null, status:200, statusText:'OK' }))
+    const rpc = vi.fn(async () => ({ get data() { fingerprint = 'b'; return {} }, error:null, count:null, status:200, statusText:'OK' }))
     const repo = createBenefitClaimRepository({getSessionContext:async () => ({actorId:id,sessionFingerprint:fingerprint,rpc})})
     const call = repo[method] as (value: never) => Promise<unknown>
     await expect(call(input as never)).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
@@ -29,10 +29,30 @@ describe('authenticated response boundaries', () => {
   })
   it.each(companyCalls)('%s discards response when an envelope getter changes session', async (method, input) => {
     let fingerprint = 'a'
-    const rpc = vi.fn(async () => ({ get data() { fingerprint = 'b'; return {} }, error:null, status:200, statusText:'OK' }))
+    const rpc = vi.fn(async () => ({ get data() { fingerprint = 'b'; return {} }, error:null, count:null, status:200, statusText:'OK' }))
     const repo = createBenefitCompanyRequestRepository({getSessionContext:async () => ({actorId:id,sessionFingerprint:fingerprint,rpc,invokeFunction:vi.fn()})})
     const call = repo[method] as (value: never) => Promise<unknown>
     await expect(call(input as never)).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
     expect(rpc).toHaveBeenCalledTimes(1)
+  })
+  it.each(claimCalls)('%s prefers an account change observed after RPC rejection', async (method,input)=>{
+    let actorId=id
+    const rpc=vi.fn(async()=>{actorId='a1000000-0000-4000-8000-000000000002';throw new TypeError('Failed to fetch')})
+    const repo=createBenefitClaimRepository({getSessionContext:async()=>({actorId,sessionFingerprint:`session-${actorId}`,rpc})})
+    const call=repo[method] as (value:never)=>Promise<unknown>
+    await expect(call(input as never)).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
+  })
+  it.each(companyCalls)('%s prefers logout observed after RPC rejection',async(method,input)=>{
+    let loggedIn=true
+    const rpc=vi.fn(async()=>{loggedIn=false;throw new TypeError('Failed to fetch')})
+    const repo=createBenefitCompanyRequestRepository({getSessionContext:async()=>loggedIn?{actorId:id,sessionFingerprint:'session-a',rpc,invokeFunction:vi.fn()}:null})
+    const call=repo[method] as (value:never)=>Promise<unknown>
+    await expect(call(input as never)).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
+  })
+  it('prefers a token change observed after Edge rejection',async()=>{
+    let fingerprint='session-a'
+    const invokeFunction=vi.fn(async()=>{fingerprint='session-b';throw new TypeError('Failed to fetch')})
+    const repo=createBenefitCompanyRequestRepository({getSessionContext:async()=>({actorId:id,sessionFingerprint:fingerprint,rpc:vi.fn(),invokeFunction})})
+    await expect(repo.verifyWithNts({clientKey:key,businessName:'테스트 기업',businessNumber:'123-45-67890',openingDate:'20260131',representativeName:'홍길동',region:null,industry:null,website:null})).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
   })
 })

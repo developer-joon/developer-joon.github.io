@@ -40,6 +40,17 @@ type OfficialVerifyArgsExact = Expect<Equal<OfficialVerifyArgs, {
   p_verification_note: string
 }>>
 type OfficialVerifyReturnExact = Expect<Equal<Database['public']['Functions']['officially_verify_benefit_claim_v1']['Returns'], Json>>
+type CreateClaimArgsExact = Expect<Equal<Database['public']['Functions']['create_benefit_claim_v1']['Args'], {
+  p_category_id: 'leave' | 'family' | 'health' | 'growth' | 'housing' | 'commute' | 'remote' | 'retirement' | 'meals' | 'inclusion'
+  p_client_key: string
+  p_company_id: string
+  p_condition_text: string | null
+  p_description: string
+  p_eligibility_text: string | null
+  p_observed_on: string
+  p_source_url: string | null
+  p_title: string
+}>>
 type ModerateClaimArgsExact = Expect<Equal<Database['public']['Functions']['moderate_benefit_claim_v1']['Args'], {
   p_action: 'hide' | 'restore' | 'withdraw' | 'merge' | 'withdraw_official'
   p_claim_id: string
@@ -88,6 +99,7 @@ export type ProfileTypeAssertions = [
   OfficialVerifyStatusExact,
   OfficialVerifyArgsExact,
   OfficialVerifyReturnExact,
+  CreateClaimArgsExact,
   ModerateClaimArgsExact,
   ModerateClaimReturnExact,
 ]

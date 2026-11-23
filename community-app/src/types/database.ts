@@ -1706,11 +1706,11 @@ export type Database = {
           p_category_id: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
           p_client_key: string;
           p_company_id: string;
-          p_condition_text?: string | null;
+          p_condition_text: string | null;
           p_description: string;
-          p_eligibility_text?: string | null;
-          p_observed_on?: string;
-          p_source_url?: string | null;
+          p_eligibility_text: string | null;
+          p_observed_on: string;
+          p_source_url: string | null;
           p_title: string;
         };
         Returns: Json;
