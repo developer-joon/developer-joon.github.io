@@ -15,6 +15,14 @@ begin loop
  perform pg_catalog.pg_sleep(0.01);
 end loop; end $$;
 
+create function pg_temp.wait_for_result(p_connection text,p_timeout interval default interval '4 seconds') returns boolean language plpgsql as $$
+declare v_deadline timestamptz:=clock_timestamp()+p_timeout;
+begin loop
+ if extensions.dblink_is_busy(p_connection)=0 then return true; end if;
+ if clock_timestamp()>=v_deadline then return false; end if;
+ perform pg_catalog.pg_sleep(0.01);
+end loop; end $$;
+
 select extensions.dblink_connect('br_setup',connection_string),extensions.dblink_connect('br_one',connection_string),extensions.dblink_connect('br_two',connection_string) from reaction_race_fixture;
 select extensions.dblink_exec('br_setup',$cleanup$
  set session_replication_role=replica;
@@ -109,14 +117,19 @@ select ok((select value::jsonb->>'reaction'='confirm' from race_one) and (select
 -- Removing the only dispute races a new dispute: promotion is immediately and atomically demoted.
 truncate race_one,race_two;
 select extensions.dblink_exec('br_one','begin; set local role authenticated; set local request.jwt.claim.sub=''b7100000-0000-4000-8000-000000000002''');
-insert into race_one select value from extensions.dblink('br_one',$q$select pg_temp.try_react('b7200000-0000-4000-8000-000000000004',null,'b7300000-0000-4000-8000-000000000030')$q$) r(value text);
+select extensions.dblink_send_query('br_one',$q$select pg_temp.try_react('b7200000-0000-4000-8000-000000000004',null,'b7300000-0000-4000-8000-000000000030')$q$);
+select ok(pg_temp.wait_for_result('br_one'),'dispute remover returns before the competing worker starts');
+insert into race_one select value from extensions.dblink_get_result('br_one') r(value text); select count(*) from extensions.dblink_get_result('br_one') r(value text);
 select extensions.dblink_exec('br_two','begin; set local role authenticated; set local request.jwt.claim.sub=''b7100000-0000-4000-8000-000000000006''');
 update reaction_race_fixture set second_pid=(select pid from extensions.dblink('br_two','select pg_backend_pid()') r(pid integer));
 select extensions.dblink_send_query('br_two',$q$select pg_temp.try_react('b7200000-0000-4000-8000-000000000004','dispute','b7300000-0000-4000-8000-000000000031')$q$);
 select ok((select pg_temp.wait_for_lock(second_pid) from reaction_race_fixture),'dispute removal/new dispute serialize on claim');
 select extensions.dblink_exec('br_one','commit'); insert into race_two select value from extensions.dblink_get_result('br_two') r(value text); select count(*) from extensions.dblink_get_result('br_two') r(value text); select extensions.dblink_exec('br_two','commit');
-select is((select state from extensions.dblink((select connection_string from reaction_race_fixture),$$select status||':'||coalesce(active_publication_id::text,'null') from public.benefit_claims where claim_id='b7200000-0000-4000-8000-000000000004'$$) r(state text)),'disputed:null','new dispute wins after removal with no active publication');
-select is((select n from extensions.dblink((select connection_string from reaction_race_fixture),$$select count(*)::integer from public.benefit_publications where provenance->>'claim_id'='b7200000-0000-4000-8000-000000000004' and status='active'$$) r(n integer)),0,'dispute race leaves no active lineage');
+select ok((select pg_catalog.count(*)=1 and pg_catalog.bool_and(value not like 'ERR:%' and (case when value like 'ERR:%' then null else value::jsonb end)->>'reaction' is null and (case when value like 'ERR:%' then null else value::jsonb end)->>'status'='community_confirmed') from race_one),'dispute remover executed successfully and returned its promotion');
+select ok((select pg_catalog.count(*)=1 and pg_catalog.bool_and(value not like 'ERR:%' and (case when value like 'ERR:%' then null else value::jsonb end)->>'reaction'='dispute' and (case when value like 'ERR:%' then null else value::jsonb end)->>'status' in ('community_confirmed','disputed')) from race_two),'new dispute worker executed successfully and returned a valid dispute response');
+select is((select state from extensions.dblink((select connection_string from reaction_race_fixture),$$select status||':'||revision||':'||coalesce(active_publication_id::text,'null')||':'||(select count(*) from public.benefit_claim_reactions where claim_id=c.claim_id and reaction='confirm')||':'||(select count(*) from public.benefit_claim_reactions where claim_id=c.claim_id and reaction='dispute') from public.benefit_claims c where claim_id='b7200000-0000-4000-8000-000000000004'$$) r(state text)),'disputed:4:null:3:1','dispute race converges to exact reactions and claim state');
+select is((select state from extensions.dblink((select connection_string from reaction_race_fixture),$$select count(*) filter(where status='active')||':'||count(*) filter(where status='withdrawn') from public.benefit_publications where provenance->>'claim_id'='b7200000-0000-4000-8000-000000000004'$$) r(state text)),'0:1','dispute race leaves one retired publication and no active lineage');
+select is((select state from extensions.dblink((select connection_string from reaction_race_fixture),$$select count(*)||':'||count(*) filter(where event_type in ('promoted','repromoted'))||':'||count(*) filter(where event_type='demoted') from public.benefit_claim_events where claim_id='b7200000-0000-4000-8000-000000000004'$$) r(state text)),'2:1:1','dispute race records exactly one promotion and one demotion transition');
 
 -- A moderator-style hide owns the claim row; a queued reaction rechecks visibility.
 select extensions.dblink_exec('br_one',$q$begin; update public.benefit_claims set status='hidden',revision=revision+1,updated_at=clock_timestamp() where claim_id='b7200000-0000-4000-8000-000000000005'$q$);

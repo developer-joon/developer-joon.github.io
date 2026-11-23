@@ -70,6 +70,7 @@ select is((select payload->>'outcome' from reaction_results where name='repeat')
 select is((select jsonb_object_agg(key,true order by key) from reaction_results,jsonb_object_keys(payload) key where name='first'),'{"active_publication_id":true,"claim_id":true,"confirm_count":true,"dispute_count":true,"outcome":true,"reaction":true,"revision":true,"status":true}'::jsonb,'reaction response keys are exact');
 select is((select count(*)::integer from public.benefit_claim_reactions where claim_id='b6200000-0000-4000-8000-000000000001' and reaction='confirm'),1,'repeat does not duplicate reaction');
 select is((select count(*)::integer from public.rate_limit_events where user_id='b6100000-0000-4000-8000-000000000002' and action='benefit_claim.react'),2,'replay is free but distinct no-op request is charged');
+select is((select pg_catalog.jsonb_build_object('window_seconds',window_seconds,'max_requests',max_requests,'is_enabled',is_enabled) from public.rate_limit_rules where action='benefit_claim.react'),'{"is_enabled": true, "max_requests": 60, "window_seconds": 3600}'::jsonb,'reaction rate rule has the exact configured window and limit');
 
 set local role authenticated;
 set local request.jwt.claim.sub='b6100000-0000-4000-8000-000000000003';
@@ -95,6 +96,68 @@ reset role;
 select ok((select status='community_confirmed' and revision=4 and active_publication_id is not null from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001'),'dispute removal by change repromotes');
 select is((select count(*)::integer from public.benefit_publications where provenance->>'claim_id'='b6200000-0000-4000-8000-000000000001'),2,'repromotion creates a new publication row');
 select ok((select bool_and(p.trust_tier='community_reviewed' and p.source_type='claim_reaction') from public.benefit_publications p where p.provenance->>'claim_id'='b6200000-0000-4000-8000-000000000001'),'claim lineage never creates official publication');
+select is((select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+  'dedupe_key',p.dedupe_key,'provenance',p.provenance,'revision',p.revision,
+  'supersedes_publication_id',p.supersedes_publication_id,'status',p.status,
+  'is_pointer',p.publication_id=c.active_publication_id
+) order by p.revision)
+from public.benefit_publications p cross join public.benefit_claims c
+where c.claim_id='b6200000-0000-4000-8000-000000000001'
+  and p.provenance->>'claim_id'=c.claim_id::text),
+pg_catalog.jsonb_build_array(
+  pg_catalog.jsonb_build_object('dedupe_key','claim-b6200000-0000-4000-8000-000000000001','provenance',pg_catalog.jsonb_build_object('claim_id','b6200000-0000-4000-8000-000000000001'),'revision',1,'supersedes_publication_id',null,'status','withdrawn','is_pointer',false),
+  pg_catalog.jsonb_build_object('dedupe_key','claim-b6200000-0000-4000-8000-000000000001','provenance',pg_catalog.jsonb_build_object('claim_id','b6200000-0000-4000-8000-000000000001'),'revision',2,'supersedes_publication_id',(select publication_id from public.benefit_publications where provenance->>'claim_id'='b6200000-0000-4000-8000-000000000001' and revision=1),'status','active','is_pointer',true)
+),'claim publication lineage has exact private binding, revisions, predecessor, status, and pointer');
+select is((select count(*)::integer from public.benefit_publications p join public.benefit_claims c on c.active_publication_id=p.publication_id where c.claim_id='b6200000-0000-4000-8000-000000000001' and p.status='active'),1,'only the exact pointed successor is active');
+
+-- Publication-side enforcement must inspect both OLD and NEW rows and reject any
+-- mutation that leaves a claim pointer inconsistent at the constraint boundary.
+select throws_ok($lineage$do $test$begin
+  update public.benefit_publications set status='withdrawn' where publication_id=(select active_publication_id from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001');
+  set constraints all immediate;
+end$test$$lineage$,'23514','claim active publication must be its active community reaction publication','direct active publication retirement is rejected while pointed');
+select throws_ok($lineage$do $test$begin
+  update public.benefit_publications set source_type='user_submission' where publication_id=(select active_publication_id from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001');
+  set constraints all immediate;
+end$test$$lineage$,'23514','claim publication must preserve its immutable claim binding','changing a pointed publication away from claim_reaction is rejected via OLD-row lookup');
+select throws_ok($lineage$do $test$begin
+  update public.benefit_publications set provenance=pg_catalog.jsonb_build_object('claim_id','b6200000-0000-4000-8000-000000000004') where publication_id=(select active_publication_id from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001');
+  set constraints all immediate;
+end$test$$lineage$,'23514','claim publication must preserve its immutable claim binding','changing pointed publication provenance is rejected');
+select throws_ok($lineage$do $test$begin
+  update public.benefit_publications set category_id='leave' where publication_id=(select active_publication_id from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001');
+  set constraints all immediate;
+end$test$$lineage$,'23514','claim publication must preserve its immutable claim binding','changing pointed publication category is rejected');
+select throws_ok($lineage$do $test$begin
+  update public.benefit_publications set dedupe_key='claim-wrong' where publication_id=(select active_publication_id from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001');
+  set constraints all immediate;
+end$test$$lineage$,'23514','claim publication must preserve its immutable claim binding','changing pointed publication dedupe key is rejected');
+select throws_ok($lineage$do $test$begin
+  update public.benefit_claims set active_publication_id=(select publication_id from public.benefit_publications where provenance->>'claim_id'='b6200000-0000-4000-8000-000000000001' and revision=1),revision=revision+1,updated_at=pg_catalog.clock_timestamp() where claim_id='b6200000-0000-4000-8000-000000000001';
+  set constraints all immediate;
+end$test$$lineage$,'23514','claim active publication must be its active community reaction publication','pointer-only mismatch is rejected');
+
+insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,is_searchable,source_edition)
+values ('KR-BIZ-9961000002','registered_business','Other Reaction Company','other reaction company',true,'reaction-test');
+select throws_ok($lineage$do $test$begin
+  update public.benefit_publications set company_id='KR-BIZ-9961000002' where publication_id=(select active_publication_id from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001');
+  set constraints all immediate;
+end$test$$lineage$,'23514','claim publication must preserve its immutable claim binding','changing pointed publication company is rejected');
+
+-- The legacy submission review RPC cannot take over claim-owned publication lineage.
+update public.user_roles set role='admin' where user_id='b6100000-0000-4000-8000-000000000004';
+insert into public.benefit_submissions(id,submitter_id,client_key,payload_fingerprint,company_id,category_id,benefit_text,status,admin_response,reviewer_id,reviewed_at)
+values ('b6500000-0000-4000-8000-000000000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('9',64),'KR-BIZ-9961000001','health','Takeover fixture','reviewing','Reviewing','b6100000-0000-4000-8000-000000000004',pg_catalog.clock_timestamp());
+insert into reaction_results values ('takeover-publication',pg_catalog.jsonb_build_object('publication_id',(select active_publication_id from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001')));
+set local role authenticated;
+set local request.jwt.claim.sub='b6100000-0000-4000-8000-000000000004';
+select throws_ok($lineage$do $test$begin
+  perform public.review_benefit_submission_v1('b6500000-0000-4000-8000-000000000001','reviewing','approve','Approved','b6500000-0000-4000-8000-000000000002','Takeover','Must fail atomically',null,null,(select (payload->>'publication_id')::uuid from reaction_results where name='takeover-publication'));
+  set constraints all immediate;
+end$test$$lineage$,'23514','claim active publication must be its active community reaction publication','submission approval cannot take over a claim publication');
+reset role;
+select is((select status||':'||coalesce(publication_id::text,'null') from public.benefit_submissions where id='b6500000-0000-4000-8000-000000000001'),'reviewing:null','failed takeover leaves submission unchanged');
+select ok((select c.status='community_confirmed' and p.status='active' and c.active_publication_id=p.publication_id from public.benefit_claims c join public.benefit_publications p on p.publication_id=c.active_publication_id where c.claim_id='b6200000-0000-4000-8000-000000000001'),'failed takeover leaves claim status, pointer, and old publication unchanged');
 
 -- Clearing one confirmation below threshold demotes even without a dispute.
 set local role authenticated;
