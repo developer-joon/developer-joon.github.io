@@ -1018,4 +1018,8 @@
 .benefit-service-company code { overflow-wrap: anywhere; }
 .benefit-service-form :focus-visible { outline: 3px solid #d59f31; outline-offset: 3px; }
 .benefit-service-form a { color: #285d78; overflow-wrap: anywhere; }
-@media (max-width: 520px) { .community-page.benefits-page main.benefit-service-form { width: 100%; margin: 0; padding: 24px 16px 48px; border-inline: 0; } .benefit-service-form__body fieldset { display: grid; } }
+.benefit-service-cta { display: inline-flex; min-height: 44px; align-items: center; padding: 8px 12px; }
+.benefit-service-actions { display: flex; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.benefit-service-actions > * { min-width: 0; }
+.benefit-service-secondary { background: #fff !important; color: #315b70 !important; }
+@media (max-width: 520px) { .community-page.benefits-page main.benefit-service-form { width: 100%; margin: 0; padding: 24px 16px 48px; border-inline: 0; } .benefit-service-form__body fieldset { display: grid; } .benefit-service-actions > * { width: 100%; } }
