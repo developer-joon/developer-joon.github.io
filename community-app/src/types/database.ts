@@ -165,12 +165,14 @@ export type Database = {
             | "promoted"
             | "demoted"
             | "repromoted"
-            | "official_reviewed";
-          from_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | null;
+            | "official_reviewed"
+            | "official_withdrawn"
+            | "reaction_recomputed";
+          from_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
           metadata: NonNullable<Json>;
           operation: "create" | "withdraw" | "moderate" | "promote" | "review";
           payload_fingerprint: string;
-          to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
         };
         ComputedFields: never;
         Insert: {
@@ -189,12 +191,14 @@ export type Database = {
             | "promoted"
             | "demoted"
             | "repromoted"
-            | "official_reviewed";
-          from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | null;
+            | "official_reviewed"
+            | "official_withdrawn"
+            | "reaction_recomputed";
+          from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
           metadata?: NonNullable<Json>;
           operation: "create" | "withdraw" | "moderate" | "promote" | "review";
           payload_fingerprint: string;
-          to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
         };
         Update: {
           actor_snapshot?: string;
@@ -212,12 +216,14 @@ export type Database = {
             | "promoted"
             | "demoted"
             | "repromoted"
-            | "official_reviewed";
-          from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | null;
+            | "official_reviewed"
+            | "official_withdrawn"
+            | "reaction_recomputed";
+          from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
           metadata?: NonNullable<Json>;
           operation?: "create" | "withdraw" | "moderate" | "promote" | "review";
           payload_fingerprint?: string;
-          to_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          to_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
         };
         Relationships: [
           {
@@ -227,6 +233,56 @@ export type Database = {
             referencedRelation: "benefit_claims";
             referencedColumns: ["claim_id"];
           },
+        ];
+      };
+      benefit_claim_merges: {
+        Row: {
+          actor_snapshot: string;
+          merged_at: string;
+          reaction_lineage: NonNullable<Json>;
+          request_client_key: string;
+          source_claim_id: string;
+          target_claim_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          actor_snapshot: string;
+          merged_at?: string;
+          reaction_lineage: NonNullable<Json>;
+          request_client_key: string;
+          source_claim_id: string;
+          target_claim_id: string;
+        };
+        Update: {
+          actor_snapshot?: string;
+          merged_at?: string;
+          reaction_lineage?: NonNullable<Json>;
+          request_client_key?: string;
+          source_claim_id?: string;
+          target_claim_id?: string;
+        };
+        Relationships: [
+          { foreignKeyName: "benefit_claim_merges_source_claim_id_fkey"; columns: ["source_claim_id"]; isOneToOne: true; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
+          { foreignKeyName: "benefit_claim_merges_target_claim_id_fkey"; columns: ["target_claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
+        ];
+      };
+      benefit_claim_moderation_requests: {
+        Row: { action: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot: string; claim_id: string; client_key: string; created_at: string; payload_fingerprint: string; response: NonNullable<Json> };
+        ComputedFields: never;
+        Insert: { action: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot: string; claim_id: string; client_key: string; created_at?: string; payload_fingerprint: string; response: NonNullable<Json> };
+        Update: { action?: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot?: string; claim_id?: string; client_key?: string; created_at?: string; payload_fingerprint?: string; response?: NonNullable<Json> };
+        Relationships: [{ foreignKeyName: "benefit_claim_moderation_requests_claim_id_fkey"; columns: ["claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] }];
+      };
+      benefit_claim_official_reviews: {
+        Row: { action: "verify" | "reverify" | "withdraw_official"; claim_id: string; evidence_observed_on: string; evidence_source_url: string; evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id: string | null; publication_id: string | null; review_id: string; reviewed_at: string; reviewer_snapshot: string; successor_publication_id: string | null; verification_note: string };
+        ComputedFields: never;
+        Insert: { action: "verify" | "reverify" | "withdraw_official"; claim_id: string; evidence_observed_on: string; evidence_source_url: string; evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id?: string | null; publication_id?: string | null; review_id?: string; reviewed_at?: string; reviewer_snapshot: string; successor_publication_id?: string | null; verification_note: string };
+        Update: { action?: "verify" | "reverify" | "withdraw_official"; claim_id?: string; evidence_observed_on?: string; evidence_source_url?: string; evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id?: string | null; publication_id?: string | null; review_id?: string; reviewed_at?: string; reviewer_snapshot?: string; successor_publication_id?: string | null; verification_note?: string };
+        Relationships: [
+          { foreignKeyName: "benefit_claim_official_reviews_claim_id_fkey"; columns: ["claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
+          { foreignKeyName: "benefit_claim_official_reviews_predecessor_publication_id_fkey"; columns: ["predecessor_publication_id"]; isOneToOne: false; referencedRelation: "benefit_publications"; referencedColumns: ["publication_id"] },
+          { foreignKeyName: "benefit_claim_official_reviews_publication_id_fkey"; columns: ["publication_id"]; isOneToOne: false; referencedRelation: "benefit_publications"; referencedColumns: ["publication_id"] },
+          { foreignKeyName: "benefit_claim_official_reviews_successor_publication_id_fkey"; columns: ["successor_publication_id"]; isOneToOne: false; referencedRelation: "benefit_publications"; referencedColumns: ["publication_id"] },
         ];
       };
       benefit_claim_reaction_requests: {
@@ -312,10 +368,11 @@ export type Database = {
           normalized_eligibility: string;
           normalized_title: string;
           observed_on: string;
+          official_publication_id: string | null;
           payload_fingerprint: string;
           revision: number;
           source_url: string | null;
-          status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
           submitter_id: string | null;
           title: string;
           updated_at: string;
@@ -335,10 +392,11 @@ export type Database = {
           normalized_eligibility?: string;
           normalized_title: string;
           observed_on: string;
+          official_publication_id?: string | null;
           payload_fingerprint: string;
           revision?: number;
           source_url?: string | null;
-          status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
           submitter_id?: string | null;
           title: string;
           updated_at?: string;
@@ -357,10 +415,11 @@ export type Database = {
           normalized_eligibility?: string;
           normalized_title?: string;
           observed_on?: string;
+          official_publication_id?: string | null;
           payload_fingerprint?: string;
           revision?: number;
           source_url?: string | null;
-          status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
           submitter_id?: string | null;
           title?: string;
           updated_at?: string;
@@ -380,6 +439,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "benefit_companies";
             referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_claims_official_publication_id_fkey";
+            columns: ["official_publication_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_publications";
+            referencedColumns: ["publication_id"];
           },
           {
             foreignKeyName: "benefit_claims_submitter_id_fkey";
@@ -1759,6 +1825,14 @@ export type Database = {
       get_public_post_v2: { Args: { p_post_id: string }; Returns: Json };
       get_public_post_v3: { Args: { p_post_id: string }; Returns: Json };
       is_admin: { Args: Record<PropertyKey, never>; Returns: boolean };
+      list_benefit_claim_audit_v1: {
+        Args: { p_claim_id: string; p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number };
+        Returns: Json;
+      };
+      list_benefit_claim_moderation_queue_v1: {
+        Args: { p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number; p_status?: "active" | "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | "all" };
+        Returns: Json;
+      };
       list_benefit_company_request_queue_v1: {
         Args: {
           p_cursor_created_at?: string;
@@ -1914,6 +1988,21 @@ export type Database = {
         };
         Returns: Json;
       };
+      moderate_benefit_claim_v1: {
+        Args: {
+          p_action: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official";
+          p_claim_id: string;
+          p_client_key: string;
+          p_evidence_observed_on?: string;
+          p_evidence_source_url?: string;
+          p_evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official";
+          p_expected_revision: number;
+          p_expected_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          p_reason?: string;
+          p_target_claim_id?: string;
+        };
+        Returns: Json;
+      };
       moderate_comment_v1: {
         Args: {
           p_action: string;
@@ -1933,6 +2022,23 @@ export type Database = {
           p_idempotency_key: string;
           p_post_id: string;
           p_reason: string;
+        };
+        Returns: Json;
+      };
+      officially_verify_benefit_claim_v1: {
+        Args: {
+          p_claim_id: string;
+          p_client_key: string;
+          p_condition_text: string | null;
+          p_description: string;
+          p_eligibility_text: string | null;
+          p_evidence_observed_on: string;
+          p_evidence_source_url: string;
+          p_evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official";
+          p_expected_revision: number;
+          p_expected_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          p_title: string;
+          p_verification_note: string;
         };
         Returns: Json;
       };
