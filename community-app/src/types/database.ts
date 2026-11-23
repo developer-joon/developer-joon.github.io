@@ -148,6 +148,179 @@ export type Database = {
         };
         Relationships: [];
       };
+      benefit_claim_events: {
+        Row: {
+          actor_snapshot: string;
+          claim_id: string;
+          client_key: string;
+          created_at: string;
+          event_id: string;
+          event_type:
+            | "submitted"
+            | "duplicate_directed"
+            | "withdrawn"
+            | "hidden"
+            | "restored"
+            | "merged"
+            | "promoted"
+            | "demoted"
+            | "repromoted"
+            | "official_reviewed";
+          from_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | null;
+          metadata: NonNullable<Json>;
+          operation: "create" | "withdraw" | "moderate" | "promote" | "review";
+          payload_fingerprint: string;
+          to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+        };
+        ComputedFields: never;
+        Insert: {
+          actor_snapshot: string;
+          claim_id: string;
+          client_key: string;
+          created_at?: string;
+          event_id?: string;
+          event_type:
+            | "submitted"
+            | "duplicate_directed"
+            | "withdrawn"
+            | "hidden"
+            | "restored"
+            | "merged"
+            | "promoted"
+            | "demoted"
+            | "repromoted"
+            | "official_reviewed";
+          from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | null;
+          metadata?: NonNullable<Json>;
+          operation: "create" | "withdraw" | "moderate" | "promote" | "review";
+          payload_fingerprint: string;
+          to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+        };
+        Update: {
+          actor_snapshot?: string;
+          claim_id?: string;
+          client_key?: string;
+          created_at?: string;
+          event_id?: string;
+          event_type?:
+            | "submitted"
+            | "duplicate_directed"
+            | "withdrawn"
+            | "hidden"
+            | "restored"
+            | "merged"
+            | "promoted"
+            | "demoted"
+            | "repromoted"
+            | "official_reviewed";
+          from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | null;
+          metadata?: NonNullable<Json>;
+          operation?: "create" | "withdraw" | "moderate" | "promote" | "review";
+          payload_fingerprint?: string;
+          to_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_claim_events_claim_id_fkey";
+            columns: ["claim_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_claims";
+            referencedColumns: ["claim_id"];
+          },
+        ];
+      };
+      benefit_claims: {
+        Row: {
+          active_publication_id: string | null;
+          category_id: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
+          claim_id: string;
+          client_key: string;
+          company_id: string;
+          condition_text: string | null;
+          created_at: string;
+          description: string;
+          eligibility_text: string | null;
+          normalized_eligibility: string;
+          normalized_title: string;
+          observed_on: string;
+          payload_fingerprint: string;
+          revision: number;
+          source_url: string | null;
+          status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          submitter_id: string | null;
+          title: string;
+          updated_at: string;
+          withdrawn_at: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          active_publication_id?: string | null;
+          category_id: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
+          claim_id?: string;
+          client_key: string;
+          company_id: string;
+          condition_text?: string | null;
+          created_at?: string;
+          description: string;
+          eligibility_text?: string | null;
+          normalized_eligibility?: string;
+          normalized_title: string;
+          observed_on: string;
+          payload_fingerprint: string;
+          revision?: number;
+          source_url?: string | null;
+          status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          submitter_id?: string | null;
+          title: string;
+          updated_at?: string;
+          withdrawn_at?: string | null;
+        };
+        Update: {
+          active_publication_id?: string | null;
+          category_id?: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
+          claim_id?: string;
+          client_key?: string;
+          company_id?: string;
+          condition_text?: string | null;
+          created_at?: string;
+          description?: string;
+          eligibility_text?: string | null;
+          normalized_eligibility?: string;
+          normalized_title?: string;
+          observed_on?: string;
+          payload_fingerprint?: string;
+          revision?: number;
+          source_url?: string | null;
+          status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          submitter_id?: string | null;
+          title?: string;
+          updated_at?: string;
+          withdrawn_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_claims_active_publication_id_fkey";
+            columns: ["active_publication_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_publications";
+            referencedColumns: ["publication_id"];
+          },
+          {
+            foreignKeyName: "benefit_claims_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_claims_submitter_id_fkey";
+            columns: ["submitter_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       benefit_company_add_events: {
         Row: {
           action: string;
@@ -1373,6 +1546,20 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      create_benefit_claim_v1: {
+        Args: {
+          p_category_id: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
+          p_client_key: string;
+          p_company_id: string;
+          p_condition_text?: string;
+          p_description: string;
+          p_eligibility_text?: string;
+          p_observed_on?: string;
+          p_source_url?: string;
+          p_title: string;
+        };
+        Returns: Json;
+      };
       create_benefit_correction_request_v1: {
         Args: {
           p_category_id: string;
@@ -1479,6 +1666,7 @@ export type Database = {
         Returns: Json;
       };
       get_benefit_company_v1: { Args: { p_company_id: string }; Returns: Json };
+      get_benefit_company_v2: { Args: { p_company_id: string }; Returns: Json };
       get_public_post: {
         Args: { p_post_id: string };
         Returns: {
@@ -1564,6 +1752,10 @@ export type Database = {
           p_limit?: number;
           p_status?: string;
         };
+        Returns: Json;
+      };
+      list_my_benefit_claims_v1: {
+        Args: { p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number };
         Returns: Json;
       };
       list_my_benefit_company_requests_v1: {
@@ -1795,6 +1987,15 @@ export type Database = {
       soft_delete_post: { Args: { p_post_id: string }; Returns: string };
       toggle_comment_reaction: { Args: { p_comment_id: string }; Returns: boolean };
       toggle_post_reaction: { Args: { p_post_id: string }; Returns: boolean };
+      withdraw_benefit_claim_v1: {
+        Args: {
+          p_claim_id: string;
+          p_client_key: string;
+          p_expected_revision: number;
+          p_expected_status: "submitted" | "community_confirmed" | "disputed";
+        };
+        Returns: Json;
+      };
       update_comment: { Args: { p_body_markdown: string; p_comment_id: string }; Returns: string };
       update_post: {
         Args: { p_body_markdown: string; p_post_id: string; p_tag_ids: string[]; p_title: string };
