@@ -4,6 +4,7 @@ import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
 import { isBenefitCompanyId, isLegacyBenefitArtifactCompanyId } from '../lib/benefitCompanyId'
 import {
   BENEFIT_CATEGORIES,
+  BENEFIT_CORRECTION_CURRENT_TEXT_MAX_LENGTH,
   BENEFIT_CORRECTION_AUDIT_EVENT_TYPES,
   BENEFIT_CORRECTION_QUEUE_FILTERS,
   BENEFIT_CORRECTION_REVIEW_ACTIONS,
@@ -97,7 +98,7 @@ function timestampOrder(...values: Array<string | null>) {
 export function decodeBenefitCorrectionItem(value: unknown, admin = false): BenefitCorrectionItem | AdminBenefitCorrectionItem {
   if (!isRecord(value) || !hasExactKeys(value, admin ? adminKeys : ownerKeys)) throw new Error('invalid response keys')
   if (!isCanonicalUuid(value.id) || (!isBenefitCompanyId(value.company_id) && !isLegacyBenefitArtifactCompanyId(value.company_id)) || !isCategory(value.category_id)
-    || !boundedText(value.current_text, 5000) || !boundedText(value.proposed_text, 5000) || !boundedText(value.scope_text, 2000)
+    || !boundedText(value.current_text, BENEFIT_CORRECTION_CURRENT_TEXT_MAX_LENGTH) || !boundedText(value.proposed_text, 5000) || !boundedText(value.scope_text, 2000)
     || !isBenefitCorrectionSourceUrl(value.source_url) || !isBenefitCorrectionDataVersion(value.observed_data_version)
     || typeof value.status !== 'string' || !(BENEFIT_CORRECTION_STATUSES as readonly string[]).includes(value.status)
     || (value.admin_response !== null && !boundedText(value.admin_response, 2000))
@@ -231,7 +232,7 @@ function validAuditInput(input: BenefitCorrectionAuditInput) {
 }
 function validCreateInput(input: CreateBenefitCorrectionInput) {
   return isStrictUuid(input.clientKey) && (isBenefitCompanyId(input.companyId) || isLegacyBenefitArtifactCompanyId(input.companyId)) && isCategory(input.categoryId)
-    && boundedText(input.currentText, 5000) && boundedText(input.proposedText, 5000) && boundedText(input.scopeText, 2000)
+    && boundedText(input.currentText, BENEFIT_CORRECTION_CURRENT_TEXT_MAX_LENGTH) && boundedText(input.proposedText, 5000) && boundedText(input.scopeText, 2000)
     && isBenefitCorrectionSourceUrl(input.sourceUrl) && isBenefitCorrectionDataVersion(input.observedDataVersion)
 }
 function validAccountScope(value: unknown): value is BenefitCorrectionAccountScope {

@@ -13,6 +13,7 @@ import { BenefitCorrectionPage } from './BenefitCorrectionPage'
 import { MyBenefitCorrectionsPage } from './MyBenefitCorrectionsPage'
 import { benefitsCorrectionUrl } from '../components/benefits/BenefitsCorrectionLink'
 import { createBenefitCorrectionDraft, saveBenefitCorrectionDraft } from '../lib/benefitCorrectionDraftStore'
+import { renderBenefitCorrectionPublications } from '../lib/benefitCorrectionCurrentText'
 
 const actor = '56000000-0000-4000-8000-0000000000a1'
 const scope = 'a'.repeat(64) as BenefitCorrectionAccountScope
@@ -173,6 +174,41 @@ describe('authenticated benefit correction', () => {
 
     await waitFor(() => expect(createRequest).toHaveBeenCalledWith(expect.objectContaining({ companyId: canonicalCompanyId, currentText: canonicalCurrentText }), scope, expect.any(AbortSignal)))
     expect(await screen.findByRole('status')).toHaveTextContent('수정 요청이 접수되었습니다')
+  })
+
+  it('uses the same bounded canonical context for display, saved draft, restored draft, and submit payload', async () => {
+    const publications = [
+      { ...canonicalCompany.publications[0], description: '😀'.repeat(6_000) },
+      canonicalCompany.publications[2],
+    ]
+    const expected = renderBenefitCorrectionPublications(publications, 'health')!
+    const detail = { ...canonicalCompany, publications }
+    const directory = directoryRepository({ detail: vi.fn(async () => ({ ok: true as const, data: detail })) })
+    const createRequest = vi.fn(async input => ({ ok: true as const, data: {
+      ...item,
+      companyId: input.companyId,
+      categoryId: input.categoryId,
+      currentText: input.currentText,
+      proposedText: input.proposedText,
+      scopeText: input.scopeText,
+      sourceUrl: input.sourceUrl,
+      observedDataVersion: input.observedDataVersion,
+    } }))
+    const local = storage()
+    const search = `?company=${canonicalCompanyId}&category=health`
+
+    const first = wrap(<BenefitCorrectionPage repository={repository({ createRequest })} directoryRepository={directory} storage={local} search={search} />, auth(actor))
+    expect(await screen.findByLabelText('현재 표시 내용')).toHaveValue(expected)
+    first.unmount()
+
+    wrap(<BenefitCorrectionPage repository={repository({ createRequest })} directoryRepository={directory} storage={local} search={search} />, auth(actor))
+    expect(await screen.findByLabelText('현재 표시 내용')).toHaveValue(expected)
+    fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: item.proposedText } })
+    fireEvent.change(screen.getByLabelText('적용 범위'), { target: { value: item.scopeText } })
+    fireEvent.change(screen.getByLabelText('공개 HTTPS 근거 URL'), { target: { value: item.sourceUrl } })
+    fireEvent.click(screen.getByRole('button', { name: '수정 요청 제출' }))
+
+    await waitFor(() => expect(createRequest).toHaveBeenCalledWith(expect.objectContaining({ currentText: expected }), scope, expect.any(AbortSignal)))
   })
 
   it('keeps the established empty-publication fallback for a canonical company', async () => {

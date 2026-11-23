@@ -7,6 +7,7 @@ import { benefitsClient } from '../data/benefitsArtifactClient'
 import { getBenefitCorrectionRepository, type BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
 import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
 import { createBenefitCorrectionDraft, loadBenefitCorrectionDraft, saveBenefitCorrectionDraft, submitBenefitCorrectionDraft, type BenefitCorrectionDraftStorage } from '../lib/benefitCorrectionDraftStore'
+import { renderBenefitCorrectionPublications } from '../lib/benefitCorrectionCurrentText'
 import { isBenefitCompanyId, isLegacyBenefitArtifactCompanyId } from '../lib/benefitCompanyId'
 import { BENEFIT_CATEGORIES, type BenefitCorrectionDraft } from '../types/benefitCorrections'
 import type { BenefitDirectoryPublication } from '../types/benefitDirectory'
@@ -36,21 +37,10 @@ function displayedValue(company: CompanyListing, category: BenefitCorrectionDraf
   if (isResearchedOutcome(outcome)) return researchStateLabels[outcome.state]
   return outcome.kind === 'evidenced' ? (outcome.status === 'confirmed' ? '공식 확인' : '범위 제한 확인') : '근거 부족'
 }
-function displayedPublications(publications: BenefitDirectoryPublication[], category: BenefitCorrectionDraft['categoryId']) {
-  if (!category) return ''
-  const matching = publications.filter(publication => publication.categoryId === category)
-  if (matching.length === 0) return null
-  return matching.map(publication => [
-    `${publication.title} — ${publication.description}`,
-    publication.eligibilityText && `대상: ${publication.eligibilityText}`,
-    publication.conditionText && `조건: ${publication.conditionText}`,
-    publication.trustLabel,
-  ].filter(Boolean).join(' · ')).join(' / ')
-}
 function correctionCurrentText(company: CorrectionCompany | undefined, category: BenefitCorrectionDraft['categoryId']) {
   if (!company || !category) return ''
   if (company.publications) {
-    const published = displayedPublications(company.publications, category)
+    const published = renderBenefitCorrectionPublications(company.publications, category)
     if (published !== null) return published
   }
   if (company.artifact) return displayedValue(company.artifact, category)

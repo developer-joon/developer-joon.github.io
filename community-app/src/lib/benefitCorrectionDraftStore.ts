@@ -1,7 +1,7 @@
 import { decodeBenefitCorrectionItem, deriveBenefitCorrectionAccountScope, isBenefitCorrectionDataVersion, isBenefitCorrectionSourceUrl, isBenefitCorrectionTimestamp, type BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
 import { isStrictUuid } from './uuid'
 import { isBenefitCompanyId, isLegacyBenefitArtifactCompanyId } from './benefitCompanyId'
-import { BENEFIT_CATEGORIES, type BenefitCorrectionAccountScope, type BenefitCorrectionDraft, type BenefitCorrectionItem, type BenefitCorrectionResult } from '../types/benefitCorrections'
+import { BENEFIT_CATEGORIES, BENEFIT_CORRECTION_CURRENT_TEXT_MAX_LENGTH, type BenefitCorrectionAccountScope, type BenefitCorrectionDraft, type BenefitCorrectionItem, type BenefitCorrectionResult } from '../types/benefitCorrections'
 
 const BENEFIT_CORRECTION_DRAFT_PREFIX = 'breadlab:benefit-correction:draft:v2'
 const ACCOUNT_SCOPE_PATTERN = /^[0-9a-f]{64}$/
@@ -46,7 +46,7 @@ function parseDraft(scope: BenefitCorrectionAccountScope, value: unknown): Benef
   if (!isAccountScope(scope) || !isRecord(value) || !hasExactKeys(value, draftKeys) || value.version !== 2 || value.accountScope !== scope || !isStrictUuid(value.draftId)
     || typeof value.companyId !== 'string' || (value.companyId !== '' && !isBenefitCompanyId(value.companyId) && !isLegacyBenefitArtifactCompanyId(value.companyId))
     || typeof value.categoryId !== 'string' || (value.categoryId !== '' && !(BENEFIT_CATEGORIES as readonly string[]).includes(value.categoryId))
-    || !boundedDraftText(value.currentText, 5000) || !boundedDraftText(value.proposedText, 5000) || !boundedDraftText(value.scopeText, 2000)
+    || !boundedDraftText(value.currentText, BENEFIT_CORRECTION_CURRENT_TEXT_MAX_LENGTH) || !boundedDraftText(value.proposedText, 5000) || !boundedDraftText(value.scopeText, 2000)
     || typeof value.sourceUrl !== 'string' || (value.sourceUrl !== '' && !isBenefitCorrectionSourceUrl(value.sourceUrl))
     || typeof value.observedDataVersion !== 'string' || (value.observedDataVersion !== '' && !isBenefitCorrectionDataVersion(value.observedDataVersion))
     || !draftTimestamp(value.updatedAt)) return null
