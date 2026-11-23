@@ -17,7 +17,8 @@ const CATALOG=Object.freeze({
  functions:[['private','reject_benefit_import_receipt_change','postgres','plpgsql','f',0,'v','u',false,false,false,'trigger',['search_path=""'],'32f491306dab4381337ff24015decb02d5529d003e96f21e53bd1897422de347','{postgres=X/postgres}']],
  triggers:[['private','benefit_import_receipts','benefit_import_receipts_immutable','O',27,0,'','private','reject_benefit_import_receipt_change','f',0,'919231c97273f831498ce690575535b562cecca806bad4cff144d90156103a87']],
 })
-export function computeOpenDartRowDigest(fields){const parts=[DOMAIN];for(const value of fields){if(value===null){parts.push(Buffer.from([0]));continue}const b=Buffer.from(value);const n=Buffer.alloc(8);n.writeBigUInt64BE(BigInt(b.length));parts.push(Buffer.from([1]),n,b)}return createHash('sha256').update(Buffer.concat(parts)).digest('hex')}
+const hasUnpairedSurrogate=value=>{for(let i=0;i<value.length;i++){const code=value.charCodeAt(i);if(code>=0xd800&&code<=0xdbff){const next=value.charCodeAt(i+1);if(!(next>=0xdc00&&next<=0xdfff))return true;i++}else if(code>=0xdc00&&code<=0xdfff)return true}return false}
+export function computeOpenDartRowDigest(fields){const parts=[DOMAIN];for(const value of fields){if(value===null){parts.push(Buffer.from([0]));continue}if(typeof value!=='string'||hasUnpairedSurrogate(value))throw Error('OpenDART row digest value contains invalid Unicode surrogate');const b=Buffer.from(value);const n=Buffer.alloc(8);n.writeBigUInt64BE(BigInt(b.length));parts.push(Buffer.from([1]),n,b)}return createHash('sha256').update(Buffer.concat(parts)).digest('hex')}
 const copyField=value=>value===null?'\\N':`"${String(value).replaceAll('"','""')}"`
 const exactUtcSecond = value => {
  const match=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(value)
@@ -27,7 +28,7 @@ const exactUtcSecond = value => {
  const days=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31]
  return month>=1&&month<=12&&day>=1&&day<=days[month-1]&&hour<=23&&minute<=59&&second<=59
 }
-const boundedApplyText=(value,label,maxCodePoints,maxUtf8Bytes)=>{if(typeof value!=='string'||value!==value.trim()||[...value].length<1||[...value].length>maxCodePoints||Buffer.byteLength(value,'utf8')>maxUtf8Bytes||/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value))throw Error(`${label} invalid`);return value}
+const boundedApplyText=(value,label,maxCodePoints,maxUtf8Bytes)=>{if(typeof value!=='string'||hasUnpairedSurrogate(value)||value!==value.trim()||[...value].length<1||[...value].length>maxCodePoints||Buffer.byteLength(value,'utf8')>maxUtf8Bytes||/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value))throw Error(`${label} invalid Unicode or text`);return value}
 function validateApplyDescriptor(m){
  const a=m?.authority,s=m?.source
  boundedApplyText(a?.source_edition,'OpenDART authority edition',100,400)

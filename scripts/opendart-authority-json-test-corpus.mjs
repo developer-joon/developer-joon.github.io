@@ -29,5 +29,9 @@ export function authorityJsonMutationCorpus(authority) {
     { name: 'depth bound', text: withReplacement('source_edition', `"source_edition":${'['.repeat(80)}"x"${']'.repeat(80)}`), expected: /depth/i },
     { name: 'key count bound', text: withReplacement('source_edition', `"source_edition":${object(Array.from({ length: 1100 }, (_, index) => `${q(`k${index}`)}:0`))}`), expected: /key/i },
     { name: 'string length bound', text: withReplacement('source_edition', `"source_edition":${q('x'.repeat(5000))}`), expected: /string/i },
+    { name: 'escaped lone high surrogate', text: withReplacement('source_edition', '"source_edition":"edition\\ud800"'), expected: /surrogate|unicode/i },
+    { name: 'escaped lone low surrogate', text: withReplacement('source_edition', '"source_edition":"edition\\udc00"'), expected: /surrogate|unicode/i },
+    { name: 'escaped high surrogate followed by non-low', text: withReplacement('source_edition', '"source_edition":"edition\\ud800A"'), expected: /surrogate|unicode/i },
+    { name: 'escaped two high surrogates', text: withReplacement('source_edition', '"source_edition":"edition\\ud800\\ud801"'), expected: /surrogate|unicode/i },
   ]
 }

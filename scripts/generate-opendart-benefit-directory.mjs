@@ -33,11 +33,24 @@ const exactUtcSecond = value => {
   const days = [31,leap ? 29 : 28,31,30,31,30,31,31,30,31,30,31]
   return month >= 1 && month <= 12 && day >= 1 && day <= days[month-1] && hour <= 23 && minute <= 59 && second <= 59
 }
+const hasUnpairedSurrogate = value => {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true
+      index++
+    } else if (code >= 0xdc00 && code <= 0xdfff) return true
+  }
+  return false
+}
 const bounded = (value, label, maxCodePoints, maxUtf8Bytes, optional = false) => {
   if (optional && value === '') return ''
-  if (typeof value !== 'string' || value !== value.trim() || [...value].length < 1 || [...value].length > maxCodePoints || Buffer.byteLength(value,'utf8') > maxUtf8Bytes || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value)) throw Error(`${label} invalid`)
+  if (typeof value !== 'string' || hasUnpairedSurrogate(value) || value !== value.trim() || [...value].length < 1 || [...value].length > maxCodePoints || Buffer.byteLength(value,'utf8') > maxUtf8Bytes || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value)) throw Error(`${label} invalid Unicode or text`)
   return value
 }
+
+export const validateOpenDartText = bounded
 
 async function readNoFollow(filePath, maximum, label) {
   const absolute = path.resolve(filePath); const parts = absolute.split(path.sep).filter(Boolean); const handles = []
@@ -144,7 +157,7 @@ function parseStrictAuthorityJson(text) {
     const start=cursor++
     while(cursor<text.length){
       const code=text.charCodeAt(cursor)
-      if(code===34){cursor++;const token=text.slice(start,cursor);let decoded;try{decoded=JSON.parse(token)}catch{throw Error('authority descriptor JSON invalid')}if(Buffer.byteLength(decoded,'utf8')>AUTHORITY_JSON_MAX_STRING_BYTES)throw Error('authority descriptor JSON string bound exceeded');return decoded}
+      if(code===34){cursor++;const token=text.slice(start,cursor);let decoded;try{decoded=JSON.parse(token)}catch{throw Error('authority descriptor JSON invalid')}if(hasUnpairedSurrogate(decoded))throw Error('authority descriptor JSON contains unpaired Unicode surrogate');if(Buffer.byteLength(decoded,'utf8')>AUTHORITY_JSON_MAX_STRING_BYTES)throw Error('authority descriptor JSON string bound exceeded');return decoded}
       if(code<0x20)throw Error('authority descriptor JSON invalid')
       if(code===92){cursor++;if(cursor>=text.length)throw Error('authority descriptor JSON invalid');if(text[cursor]==='u'){if(!/^[0-9a-fA-F]{4}$/.test(text.slice(cursor+1,cursor+5)))throw Error('authority descriptor JSON invalid');cursor+=5}else{if(!/["\\/bfnrt]/.test(text[cursor]))throw Error('authority descriptor JSON invalid');cursor++}}
       else cursor++

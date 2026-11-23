@@ -7,7 +7,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { generateOpenDartBundle } from './generate-opendart-benefit-directory.mjs'
 import { applyOpenDart } from './apply-opendart-benefit-directory.mjs'
-import { parseOpenDartSourceZip, validateOpenDartAuthorityDescriptor, verifyOpenDartBundle } from './verify-opendart-benefit-directory.mjs'
+import { parseOpenDartSourceZip, validateOpenDartAuthorityDescriptor, validateOpenDartText, verifyOpenDartBundle } from './verify-opendart-benefit-directory.mjs'
 import { zipContractCorpus } from './opendart-zip-contract-test-corpus.mjs'
 import { authorityTextCases, corporationTextCases } from './opendart-text-contract-test-corpus.mjs'
 import { authorityJsonMutationCorpus } from './opendart-authority-json-test-corpus.mjs'
@@ -60,6 +60,18 @@ async function rewriteSelfConsistentName(f, value) {
   })
 }
 
+async function rewriteEscapedMalformedBundleName(f, escape) {
+  const companiesPath=path.join(f.bundleDir,'companies.ndjson')
+  const lines=(await readFile(companiesPath,'utf8')).trim().split('\n')
+  lines[0]=lines[0].replace('"display_name":"Alpha"',`"display_name":"Alpha${escape}Beta"`)
+  const companyBytes=Buffer.from(lines.join('\n')+'\n')
+  await writeFile(companiesPath,companyBytes)
+  await rewriteManifest(f.bundleDir,manifest=>{
+    manifest.outputs.companies.byte_count=companyBytes.length
+    manifest.outputs.companies.sha256=sha(companyBytes)
+  })
+}
+
 test('independent verifier accepts canonical source-bound bundle', async () => {
   const f = await fixture()
   try { const result = await verifyOpenDartBundle({ sourceFile: f.sourceFile, authorityFile:f.authorityFile, bundleDir: f.bundleDir }); assert.equal(result.companyCount, 2); assert.equal(result.sourceSha256, sha(source())) } finally { await rm(f.root,{recursive:true,force:true}) }
@@ -77,7 +89,9 @@ test('independent verifier separately enforces the shared corporation text corpu
     for (const sample of corporationTextCases(field)) {
       const row = ['00123456', 'Alpha', 'ALPHA', '', '20260101']
       row[field === 'corp_name' ? 1 : 2] = sample.value
-      const action = () => parseOpenDartSourceZip(source([row]))
+      const action = sample.name.includes('surrogate')
+        ? () => validateOpenDartText(sample.value,field,200,800,field==='corp_eng_name')
+        : () => parseOpenDartSourceZip(source([row]))
       if (sample.accept) assert.equal(action()[0][field === 'corp_name' ? 'name' : 'eng'],sample.value,`${field}: ${sample.name}`)
       else assert.throws(action, undefined, `${field}: ${sample.name}`)
     }
@@ -106,7 +120,7 @@ test('verifier and apply reject duplicate authority keys at every depth before J
       await writeFile(f.authorityFile, sample.text + '\n')
       const expected = sample.expected ?? /duplicate/i
       await assert.rejects(verifyOpenDartBundle({ sourceFile:f.sourceFile, authorityFile:f.authorityFile, bundleDir:f.bundleDir }), expected, sample.name)
-      await assert.rejects(applyOpenDart({ databaseUrl:'postgresql://user:***@127.0.0.1/test', psqlBin:'/does/not/matter', sourceFile:f.sourceFile, authorityFile:f.authorityFile, bundleDir:f.bundleDir, dryRun:true }), expected, sample.name)
+      await assert.rejects(applyOpenDart({ databaseUrl:'postgresql://user:password@127.0.0.1/test', psqlBin:'/does/not/matter', sourceFile:f.sourceFile, authorityFile:f.authorityFile, bundleDir:f.bundleDir, dryRun:true }), expected, sample.name)
     } finally { await rm(f.root,{recursive:true,force:true}) }
   }
 })
@@ -118,6 +132,17 @@ test('verifier and apply reject self-consistently rehashed bundles with invalid 
       await rewriteSelfConsistentName(f,value)
       await assert.rejects(verifyOpenDartBundle({sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir}),/corp_name|source authority|invalid/i)
       await assert.rejects(applyOpenDart({databaseUrl:'postgresql://user:password@127.0.0.1/test',psqlBin:'/does/not/matter',sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir,dryRun:true}),/corp_name|source authority|invalid/i)
+    }finally{await rm(f.root,{recursive:true,force:true})}
+  }
+})
+
+test('verifier and apply reject self-rehashed bundle JSON containing escaped unpaired surrogates',async()=>{
+  for(const escape of ['\\ud800','\\udc00','\\ud800A','\\ud800\\ud801']){
+    const f=await fixture()
+    try{
+      await rewriteEscapedMalformedBundleName(f,escape)
+      await assert.rejects(verifyOpenDartBundle({sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir}),/surrogate|unicode/i)
+      await assert.rejects(applyOpenDart({databaseUrl:'postgresql://user:password@127.0.0.1/test',psqlBin:'/does/not/matter',sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir,dryRun:true}),/surrogate|unicode/i)
     }finally{await rm(f.root,{recursive:true,force:true})}
   }
 })

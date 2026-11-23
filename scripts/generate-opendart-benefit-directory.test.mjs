@@ -8,7 +8,7 @@ import { authorityJsonMutationCorpus } from './opendart-authority-json-test-corp
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { buildOpenDartBundle, generateOpenDartBundle, parseCorpCodeZip } from './generate-opendart-benefit-directory.mjs'
+import { buildOpenDartBundle, generateOpenDartBundle, parseCorpCodeZip, validateOpenDartText } from './generate-opendart-benefit-directory.mjs'
 import { buildOpenDartImportSql, computeOpenDartRowDigest } from './apply-opendart-benefit-directory.mjs'
 import { zipContractCorpus } from './opendart-zip-contract-test-corpus.mjs'
 import { authorityTextCases, corporationTextCases } from './opendart-text-contract-test-corpus.mjs'
@@ -97,7 +97,9 @@ test('generator enforces bounded control-free corporation text by code point and
     for (const sample of corporationTextCases(field)) {
       const row = ['00123456', 'Alpha', 'ALPHA', '', '20260101']
       row[field === 'corp_name' ? 1 : 2] = sample.value
-      const action = () => parseCorpCodeZip(zip(xml([row])))
+      const action = sample.name.includes('surrogate')
+        ? () => validateOpenDartText(sample.value,field,200,800,field==='corp_eng_name')
+        : () => parseCorpCodeZip(zip(xml([row])))
       if (sample.accept) assert.equal(action()[0][field],sample.value,`${field}: ${sample.name}`)
       else assert.throws(action, undefined, `${field}: ${sample.name}`)
     }
@@ -113,6 +115,26 @@ test('generator enforces bounded control-free authority text after JSON decoding
     if (sample.accept) assert.doesNotThrow(action, sample.name)
     else assert.throws(action, undefined, sample.name)
   }
+})
+
+test('valid surrogate pairs remain one scalar with exact UTF-8 bytes', () => {
+  const emoji='\ud83d\ude00'
+  assert.equal([...validateOpenDartText(emoji,'emoji',1,4)].length,1)
+  assert.deepEqual(Buffer.from(emoji),Buffer.from([0xf0,0x9f,0x98,0x80]))
+  assert.throws(()=>validateOpenDartText(`${emoji}A`,'emoji',1,5),/invalid/i)
+})
+
+test('strict authority JSON accepts an escaped valid surrogate pair', async () => {
+  const root=await mkdtemp(path.join(tmpdir(),'opendart-valid-surrogate-pair-'))
+  try{
+    const sourceBytes=zip(xml()),sourceFile=path.join(root,'source.zip'),authorityFile=path.join(root,'authority.json')
+    await writeFile(sourceFile,sourceBytes)
+    const text=JSON.stringify(authorityFor(sourceBytes)).replace('OpenDART attribution required','OpenDART \\ud83d\\ude00 attribution')+'\n'
+    await writeFile(authorityFile,text)
+    const built=await generateOpenDartBundle({sourceFile,authorityFile,outputDir:path.join(root,'bundle')})
+    assert.equal(built.manifest.authority.reuse_rights_note,'OpenDART 😀 attribution')
+    assert.ok(built.manifestBytes.includes(Buffer.from([0xf0,0x9f,0x98,0x80])))
+  }finally{await rm(root,{recursive:true,force:true})}
 })
 
 test('generator rejects duplicate authority keys at every depth before JSON collapse and enforces parser bounds', async () => {
@@ -464,6 +486,14 @@ test('apply SQL uses framed UTF-8 digests, strong-code conflicts, exact preserva
   assert.match(sql, /t\.tgtype/)
   assert.match(sql, /ROLLBACK;/)
   assert.doesNotMatch(sql, /ON CONFLICT\s*\([^)]*display_name/i)
+})
+
+test('row digest rejects malformed UTF-16 instead of colliding with literal replacement text', () => {
+  const replacement = ['Alpha�Beta', ...Array(15).fill(null)]
+  assert.match(computeOpenDartRowDigest(replacement), /^[0-9a-f]{64}$/)
+  for (const malformed of ['Alpha\ud800Beta','Alpha\udc00Beta','Alpha\ud800ABeta','Alpha\ud800\ud801Beta']) {
+    assert.throws(() => computeOpenDartRowDigest([malformed, ...Array(15).fill(null)]), /surrogate|unicode/i)
+  }
 })
 
 test('no-follow source and output reads reject symlinks and failed replacement preserves old bundle', async () => {
