@@ -9,6 +9,7 @@ import { BenefitDirectoryCompanyPage } from './BenefitDirectoryCompanyPage'
 const CRN_A = 'KR-CRN-1101111111111'
 const CRN_B = 'KR-CRN-2202222222222'
 const BIZ = 'KR-BIZ-1234567890'
+const CAN = `KR-CAN-${'a'.repeat(32)}`
 const publication = (overrides: Partial<BenefitCompanyDetail['publications'][number]> = {}): BenefitCompanyDetail['publications'][number] => ({
   publicationId: '123e4567-e89b-42d3-a456-426614174000',
   categoryId: 'leave',
@@ -69,7 +70,7 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
   })
 
-  it.each([CRN_A, BIZ])('passes canonical server ID %s to detail unchanged', async id => {
+  it.each([CRN_A, BIZ, CAN])('passes canonical server ID %s to detail unchanged', async id => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>().mockResolvedValue(ok(detail(id, [])))
     render(<BenefitDirectoryCompanyPage search={`?id=${id}`} repository={repository(load)} />)
     await screen.findByRole('heading', { name: '가 기업' })

@@ -2,6 +2,7 @@ import { parseEnv } from '../config/env'
 import { getSupabaseClient } from '../lib/supabase'
 import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
 import { comparePostgresTimestamps, parsePostgresTimestampMicros } from '../lib/postgresTimestamp'
+import { isBenefitCompanyId } from '../lib/benefitCompanyId'
 import { BENEFIT_SUBMISSION_CATEGORIES, BENEFIT_SUBMISSION_STATUSES, type BenefitSubmissionAccountScope, type BenefitSubmissionCategory, type BenefitSubmissionCursor, type BenefitSubmissionErrorCode, type BenefitSubmissionItem, type BenefitSubmissionListInput, type BenefitSubmissionPage, type BenefitSubmissionResult, type CreateBenefitSubmissionInput } from '../types/benefitSubmissions'
 
 export interface BenefitSubmissionRpcResponse { data: unknown; error: unknown; status: number; statusText: string }
@@ -17,7 +18,6 @@ export interface BenefitSubmissionRepository {
   listMySubmissions(input: BenefitSubmissionListInput, signal?: AbortSignal): Promise<BenefitSubmissionResult<BenefitSubmissionPage>>
 }
 
-const companyPattern = /^(?:KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10})$/
 
 const ownerKeys = ['id','company_id','category_id','benefit_text','eligibility_text','condition_text','source_url','status','admin_response','publication_id','reviewed_at','created_at','updated_at'] as const
 const SESSION_DOMAIN = 'breadlab:benefit-submission:session-fingerprint:v1'
@@ -43,7 +43,7 @@ export function isBenefitSubmissionSourceUrl(value: unknown): value is string {
 }
 function order(...values:(string|null)[]){ const present=values.filter((v):v is string=>v!==null); return present.every((v,i)=>i===0||comparePostgresTimestamps(v,present[i-1])>=0) }
 export function decodeBenefitSubmissionItem(value: unknown): BenefitSubmissionItem {
-  if(!record(value)||!exact(value,ownerKeys)||!isCanonicalUuid(value.id)||typeof value.company_id!=='string'||!companyPattern.test(value.company_id)||!category(value.category_id)||!bounded(value.benefit_text,5000)||!nullableBounded(value.eligibility_text,2000)||!nullableBounded(value.condition_text,2000)||(value.source_url!==null&&!isBenefitSubmissionSourceUrl(value.source_url))||typeof value.status!=='string'||!(BENEFIT_SUBMISSION_STATUSES as readonly string[]).includes(value.status)||(value.admin_response!==null&&!isCanonicalBenefitSubmissionText(value.admin_response,2000))||(value.publication_id!==null&&!isCanonicalUuid(value.publication_id))||(value.reviewed_at!==null&&!isBenefitSubmissionTimestamp(value.reviewed_at))||!isBenefitSubmissionTimestamp(value.created_at)||!isBenefitSubmissionTimestamp(value.updated_at)) throw new Error('invalid owner projection')
+  if(!record(value)||!exact(value,ownerKeys)||!isCanonicalUuid(value.id)||!isBenefitCompanyId(value.company_id)||!category(value.category_id)||!bounded(value.benefit_text,5000)||!nullableBounded(value.eligibility_text,2000)||!nullableBounded(value.condition_text,2000)||(value.source_url!==null&&!isBenefitSubmissionSourceUrl(value.source_url))||typeof value.status!=='string'||!(BENEFIT_SUBMISSION_STATUSES as readonly string[]).includes(value.status)||(value.admin_response!==null&&!isCanonicalBenefitSubmissionText(value.admin_response,2000))||(value.publication_id!==null&&!isCanonicalUuid(value.publication_id))||(value.reviewed_at!==null&&!isBenefitSubmissionTimestamp(value.reviewed_at))||!isBenefitSubmissionTimestamp(value.created_at)||!isBenefitSubmissionTimestamp(value.updated_at)) throw new Error('invalid owner projection')
   const status=value.status as BenefitSubmissionItem['status']; const untouched=status==='submitted'; const approved=status==='approved'
   if((untouched&&(value.admin_response!==null||value.publication_id!==null||value.reviewed_at!==null))||(!untouched&&(value.admin_response===null||value.reviewed_at===null))||(approved!==(value.publication_id!==null))||!order(value.created_at,value.updated_at)||(value.reviewed_at!==null&&!order(value.created_at,value.reviewed_at,value.updated_at)))throw new Error('invalid owner state')
   return { id:value.id.toLowerCase(), companyId:value.company_id, categoryId:value.category_id, benefitText:value.benefit_text, eligibilityText:value.eligibility_text, conditionText:value.condition_text, sourceUrl:value.source_url as string|null, status, adminResponse:value.admin_response as string|null, publicationId:value.publication_id===null?null:(value.publication_id as string).toLowerCase(), reviewedAt:value.reviewed_at as string|null, createdAt:value.created_at, updatedAt:value.updated_at }
@@ -60,7 +60,7 @@ function decodePage(value:unknown,input:BenefitSubmissionListInput,requestCursor
   const next=value.next_cursor===null?null:cursor(value.next_cursor); if(next&&(items.length===0||compare({createdAt:items.at(-1)!.createdAt,id:items.at(-1)!.id},next)!==0))throw new Error('invalid next cursor')
   return {items,hasMore:value.has_more,nextCursor:next?encodeCursor(next):null}
 }
-function validCreate(input:CreateBenefitSubmissionInput){ return isStrictUuid(input.clientKey)&&companyPattern.test(input.companyId)&&category(input.categoryId)&&bounded(input.benefitText,5000)&&nullableBounded(input.eligibilityText,2000)&&nullableBounded(input.conditionText,2000)&&(input.sourceUrl===null||input.sourceUrl===''||isBenefitSubmissionSourceUrl(input.sourceUrl)) }
+function validCreate(input:CreateBenefitSubmissionInput){ return isStrictUuid(input.clientKey)&&isBenefitCompanyId(input.companyId)&&category(input.categoryId)&&bounded(input.benefitText,5000)&&nullableBounded(input.eligibilityText,2000)&&nullableBounded(input.conditionText,2000)&&(input.sourceUrl===null||input.sourceUrl===''||isBenefitSubmissionSourceUrl(input.sourceUrl)) }
 function validList(input:BenefitSubmissionListInput){ return Number.isSafeInteger(input.limit)&&input.limit>=1&&input.limit<=100&&(input.cursor===undefined||parseOpaqueCursor(input.cursor)!==null) }
 function fail<T>(code: BenefitSubmissionErrorCode, message:string, sourceCode?:string):BenefitSubmissionResult<T>{ return {ok:false,error:{code,message,...(sourceCode?{sourceCode}: {})}} }
 function mapError<T>(error:unknown,statusValue?:unknown):BenefitSubmissionResult<T>{

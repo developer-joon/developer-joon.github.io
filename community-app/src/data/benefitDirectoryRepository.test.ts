@@ -143,6 +143,18 @@ describe('benefit directory repository', () => {
     expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v1', { p_company_id: company.company_id })
   })
 
+  it('accepts an opaque canonical company ID in detail responses without rewriting it', async () => {
+    const companyId = `KR-CAN-${'a'.repeat(32)}`
+    const opaqueDetail = { ...detail, company: { ...company, company_id: companyId } }
+    const transport = rpcClient(success(opaqueDetail))
+    getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    await expect(createBenefitDirectoryRepository().detail(companyId)).resolves.toMatchObject({
+      ok: true,
+      data: { company: { companyId } },
+    })
+    expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v1', { p_company_id: companyId })
+  })
+
   it.each([
     [{ ...page, source_url: 'https://private.example' }, 'top-level'],
     [{ ...page, items: [{ ...searchItem, verified_at: '2026-01-01T00:00:00Z' }] }, 'search item'],

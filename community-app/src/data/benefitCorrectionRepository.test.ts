@@ -199,6 +199,18 @@ describe('benefit correction repository RPC contract', () => {
     expect(JSON.stringify(value.calls)).not.toMatch(/user|email|token|reviewer|operator/i)
   })
 
+  it('passes an opaque canonical company ID through the correction RPC unchanged', async () => {
+    const companyId = `KR-CAN-${'f'.repeat(32)}`
+    const value = setup({ data: { ...ownerItem, company_id: companyId }, error: null })
+    const result = await createFor(value.repository, { ...createInput, companyId })
+
+    expect(result).toMatchObject({ ok: true, data: { companyId } })
+    expect(value.calls[0]).toMatchObject({
+      name: 'create_benefit_correction_request_v1',
+      args: { p_company_id: companyId },
+    })
+  })
+
   it('calls own list, admin queue, and review RPCs with exact cursor/CAS arguments', async () => {
     const value = setup({ data: { items: [ownerItem], has_more: false, next_cursor: null }, error: null })
     await value.repository.listMyRequests({ limit: 25 })

@@ -1,5 +1,6 @@
 import { decodeBenefitCorrectionItem, deriveBenefitCorrectionAccountScope, isBenefitCorrectionDataVersion, isBenefitCorrectionSourceUrl, isBenefitCorrectionTimestamp, type BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
 import { isStrictUuid } from './uuid'
+import { isBenefitCompanyId, isLegacyBenefitArtifactCompanyId } from './benefitCompanyId'
 import { BENEFIT_CATEGORIES, type BenefitCorrectionAccountScope, type BenefitCorrectionDraft, type BenefitCorrectionItem, type BenefitCorrectionResult } from '../types/benefitCorrections'
 
 const BENEFIT_CORRECTION_DRAFT_PREFIX = 'breadlab:benefit-correction:draft:v2'
@@ -43,7 +44,7 @@ export function benefitCorrectionDraftKey(scope: BenefitCorrectionAccountScope):
 
 function parseDraft(scope: BenefitCorrectionAccountScope, value: unknown): BenefitCorrectionDraft | null {
   if (!isAccountScope(scope) || !isRecord(value) || !hasExactKeys(value, draftKeys) || value.version !== 2 || value.accountScope !== scope || !isStrictUuid(value.draftId)
-    || typeof value.companyId !== 'string' || (value.companyId !== '' && !/^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$/.test(value.companyId))
+    || typeof value.companyId !== 'string' || (value.companyId !== '' && !isBenefitCompanyId(value.companyId) && !isLegacyBenefitArtifactCompanyId(value.companyId))
     || typeof value.categoryId !== 'string' || (value.categoryId !== '' && !(BENEFIT_CATEGORIES as readonly string[]).includes(value.categoryId))
     || !boundedDraftText(value.currentText, 5000) || !boundedDraftText(value.proposedText, 5000) || !boundedDraftText(value.scopeText, 2000)
     || typeof value.sourceUrl !== 'string' || (value.sourceUrl !== '' && !isBenefitCorrectionSourceUrl(value.sourceUrl))

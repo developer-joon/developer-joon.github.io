@@ -3,6 +3,7 @@ import { AppFooter } from '../components/AppFooter'
 import { AppHeader } from '../components/AppHeader'
 import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
 import { benefitSubmissionHref } from '../benefitsRoutes'
+import { isBenefitCompanyId } from '../lib/benefitCompanyId'
 import { parseBenefitDirectoryQuery, serializeBenefitDirectoryQuery } from '../lib/benefitDirectoryQueryState'
 import { presentPublicDirectoryError } from '../lib/publicDirectoryErrorPresentation'
 import {
@@ -14,7 +15,6 @@ import {
   type BenefitDirectoryPublication,
 } from '../types/benefitDirectory'
 
-const COMPANY_ID = /^(?:KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10})$/
 const MAX_SEARCH_LENGTH = 10_000
 const RETURN_KEYS = new Set(['q', 'categories', 'industry', 'size', 'hasBenefitsOnly', 'sort'])
 
@@ -43,7 +43,7 @@ function parseCompanyQuery(search: string): ParsedCompanyQuery {
   }
   const idLike = entries.filter(entry => entry.key.toLowerCase() === 'id')
   const ids = entries.filter(entry => entry.rawKey === 'id')
-  if (idLike.length !== 1 || ids.length !== 1 || ids[0].separators !== 1 || ids[0].rawValue !== ids[0].value || !COMPANY_ID.test(ids[0].value)) return { id: null, directoryQuery: '' }
+  if (idLike.length !== 1 || ids.length !== 1 || ids[0].separators !== 1 || ids[0].rawValue !== ids[0].value || !isBenefitCompanyId(ids[0].value)) return { id: null, directoryQuery: '' }
 
   const returnEntries = entries.filter(entry => entry.key !== 'id')
   if (returnEntries.length === 0) return { id: ids[0].value, directoryQuery: '' }

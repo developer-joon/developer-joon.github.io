@@ -1,6 +1,7 @@
 import { getSupabaseClient } from '../lib/supabase'
 import { parseEnv } from '../config/env'
 import { isCanonicalUuid, isStrictUuid } from '../lib/uuid'
+import { isBenefitCompanyId, isLegacyBenefitArtifactCompanyId } from '../lib/benefitCompanyId'
 import {
   BENEFIT_CATEGORIES,
   BENEFIT_CORRECTION_AUDIT_EVENT_TYPES,
@@ -47,7 +48,7 @@ const adminKeys = [...ownerKeys, 'reviewed_at'] as const
 const auditKeys = ['sequence', 'event_type', 'from_status', 'to_status', 'admin_response', 'applied_version', 'created_at'] as const
 const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2}):(\d{2}))$/
 const dataVersionPattern = /^company-benefits-(\d{4})-(\d{2})-(\d{2})-v[1-9][0-9]*$/
-const companyPattern = /^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$/
+
 const accountScopePattern = /^[0-9a-f]{64}$/
 const ACCOUNT_SCOPE_DOMAIN = 'breadlab:benefit-correction:account-scope:v1'
 const SESSION_FINGERPRINT_DOMAIN = 'breadlab:benefit-correction:session-fingerprint:v1'
@@ -95,7 +96,7 @@ function timestampOrder(...values: Array<string | null>) {
 
 export function decodeBenefitCorrectionItem(value: unknown, admin = false): BenefitCorrectionItem | AdminBenefitCorrectionItem {
   if (!isRecord(value) || !hasExactKeys(value, admin ? adminKeys : ownerKeys)) throw new Error('invalid response keys')
-  if (!isCanonicalUuid(value.id) || typeof value.company_id !== 'string' || !companyPattern.test(value.company_id) || !isCategory(value.category_id)
+  if (!isCanonicalUuid(value.id) || (!isBenefitCompanyId(value.company_id) && !isLegacyBenefitArtifactCompanyId(value.company_id)) || !isCategory(value.category_id)
     || !boundedText(value.current_text, 5000) || !boundedText(value.proposed_text, 5000) || !boundedText(value.scope_text, 2000)
     || !isBenefitCorrectionSourceUrl(value.source_url) || !isBenefitCorrectionDataVersion(value.observed_data_version)
     || typeof value.status !== 'string' || !(BENEFIT_CORRECTION_STATUSES as readonly string[]).includes(value.status)
@@ -229,7 +230,7 @@ function validAuditInput(input: BenefitCorrectionAuditInput) {
     && (!input.cursor || (isBenefitCorrectionTimestamp(input.cursor.createdAt) && isCanonicalUuid(input.cursor.sequence)))
 }
 function validCreateInput(input: CreateBenefitCorrectionInput) {
-  return isStrictUuid(input.clientKey) && companyPattern.test(input.companyId) && isCategory(input.categoryId)
+  return isStrictUuid(input.clientKey) && (isBenefitCompanyId(input.companyId) || isLegacyBenefitArtifactCompanyId(input.companyId)) && isCategory(input.categoryId)
     && boundedText(input.currentText, 5000) && boundedText(input.proposedText, 5000) && boundedText(input.scopeText, 2000)
     && isBenefitCorrectionSourceUrl(input.sourceUrl) && isBenefitCorrectionDataVersion(input.observedDataVersion)
 }

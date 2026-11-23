@@ -4,6 +4,7 @@ import { benefitSubmissionHref, benefitsRoute, legacyBenefitsRedirect } from './
 describe('Task 7 benefit submission route contract', () => {
   it('builds the canonical company-prefilled submission URL', () => {
     expect(benefitSubmissionHref('KR-BIZ-1234567890')).toBe('/community/benefits/submit/?companyId=KR-BIZ-1234567890')
+    expect(benefitSubmissionHref(`KR-CAN-${'d'.repeat(32)}`)).toBe(`/community/benefits/submit/?companyId=KR-CAN-${'d'.repeat(32)}`)
   })
 
   it.each(['', 'KR-BIZ-123', 'kr-biz-1234567890', 'KR-BIZ-1234567890&admin=true'])(

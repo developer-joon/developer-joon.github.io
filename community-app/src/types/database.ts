@@ -148,6 +148,98 @@ export type Database = {
         };
         Relationships: [];
       };
+      benefit_company_identifiers: {
+        Row: {
+          company_id: string;
+          created_at: string;
+          identifier_digest_or_value: string;
+          identifier_id: string;
+          identifier_type: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          source_edition: string;
+          updated_at: string;
+          verified_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          company_id: string;
+          created_at?: string;
+          identifier_digest_or_value: string;
+          identifier_id?: string;
+          identifier_type: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          source_edition: string;
+          updated_at?: string;
+          verified_at: string;
+        };
+        Update: {
+          company_id?: string;
+          created_at?: string;
+          identifier_digest_or_value?: string;
+          identifier_id?: string;
+          identifier_type?: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          source_edition?: string;
+          updated_at?: string;
+          verified_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_company_identifiers_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+        ];
+      };
+      benefit_company_merge_events: {
+        Row: {
+          actor_id: string;
+          created_at: string;
+          destination_company_id: string;
+          merge_event_id: string;
+          reason: string;
+          source_company_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          actor_id: string;
+          created_at?: string;
+          destination_company_id: string;
+          merge_event_id?: string;
+          reason: string;
+          source_company_id: string;
+        };
+        Update: {
+          actor_id?: string;
+          created_at?: string;
+          destination_company_id?: string;
+          merge_event_id?: string;
+          reason?: string;
+          source_company_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_company_merge_events_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "benefit_company_merge_events_destination_company_id_fkey";
+            columns: ["destination_company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_company_merge_events_source_company_id_fkey";
+            columns: ["source_company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+        ];
+      };
       benefit_correction_events: {
         Row: {
           action: string;

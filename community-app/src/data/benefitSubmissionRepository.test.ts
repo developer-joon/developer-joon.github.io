@@ -59,6 +59,15 @@ describe('benefit submission repository', () => {
     expect(rpc).toHaveBeenCalledWith('create_benefit_submission_v1', expect.objectContaining({ p_source_url: null }), undefined)
   })
 
+  it('accepts and preserves opaque canonical company IDs through create and decode', async () => {
+    const companyId = `KR-CAN-${'b'.repeat(32)}`
+    const opaqueWire = { ...wire, company_id: companyId }
+    const rpc = vi.fn().mockResolvedValue({ data: opaqueWire, error: null, status: 200, statusText: 'OK' })
+    const repository = createBenefitSubmissionRepository({ getSessionContext: async () => context(rpc) })
+    await expect(repository.createSubmission({ ...input, companyId })).resolves.toMatchObject({ ok: true, data: { companyId } })
+    expect(rpc).toHaveBeenCalledWith('create_benefit_submission_v1', expect.objectContaining({ p_company_id: companyId }), undefined)
+  })
+
   it('rejects an A-B-A session switch even when actor returns to A', async () => {
     const contexts = [context(), { ...context(), sessionFingerprint: 'session-b' }, context()]
     const repository = createBenefitSubmissionRepository({ getSessionContext: vi.fn().mockImplementation(async () => contexts.shift() ?? context()) })

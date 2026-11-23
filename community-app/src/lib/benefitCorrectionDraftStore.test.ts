@@ -144,6 +144,14 @@ describe('account-scoped benefit correction drafts', () => {
     expect(api.saveBenefitCorrectionDraft(accountA, { ...value, scopeText: '😀'.repeat(2001) }, storage)).toBe(false)
   })
 
+  it('stores an opaque canonical company ID unchanged', async () => {
+    const { accountA, value } = await fixture()
+    const companyId = `KR-CAN-${'c'.repeat(32)}`
+    const storage = memoryStorage()
+    expect(api.saveBenefitCorrectionDraft(accountA, { ...value, companyId }, storage)).toBe(true)
+    expect(api.loadBenefitCorrectionDraft(accountA, storage)).toMatchObject({ companyId })
+  })
+
   it('preserves retry state and clears only the same scoped snapshot after validated success', async () => {
     const { accountA, value } = await fixture()
     const storage = memoryStorage()

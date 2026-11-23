@@ -6,6 +6,7 @@ import { AppHeader } from '../components/AppHeader'
 import { benefitsClient } from '../data/benefitsArtifactClient'
 import { getBenefitCorrectionRepository, type BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
 import { createBenefitCorrectionDraft, loadBenefitCorrectionDraft, saveBenefitCorrectionDraft, submitBenefitCorrectionDraft, type BenefitCorrectionDraftStorage } from '../lib/benefitCorrectionDraftStore'
+import { isBenefitCompanyId, isLegacyBenefitArtifactCompanyId } from '../lib/benefitCompanyId'
 import { BENEFIT_CATEGORIES, type BenefitCorrectionDraft } from '../types/benefitCorrections'
 import { categoryLabels, isResearchedOutcome, researchStateLabels, type CompanyListing } from '../types/benefits'
 
@@ -16,7 +17,7 @@ interface Props {
   currentPath?: string
 }
 
-const canonicalCompany = /^(?:KR-CRN-[0-9]{13}|US-CIK[0-9]{10})$/
+
 const correctionBasePath = '/community/benefits/correction/'
 
 function singleParam(params: URLSearchParams, name: string) {
@@ -37,7 +38,7 @@ function safeCorrectionPath(path: string) {
     const query = new URLSearchParams()
     const company = singleParam(parsed.searchParams, 'company')
     const category = singleParam(parsed.searchParams, 'category')
-    if (company && canonicalCompany.test(company)) query.set('company', company)
+    if (company && (isBenefitCompanyId(company) || isLegacyBenefitArtifactCompanyId(company))) query.set('company', company)
     if (category && (BENEFIT_CATEGORIES as readonly string[]).includes(category)) query.set('category', category)
     const serialized = query.toString()
     return `${correctionBasePath}${serialized ? `?${serialized}` : ''}`
@@ -82,7 +83,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
         const saved = loadBenefitCorrectionDraft(accountScope, draftStorage)
         const companyParam = singleParam(params, 'company')
         const categoryParam = singleParam(params, 'category')
-        const company = companyParam && canonicalCompany.test(companyParam) ? artifacts.companies.find(value => value.company_id === companyParam) : undefined
+        const company = companyParam && (isBenefitCompanyId(companyParam) || isLegacyBenefitArtifactCompanyId(companyParam)) ? artifacts.companies.find(value => value.company_id === companyParam) : undefined
         const category = categoryParam && (BENEFIT_CATEGORIES as readonly string[]).includes(categoryParam) ? categoryParam as BenefitCorrectionDraft['categoryId'] : ''
         const base = saved ?? createBenefitCorrectionDraft(accountScope)
         const companyId = base.companyId || company?.company_id || ''

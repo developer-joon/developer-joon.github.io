@@ -1,5 +1,6 @@
 import { getAnonymousSupabaseClient } from '../lib/supabase'
 import { isCanonicalUuid } from '../lib/uuid'
+import { isBenefitCompanyId } from '../lib/benefitCompanyId'
 import {
   BENEFIT_DIRECTORY_CATEGORIES,
   BENEFIT_DIRECTORY_IDENTITY_LABELS,
@@ -28,7 +29,7 @@ const detailKeys = ['company', 'publications'] as const
 const companyKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary'] as const
 const publicationKeys = ['publication_id', 'category_id', 'title', 'description', 'eligibility_text', 'condition_text', 'trust_label', 'revision'] as const
 const searchInputKeys = ['query', 'categories', 'industry', 'size', 'region', 'hasBenefitsOnly', 'pageSize', 'cursor'] as const
-const companyIdPattern = /^(?:KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10})$/
+
 export const MAX_BENEFIT_DETAIL_PUBLICATIONS = 200
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -66,7 +67,7 @@ function inValues<T extends string>(value: unknown, values: readonly T[]): value
   return typeof value === 'string' && (values as readonly string[]).includes(value)
 }
 function isCompanyId(value: unknown): value is string {
-  return typeof value === 'string' && companyIdPattern.test(value)
+  return isBenefitCompanyId(value)
 }
 function isCategory(value: unknown): value is BenefitDirectoryCategory {
   return inValues(value, BENEFIT_DIRECTORY_CATEGORIES)
