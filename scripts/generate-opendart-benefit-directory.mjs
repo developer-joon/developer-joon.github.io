@@ -30,9 +30,9 @@ const exactUtcSecond = value => {
   const days = [31,leap ? 29 : 28,31,30,31,30,31,31,30,31,30,31]
   return month >= 1 && month <= 12 && day >= 1 && day <= days[month-1] && hour <= 23 && minute <= 59 && second <= 59
 }
-const bounded = (value, label, max, optional = false) => {
+const bounded = (value, label, maxCodePoints, maxUtf8Bytes, optional = false) => {
   if (optional && value === '') return ''
-  if (typeof value !== 'string' || value !== value.trim() || value.length < 1 || value.length > max || Buffer.byteLength(value) > max * 4 || /[\u0000-\u001f\u007f]/u.test(value)) throw Error(`${label} invalid`)
+  if (typeof value !== 'string' || value !== value.trim() || [...value].length < 1 || [...value].length > maxCodePoints || Buffer.byteLength(value,'utf8') > maxUtf8Bytes || /[\u0000-\u001f\u007f\u2028\u2029]/u.test(value)) throw Error(`${label} invalid`)
   return value
 }
 
@@ -75,7 +75,7 @@ export function parseCorpCodeXml(bytes) {
   const codes = new Set()
   for (const row of rows) {
     if (!/^\d{8}$/.test(row.corp_code) || codes.has(row.corp_code)) throw Error('invalid or duplicate corp_code')
-    codes.add(row.corp_code); bounded(row.corp_name,'corp_name',200); bounded(row.corp_eng_name,'corp_eng_name',200,true)
+    codes.add(row.corp_code); bounded(row.corp_name,'corp_name',200,800); bounded(row.corp_eng_name,'corp_eng_name',200,800,true)
     if (row.stock_code !== '' && !/^\d{6}$/.test(row.stock_code)) throw Error('stock_code invalid')
     if (!exactDate(row.modify_date)) throw Error('modify_date invalid')
   }
@@ -115,19 +115,20 @@ function companyId(edition, code) { return `KR-CAN-${domainHash('benefit-directo
 function identifierUuid(edition, code) { const b=Buffer.from(domainHash('benefit-directory-opendart-identifier-v1',edition,code).slice(0,32),'hex'); b[6]=(b[6]&15)|0x50; b[8]=(b[8]&63)|0x80; const h=b.toString('hex'); return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}` }
 const jsonLines = rows => Buffer.from(rows.map(row=>JSON.stringify(row)).join('\n')+'\n')
 const requireMetadata = options => {
-  bounded(options.edition,'edition',100); bounded(options.retrievedAt,'retrieved-at',64); if (!exactUtcSecond(options.retrievedAt)) throw Error('retrieved-at invalid')
-  bounded(options.sourceUrl,'source URL',500); const url=new URL(options.sourceUrl); if (url.protocol!=='https:') throw Error('source URL must use https')
-  bounded(options.reuseRights,'reuse-rights',1000)
+  bounded(options.edition,'edition',100,400); bounded(options.retrievedAt,'retrieved-at',64,256); if (!exactUtcSecond(options.retrievedAt)) throw Error('retrieved-at invalid')
+  bounded(options.sourceUrl,'source URL',500,2000); const url=new URL(options.sourceUrl); if (url.protocol!=='https:') throw Error('source URL must use https')
+  bounded(options.reuseRights,'reuse-rights',1000,4000)
 }
 
 export function validateOpenDartAuthority(authority, sourceBytes) {
   if (!authority || typeof authority !== 'object' || Array.isArray(authority) || Object.keys(authority).sort().join('\0') !== [...AUTHORITY_KEYS].sort().join('\0')) throw Error('authority descriptor exact shape invalid')
   if (authority.schema_version !== 'benefit-directory-opendart-authority-v1') throw Error('authority descriptor schema version invalid')
-  bounded(authority.source_edition,'authority source edition',100)
+  bounded(authority.source_edition,'authority source edition',100,400)
+  bounded(authority.official_url,'authority official URL',500,2000)
   if (authority.official_url !== OFFICIAL_URL) throw Error('authority official URL is not allowlisted')
-  bounded(authority.reuse_rights_note,'authority reuse rights note',4000)
+  bounded(authority.reuse_rights_note,'authority reuse rights note',1000,4000)
   if (!/^[0-9a-f]{64}$/.test(authority.source_sha256) || authority.source_sha256 !== sha(sourceBytes)) throw Error('authority source sha256 mismatch')
-  bounded(authority.retrieved_at,'authority retrieval timestamp',64)
+  bounded(authority.retrieved_at,'authority retrieval timestamp',64,256)
   if (!exactUtcSecond(authority.retrieved_at)) throw Error('authority retrieval timestamp invalid')
   return Object.freeze({...authority})
 }

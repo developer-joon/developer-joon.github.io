@@ -6,14 +6,16 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { generateOpenDartBundle } from './generate-opendart-benefit-directory.mjs'
-import { parseOpenDartSourceZip, verifyOpenDartBundle } from './verify-opendart-benefit-directory.mjs'
+import { applyOpenDart } from './apply-opendart-benefit-directory.mjs'
+import { parseOpenDartSourceZip, validateOpenDartAuthorityDescriptor, verifyOpenDartBundle } from './verify-opendart-benefit-directory.mjs'
 import { zipContractCorpus } from './opendart-zip-contract-test-corpus.mjs'
+import { authorityTextCases, corporationTextCases } from './opendart-text-contract-test-corpus.mjs'
 
 const options = { edition: '2026-11-23', retrievedAt: '2026-11-23T00:00:00Z', sourceUrl: 'https://opendart.fss.or.kr/api/corpCode.xml', reuseRights: 'OpenDART attribution required' }
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const crc32 = bytes => { let crc=0xffffffff; for(const byte of bytes){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^(0xedb88320&-(crc&1))}return(crc^0xffffffff)>>>0 }
-function source() {
-  const xml = Buffer.from('<?xml version="1.0" encoding="UTF-8"?><result><list><corp_code>00123456</corp_code><corp_name>Alpha</corp_name><corp_eng_name>ALPHA INC.</corp_eng_name><stock_code>123456</stock_code><modify_date>20261122</modify_date></list><list><corp_code>00999999</corp_code><corp_name>Alpha</corp_name><corp_eng_name></corp_eng_name><stock_code></stock_code><modify_date>20260101</modify_date></list></result>')
+function source(rows = [['00123456','Alpha','ALPHA INC.','123456','20261122'],['00999999','Alpha','','','20260101']]) {
+  const xml = Buffer.from(`<?xml version="1.0" encoding="UTF-8"?><result>${rows.map(([code,name,eng,stock,date])=>`<list><corp_code>${code}</corp_code><corp_name>${name}</corp_name><corp_eng_name>${eng}</corp_eng_name><stock_code>${stock}</stock_code><modify_date>${date}</modify_date></list>`).join('')}</result>`)
   const name = Buffer.from('CORPCODE.xml'); const body = deflateRawSync(xml)
   const crc=crc32(xml)
   const local = Buffer.alloc(30 + name.length); local.writeUInt32LE(0x04034b50); local.writeUInt16LE(20,4); local.writeUInt16LE(8,8); local.writeUInt32LE(crc,14); local.writeUInt32LE(body.length,18); local.writeUInt32LE(xml.length,22); local.writeUInt16LE(name.length,26); name.copy(local,30)
@@ -34,6 +36,29 @@ async function rewriteManifest(bundleDir, updater) {
   await writeFile(manifestPath, JSON.stringify(manifest) + '\n')
 }
 
+async function rewriteSelfConsistentName(f, value) {
+  const sourceBytes=source([['00123456',value,'ALPHA INC.','123456','20261122'],['00999999','Alpha','','','20260101']])
+  const sourceDigest=sha(sourceBytes)
+  await writeFile(f.sourceFile,sourceBytes)
+  const authority=JSON.parse(await readFile(f.authorityFile,'utf8'))
+  authority.source_sha256=sourceDigest
+  await writeFile(f.authorityFile,JSON.stringify(authority)+'\n')
+  const companiesPath=path.join(f.bundleDir,'companies.ndjson')
+  const companies=(await readFile(companiesPath,'utf8')).trim().split('\n').map(JSON.parse)
+  companies[0].display_name=value
+  companies[0].normalized_name=value.toLowerCase()
+  for(const company of companies) company.provenance.source_sha256=sourceDigest
+  const companyBytes=Buffer.from(companies.map(JSON.stringify).join('\n')+'\n')
+  await writeFile(companiesPath,companyBytes)
+  await rewriteManifest(f.bundleDir,manifest=>{
+    manifest.authority.source_sha256=sourceDigest
+    manifest.source.sha256=sourceDigest
+    manifest.source.byte_count=sourceBytes.length
+    manifest.outputs.companies.byte_count=companyBytes.length
+    manifest.outputs.companies.sha256=sha(companyBytes)
+  })
+}
+
 test('independent verifier accepts canonical source-bound bundle', async () => {
   const f = await fixture()
   try { const result = await verifyOpenDartBundle({ sourceFile: f.sourceFile, authorityFile:f.authorityFile, bundleDir: f.bundleDir }); assert.equal(result.companyCount, 2); assert.equal(result.sourceSha256, sha(source())) } finally { await rm(f.root,{recursive:true,force:true}) }
@@ -43,6 +68,40 @@ test('independent verifier enforces the same complete ZIP contract corpus', () =
   for (const sample of zipContractCorpus()) {
     if (sample.accept) assert.doesNotThrow(() => parseOpenDartSourceZip(sample.bytes), sample.name)
     else assert.throws(() => parseOpenDartSourceZip(sample.bytes), undefined, sample.name)
+  }
+})
+
+test('independent verifier separately enforces the shared corporation text corpus', () => {
+  for (const field of ['corp_name', 'corp_eng_name']) {
+    for (const sample of corporationTextCases(field)) {
+      const row = ['00123456', 'Alpha', 'ALPHA', '', '20260101']
+      row[field === 'corp_name' ? 1 : 2] = sample.value
+      const action = () => parseOpenDartSourceZip(source([row]))
+      if (sample.accept) assert.equal(action()[0][field === 'corp_name' ? 'name' : 'eng'],sample.value,`${field}: ${sample.name}`)
+      else assert.throws(action, undefined, `${field}: ${sample.name}`)
+    }
+  }
+})
+
+test('independent verifier separately enforces bounded control-free authority text', () => {
+  const bytes = source()
+  for (const sample of authorityTextCases()) {
+    const authority = {schema_version:'benefit-directory-opendart-authority-v1',source_edition:options.edition,official_url:options.sourceUrl,reuse_rights_note:options.reuseRights,source_sha256:sha(bytes),retrieved_at:options.retrievedAt}
+    authority[sample.field] = sample.value
+    const action = () => validateOpenDartAuthorityDescriptor(authority, bytes)
+    if (sample.accept) assert.doesNotThrow(action, sample.name)
+    else assert.throws(action, undefined, sample.name)
+  }
+})
+
+test('verifier and apply reject self-consistently rehashed bundles with invalid decoded names',async()=>{
+  for(const value of ['Alpha\tBeta','Alpha\u2028Beta','😀'.repeat(201)]){
+    const f=await fixture()
+    try{
+      await rewriteSelfConsistentName(f,value)
+      await assert.rejects(verifyOpenDartBundle({sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir}),/corp_name|source authority|invalid/i)
+      await assert.rejects(applyOpenDart({databaseUrl:'postgresql://user:password@127.0.0.1/test',psqlBin:'/does/not/matter',sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir,dryRun:true}),/corp_name|source authority|invalid/i)
+    }finally{await rm(f.root,{recursive:true,force:true})}
   }
 })
 

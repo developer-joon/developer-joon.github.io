@@ -10,6 +10,7 @@ import test from 'node:test'
 import { buildOpenDartBundle, generateOpenDartBundle, parseCorpCodeZip } from './generate-opendart-benefit-directory.mjs'
 import { buildOpenDartImportSql, computeOpenDartRowDigest } from './apply-opendart-benefit-directory.mjs'
 import { zipContractCorpus } from './opendart-zip-contract-test-corpus.mjs'
+import { authorityTextCases, corporationTextCases } from './opendart-text-contract-test-corpus.mjs'
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const crc32 = bytes => {
@@ -90,14 +91,39 @@ test('generator enforces the complete ZIP contract corpus', () => {
   }
 })
 
+test('generator enforces bounded control-free corporation text by code point and UTF-8 byte', () => {
+  for (const field of ['corp_name', 'corp_eng_name']) {
+    for (const sample of corporationTextCases(field)) {
+      const row = ['00123456', 'Alpha', 'ALPHA', '', '20260101']
+      row[field === 'corp_name' ? 1 : 2] = sample.value
+      const action = () => parseCorpCodeZip(zip(xml([row])))
+      if (sample.accept) assert.equal(action()[0][field],sample.value,`${field}: ${sample.name}`)
+      else assert.throws(action, undefined, `${field}: ${sample.name}`)
+    }
+  }
+})
+
+test('generator enforces bounded control-free authority text after JSON decoding', () => {
+  const sourceBytes = zip(xml())
+  for (const sample of authorityTextCases()) {
+    const authority = authorityFor(sourceBytes)
+    authority[sample.field] = sample.value
+    const action = () => buildOpenDartBundle(sourceBytes, authority)
+    if (sample.accept) assert.doesNotThrow(action, sample.name)
+    else assert.throws(action, undefined, sample.name)
+  }
+})
+
 test('generator and apply accept only exact calendar-valid UTC-second timestamps', () => {
   assert.doesNotThrow(() => buildOpenDartBundle(zip(xml()), { ...options, retrievedAt: '2024-02-29T23:59:59Z' }))
   for (const retrievedAt of ['2026-02-30T00:00:00Z','2025-02-29T00:00:00Z','2026-01-01T24:00:00Z','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00.000Z']) {
     assert.throws(() => buildOpenDartBundle(zip(xml()), { ...options, retrievedAt }), /retriev|timestamp/i, retrievedAt)
   }
-  const built = buildOpenDartBundle(zip(xml()), options)
+  const sourceBytes = zip(xml())
+  const built = buildOpenDartBundle(sourceBytes, authorityFor(sourceBytes))
   const verified = { manifest: structuredClone(built.manifest), bundleSha256: sha(built.manifestBytes) }
   verified.manifest.source.retrieved_at = '2026-02-30T00:00:00Z'
+  verified.manifest.authority.retrieved_at = '2026-02-30T00:00:00Z'
   assert.throws(() => buildOpenDartImportSql({ tsvPath: '/private/import/rows.tsv', verified, dryRun: true }), /retriev|timestamp/i)
 })
 

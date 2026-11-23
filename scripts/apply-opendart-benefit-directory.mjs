@@ -19,11 +19,31 @@ const CATALOG=Object.freeze({
 })
 export function computeOpenDartRowDigest(fields){const parts=[DOMAIN];for(const value of fields){if(value===null){parts.push(Buffer.from([0]));continue}const b=Buffer.from(value);const n=Buffer.alloc(8);n.writeBigUInt64BE(BigInt(b.length));parts.push(Buffer.from([1]),n,b)}return createHash('sha256').update(Buffer.concat(parts)).digest('hex')}
 const copyField=value=>value===null?'\\N':`"${String(value).replaceAll('"','""')}"`
-const exactUtcSecond=value=>{const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(value);if(!m)return false;const[y,mo,d,h,mi,s]=m.slice(1).map(Number),leap=y%4===0&&(y%100!==0||y%400===0),days=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31];return mo>=1&&mo<=12&&d>=1&&d<=days[mo-1]&&h<=23&&mi<=59&&s<=59}
+const exactUtcSecond = value => {
+ const match=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(value)
+ if(!match)return false
+ const[year,month,day,hour,minute,second]=match.slice(1).map(Number)
+ const leap=year%4===0&&(year%100!==0||year%400===0)
+ const days=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31]
+ return month>=1&&month<=12&&day>=1&&day<=days[month-1]&&hour<=23&&minute<=59&&second<=59
+}
+const boundedApplyText=(value,label,maxCodePoints,maxUtf8Bytes)=>{if(typeof value!=='string'||value!==value.trim()||[...value].length<1||[...value].length>maxCodePoints||Buffer.byteLength(value,'utf8')>maxUtf8Bytes||/[\u0000-\u001f\u007f\u2028\u2029]/u.test(value))throw Error(`${label} invalid`);return value}
+function validateApplyDescriptor(m){
+ const a=m?.authority,s=m?.source
+ boundedApplyText(a?.source_edition,'OpenDART authority edition',100,400)
+ boundedApplyText(a?.official_url,'OpenDART authority URL',500,2000)
+ boundedApplyText(a?.reuse_rights_note,'OpenDART authority rights note',1000,4000)
+ boundedApplyText(a?.retrieved_at,'OpenDART authority retrieval timestamp',64,256)
+ if(a.schema_version!=='benefit-directory-opendart-authority-v1')throw Error('OpenDART authority schema invalid')
+ if(a.official_url!=='https://opendart.fss.or.kr/api/corpCode.xml')throw Error('OpenDART authority URL invalid')
+ if(!exactUtcSecond(a.retrieved_at))throw Error('OpenDART authority retrieval timestamp invalid')
+ if(s?.edition!==a.source_edition||s?.url!==a.official_url||s?.reuse_rights!==a.reuse_rights_note||s?.retrieved_at!==a.retrieved_at||s?.sha256!==a.source_sha256)throw Error('OpenDART authority metadata binding invalid')
+ return m
+}
 function tsvRows(companies,identifiers){const byCompany=new Map(identifiers.map(i=>[i.company_id,i]));return Buffer.from(companies.map(c=>{const i=byCompany.get(c.company_id);if(!i)throw Error('identifier/company exact set mismatch');const fields=[c.company_id,c.identity_class,c.display_name,c.normalized_name,c.industry,c.size_class,c.region,c.summary,String(c.is_searchable),c.source_edition,JSON.stringify(c.provenance),i.identifier_id,i.identifier_type,i.identifier_digest_or_value,i.source_edition,i.verified_at];return[...fields,computeOpenDartRowDigest(fields)].map(copyField).join('\t')}).join('\n')+'\n')}
 
 export function buildOpenDartImportSql({tsvPath,verified,dryRun,injectLateFailure=false}){
- if(!path.isAbsolute(tsvPath)||/[\r\n\0]/.test(tsvPath))throw Error('unsafe TSV path');const m=verified.manifest;if(!exactUtcSecond(m?.source?.retrieved_at)||m.source.retrieved_at!==m?.authority?.retrieved_at)throw Error('OpenDART retrieval timestamp invalid');const bundle=verified.bundleSha256,importKey=`${m.schema_version}:${m.source.sha256}:${m.source.edition}`;const ordered=m.ordered_code_company_sha256
+ if(!path.isAbsolute(tsvPath)||/[\r\n\0]/.test(tsvPath))throw Error('unsafe TSV path');const m=validateApplyDescriptor(verified?.manifest);const bundle=verified.bundleSha256,importKey=`${m.schema_version}:${m.source.sha256}:${m.source.edition}`;const ordered=m.ordered_code_company_sha256
  return String.raw`\set ON_ERROR_STOP on
 BEGIN;
 SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-directory-opendart-import-v1',0));
@@ -86,7 +106,7 @@ function dbEnv(value,timeout){let u;try{u=new URL(value)}catch{throw Error('DATA
 async function run(exe,env,sql,timeout,sensitive){const result=await runBoundedProcess({executable:exe,args:['-X','--no-psqlrc','-v','ON_ERROR_STOP=1','-f',sql],env,stdin:'ignore',timeoutMs:timeout,termGraceMs:2000,pipeDrainMs:250,stdoutLimitBytes:524288,stderrLimitBytes:524288,combinedLimitBytes:1048576,diagnosticBytes:12000,sensitiveValues:sensitive,label:'psql OpenDART import'});if(result.stdout.trim())console.log(result.stdout.trim())}
 
 export async function applyOpenDart({databaseUrl,psqlBin,bundleDir,sourceFile,authorityFile,dryRun=false,apply=false,timeoutMs=1200000,injectLateFailure=false}={}){
- if(dryRun===apply)throw Error('choose exactly one of dryRun or apply');const timeout=Number(timeoutMs);if(!Number.isSafeInteger(timeout)||timeout<30000||timeout>1200000)throw Error('timeout out of bounds');const executable=await trustedPsql(psqlBin),env=dbEnv(databaseUrl,timeout),verified=await verifyOpenDartBundle({sourceFile,authorityFile,bundleDir});const root=await realpath(tmpdir()),rs=await lstat(root);if(!rs.isDirectory()||rs.uid!==process.getuid()||(rs.mode&0o022)!==0)throw Error('TMPDIR custody invalid');const dir=await mkdtemp(path.join(root,'opendart-apply-'));await chmod(dir,0o700)
+ if(dryRun===apply)throw Error('choose exactly one of dryRun or apply');const timeout=Number(timeoutMs);if(!Number.isSafeInteger(timeout)||timeout<30000||timeout>1200000)throw Error('timeout out of bounds');const verified=await verifyOpenDartBundle({sourceFile,authorityFile,bundleDir}),executable=await trustedPsql(psqlBin),env=dbEnv(databaseUrl,timeout);const root=await realpath(tmpdir()),rs=await lstat(root);if(!rs.isDirectory()||rs.uid!==process.getuid()||(rs.mode&0o022)!==0)throw Error('TMPDIR custody invalid');const dir=await mkdtemp(path.join(root,'opendart-apply-'));await chmod(dir,0o700)
  try{const tsv=path.join(dir,'rows.tsv'),sql=path.join(dir,'apply.sql'),bytes=tsvRows(verified.companies,verified.identifiers);const h=await open(tsv,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);try{await h.writeFile(bytes);await h.sync()}finally{await h.close()}await writeFile(sql,buildOpenDartImportSql({tsvPath:tsv,verified,dryRun,injectLateFailure}),{mode:0o600,flag:'wx'});await run(executable,env,sql,timeout,[databaseUrl,env.PGPASSWORD,dir]);return{companyCount:verified.companyCount,bundleSha256:verified.bundleSha256,dryRun}}finally{await rm(dir,{recursive:true,force:true})}}
 
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
