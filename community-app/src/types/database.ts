@@ -229,6 +229,75 @@ export type Database = {
           },
         ];
       };
+      benefit_claim_reaction_requests: {
+        Row: {
+          actor_snapshot: string;
+          claim_id: string;
+          client_key: string;
+          created_at: string;
+          payload_fingerprint: string;
+          response: NonNullable<Json>;
+        };
+        ComputedFields: never;
+        Insert: {
+          actor_snapshot: string;
+          claim_id: string;
+          client_key: string;
+          created_at?: string;
+          payload_fingerprint: string;
+          response: NonNullable<Json>;
+        };
+        Update: {
+          actor_snapshot?: string;
+          claim_id?: string;
+          client_key?: string;
+          created_at?: string;
+          payload_fingerprint?: string;
+          response?: NonNullable<Json>;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_claim_reaction_requests_claim_id_fkey";
+            columns: ["claim_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_claims";
+            referencedColumns: ["claim_id"];
+          },
+        ];
+      };
+      benefit_claim_reactions: {
+        Row: {
+          claim_id: string;
+          created_at: string;
+          reaction: "confirm" | "dispute";
+          updated_at: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          claim_id: string;
+          created_at?: string;
+          reaction: "confirm" | "dispute";
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          claim_id?: string;
+          created_at?: string;
+          reaction?: "confirm" | "dispute";
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_claim_reactions_claim_id_fkey";
+            columns: ["claim_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_claims";
+            referencedColumns: ["claim_id"];
+          },
+        ];
+      };
       benefit_claims: {
         Row: {
           active_publication_id: string | null;
@@ -1959,6 +2028,10 @@ export type Database = {
           p_region?: string;
           p_size?: string;
         };
+        Returns: Json;
+      };
+      set_benefit_claim_reaction_v1: {
+        Args: { p_claim_id: string; p_client_key: string; p_reaction: "confirm" | "dispute" | null };
         Returns: Json;
       };
       set_comment_reaction: { Args: { p_comment_id: string; p_reacted: boolean }; Returns: Json };
