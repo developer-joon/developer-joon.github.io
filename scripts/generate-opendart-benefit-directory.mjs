@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { chmod, lstat, mkdtemp, open, readdir, rename, rm } from 'node:fs/promises'
+import { chmod, lstat, mkdtemp, open, readdir, rename, rm, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
@@ -12,6 +12,9 @@ const MAX_ROWS = 200_000
 const MAX_RATIO = 200
 const BASE = Object.freeze({ company_count: 40053, source_sha256: 'b7e61860d69f289735f42a6ae275c8a5303cbde367036f77865c7b20de7b9594' })
 const AUTHORITY_KEYS = ['schema_version','source_edition','official_url','reuse_rights_note','source_sha256','retrieved_at']
+const AUTHORITY_JSON_MAX_DEPTH = 64
+const AUTHORITY_JSON_MAX_KEYS = 1024
+const AUTHORITY_JSON_MAX_STRING_BYTES = 4096
 const OFFICIAL_URL = 'https://opendart.fss.or.kr/api/corpCode.xml'
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const crc32 = bytes => { let crc=0xffffffff; for(const byte of bytes){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^(0xedb88320&-(crc&1))}return(crc^0xffffffff)>>>0 }
@@ -133,11 +136,42 @@ export function validateOpenDartAuthority(authority, sourceBytes) {
   return Object.freeze({...authority})
 }
 
+function parseStrictAuthorityJson(text) {
+  let cursor=0,keyCount=0
+  const whitespace=()=>{while(/[\t\n\r ]/.test(text[cursor]??''))cursor++}
+  const string=()=>{
+    if(text[cursor]!=='"')throw Error('authority descriptor JSON invalid')
+    const start=cursor++
+    while(cursor<text.length){
+      const code=text.charCodeAt(cursor)
+      if(code===34){cursor++;const token=text.slice(start,cursor);let decoded;try{decoded=JSON.parse(token)}catch{throw Error('authority descriptor JSON invalid')}if(Buffer.byteLength(decoded,'utf8')>AUTHORITY_JSON_MAX_STRING_BYTES)throw Error('authority descriptor JSON string bound exceeded');return decoded}
+      if(code<0x20)throw Error('authority descriptor JSON invalid')
+      if(code===92){cursor++;if(cursor>=text.length)throw Error('authority descriptor JSON invalid');if(text[cursor]==='u'){if(!/^[0-9a-fA-F]{4}$/.test(text.slice(cursor+1,cursor+5)))throw Error('authority descriptor JSON invalid');cursor+=5}else{if(!/["\\/bfnrt]/.test(text[cursor]))throw Error('authority descriptor JSON invalid');cursor++}}
+      else cursor++
+    }
+    throw Error('authority descriptor JSON invalid')
+  }
+  const value=depth=>{
+    if(depth>AUTHORITY_JSON_MAX_DEPTH)throw Error('authority descriptor JSON depth bound exceeded')
+    whitespace();const ch=text[cursor]
+    if(ch==='"'){string();return}
+    if(ch==='{'){
+      cursor++;whitespace();const keys=new Set;if(text[cursor]==='}'){cursor++;return}
+      while(true){const key=string();if(keys.has(key))throw Error(`authority descriptor JSON duplicate key: ${key}`);keys.add(key);if(++keyCount>AUTHORITY_JSON_MAX_KEYS)throw Error('authority descriptor JSON key bound exceeded');whitespace();if(text[cursor++]!==':')throw Error('authority descriptor JSON invalid');value(depth+1);whitespace();if(text[cursor]==='}'){cursor++;return}if(text[cursor++]!==',')throw Error('authority descriptor JSON invalid');whitespace()}
+    }
+    if(ch==='['){cursor++;whitespace();if(text[cursor]===']'){cursor++;return}while(true){value(depth+1);whitespace();if(text[cursor]===']'){cursor++;return}if(text[cursor++]!==',')throw Error('authority descriptor JSON invalid');whitespace()}}
+    const match=/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(text.slice(cursor));if(!match)throw Error('authority descriptor JSON invalid');cursor+=match[0].length
+  }
+  value(1);whitespace();if(cursor!==text.length)throw Error('authority descriptor JSON invalid')
+  try{return JSON.parse(text)}catch{throw Error('authority descriptor JSON invalid')}
+}
+
 async function readAuthority(authorityFile, sourceBytes) {
   if (!authorityFile) throw Error('--authority is required')
   const bytes=await readNoFollow(authorityFile,16*1024,'OpenDART authority descriptor')
-  let authority
-  try { authority=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)) } catch { throw Error('authority descriptor JSON invalid') }
+  let text
+  try { text=new TextDecoder('utf-8',{fatal:true}).decode(bytes) } catch { throw Error('authority descriptor JSON invalid') }
+  const authority=parseStrictAuthorityJson(text)
   return validateOpenDartAuthority(authority,sourceBytes)
 }
 
@@ -171,7 +205,24 @@ export async function generateOpenDartBundle({sourceFile,authorityFile,outputDir
   const parent=path.dirname(destination), stat=await lstat(parent); if(!stat.isDirectory()||stat.isSymbolicLink()||stat.uid!==process.getuid()||(stat.mode&0o022)!==0) throw Error('output parent must be pre-existing, caller-owned, non-symlink, and not group/world writable')
   const lockPath=`${destination}.generate.lock`; let lock
   try { lock=await open(lockPath,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600) } catch(error){ if(error?.code==='EEXIST') throw Error('OpenDART generation lock is held'); throw error }
-  let stage=null,stageOwned=false,backupContainer=null,backupOwned=false,retainBackup=false
+  const lockIdentity=await lock.stat({bigint:true})
+  if(!lockIdentity.isFile()||lockIdentity.nlink!==1n) { await lock.close(); throw Error('OpenDART generation lock identity invalid') }
+  let lockClosed=false,stage=null,stageOwned=false,backupContainer=null,backupOwned=false,retainBackup=false,committed=false,primaryError=null
+  const residues=[]
+  const addResidue=value=>{if(!residues.includes(value))residues.push(value)}
+  const sameLockIdentity=current=>current.isFile()&&current.dev===lockIdentity.dev&&current.ino===lockIdentity.ino&&current.nlink===lockIdentity.nlink&&current.mode===lockIdentity.mode
+  const cleanupLock=async()=>{
+    if(!lockClosed){
+      lockClosed=true
+      try { await lock.close(); if(testOnly?.injectLockCloseFailure) await testOnly.injectLockCloseFailure() }
+      catch { addResidue('generation-lock-close-failed') }
+    }
+    let current
+    try { current=await lstat(lockPath,{bigint:true}) }
+    catch(error){ if(error?.code==='ENOENT'){addResidue('generation-lock-missing');return}addResidue('generation-lock-inspection-failed');return }
+    if(!sameLockIdentity(current)){addResidue('generation-lock-replaced');return}
+    try { if(testOnly?.injectLockPathCleanupFailure) await testOnly.injectLockPathCleanupFailure(); await unlink(lockPath) } catch { addResidue('generation-lock-removal-failed') }
+  }
   try {
     stage=await mkdtemp(path.join(parent,'.opendart-stage-')); stageOwned=true; await chmod(stage,0o700)
     await writeSynced(path.join(stage,'manifest.json'),built.manifestBytes); await writeSynced(path.join(stage,'companies.ndjson'),built.companiesNdjson); await writeSynced(path.join(stage,'identifiers.ndjson'),built.identifiersNdjson)
@@ -181,7 +232,7 @@ export async function generateOpenDartBundle({sourceFile,authorityFile,outputDir
     try {
       try { await rename(destination,backup); oldMoved=true } catch(error){ if(error?.code!=='ENOENT') throw error }
       if(testOnly?.beforeInstall) await testOnly.beforeInstall()
-      await rename(stage,destination); stageInstalled=true; stage=null; stageOwned=false
+      await rename(stage,destination); stageInstalled=true; committed=true; stage=null; stageOwned=false
     } catch(error) {
       if(oldMoved&&!stageInstalled) {
         let destinationAbsent=false
@@ -200,15 +251,21 @@ export async function generateOpenDartBundle({sourceFile,authorityFile,outputDir
       if(testOnly?.injectBackupCleanupFailure) await testOnly.injectBackupCleanupFailure()
       await rm(backupContainer,{recursive:true,force:true}); backupContainer=null; backupOwned=false
     } catch {
-      retainBackup=true
+      retainBackup=true; addResidue('stale-backup')
       console.warn(`OpenDART bundle committed; stale backup remains at ${path.basename(backupContainer)}/bundle and may be removed after verification`)
     }
-    return built
-  } finally {
-    if(stageOwned&&stage!==null) await rm(stage,{recursive:true,force:true})
-    if(backupOwned&&backupContainer!==null&&!retainBackup) await rm(backupContainer,{recursive:true,force:true})
-    await lock.close(); await rm(lockPath,{force:true})
+  } catch(error) { primaryError=error }
+  finally {
+    if(stageOwned&&stage!==null) { try { await rm(stage,{recursive:true,force:true}) } catch { addResidue('staging-cleanup-failed') } }
+    if(backupOwned&&backupContainer!==null&&!retainBackup) { try { await rm(backupContainer,{recursive:true,force:true}) } catch { addResidue('backup-cleanup-failed') } }
+    await cleanupLock()
   }
+  if(primaryError) throw primaryError
+  if(!committed) throw Error('OpenDART generation failed before commit')
+  if(residues.includes('generation-lock-replaced')) console.warn('OpenDART bundle committed; generation lock replacement remains untouched')
+  else if(residues.some(value=>value.startsWith('generation-lock-'))) console.warn('OpenDART bundle committed; generation lock cleanup left bounded residue')
+  built.cleanup=Object.freeze({status:residues.length?'committed-with-residue':'clean',residues:Object.freeze([...residues])})
+  return built
 }
 
 function cliArgs(args){ const result={check:false}; for(let i=0;i<args.length;i++){ const arg=args[i]; if(arg==='--check') result.check=true; else if(['--source','--authority','--output'].includes(arg)){ if(!args[i+1]) throw Error(`missing value for ${arg}`); result[arg.slice(2)]=args[++i] } else throw Error('unknown argument '+arg) } return result }

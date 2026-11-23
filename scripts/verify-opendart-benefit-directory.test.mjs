@@ -10,6 +10,7 @@ import { applyOpenDart } from './apply-opendart-benefit-directory.mjs'
 import { parseOpenDartSourceZip, validateOpenDartAuthorityDescriptor, verifyOpenDartBundle } from './verify-opendart-benefit-directory.mjs'
 import { zipContractCorpus } from './opendart-zip-contract-test-corpus.mjs'
 import { authorityTextCases, corporationTextCases } from './opendart-text-contract-test-corpus.mjs'
+import { authorityJsonMutationCorpus } from './opendart-authority-json-test-corpus.mjs'
 
 const options = { edition: '2026-11-23', retrievedAt: '2026-11-23T00:00:00Z', sourceUrl: 'https://opendart.fss.or.kr/api/corpCode.xml', reuseRights: 'OpenDART attribution required' }
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -91,6 +92,22 @@ test('independent verifier separately enforces bounded control-free authority te
     const action = () => validateOpenDartAuthorityDescriptor(authority, bytes)
     if (sample.accept) assert.doesNotThrow(action, sample.name)
     else assert.throws(action, undefined, sample.name)
+  }
+})
+
+test('verifier and apply reject duplicate authority keys at every depth before JSON collapse and enforce parser bounds', async () => {
+  for (const sample of authorityJsonMutationCorpus({
+    schema_version:'benefit-directory-opendart-authority-v1', source_edition:options.edition,
+    official_url:options.sourceUrl, reuse_rights_note:options.reuseRights,
+    source_sha256:sha(source()), retrieved_at:options.retrievedAt,
+  })) {
+    const f = await fixture()
+    try {
+      await writeFile(f.authorityFile, sample.text + '\n')
+      const expected = sample.expected ?? /duplicate/i
+      await assert.rejects(verifyOpenDartBundle({ sourceFile:f.sourceFile, authorityFile:f.authorityFile, bundleDir:f.bundleDir }), expected, sample.name)
+      await assert.rejects(applyOpenDart({ databaseUrl:'postgresql://user:***@127.0.0.1/test', psqlBin:'/does/not/matter', sourceFile:f.sourceFile, authorityFile:f.authorityFile, bundleDir:f.bundleDir, dryRun:true }), expected, sample.name)
+    } finally { await rm(f.root,{recursive:true,force:true}) }
   }
 })
 

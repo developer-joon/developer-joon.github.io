@@ -30,7 +30,47 @@ function cid(e,c){return`KR-CAN-${dh('benefit-directory-opendart-company-v1',e,c
 function iid(e,c){const b=Buffer.from(dh('benefit-directory-opendart-identifier-v1',e,c).slice(0,32),'hex');b[6]=(b[6]&15)|0x50;b[8]=(b[8]&63)|0x80;const h=b.toString('hex');return`${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`}
 function parseLines(bytes,label){if(bytes.at(-1)!==10)throw Error(`${label} missing LF`);const lines=bytes.toString('utf8').slice(0,-1).split('\n');return lines.map((line,i)=>{try{return JSON.parse(line)}catch{throw Error(`${label} row ${i+1} JSON`)}})}
 export function validateOpenDartAuthorityDescriptor(a,source){exactKeys(a,['schema_version','source_edition','official_url','reuse_rights_note','source_sha256','retrieved_at'],'authority descriptor');boundedText(a.source_edition,'authority source edition',100,400);boundedText(a.official_url,'authority official URL',500,2000);boundedText(a.reuse_rights_note,'authority reuse rights note',1000,4000);boundedText(a.retrieved_at,'authority retrieval timestamp',64,256);if(a.schema_version!=='benefit-directory-opendart-authority-v1')throw Error('authority descriptor schema invalid');if(a.official_url!==OFFICIAL_URL)throw Error('authority descriptor URL invalid');if(a.source_sha256!==sha(source))throw Error('authority descriptor source digest invalid');if(!exactUtcSecond(a.retrieved_at))throw Error('authority descriptor retrieval timestamp invalid');return a}
-function parseAuthority(bytes,source){let a;try{a=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes))}catch{throw Error('authority descriptor JSON invalid')}return validateOpenDartAuthorityDescriptor(a,source)}
+function parseAuthorityStrict(bytes,source){
+ let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch{throw Error('authority descriptor JSON invalid')}
+ const tokens=[];let offset=0
+ while(offset<text.length){
+  if(/[\t\n\r ]/.test(text[offset])){offset++;continue}
+  if('{}[],:'.includes(text[offset])){tokens.push({type:text[offset++]});continue}
+  if(text[offset]==='"'){
+   const start=offset++
+   while(offset<text.length&&text[offset]!=='"'){
+    if(text.charCodeAt(offset)<0x20)throw Error('authority descriptor JSON invalid')
+    if(text[offset++]==='\\'){
+     if(offset>=text.length)throw Error('authority descriptor JSON invalid')
+     if(text[offset]==='u'){if(!/^[0-9a-fA-F]{4}$/.test(text.slice(offset+1,offset+5)))throw Error('authority descriptor JSON invalid');offset+=5}
+     else{if(!/["\\/bfnrt]/.test(text[offset]))throw Error('authority descriptor JSON invalid');offset++}
+    }
+   }
+   if(text[offset]!=='"')throw Error('authority descriptor JSON invalid');offset++
+   let decoded;try{decoded=JSON.parse(text.slice(start,offset))}catch{throw Error('authority descriptor JSON invalid')}
+   if(Buffer.byteLength(decoded,'utf8')>4096)throw Error('authority descriptor JSON string bound exceeded')
+   tokens.push({type:'string',value:decoded});continue
+  }
+  const atom=/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(text.slice(offset));if(!atom)throw Error('authority descriptor JSON invalid');tokens.push({type:'atom'});offset+=atom[0].length
+ }
+ let position=0,keyCount=0
+ const take=type=>{if(tokens[position]?.type!==type)throw Error('authority descriptor JSON invalid');return tokens[position++]}
+ const inspect=depth=>{
+  if(depth>64)throw Error('authority descriptor JSON depth bound exceeded')
+  const token=tokens[position];if(!token)throw Error('authority descriptor JSON invalid')
+  if(token.type==='string'||token.type==='atom'){position++;return}
+  if(token.type==='['){position++;if(tokens[position]?.type===']'){position++;return}for(;;){inspect(depth+1);if(tokens[position]?.type===']'){position++;return}take(',')}}
+  if(token.type==='{'){
+   position++;if(tokens[position]?.type==='}'){position++;return}const keys=new Set
+   for(;;){const key=take('string').value;if(keys.has(key))throw Error(`authority descriptor JSON duplicate key: ${key}`);keys.add(key);if(++keyCount>1024)throw Error('authority descriptor JSON key bound exceeded');take(':');inspect(depth+1);if(tokens[position]?.type==='}'){position++;return}take(',')}
+  }
+  throw Error('authority descriptor JSON invalid')
+ }
+ inspect(1);if(position!==tokens.length)throw Error('authority descriptor JSON invalid')
+ let authority;try{authority=JSON.parse(text)}catch{throw Error('authority descriptor JSON invalid')}
+ return validateOpenDartAuthorityDescriptor(authority,source)
+}
+function parseAuthority(bytes,source){return parseAuthorityStrict(bytes,source)}
 
 export async function verifyOpenDartBundle({sourceFile,authorityFile,bundleDir}={}){
  if(!sourceFile||!authorityFile||!bundleDir)throw Error('sourceFile, authorityFile, and bundleDir required');const inv=(await readdir(bundleDir)).sort();if(inv.join(',')!=='companies.ndjson,identifiers.ndjson,manifest.json')throw Error('bundle inventory invalid')

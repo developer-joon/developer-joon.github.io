@@ -4,6 +4,7 @@ import { once } from 'node:events'
 import { createHash } from 'node:crypto'
 import { deflateRawSync } from 'node:zlib'
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { authorityJsonMutationCorpus } from './opendart-authority-json-test-corpus.mjs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -114,6 +115,24 @@ test('generator enforces bounded control-free authority text after JSON decoding
   }
 })
 
+test('generator rejects duplicate authority keys at every depth before JSON collapse and enforces parser bounds', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-authority-json-'))
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'source.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    await writeFile(sourceFile, sourceBytes)
+    for (const sample of authorityJsonMutationCorpus(authorityFor(sourceBytes))) {
+      await writeFile(authorityFile, sample.text + '\n')
+      await assert.rejects(
+        generateOpenDartBundle({ sourceFile, authorityFile, outputDir: path.join(root, 'bundle') }),
+        sample.expected ?? /duplicate/i,
+        sample.name,
+      )
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('generator and apply accept only exact calendar-valid UTC-second timestamps', () => {
   assert.doesNotThrow(() => buildOpenDartBundle(zip(xml()), { ...options, retrievedAt: '2024-02-29T23:59:59Z' }))
   for (const retrievedAt of ['2026-02-30T00:00:00Z','2025-02-29T00:00:00Z','2026-01-01T24:00:00Z','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00.000Z']) {
@@ -152,6 +171,38 @@ test('normal generation is deterministic and check mode is read-only', async () 
     const absentParent = path.join(root, 'absent')
     await assert.rejects(generateOpenDartBundle({ sourceFile: source, authorityFile:authority, outputDir: path.join(absentParent,'bundle'), check: true }), /absent|missing|ENOENT/i)
     await assert.rejects(readdir(absentParent), error => error?.code === 'ENOENT')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('lock allocation collision is fail-closed and concurrent generators serialize without residue', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-lock-collision-'))
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'corp.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    const output = path.join(root, 'bundle')
+    const lockPath = `${output}.generate.lock`
+    await writeFile(sourceFile, sourceBytes)
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n')
+    await writeFile(lockPath, 'pre-existing lock')
+    await assert.rejects(generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output }), /lock is held/i)
+    assert.equal(await readFile(lockPath, 'utf8'), 'pre-existing lock')
+    await rm(lockPath)
+
+    let enter
+    const entered = new Promise(resolve => { enter = resolve })
+    let release
+    const released = new Promise(resolve => { release = resolve })
+    const first = generateOpenDartBundle({
+      sourceFile, authorityFile, outputDir: output,
+      testOnly: { beforeInstall: async () => { enter(); await released } },
+    })
+    await entered
+    await assert.rejects(generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output }), /lock is held/i)
+    release()
+    const result = await first
+    assert.equal(result.cleanup.status, 'clean')
+    assert.deepEqual(await transactionResidue(root), [])
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -269,6 +320,130 @@ test('post-commit backup cleanup failure reports committed success and retains o
     console.warn = originalWarn
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test('post-commit lock close failure returns committed success and removes the owned lock path', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-lock-close-'))
+  const warnings = []
+  const originalWarn = console.warn
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'corp.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    const output = path.join(root, 'bundle')
+    await writeFile(sourceFile, sourceBytes)
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n')
+    console.warn = message => warnings.push(String(message))
+    const result = await generateOpenDartBundle({
+      sourceFile, authorityFile, outputDir: output,
+      testOnly: { injectLockCloseFailure: () => { throw Error('close unavailable') } },
+    })
+    assert.equal(result.cleanup.status, 'committed-with-residue')
+    assert.deepEqual(result.cleanup.residues, ['generation-lock-close-failed'])
+    assert.match(warnings.join('\n'), /committed.*lock cleanup.*residue/i)
+    assert.deepEqual(await transactionResidue(root), [])
+  } finally {
+    console.warn = originalWarn
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('post-commit lock path cleanup failure returns committed success with the owned lock residue', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-lock-path-cleanup-'))
+  const warnings = []
+  const originalWarn = console.warn
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'corp.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    const output = path.join(root, 'bundle')
+    await writeFile(sourceFile, sourceBytes)
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n')
+    console.warn = message => warnings.push(String(message))
+    const result = await generateOpenDartBundle({
+      sourceFile, authorityFile, outputDir: output,
+      testOnly: { injectLockPathCleanupFailure: () => { throw Error('unlink unavailable') } },
+    })
+    assert.equal(result.cleanup.status, 'committed-with-residue')
+    assert.deepEqual(result.cleanup.residues, ['generation-lock-removal-failed'])
+    assert.match(warnings.join('\n'), /committed.*lock cleanup.*residue/i)
+    assert.equal((await stat(`${output}.generate.lock`)).mode & 0o170000, 0o100000)
+  } finally {
+    console.warn = originalWarn
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+for (const replacementType of ['directory', 'file', 'symlink']) {
+  test(`post-commit lock ${replacementType} replacement is untouched and reports committed residue`, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), `opendart-lock-${replacementType}-`))
+    const warnings = []
+    const originalWarn = console.warn
+    try {
+      const sourceBytes = zip(xml())
+      const sourceFile = path.join(root, 'corp.zip')
+      const authorityFile = path.join(root, 'authority.json')
+      const output = path.join(root, 'bundle')
+      const lockPath = `${output}.generate.lock`
+      const symlinkTarget = path.join(root, 'replacement-target')
+      await writeFile(sourceFile, sourceBytes)
+      await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n')
+      await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output })
+      const nextAuthority = authorityFor(sourceBytes, { edition: '2026-11-24', retrievedAt: '2026-11-24T00:00:00Z' })
+      await writeFile(authorityFile, JSON.stringify(nextAuthority) + '\n')
+      const expected = buildOpenDartBundle(sourceBytes, nextAuthority)
+      console.warn = message => warnings.push(String(message))
+
+      const result = await generateOpenDartBundle({
+        sourceFile, authorityFile, outputDir: output,
+        testOnly: { beforeInstall: async () => {
+          await rm(lockPath)
+          if (replacementType === 'directory') await mkdir(lockPath)
+          if (replacementType === 'file') await writeFile(lockPath, 'replacement lock file')
+          if (replacementType === 'symlink') { await writeFile(symlinkTarget, 'target'); await symlink(symlinkTarget, lockPath) }
+        } },
+      })
+
+      assert.deepEqual(await readFile(path.join(output, 'manifest.json')), expected.manifestBytes)
+      assert.equal(result.cleanup.status, 'committed-with-residue')
+      assert.deepEqual(result.cleanup.residues, ['generation-lock-replaced'])
+      assert.match(warnings.join('\n'), /committed.*lock.*replacement.*untouched/i)
+      const replacement = await stat(lockPath)
+      if (replacementType === 'directory') assert.ok(replacement.isDirectory())
+      if (replacementType === 'file') assert.equal(await readFile(lockPath, 'utf8'), 'replacement lock file')
+      if (replacementType === 'symlink') assert.equal(await readFile(lockPath, 'utf8'), 'target')
+    } finally {
+      console.warn = originalWarn
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('pre-commit primary failure survives lock cleanup failure and preserves the old bundle', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opendart-lock-primary-'))
+  try {
+    const sourceBytes = zip(xml())
+    const sourceFile = path.join(root, 'corp.zip')
+    const authorityFile = path.join(root, 'authority.json')
+    const output = path.join(root, 'bundle')
+    const lockPath = `${output}.generate.lock`
+    await writeFile(sourceFile, sourceBytes)
+    await writeFile(authorityFile, JSON.stringify(authorityFor(sourceBytes)) + '\n')
+    await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: output })
+    const prior = await readFile(path.join(output, 'manifest.json'))
+
+    await assert.rejects(generateOpenDartBundle({
+      sourceFile, authorityFile, outputDir: output,
+      testOnly: { beforeInstall: async () => {
+        await rm(lockPath)
+        await mkdir(lockPath)
+        throw Error('primary install failure')
+      }, injectLockCloseFailure: () => { throw Error('secondary lock close failure') } },
+    }), error => error.message === 'primary install failure')
+
+    assert.deepEqual(await readFile(path.join(output, 'manifest.json')), prior)
+    assert.ok((await stat(lockPath)).isDirectory())
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('apply SQL uses framed UTF-8 digests, strong-code conflicts, exact preservation, and explicit rollback', () => {
