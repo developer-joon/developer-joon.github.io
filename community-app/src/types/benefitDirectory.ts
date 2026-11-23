@@ -86,10 +86,13 @@ export interface BenefitDirectoryPublicClaim {
   lastConfirmationAt: string | null
 }
 
-export interface BenefitCompanyDetail {
+export interface BenefitCompanyDetailV1 {
   company: BenefitDirectoryCompanySummary
   publications: BenefitDirectoryPublication[]
-  claims?: BenefitDirectoryPublicClaim[]
+}
+
+export interface BenefitCompanyDetail extends BenefitCompanyDetailV1 {
+  claims: BenefitDirectoryPublicClaim[]
 }
 
 export type BenefitDirectoryErrorCode =

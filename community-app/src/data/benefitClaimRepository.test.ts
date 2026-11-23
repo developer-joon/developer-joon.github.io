@@ -31,6 +31,83 @@ describe('benefit claim repository', () => {
     expect(order[0]).toBe('session')
   })
 
+  it('maps a getter that throws during argument construction to invalid_argument', async () => {
+    const input = { ...createInput, get title(): string { throw new Error('secret') } }
+    const rpc = vi.fn()
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
+    await expect(repo.createClaim(input)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('validates the same input snapshot that it sends', async () => {
+    let reads = 0
+    const input = { ...createInput, get title() { return ++reads === 1 ? '정상' : '' } }
+    const rpc = vi.fn(async () => ok({ claim_id: claimId, outcome: 'created' }))
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
+    await expect(repo.createClaim(input)).resolves.toMatchObject({ ok: true })
+    expect(rpc).toHaveBeenCalledWith('create_benefit_claim_v1', expect.objectContaining({p_title:'정상'}), undefined)
+  })
+
+  it('captures immutable session identity when a provider reuses its context object', async () => {
+    const session = context('one', vi.fn(async () => { Object.assign(session, { sessionFingerprint: 'two' }); return ok({ claim_id: claimId, outcome: 'created' }) }))
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => session })
+    await expect(repo.createClaim(createInput)).resolves.toMatchObject({ ok: false, error: { code: 'stale_session' } })
+  })
+
+  it('rejects a session change caused by a response getter', async () => {
+    let fingerprint = 'one'
+    const data = { get claim_id() { fingerprint = 'two'; return claimId }, outcome: 'created' }
+    const rpc = vi.fn(async () => ok(data))
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context(fingerprint, rpc) })
+    await expect(repo.createClaim(createInput)).resolves.toMatchObject({ ok: false, error: { code: 'stale_session' } })
+  })
+
+  it('returns aborted if the session provider rejects after abort', async () => {
+    const controller = new AbortController()
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => { controller.abort(); throw new TypeError('secret') } })
+    await expect(repo.createClaim(createInput, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
+  })
+
+  it.each(['createClaim','withdrawClaim','listMyClaims','setReaction','listModerationQueue','listAudit','moderateClaim','officiallyVerifyClaim'] as const)('%s captures before touching a throwing input', async method => {
+    const order: string[] = []
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => { order.push('session'); return context('one', vi.fn()) } })
+    const input = new Proxy({}, { ownKeys() { order.push('input'); throw Error('secret') }, get() { order.push('input'); throw Error('secret') } })
+    const call = repo[method] as (value: never) => Promise<unknown>
+    await expect(call(input as never)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(order).toEqual(['session', 'input'])
+  })
+
+  it('honors abort while asynchronously capturing the session', async () => {
+    const controller = new AbortController()
+    const rpc = vi.fn()
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => { controller.abort(); return context('one', rpc) } })
+    await expect(repo.createClaim(createInput, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('rejects future observations before transport', async () => {
+    const rpc = vi.fn()
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
+    await expect(repo.createClaim({ ...createInput, observedOn: '9999-01-01' })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it.each(['https://example.com/?sig=secret', 'https://example.com/?x=%23', 'https://example.com/?x=1;y=2', 'https://example.com/?%61uth=x', 'https://example.com/#fragment'])('rejects unsafe source URL %s', async sourceUrl => {
+    const rpc = vi.fn()
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
+    await expect(repo.createClaim({ ...createInput, sourceUrl })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('accepts the client count field and rejects contradictory transport envelopes', async () => {
+    for (const [envelope, expected] of [[{ ...ok({ claim_id: claimId, outcome: 'created' }), count: null }, true], [{ data: { claim_id: claimId }, error: { code: 'XX000', message: 'secret' }, status: 500, statusText: '' }, false]] as const) {
+      const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => envelope)) })
+      const result = await repo.createClaim(createInput)
+      expect(result.ok).toBe(expected)
+      if (!expected) expect(result).toMatchObject({ error: { code: 'invalid_response' } })
+    }
+  })
+
   it('sends exact create args and decodes the exact outcome', async () => {
     const rpc = vi.fn(async () => ok({ claim_id: claimId, outcome: 'created' })); const ctx = context('one', rpc)
     const result = await createBenefitClaimRepository({ getSessionContext: async () => ctx }).createClaim(createInput)
@@ -59,11 +136,49 @@ describe('benefit claim repository', () => {
     }
   })
 
+  it('rejects out-of-order pages and mismatched next cursors', async () => {
+    const newer = { ...owner, claim_id: 'b1000000-0000-4000-8000-000000000002', created_at: later, updated_at: later }
+    for (const result of [{ items: [owner, newer], has_more: false, next_cursor: null }, { items: [newer], has_more: true, next_cursor: { created_at: now, claim_id: claimId } }]) {
+      const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => ok(result))) })
+      await expect(repo.listMyClaims({ limit: result.has_more ? 1 : 2 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    }
+  })
+
   it('sets and clears reactions with explicit null and validates aggregate response', async () => {
     const response = { claim_id: claimId, reaction: null, status: 'submitted', revision: 2, confirm_count: 0, dispute_count: 0, active_publication_id: null, outcome: 'cleared' }
     const rpc = vi.fn(async () => ok(response)); const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
     expect(await repo.setReaction({ claimId, reaction: null, clientKey: createInput.clientKey })).toMatchObject({ ok: true, data: { reaction: null, outcome: 'cleared' } })
     expect(rpc).toHaveBeenCalledWith('set_benefit_claim_reaction_v1', { p_claim_id: claimId, p_reaction: null, p_client_key: createInput.clientKey }, undefined)
+  })
+
+  it('rejects reaction responses for another claim or reaction', async () => {
+    const response = { claim_id: 'b1000000-0000-4000-8000-000000000002', reaction: 'confirm', status: 'submitted', revision: 2, confirm_count: 1, dispute_count: 0, active_publication_id: null, outcome: 'set' }
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => ok(response))) })
+    await expect(repo.setReaction({ claimId, reaction: null, clientKey: createInput.clientKey })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects reaction aggregates that contradict the derived status', async () => {
+    const response = { claim_id: claimId, reaction: 'confirm', status: 'submitted', revision: 2, confirm_count: 3, dispute_count: 0, active_publication_id: null, outcome: 'set' }
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => ok(response))) })
+    await expect(repo.setReaction({ claimId, reaction: 'confirm', clientKey: createInput.clientKey })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects audit branches with impossible action and nullability', async () => {
+    const event = { event_id: claimId, event_kind: 'merge', action: 'verify', from_status: null, to_status: 'submitted', evidence_type: null, evidence_observed_on: null, related_claim_id: null, publication_id: null, created_at: now }
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => ok({ items: [event], has_more: false, next_cursor: null }))) })
+    await expect(repo.listAudit({ claimId, limit: 20 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('orders equal-time audit events by kind then ID and respects cross-kind cursors', async () => {
+    const review = { event_id: 'b1000000-0000-4000-8000-000000000003', event_kind:'official_review', action:'verify', from_status:null, to_status:null, evidence_type:'official_website', evidence_observed_on:'2020-01-01', related_claim_id:null, publication_id:publicationId, created_at:now }
+    // SQL intentionally reuses a review UUID for the paired claim_event on official withdrawal;
+    // identity and cursor uniqueness are therefore the complete (kind, id) discriminator.
+    const merge = { event_id:review.event_id, event_kind:'merge', action:'merged', from_status:null, to_status:'merged', evidence_type:null, evidence_observed_on:null, related_claim_id:claimId, publication_id:null, created_at:now }
+    const rpc = vi.fn(async () => ok({items:[review,merge],has_more:true,next_cursor:{created_at:now,event_kind:'merge',event_id:merge.event_id}}))
+    const repo = createBenefitClaimRepository({getSessionContext:async()=>context('one',rpc)})
+    const result = await repo.listAudit({claimId,limit:2,cursor:JSON.stringify({created_at:later,event_kind:'claim_event',event_id:claimId})})
+    expect(result).toMatchObject({ok:true,data:{hasMore:true,items:[{eventKind:'official_review'},{eventKind:'merge'}]}})
+    expect(rpc).toHaveBeenCalledWith('list_benefit_claim_audit_v1',{p_claim_id:claimId,p_limit:2,p_cursor_created_at:later,p_cursor_kind:'claim_event',p_cursor_id:claimId},undefined)
   })
 
   it('supports withdrawal, admin queue, audit, moderation, and official verification RPC signatures', async () => {

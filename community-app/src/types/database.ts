@@ -558,10 +558,10 @@ export type Database = {
           resolved_company_id: string | null;
           revision: number;
           reviewer_id: string | null;
-          status: string;
+          status: "pending_review" | "approved" | "rejected" | "merged";
           updated_at: string;
-          verification_method: string;
-          verification_status: string;
+          verification_method: "manual" | "nts_full";
+          verification_status: "pending" | "matched" | "mismatched" | "unavailable" | "rejected";
           website: string | null;
         };
         ComputedFields: never;
@@ -581,10 +581,10 @@ export type Database = {
           resolved_company_id?: string | null;
           revision?: number;
           reviewer_id?: string | null;
-          status?: string;
+          status?: "pending_review" | "approved" | "rejected" | "merged";
           updated_at?: string;
-          verification_method: string;
-          verification_status?: string;
+          verification_method: "manual" | "nts_full";
+          verification_status?: "pending" | "matched" | "mismatched" | "unavailable" | "rejected";
           website?: string | null;
         };
         Update: {
@@ -603,10 +603,10 @@ export type Database = {
           resolved_company_id?: string | null;
           revision?: number;
           reviewer_id?: string | null;
-          status?: string;
+          status?: "pending_review" | "approved" | "rejected" | "merged";
           updated_at?: string;
-          verification_method?: string;
-          verification_status?: string;
+          verification_method?: "manual" | "nts_full";
+          verification_status?: "pending" | "matched" | "mismatched" | "unavailable" | "rejected";
           website?: string | null;
         };
         Relationships: [
@@ -1858,7 +1858,7 @@ export type Database = {
           p_cursor_created_at?: string | null;
           p_cursor_id?: string | null;
           p_limit?: number;
-          p_status?: string;
+          p_status?: "pending_review" | "approved" | "rejected" | "merged" | "all";
         };
         Returns: Json;
       };
@@ -2017,7 +2017,7 @@ export type Database = {
           p_evidence_source_url?: string | null;
           p_evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official" | null;
           p_expected_revision: number;
-          p_expected_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn";
+          p_expected_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
           p_reason?: string | null;
           p_target_claim_id?: string | null;
         };
@@ -2109,10 +2109,10 @@ export type Database = {
       };
       review_benefit_company_request_v1: {
         Args: {
-          p_action: string;
-          p_destination_company_id?: string;
+          p_action: "approve" | "reject" | "merge";
+          p_destination_company_id?: string | null;
           p_expected_revision: number;
-          p_expected_status: string;
+          p_expected_status: "pending_review";
           p_reason: string;
           p_request_id: string;
         };

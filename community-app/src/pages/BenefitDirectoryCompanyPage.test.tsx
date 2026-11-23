@@ -32,6 +32,7 @@ const detail = (id = CRN_A, publications: BenefitCompanyDetail['publications'] =
     summary: '공개 기업 소개입니다.',
   },
   publications,
+  claims: [],
 })
 const ok = (value: BenefitCompanyDetail): Result<BenefitCompanyDetail> => ({ ok: true, data: value })
 const failure = (code: BenefitDirectoryErrorCode, message = 'raw internal message'): Result<BenefitCompanyDetail> => ({ ok: false, error: { code, message } })

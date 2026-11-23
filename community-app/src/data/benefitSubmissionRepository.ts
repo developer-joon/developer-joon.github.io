@@ -5,7 +5,7 @@ import { comparePostgresTimestamps, parsePostgresTimestampMicros } from '../lib/
 import { isBenefitCompanyId } from '../lib/benefitCompanyId'
 import { BENEFIT_SUBMISSION_CATEGORIES, BENEFIT_SUBMISSION_STATUSES, type BenefitSubmissionAccountScope, type BenefitSubmissionCategory, type BenefitSubmissionCursor, type BenefitSubmissionErrorCode, type BenefitSubmissionItem, type BenefitSubmissionListInput, type BenefitSubmissionPage, type BenefitSubmissionResult, type CreateBenefitSubmissionInput } from '../types/benefitSubmissions'
 
-export interface BenefitSubmissionRpcResponse { data: unknown; error: unknown; status: number; statusText: string }
+export interface BenefitSubmissionRpcResponse { data: unknown; error: unknown; status: number; statusText: string; count?: number | null }
 export interface BenefitSubmissionSessionContext {
   readonly actorId: string
   readonly sessionFingerprint: string
@@ -24,6 +24,13 @@ const SESSION_DOMAIN = 'breadlab:benefit-submission:session-fingerprint:v1'
 const SCOPE_DOMAIN = 'breadlab:benefit-submission:account-scope:v1'
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function exact(value: Record<string, unknown>, keys: readonly string[]) { const a=Object.keys(value).sort(), b=[...keys].sort(); return a.length===b.length && a.every((key,index)=>key===b[index]) }
+export function isStrictBenefitRpcEnvelope(value: unknown): value is BenefitSubmissionRpcResponse {
+  if (!record(value)) return false
+  const keys = Object.hasOwn(value, 'count') ? ['data','error','count','status','statusText'] : ['data','error','status','statusText']
+  if (!exact(value, keys) || !Number.isInteger(value.status) || (value.status as number) < 100 || (value.status as number) > 599 || typeof value.statusText !== 'string' || new TextEncoder().encode(value.statusText).length > 800 || (Object.hasOwn(value, 'count') && value.count !== null && (!Number.isSafeInteger(value.count) || (value.count as number) < 0))) return false
+  if (value.error === null) return (value.status as number) >= 200 && (value.status as number) < 300 && value.status !== 204
+  return value.data === null && record(value.error) && typeof value.error.code === 'string' && typeof value.error.message === 'string' && (value.status as number) >= 400
+}
 function dense(value: unknown[]) { return value.every((_, index) => Object.prototype.hasOwnProperty.call(value,index)) }
 function length(value: string) { return Array.from(value).length }
 function bounded(value: unknown, max: number): value is string { return typeof value === 'string' && length(value)>=1 && length(value)<=max && value.trim()===value }
@@ -87,6 +94,6 @@ type Auth={
   getSession():Promise<{data:{session:{user:{id:string};access_token:string}|null}}>
   onAuthStateChange?(callback:(event:string,session:unknown)=>void):{data:{subscription:{unsubscribe():void}}}
 }
-export function createBenefitSubmissionSessionProvider(auth:Auth,config:{supabaseUrl:string;supabasePublishableKey:string},fetcher:typeof fetch=globalThis.fetch):BenefitSubmissionSessionProvider{let generation=0;auth.onAuthStateChange?.(()=>{generation+=1});return async()=>{const session=(await auth.getSession()).data.session;if(!session||!isCanonicalUuid(session.user.id)||!session.access_token)return null;const token=session.access_token;return {actorId:session.user.id.toLowerCase(),sessionFingerprint:await sha256(`${SESSION_DOMAIN}\0${token}\0${generation}`),async rpc(name,args,signal){const response=await fetcher(`${config.supabaseUrl}/rest/v1/rpc/${encodeURIComponent(name)}`,{method:'POST',headers:{apikey:config.supabasePublishableKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(args),signal});let payload:unknown;try{payload=await response.json()}catch{payload=undefined}return response.ok?{data:payload,error:null,status:response.status,statusText:response.statusText}:{data:null,error:record(payload)?payload:{code:'INVALID_ERROR',message:'Invalid response'},status:response.status,statusText:response.statusText}}}}}
+export function createBenefitSubmissionSessionProvider(auth:Auth,config:{supabaseUrl:string;supabasePublishableKey:string},fetcher:typeof fetch=globalThis.fetch):()=>Promise<(BenefitSubmissionSessionContext & {invokeFunction(name:string,input:{idempotencyKey:string;body:Record<string,unknown>;signal?:AbortSignal}):Promise<Response>})|null>{let generation=0;auth.onAuthStateChange?.(()=>{generation+=1});return async()=>{const session=(await auth.getSession()).data.session;if(!session||!isCanonicalUuid(session.user.id)||!session.access_token)return null;const token=session.access_token;return {actorId:session.user.id.toLowerCase(),sessionFingerprint:await sha256(`${SESSION_DOMAIN}\0${token}\0${generation}`),async invokeFunction(name,input){return fetcher(`${config.supabaseUrl}/functions/v1/${encodeURIComponent(name)}`,{method:'POST',headers:{apikey:config.supabasePublishableKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json','idempotency-key':input.idempotencyKey},body:JSON.stringify(input.body),signal:input.signal})},async rpc(name,args,signal){const response=await fetcher(`${config.supabaseUrl}/rest/v1/rpc/${encodeURIComponent(name)}`,{method:'POST',headers:{apikey:config.supabasePublishableKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(args),signal});let payload:unknown;try{payload=await response.json()}catch{payload=undefined}return response.ok?{data:payload,error:null,status:response.status,statusText:response.statusText}:{data:null,error:record(payload)?payload:{code:'INVALID_ERROR',message:'Invalid response'},status:response.status,statusText:response.statusText}}}}}
 let singleton:BenefitSubmissionRepository|undefined
 export function getBenefitSubmissionRepository(){if(singleton)return singleton;const supabase=getSupabaseClient(),config=parseEnv(import.meta.env);singleton=createBenefitSubmissionRepository({getSessionContext:createBenefitSubmissionSessionProvider(supabase.auth,config)});return singleton}

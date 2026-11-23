@@ -29,6 +29,7 @@ const item: BenefitCorrectionItem = {
 const canonicalCompanyId = `KR-CAN-${'c'.repeat(32)}`
 const canonicalCurrentText = '건강 검진 — 정기 검진을 지원합니다. · 대상: 정규직 구성원 · 공식 확인 / 심리 상담 — 상담 비용을 지원합니다. · 조건: 월 한도 적용 · 사용자 제보'
 const canonicalCompany: BenefitCompanyDetail = {
+  claims: [],
   company: { companyId: canonicalCompanyId, displayName: '신규 정식 기업', identityLabel: '등록 사업자' as const, industry: null, sizeLabel: '분류 미확인' as const, region: null, summary: null },
   publications: [
     { publicationId: '123e4567-e89b-42d3-a456-426614174010', categoryId: 'health', title: '건강 검진', description: '정기 검진을 지원합니다.', eligibilityText: '정규직 구성원', conditionText: null, trustLabel: '공식 확인', revision: 3 },
@@ -53,6 +54,7 @@ function directoryRepository(overrides: Partial<BenefitDirectoryRepository> = {}
     detail: vi.fn(async companyId => ({ ok: true as const, data: companyId === canonicalCompanyId ? canonicalCompany : {
       company: { companyId: company.company_id, displayName: company.display_name, identityLabel: '법인' as const, industry: null, sizeLabel: '분류 미확인' as const, region: null, summary: null },
       publications: [],
+      claims: [],
     } })),
     ...overrides,
   }

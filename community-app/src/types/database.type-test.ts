@@ -48,13 +48,19 @@ type ModerateClaimArgsExact = Expect<Equal<Database['public']['Functions']['mode
   p_evidence_source_url?: string | null
   p_evidence_type?: 'official_website' | 'company_policy' | 'regulatory_filing' | 'employment_document' | 'other_official' | null
   p_expected_revision: number
-  p_expected_status: 'submitted' | 'community_confirmed' | 'disputed' | 'hidden' | 'withdrawn'
+  p_expected_status: 'submitted' | 'community_confirmed' | 'disputed' | 'hidden' | 'withdrawn' | 'merged'
   p_reason?: string | null
   p_target_claim_id?: string | null
 }>>
 type ModerateClaimReturnExact = Expect<Equal<Database['public']['Functions']['moderate_benefit_claim_v1']['Returns'], Json>>
 
+type CompanyStatusExact = Expect<Equal<Database['public']['Tables']['benefit_company_add_requests']['Row']['status'], 'pending_review' | 'approved' | 'rejected' | 'merged'>>
+type CompanyQueueStatusExact = Expect<Equal<Database['public']['Functions']['list_benefit_company_request_queue_v1']['Args']['p_status'], 'pending_review' | 'approved' | 'rejected' | 'merged' | 'all' | undefined>>
+type CompanyReviewActionExact = Expect<Equal<Database['public']['Functions']['review_benefit_company_request_v1']['Args']['p_action'], 'approve' | 'reject' | 'merge'>>
+type CompanyDestinationExact = Expect<Equal<Database['public']['Functions']['review_benefit_company_request_v1']['Args']['p_destination_company_id'], string | null | undefined>>
+
 export type ProfileTypeAssertions = [
+  CompanyStatusExact, CompanyQueueStatusExact, CompanyReviewActionExact, CompanyDestinationExact,
   ProfileRowHasNullableGithubId,
   ProfileInsertMayOmitOrNullGithubId,
   ProfileUpdateMayNullGithubId,
