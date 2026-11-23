@@ -43,7 +43,6 @@ export type Database = {
           status: string;
           storage_path: string;
         };
-        ComputedFields: never;
         Insert: {
           attached_at?: string | null;
           byte_size: number;
@@ -110,12 +109,12 @@ export type Database = {
           normalized_name: string;
           provenance: NonNullable<Json>;
           region: string | null;
+          search_name: string | null;
           size_class: string | null;
           source_edition: string;
           summary: string | null;
           updated_at: string;
         };
-        ComputedFields: never;
         Insert: {
           company_id: string;
           created_at?: string;
@@ -126,6 +125,7 @@ export type Database = {
           normalized_name: string;
           provenance?: NonNullable<Json>;
           region?: string | null;
+          search_name?: never;
           size_class?: string | null;
           source_edition: string;
           summary?: string | null;
@@ -141,6 +141,7 @@ export type Database = {
           normalized_name?: string;
           provenance?: NonNullable<Json>;
           region?: string | null;
+          search_name?: never;
           size_class?: string | null;
           source_edition?: string;
           summary?: string | null;
@@ -148,24 +149,175 @@ export type Database = {
         };
         Relationships: [];
       };
+      benefit_company_add_events: {
+        Row: {
+          action: string;
+          actor_id: string | null;
+          actor_kind: string;
+          created_at: string;
+          event_id: string;
+          from_status: string | null;
+          metadata: NonNullable<Json>;
+          request_id: string;
+          resolved_company_id: string | null;
+          to_status: string;
+          verification_category: string | null;
+        };
+        Insert: {
+          action: string;
+          actor_id?: string | null;
+          actor_kind: string;
+          created_at?: string;
+          event_id?: string;
+          from_status?: string | null;
+          metadata?: NonNullable<Json>;
+          request_id: string;
+          resolved_company_id?: string | null;
+          to_status: string;
+          verification_category?: string | null;
+        };
+        Update: {
+          action?: string;
+          actor_id?: string | null;
+          actor_kind?: string;
+          created_at?: string;
+          event_id?: string;
+          from_status?: string | null;
+          metadata?: NonNullable<Json>;
+          request_id?: string;
+          resolved_company_id?: string | null;
+          to_status?: string;
+          verification_category?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_company_add_events_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "benefit_company_add_events_request_id_fkey";
+            columns: ["request_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_company_add_requests";
+            referencedColumns: ["request_id"];
+          },
+          {
+            foreignKeyName: "benefit_company_add_events_resolved_company_id_fkey";
+            columns: ["resolved_company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+        ];
+      };
+      benefit_company_add_requests: {
+        Row: {
+          business_number_digest: string | null;
+          client_key: string;
+          created_at: string;
+          external_verified_at: string | null;
+          industry: string | null;
+          normalized_name: string;
+          payload_fingerprint: string;
+          processed_at: string | null;
+          proposed_name: string;
+          region: string | null;
+          request_id: string;
+          requester_id: string;
+          resolved_company_id: string | null;
+          reviewer_id: string | null;
+          status: string;
+          updated_at: string;
+          verification_method: string;
+          verification_status: string;
+          website: string | null;
+        };
+        Insert: {
+          business_number_digest?: string | null;
+          client_key: string;
+          created_at?: string;
+          external_verified_at?: string | null;
+          industry?: string | null;
+          normalized_name: string;
+          payload_fingerprint: string;
+          processed_at?: string | null;
+          proposed_name: string;
+          region?: string | null;
+          request_id?: string;
+          requester_id: string;
+          resolved_company_id?: string | null;
+          reviewer_id?: string | null;
+          status?: string;
+          updated_at?: string;
+          verification_method: string;
+          verification_status?: string;
+          website?: string | null;
+        };
+        Update: {
+          business_number_digest?: string | null;
+          client_key?: string;
+          created_at?: string;
+          external_verified_at?: string | null;
+          industry?: string | null;
+          normalized_name?: string;
+          payload_fingerprint?: string;
+          processed_at?: string | null;
+          proposed_name?: string;
+          region?: string | null;
+          request_id?: string;
+          requester_id?: string;
+          resolved_company_id?: string | null;
+          reviewer_id?: string | null;
+          status?: string;
+          updated_at?: string;
+          verification_method?: string;
+          verification_status?: string;
+          website?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_company_add_requests_requester_id_fkey";
+            columns: ["requester_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "benefit_company_add_requests_resolved_company_id_fkey";
+            columns: ["resolved_company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_company_add_requests_reviewer_id_fkey";
+            columns: ["reviewer_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       benefit_company_identifiers: {
         Row: {
           company_id: string;
           created_at: string;
           identifier_digest_or_value: string;
           identifier_id: string;
-          identifier_type: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          identifier_type: string;
           source_edition: string;
           updated_at: string;
           verified_at: string;
         };
-        ComputedFields: never;
         Insert: {
           company_id: string;
           created_at?: string;
           identifier_digest_or_value: string;
           identifier_id?: string;
-          identifier_type: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          identifier_type: string;
           source_edition: string;
           updated_at?: string;
           verified_at: string;
@@ -175,7 +327,7 @@ export type Database = {
           created_at?: string;
           identifier_digest_or_value?: string;
           identifier_id?: string;
-          identifier_type?: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          identifier_type?: string;
           source_edition?: string;
           updated_at?: string;
           verified_at?: string;
@@ -199,7 +351,6 @@ export type Database = {
           reason: string;
           source_company_id: string;
         };
-        ComputedFields: never;
         Insert: {
           actor_id: string;
           created_at?: string;
@@ -257,7 +408,6 @@ export type Database = {
           response_text: string | null;
           to_status: string;
         };
-        ComputedFields: never;
         Insert: {
           action: string;
           actor_id?: string | null;
@@ -315,7 +465,6 @@ export type Database = {
           idempotency_key: string;
           occurred_at: string;
         };
-        ComputedFields: never;
         Insert: {
           action: string;
           actor_snapshot: string;
@@ -354,7 +503,6 @@ export type Database = {
           submitter_id: string;
           updated_at: string;
         };
-        ComputedFields: never;
         Insert: {
           admin_response?: string | null;
           applied_at?: string | null;
@@ -437,7 +585,6 @@ export type Database = {
           updated_at: string;
           verified_at: string | null;
         };
-        ComputedFields: never;
         Insert: {
           category_id: string;
           company_id: string;
@@ -514,7 +661,6 @@ export type Database = {
           submission_id: string;
           to_status: string;
         };
-        ComputedFields: never;
         Insert: {
           action: string;
           actor_id: string;
@@ -587,7 +733,6 @@ export type Database = {
           submitter_id: string;
           updated_at: string;
         };
-        ComputedFields: never;
         Insert: {
           admin_response?: string | null;
           benefit_text: string;
@@ -664,7 +809,6 @@ export type Database = {
           id: string;
           user_id: string;
         };
-        ComputedFields: never;
         Insert: {
           comment_id: string;
           created_at?: string;
@@ -706,7 +850,6 @@ export type Database = {
           status: string;
           updated_at: string;
         };
-        ComputedFields: never;
         Insert: {
           author_id: string;
           body_markdown: string;
@@ -765,7 +908,6 @@ export type Database = {
           resource_type: string | null;
           user_id: string;
         };
-        ComputedFields: never;
         Insert: {
           created_at?: string;
           expires_at: string;
@@ -809,7 +951,6 @@ export type Database = {
           target_id: string;
           target_type: string;
         };
-        ComputedFields: never;
         Insert: {
           action: string;
           actor_id?: string | null;
@@ -847,7 +988,6 @@ export type Database = {
           post_id: string;
           user_id: string;
         };
-        ComputedFields: never;
         Insert: {
           created_at?: string;
           id?: string;
@@ -882,7 +1022,6 @@ export type Database = {
           post_id: string;
           tag_id: string;
         };
-        ComputedFields: never;
         Insert: {
           post_id: string;
           tag_id: string;
@@ -921,7 +1060,6 @@ export type Database = {
           title: string;
           updated_at: string;
         };
-        ComputedFields: never;
         Insert: {
           author_id: string;
           body_markdown: string;
@@ -967,7 +1105,6 @@ export type Database = {
           metadata_provider: string | null;
           updated_at: string;
         };
-        ComputedFields: never;
         Insert: {
           avatar_url?: string | null;
           created_at?: string;
@@ -999,7 +1136,6 @@ export type Database = {
           upload_reservation_id: string | null;
           user_id: string;
         };
-        ComputedFields: never;
         Insert: {
           action: string;
           id?: string;
@@ -1036,7 +1172,6 @@ export type Database = {
           updated_at: string;
           window_seconds: number;
         };
-        ComputedFields: never;
         Insert: {
           action: string;
           created_at?: string;
@@ -1070,7 +1205,6 @@ export type Database = {
           target_id: string;
           target_type: string;
         };
-        ComputedFields: never;
         Insert: {
           created_at?: string;
           detail?: string | null;
@@ -1120,7 +1254,6 @@ export type Database = {
           slug: string;
           sort_order: number;
         };
-        ComputedFields: never;
         Insert: {
           id?: string;
           is_active?: boolean;
@@ -1144,7 +1277,6 @@ export type Database = {
           role: string;
           user_id: string;
         };
-        ComputedFields: never;
         Insert: {
           granted_at?: string;
           granted_by?: string | null;
@@ -1257,6 +1389,16 @@ export type Database = {
         };
         Returns: Json;
       };
+      create_manual_benefit_company_request_v1: {
+        Args: {
+          p_client_key: string;
+          p_industry?: string;
+          p_proposed_name: string;
+          p_region?: string;
+          p_website?: string;
+        };
+        Returns: Json;
+      };
       create_post: {
         Args: {
           p_body_markdown: string;
@@ -1290,6 +1432,24 @@ export type Database = {
         Args: { p_attachment_id: string; p_storage_path: string };
         Returns: boolean;
       };
+      fail_benefit_company_nts_request_v1: {
+        Args: {
+          p_expected_verification_status: string;
+          p_failure_category: string;
+          p_request_id: string;
+        };
+        Returns: Json;
+      };
+      finalize_benefit_company_nts_request_v1: {
+        Args: {
+          p_business_number_digest: string;
+          p_expected_verification_status: string;
+          p_external_verified_at: string;
+          p_payload_fingerprint: string;
+          p_request_id: string;
+        };
+        Returns: Json;
+      };
       get_benefit_company_v1: { Args: { p_company_id: string }; Returns: Json };
       get_public_post: {
         Args: { p_post_id: string };
@@ -1314,6 +1474,15 @@ export type Database = {
       get_public_post_v2: { Args: { p_post_id: string }; Returns: Json };
       get_public_post_v3: { Args: { p_post_id: string }; Returns: Json };
       is_admin: { Args: Record<PropertyKey, never>; Returns: boolean };
+      list_benefit_company_request_queue_v1: {
+        Args: {
+          p_cursor_created_at?: string;
+          p_cursor_id?: string;
+          p_limit?: number;
+          p_status?: string;
+        };
+        Returns: Json;
+      };
       list_benefit_correction_audit_v1: {
         Args: {
           p_cursor_created_at?: string;
@@ -1367,6 +1536,10 @@ export type Database = {
           p_limit?: number;
           p_status?: string;
         };
+        Returns: Json;
+      };
+      list_my_benefit_company_requests_v1: {
+        Args: { p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number };
         Returns: Json;
       };
       list_my_benefit_correction_requests_v1: {
@@ -1498,6 +1671,16 @@ export type Database = {
         Returns: boolean;
       };
       reserve_attachment_upload: { Args: { p_idempotency_key: string }; Returns: string };
+      reserve_benefit_company_nts_request_v1: {
+        Args: {
+          p_client_key: string;
+          p_industry?: string;
+          p_proposed_name: string;
+          p_region?: string;
+          p_website?: string;
+        };
+        Returns: Json;
+      };
       resolve_public_attachment: {
         Args: { p_attachment_id: string };
         Returns: {
@@ -1508,6 +1691,16 @@ export type Database = {
           owner_id: string;
           storage_path: string;
         }[];
+      };
+      review_benefit_company_request_v1: {
+        Args: {
+          p_action: string;
+          p_destination_company_id?: string;
+          p_expected_status: string;
+          p_reason: string;
+          p_request_id: string;
+        };
+        Returns: Json;
       };
       review_benefit_correction_request_v1: {
         Args: {
@@ -1601,12 +1794,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends (DefaultSchemaTableNameOrOptions extends {
+  TableName extends DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never) = never,
+    : never = never,
 > = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
       DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
@@ -1626,11 +1819,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends (DefaultSchemaTableNameOrOptions extends {
+  TableName extends DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never) = never,
+    : never = never,
 > = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
       Insert: infer I;
@@ -1649,11 +1842,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends (DefaultSchemaTableNameOrOptions extends {
+  TableName extends DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never) = never,
+    : never = never,
 > = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
       Update: infer U;
@@ -1672,11 +1865,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never) = never,
+    : never = never,
 > = DefaultSchemaEnumNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
   : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
@@ -1687,11 +1880,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals;
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never) = never,
+    : never = never,
 > = PublicCompositeTypeNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
   ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
   : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
