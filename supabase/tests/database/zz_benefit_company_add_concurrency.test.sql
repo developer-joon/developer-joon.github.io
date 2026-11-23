@@ -4,10 +4,10 @@ create extension if not exists dblink with schema extensions;
 
 create temporary table company_add_race_fixture(
  requester_id uuid,admin_one_id uuid,admin_two_id uuid,request_id uuid,merge_request_id uuid,
- same_key uuid,digest text,destination text,connection_string text,second_pid integer
+ same_key uuid,kill_key uuid,digest text,destination text,connection_string text,second_pid integer
 );
 insert into company_add_race_fixture
-select gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),repeat('c',64),null,
+select gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),repeat('c',64),null,
  format('hostaddr=%s port=%s dbname=%L user=%L password=postgres options=%L',coalesce(host(inet_server_addr()),'127.0.0.1'),inet_server_port(),current_database(),current_user,'-c statement_timeout=8000 -c lock_timeout=5000'),null;
 
 create function pg_temp.wait_for_lock(p_pid integer,p_timeout interval default interval '3 seconds') returns boolean language plpgsql as $$
@@ -51,7 +51,12 @@ select extensions.dblink_exec('ca_two',$fn$
  returns text language plpgsql as $body$ begin
   perform public.finalize_benefit_company_nts_request_v1(p_request,'pending',p_fingerprint,p_digest,clock_timestamp());
   return 'ok'; exception when others then return sqlstate; end $body$;
- grant execute on function pg_temp.try_finalize(uuid,text,text) to service_role
+ grant execute on function pg_temp.try_finalize(uuid,text,text) to service_role;
+ create or replace function pg_temp.try_create(p_key uuid,p_name text)
+ returns text language plpgsql as $body$ begin
+  perform public.create_manual_benefit_company_request_v1(p_key,p_name,null,null,null);
+  return 'ok'; exception when others then return sqlstate; end $body$;
+ grant execute on function pg_temp.try_create(uuid,text) to authenticated
 $fn$);
 select extensions.dblink_exec('ca_one',$fn$
  create or replace function pg_temp.try_review(p_request uuid,p_action text,p_destination text default null)
@@ -149,11 +154,14 @@ select extensions.dblink_exec('ca_one','begin');
 select extensions.dblink_exec('ca_one',$$update private.benefit_feature_settings set enabled=false,updated_at=clock_timestamp() where setting_key='company_add_write_enabled'$$);
 select extensions.dblink_exec('ca_two','begin'); select extensions.dblink_exec('ca_two','set local role authenticated'); select extensions.dblink_exec('ca_two',format('set local request.jwt.claim.sub=%L',requester_id)) from company_add_race_fixture;
 update company_add_race_fixture set second_pid=(select pid from extensions.dblink('ca_two','select pg_backend_pid()') r(pid integer));
-select extensions.dblink_send_query('ca_two',$q$select public.create_manual_benefit_company_request_v1(gen_random_uuid(),'Killed Co',null,null,null)::text$q$);
+select extensions.dblink_send_query('ca_two',format($q$select pg_temp.try_create(%L,'Killed Co')$q$,kill_key)) from company_add_race_fixture;
 select ok((select pg_temp.wait_for_lock(second_pid) from company_add_race_fixture),'mutation waits behind feature-setting update');
 select extensions.dblink_exec('ca_one','commit');
-create temporary table kill_result(value text); insert into kill_result select * from extensions.dblink_get_result('ca_two',false) r(value text); select count(*) from extensions.dblink_get_result('ca_two',false) r(value text); select extensions.dblink_exec('ca_two','rollback');
+create temporary table kill_result(value text); insert into kill_result select * from extensions.dblink_get_result('ca_two') r(value text); select count(*) from extensions.dblink_get_result('ca_two') r(value text); select extensions.dblink_exec('ca_two','rollback');
+select is((select value from kill_result),'55000','waiting mutation fails closed with exact switch-off SQLSTATE');
 select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select request_id from public.benefit_company_add_requests where proposed_name='Killed Co'$$) r(request_id uuid)),0,'no write occurs after switch-off commit');
+select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),$$select e.event_id from public.benefit_company_add_events e join public.benefit_company_add_requests r using(request_id) where r.proposed_name='Killed Co'$$) r(event_id uuid)),0,'switch-off loser leaves no request event');
+select is((select count(*)::integer from extensions.dblink((select connection_string from company_add_race_fixture),format($q$select id from public.rate_limit_events where user_id=%L and action='benefit_company_add.create' and idempotency_key=%L$q$,(select requester_id from company_add_race_fixture),(select kill_key::text from company_add_race_fixture))) r(id uuid)),0,'switch-off loser consumes no rate slot');
 select extensions.dblink_exec('ca_setup',$q$update private.benefit_feature_settings set enabled=true,updated_at=clock_timestamp() where setting_key='company_add_write_enabled'$q$);
 
 -- 7: injected late event failure rolls back company and request transition.

@@ -222,6 +222,7 @@ begin
   if p_client_key is null then raise exception 'client key is required' using errcode='22023'; end if;
   v_name:=private.benefit_company_add_text(p_name,'proposed name',200,false);
   v_normalized:=private.normalize_benefit_company_search(v_name);
+  if v_normalized='' then raise exception 'invalid proposed name' using errcode='22023'; end if;
   v_region:=private.benefit_company_add_text(p_region,'region',100,true);
   v_industry:=private.benefit_company_add_text(p_industry,'industry',100,true);
   v_website:=private.benefit_company_add_website(p_website);

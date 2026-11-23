@@ -65,6 +65,21 @@ reset role;
 
 set local role authenticated;
 set local request.jwt.claim.sub='a1000000-0000-4000-8000-000000000001';
+select throws_ok($$select public.create_manual_benefit_company_request_v1('a2000000-0000-4000-8000-000000000006','(주)',null,null,null)$$,'22023','invalid proposed name','manual legal-form-only name fails as invalid argument');
+select throws_ok($$select public.create_manual_benefit_company_request_v1('a2000000-0000-4000-8000-000000000007','   ',null,null,null)$$,'22023','invalid proposed name','manual whitespace-only name fails as invalid argument');
+reset role;
+update private.benefit_feature_settings set enabled=true,updated_at=clock_timestamp() where setting_key='nts_verification_enabled';
+set local role authenticated;
+set local request.jwt.claim.sub='a1000000-0000-4000-8000-000000000001';
+select throws_ok($$select public.reserve_benefit_company_nts_request_v1('a2000000-0000-4000-8000-000000000008','  주식회사  ',null,null,null)$$,'22023','invalid proposed name','NTS legal-form-only name fails as invalid argument');
+reset role;
+update private.benefit_feature_settings set enabled=false,updated_at=clock_timestamp() where setting_key='nts_verification_enabled';
+select is((select count(*)::integer from public.benefit_company_add_requests where client_key in ('a2000000-0000-4000-8000-000000000006','a2000000-0000-4000-8000-000000000007','a2000000-0000-4000-8000-000000000008')),0,'normalized-empty names leave no request');
+select is((select count(*)::integer from public.benefit_company_add_events e join public.benefit_company_add_requests r using(request_id) where r.client_key in ('a2000000-0000-4000-8000-000000000006','a2000000-0000-4000-8000-000000000007','a2000000-0000-4000-8000-000000000008')),0,'normalized-empty names leave no event');
+select is((select count(*)::integer from public.rate_limit_events where user_id='a1000000-0000-4000-8000-000000000001' and action='benefit_company_add.create' and idempotency_key in ('a2000000-0000-4000-8000-000000000006','a2000000-0000-4000-8000-000000000007','a2000000-0000-4000-8000-000000000008')),0,'normalized-empty names consume no rate slot');
+
+set local role authenticated;
+set local request.jwt.claim.sub='a1000000-0000-4000-8000-000000000001';
 create temporary table company_add_results(name text primary key,payload jsonb);
 insert into company_add_results values ('manual',public.create_manual_benefit_company_request_v1(
  'a2000000-0000-4000-8000-000000000001','  Example   Company  ',' Seoul ',' Software ','https://example.com'));
