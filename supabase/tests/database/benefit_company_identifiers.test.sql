@@ -12,6 +12,8 @@ insert into auth.users(id,aud,role,email) values
  ('c1000000-0000-4000-8000-000000000001','authenticated','authenticated','company-merge-actor@example.test');
 insert into public.profiles(id,github_user_id,login,display_name) values
  ('c1000000-0000-4000-8000-000000000001',999000001,'company-merge-actor','Company Merge Actor');
+insert into auth.identities(provider_id,user_id,identity_data,provider) values
+ ('company-id-google-actor','c1000000-0000-4000-8000-000000000001','{"full_name":"Company Merge Actor"}'::jsonb,'google');
 
 insert into public.benefit_companies(company_id,identity_class,display_name,normalized_name,source_edition) values
  ('KR-CAN-00000000000000000000000000000001','registered_business','Same Name One','same name','identifier-test'),
@@ -28,6 +30,18 @@ select throws_ok($$insert into public.benefit_company_identifiers(company_id,ide
 select throws_ok($$insert into public.benefit_company_identifiers(company_id,identifier_type,identifier_digest_or_value,source_edition,verified_at) values ('KR-CAN-00000000000000000000000000000002','business_number_hmac_v1','1234567890','raw-number-test',now())$$,'23514',null,'raw business numbers cannot be stored as HMAC identifiers');
 select throws_ok($$insert into public.benefit_company_identifiers(company_id,identifier_type,identifier_digest_or_value,source_edition,verified_at) values ('KR-CAN-00000000000000000000000000000002','legacy_company_id','KR-CAN-00000000000000000000000000000002','identifier-test',now())$$,'23514',null,'legacy identifier values are bounded to unchanged CRN or BIZ IDs');
 select throws_ok($$insert into public.benefit_company_identifiers(company_id,identifier_type,identifier_digest_or_value,source_edition,verified_at) values ('KR-CAN-00000000000000000000000000000002','alias','anything','identifier-test',now())$$,'23514',null,'identifier types are exactly the approved enum');
+
+set local role authenticated;
+set local request.jwt.claim.sub='c1000000-0000-4000-8000-000000000001';
+create temporary table opaque_company_rpc_results(kind text primary key,payload jsonb);
+insert into opaque_company_rpc_results values
+ ('submission',public.create_benefit_submission_v1('c2000000-0000-4000-8000-000000000001','KR-CAN-00000000000000000000000000000001','health','Canonical company health benefit','Employees','Current employees','https://example.com/canonical-submission')),
+ ('correction',public.create_benefit_correction_request_v1('c2000000-0000-4000-8000-000000000002','KR-CAN-00000000000000000000000000000001','health','No public benefit','Canonical company health benefit','Current employees','https://example.com/canonical-correction','company-benefits-2026-11-23-v1'));
+reset role;
+select is((select payload->>'company_id' from opaque_company_rpc_results where kind='submission'),'KR-CAN-00000000000000000000000000000001','submission RPC returns the opaque company ID byte-for-byte');
+select is((select company_id from public.benefit_submissions where id=((select payload->>'id' from opaque_company_rpc_results where kind='submission')::uuid)),'KR-CAN-00000000000000000000000000000001','submission RPC stores the opaque company ID byte-for-byte');
+select is((select payload->>'company_id' from opaque_company_rpc_results where kind='correction'),'KR-CAN-00000000000000000000000000000001','correction RPC returns the opaque company ID byte-for-byte');
+select is((select company_id from public.benefit_correction_requests where id=((select payload->>'id' from opaque_company_rpc_results where kind='correction')::uuid)),'KR-CAN-00000000000000000000000000000001','correction RPC stores the opaque company ID byte-for-byte');
 
 insert into public.benefit_company_merge_events(source_company_id,destination_company_id,actor_id,reason) values
  ('KR-CAN-00000000000000000000000000000001','KR-CAN-00000000000000000000000000000002','c1000000-0000-4000-8000-000000000001','Strong identifier reviewed by an operator');

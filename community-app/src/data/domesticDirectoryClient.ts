@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isLegacyBenefitBizId, isLegacyBenefitCrnId } from '../lib/benefitCompanyId'
 
 const prefix = '/community/data/company-benefits/'
 const pinnedSources = {
@@ -24,7 +25,7 @@ const pinnedArtifacts = {
 const sha = z.string().regex(/^[0-9a-f]{64}$/)
 const date = z.iso.date()
 const text = z.string().min(1).max(120).refine(s => !/[<>]/.test(s) && [...s].every(c => c.charCodeAt(0) > 31 && c.charCodeAt(0) !== 127))
-const id = z.string().regex(/^KR-(?:BIZ-[0-9]{10}|CRN-[0-9]{13})$/)
+const id = z.string().refine(value => isLegacyBenefitBizId(value) || isLegacyBenefitCrnId(value), 'invalid legacy domestic company ID')
 const descriptor = z.strictObject({ path: z.string(), bytes: z.number().int().positive(), sha256: sha, count: z.number().int().positive() })
 const listing = z.strictObject({ id, name: text, observation_date: date, source_type: z.literal('dated_recruitment_observation'), size_class: z.literal('unclassified'), region: text.optional(), employee_count: z.number().int().min(0).max(10000000).optional() })
 const label = z.strictObject({ id, as_of: date, source: z.enum(['ftc', 'mid', 'sme']), size_class: z.enum(['large_affiliate', 'mid_history', 'sme_unspecified']), expires_on: date.optional() })
@@ -94,7 +95,7 @@ export class DomesticDirectoryClient {
     assert(await digest(baseBytes, this.subtle) === pinnedArtifacts.base, '기본 manifest 지문')
     const base = z.object({ company_shards: z.record(z.string(), z.unknown()), company_count: z.literal(2000) }).parse(this.json(baseBytes))
     const canonicalIds = Object.keys(base.company_shards).filter(x => x.startsWith('KR-CRN-'))
-    assert(canonicalIds.length === 1000 && canonicalIds.every(x => /^KR-CRN-[0-9]{13}$/.test(x)), '기본 기업 집합')
+    assert(canonicalIds.length === 1000 && canonicalIds.every(isLegacyBenefitCrnId), '기본 기업 집합')
     assert(baseIds.size === 1000 && canonicalIds.every(x => baseIds.has(x)), '기본 기업 ID 불일치')
     const baseHash = await digest(baseBytes, this.subtle)
     const directoryBytes = await this.raw(`${prefix}domestic-directory-v1/manifest.json`, 100_000, signal)

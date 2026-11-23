@@ -5,17 +5,33 @@ export interface ParsedBenefitCompanyId {
   readonly kind: BenefitCompanyIdKind
 }
 
-const BENEFIT_COMPANY_ID = /^(?:KR-CRN-[0-9]{13}|KR-BIZ-[0-9]{10}|KR-CAN-[0-9a-f]{32})$/
+const LEGACY_CRN_ID = /^KR-CRN-[0-9]{13}$/
+const LEGACY_BIZ_ID = /^KR-BIZ-[0-9]{10}$/
+const CANONICAL_ID = /^KR-CAN-[0-9a-f]{32}$/
 const LEGACY_ARTIFACT_COMPANY_ID = /^US-CIK[0-9]{10}$/
 
+export function isLegacyBenefitCrnId(value: unknown): value is string {
+  return typeof value === 'string' && LEGACY_CRN_ID.test(value)
+}
+
+export function isLegacyBenefitBizId(value: unknown): value is string {
+  return typeof value === 'string' && LEGACY_BIZ_ID.test(value)
+}
+
+export function isFrozenBenefitArtifactCompanyId(value: unknown): value is string {
+  return isLegacyBenefitCrnId(value) || isLegacyBenefitArtifactCompanyId(value)
+}
+
 export function parseBenefitCompanyId(value: unknown): ParsedBenefitCompanyId | null {
-  if (typeof value !== 'string' || !BENEFIT_COMPANY_ID.test(value)) return null
-  const kind: BenefitCompanyIdKind = value.startsWith('KR-CRN-')
+  if (typeof value !== 'string') return null
+  const kind: BenefitCompanyIdKind | null = isLegacyBenefitCrnId(value)
     ? 'legacy_crn'
-    : value.startsWith('KR-BIZ-')
+    : isLegacyBenefitBizId(value)
       ? 'legacy_biz'
-      : 'canonical'
-  return { value, kind }
+      : CANONICAL_ID.test(value)
+        ? 'canonical'
+        : null
+  return kind ? { value, kind } : null
 }
 
 export function isBenefitCompanyId(value: unknown): value is string {

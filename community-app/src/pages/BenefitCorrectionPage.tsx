@@ -5,6 +5,7 @@ import { AppFooter } from '../components/AppFooter'
 import { AppHeader } from '../components/AppHeader'
 import { benefitsClient } from '../data/benefitsArtifactClient'
 import { getBenefitCorrectionRepository, type BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
+import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
 import { createBenefitCorrectionDraft, loadBenefitCorrectionDraft, saveBenefitCorrectionDraft, submitBenefitCorrectionDraft, type BenefitCorrectionDraftStorage } from '../lib/benefitCorrectionDraftStore'
 import { isBenefitCompanyId, isLegacyBenefitArtifactCompanyId } from '../lib/benefitCompanyId'
 import { BENEFIT_CATEGORIES, type BenefitCorrectionDraft } from '../types/benefitCorrections'
@@ -12,10 +13,13 @@ import { categoryLabels, isResearchedOutcome, researchStateLabels, type CompanyL
 
 interface Props {
   repository?: BenefitCorrectionRepository
+  directoryRepository?: BenefitDirectoryRepository
   storage?: BenefitCorrectionDraftStorage
   search?: string
   currentPath?: string
 }
+
+type CorrectionCompany = { companyId: string; displayName: string; artifact?: CompanyListing }
 
 
 const correctionBasePath = '/community/benefits/correction/'
@@ -50,10 +54,10 @@ function resolveDraftStorage(storage?: BenefitCorrectionDraftStorage): BenefitCo
   try { return typeof window === 'undefined' ? undefined : window.localStorage } catch { return undefined }
 }
 
-export function BenefitCorrectionPage({ repository = getBenefitCorrectionRepository(), storage, search = window.location.search, currentPath = `${window.location.pathname}${window.location.search}` }: Props) {
+export function BenefitCorrectionPage({ repository = getBenefitCorrectionRepository(), directoryRepository = getBenefitDirectoryRepository(), storage, search = window.location.search, currentPath = `${window.location.pathname}${window.location.search}` }: Props) {
   const auth = useAuth()
   const [draft, setDraft] = useState<BenefitCorrectionDraft | null>(null)
-  const [companies, setCompanies] = useState<CompanyListing[] | null>(null)
+  const [companies, setCompanies] = useState<CorrectionCompany[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
@@ -76,28 +80,39 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
     const generation = ++lifecycle.current
     const controller = new AbortController()
     void Promise.all([repository.getCurrentAccountScope(controller.signal), benefitsClient.loadManifest(controller.signal).then(async manifest => ({ manifest, companies: await benefitsClient.loadListingChunks(manifest, controller.signal) }))])
-      .then(([scopeResult, artifacts]) => {
+      .then(async ([scopeResult, artifacts]) => {
         if (generation !== lifecycle.current || controller.signal.aborted) return
         if (!scopeResult.ok) { setLoadError(scopeResult.error.message); return }
         const accountScope = scopeResult.data
         const saved = loadBenefitCorrectionDraft(accountScope, draftStorage)
         const companyParam = singleParam(params, 'company')
         const categoryParam = singleParam(params, 'category')
-        const company = companyParam && (isBenefitCompanyId(companyParam) || isLegacyBenefitArtifactCompanyId(companyParam)) ? artifacts.companies.find(value => value.company_id === companyParam) : undefined
+        const validCompanyParam = companyParam && (isBenefitCompanyId(companyParam) || isLegacyBenefitArtifactCompanyId(companyParam)) ? companyParam : ''
         const category = categoryParam && (BENEFIT_CATEGORIES as readonly string[]).includes(categoryParam) ? categoryParam as BenefitCorrectionDraft['categoryId'] : ''
         const base = saved ?? createBenefitCorrectionDraft(accountScope)
-        const companyId = base.companyId || company?.company_id || ''
+        const companyId = base.companyId || validCompanyParam
         const categoryId = base.categoryId || category
-        const selectedCompany = artifacts.companies.find(value => value.company_id === companyId)
+        const options: CorrectionCompany[] = artifacts.companies.map(artifact => ({ companyId: artifact.company_id, displayName: artifact.display_name, artifact }))
+        let selectedCompany = options.find(value => value.companyId === companyId)
+        if (companyId && isBenefitCompanyId(companyId)) {
+          const detail = await directoryRepository.detail(companyId, controller.signal)
+          if (generation !== lifecycle.current || controller.signal.aborted) return
+          if (!detail.ok) { setLoadError(detail.error.message); return }
+          const dynamic = { companyId: detail.data.company.companyId, displayName: detail.data.company.displayName }
+          const existing = options.findIndex(value => value.companyId === dynamic.companyId)
+          if (existing >= 0) options[existing] = { ...dynamic, artifact: options[existing].artifact }
+          else options.push(dynamic)
+          selectedCompany = options.find(value => value.companyId === companyId)
+        }
         const next: BenefitCorrectionDraft = {
           ...base,
           companyId,
           categoryId,
-          currentText: base.currentText || (selectedCompany ? displayedValue(selectedCompany, categoryId) : ''),
+          currentText: base.currentText || (selectedCompany?.artifact ? displayedValue(selectedCompany.artifact, categoryId) : selectedCompany ? '공개 확인된 복지 정보 없음' : ''),
           observedDataVersion: base.observedDataVersion || artifacts.manifest.data_version,
         }
         saveBenefitCorrectionDraft(accountScope, next, draftStorage)
-        setCompanies(artifacts.companies)
+        setCompanies(options)
         setDraft(next)
       })
       .catch(error => { if (generation === lifecycle.current && !controller.signal.aborted) setLoadError(error instanceof Error ? '기업 복지 기준 정보를 불러오지 못했습니다.' : '요청 화면을 준비하지 못했습니다.') })
@@ -107,14 +122,14 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
       submitController.current = null
       lifecycle.current += 1
     }
-  }, [auth.user?.id, draftStorage, params, repository])
+  }, [auth.user?.id, directoryRepository, draftStorage, params, repository])
 
   function update(patch: Partial<BenefitCorrectionDraft>) {
     if (!draft) return
     let next = { ...draft, ...patch, updatedAt: new Date().toISOString() }
     if (patch.companyId !== undefined || patch.categoryId !== undefined) {
-      const company = companies?.find(value => value.company_id === next.companyId)
-      next = { ...next, currentText: company ? displayedValue(company, next.categoryId) : '' }
+      const company = companies?.find(value => value.companyId === next.companyId)
+      next = { ...next, currentText: company?.artifact ? displayedValue(company.artifact, next.categoryId) : company ? '공개 확인된 복지 정보 없음' : '' }
     }
     saveBenefitCorrectionDraft(next.accountScope, next, draftStorage)
     setDraft(next)
@@ -154,7 +169,7 @@ export function BenefitCorrectionPage({ repository = getBenefitCorrectionReposit
   if (submitted) return <CorrectionShell><section><h1>요청 접수 완료</h1><p role="status">수정 요청이 접수되었습니다. 내 수정 요청에서 검토 상태를 확인할 수 있습니다.</p><a className="benefits-correction-link" href="/community/benefits/my-corrections/">내 수정 요청</a></section></CorrectionShell>
 
   return <CorrectionShell><section className="benefit-correction-panel"><h1>복지 정보 수정 요청</h1><p className="benefit-correction-warning">개인정보, 비공개·사내 문서, 로그인해야 볼 수 있는 문서, 유료 자료는 제출하지 마세요. 공개적으로 접근 가능한 HTTPS 근거 URL이 필요합니다.</p><p className="benefit-correction-review-note">승인은 검토 결정이며 공개 데이터가 즉시 변경되지는 않습니다. 게시는 별도의 조사·산출물(artifact) 검증과 운영자 적용을 거쳐야 합니다.</p><form onSubmit={submit} className="benefit-correction-form">
-    <label>기업<select value={draft.companyId} onChange={event => update({ companyId: event.target.value })} required><option value="">기업 선택</option>{companies.map(company => <option key={company.company_id} value={company.company_id}>{company.display_name} ({company.company_id})</option>)}</select></label>
+    <label>기업<select value={draft.companyId} onChange={event => update({ companyId: event.target.value })} required><option value="">기업 선택</option>{companies.map(company => <option key={company.companyId} value={company.companyId}>{company.displayName} ({company.companyId})</option>)}</select></label>
     <label>복지 분야<select value={draft.categoryId} onChange={event => update({ categoryId: event.target.value as BenefitCorrectionDraft['categoryId'] })} required><option value="">분야 선택</option>{BENEFIT_CATEGORIES.map(category => <option key={category} value={category}>{categoryLabels[category]}</option>)}</select></label>
     <label>현재 표시 내용<input value={draft.currentText} readOnly /></label>
     <label>제안 내용<textarea value={draft.proposedText} maxLength={5000} onChange={event => update({ proposedText: event.target.value })} required /></label>

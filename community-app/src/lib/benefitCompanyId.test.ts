@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { isBenefitCompanyId, parseBenefitCompanyId } from './benefitCompanyId'
@@ -42,5 +42,21 @@ describe('canonical benefit company IDs', () => {
   it('rejects non-string values without coercion', () => {
     expect(parseBenefitCompanyId(null)).toBeNull()
     expect(parseBenefitCompanyId(1234567890)).toBeNull()
+  })
+
+  it('keeps company-ID regex ownership in the central helper', () => {
+    const sourceRoot = resolve(process.cwd(), 'src')
+    const files = readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
+      .filter(entry => entry.isFile() && /\.(?:ts|tsx)$/.test(entry.name) && !entry.name.includes('.test.'))
+      .map(entry => resolve(entry.parentPath, entry.name))
+      .filter(path => path !== resolve(sourceRoot, 'lib/benefitCompanyId.ts'))
+    const copies = files.flatMap(path => {
+      const source = readFileSync(path, 'utf8')
+      return [...source.matchAll(/\/(?:\\.|[^/\n])+\/[a-z]*/g)]
+        .map(match => match[0])
+        .filter(literal => /KR-(?:CRN|BIZ|CAN)|US-CIK/.test(literal))
+        .map(literal => `${path.slice(sourceRoot.length + 1)}: ${literal}`)
+    })
+    expect(copies).toEqual([])
   })
 })

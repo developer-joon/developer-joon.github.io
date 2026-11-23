@@ -1,4 +1,5 @@
 import { categories, hasOutcomeScope, isResearchedOutcome, outcomeFor, researchStateFor, researchStatePrecedence, type Category, type CompanyListing, type ResearchLead } from '../types/benefits'
+import { isFrozenBenefitArtifactCompanyId } from './benefitCompanyId'
 
 export const presets = ['parenting','growth','housing','health','remote','custom'] as const
 export const presetLabels = ['육아 중','커리어 성장','주거·이동','건강 관리','원격·유연근무','직접 설정']
@@ -17,7 +18,7 @@ export type QueryState = {
   preset: (typeof presets)[number]
   notice: boolean
 }
-const companyIdPattern = /^(?:KR-CRN-\d{13}|US-CIK\d{10})$/
+
 const defaults: QueryState = { scope: 'all', q: '', categories: [], statuses: [], evidence: 'research', compare: [], page: 1, country: '', employment_type: '', role: '', preferred_categories: [], preset: 'parenting', notice: false }
 
 export function parseQuery(raw: string, ids?: string[]): QueryState {
@@ -34,7 +35,7 @@ export function parseQuery(raw: string, ids?: string[]): QueryState {
   const evidenceRaw = params.get('evidence') ?? (params.has('statuses') ? 'verified' : 'research')
   const presetRaw = params.get('preset') ?? 'parenting'
   const pageRaw = Number(params.get('page') ?? 1)
-  const candidates = ids ?? (params.get('compare')?.split(',').filter((id) => companyIdPattern.test(id)) ?? [])
+  const candidates = ids ?? (params.get('compare')?.split(',').filter(isFrozenBenefitArtifactCompanyId) ?? [])
   const qRaw = params.get('q') ?? ''
   const state: QueryState = {
     ...defaults,
@@ -43,7 +44,7 @@ export function parseQuery(raw: string, ids?: string[]): QueryState {
     categories: list('categories', categories),
     statuses: list('statuses', ['confirmed','bounded','insufficient_evidence'] as const),
     evidence: ['research', 'verified', 'all'].includes(evidenceRaw) ? evidenceRaw as QueryState['evidence'] : 'research',
-    compare: list('compare', candidates, 4).filter((id) => companyIdPattern.test(id)),
+    compare: list('compare', candidates, 4).filter(isFrozenBenefitArtifactCompanyId),
     page: Number.isSafeInteger(pageRaw) && pageRaw > 0 ? Math.min(pageRaw, 10000) : 1,
     country: (params.get('country') ?? '').slice(0, 100),
     employment_type: (params.get('employment_type') ?? '').slice(0, 100),

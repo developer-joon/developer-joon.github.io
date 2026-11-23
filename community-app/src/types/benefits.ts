@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isFrozenBenefitArtifactCompanyId } from '../lib/benefitCompanyId'
 
 export const categories = ['leave','family','health','growth','housing','commute','remote','retirement','meals','inclusion'] as const
 export type Category = (typeof categories)[number]
@@ -21,7 +22,7 @@ export const sourceTierLabels: Record<SourceTier, string> = {
 }
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/)
-const companyId = z.string().regex(/^(?:KR-CRN-\d{13}|US-CIK\d{10})$/)
+const companyId = z.string().refine(isFrozenBenefitArtifactCompanyId, 'invalid frozen benefit artifact company ID')
 export const safePublicSourceUrlSchema = z.string().url().refine((value) => {
   const url = new URL(value)
   return url.protocol === 'https:' && !url.username && !url.password
