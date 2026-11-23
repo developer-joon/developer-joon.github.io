@@ -19,6 +19,14 @@ const publication = {
 }
 const page = { items: [searchItem], has_more: false, next_cursor: null, total: 1 }
 const detail = { company, publications: [publication] }
+const publicClaim = {
+  claim_id: 'b2000000-0000-0000-0000-000000000001', category_id: 'health', category_name: '건강',
+  title: '건강 지원', description: '건강 지원 설명', eligibility_text: null, condition_text: null,
+  status_code: 'community_confirmed', status_label: '커뮤니티 확인', nickname: '빵친구',
+  submitted_at: '2026-11-22T01:00:00.000000+00:00', observed_on: '2026-11-21',
+  confirm_count: 3, dispute_count: 0, last_confirmation_at: '2026-11-22T02:00:00.000000+00:00',
+}
+const detailV2 = { ...detail, claims: [publicClaim] }
 
 function sparseAtZero<T>(value: T): T[] {
   const values = Array<T>(2)
@@ -132,27 +140,51 @@ describe('benefit directory repository', () => {
     expect(getAnonymousSupabaseClient).not.toHaveBeenCalled()
   })
 
-  it('calls the public detail RPC and preserves PostgreSQL UUID text without version restrictions', async () => {
-    const transport = rpcClient(success(detail))
+  it('calls public v2 detail through the anonymous client and decodes strict public claims', async () => {
+    const transport = rpcClient(success(detailV2))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
     const result = await createBenefitDirectoryRepository().detail(company.company_id)
-    expect(result).toEqual({ ok: true, data: {
+    expect(result).toMatchObject({ ok: true, data: { claims: [{ claimId: publicClaim.claim_id, statusCode: 'community_confirmed', confirmCount: 3 }] } })
+    expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v2', { p_company_id: company.company_id })
+    expect(getAnonymousSupabaseClient).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    { ...detailV2, claims: [{ ...publicClaim, email: 'private@example.test' }] },
+    { ...detailV2, claims: [{ ...publicClaim, submitter_id: 'private' }] },
+    { ...detailV2, claims: [{ ...publicClaim, source_url: 'https://private.example' }] },
+    { ...detailV2, claims: [{ ...publicClaim, reviewer_id: 'private' }] },
+    { ...detailV2, claims: [{ ...publicClaim, confirm_count: -1 }] },
+    { ...detailV2, claims: [{ ...publicClaim, status_label: '잘못됨' }] },
+    { ...detailV2, claims: [{ ...publicClaim, last_confirmation_at: '2026-11-21T00:00:00Z' }] },
+    { ...detailV2, claims: [publicClaim, publicClaim] },
+    { ...detailV2, claims: Array.from({ length: 201 }, (_, index) => ({ ...publicClaim, claim_id: `b2000000-0000-0000-0000-${index.toString(16).padStart(12, '0')}` })) },
+  ])('rejects malformed or private public-v2 claims', async wire => {
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('calls the public detail RPC and preserves PostgreSQL UUID text without version restrictions', async () => {
+    const transport = rpcClient(success(detailV2))
+    getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const result = await createBenefitDirectoryRepository().detail(company.company_id)
+    expect(result).toMatchObject({ ok: true, data: {
       company: { companyId: company.company_id, displayName: company.display_name, identityLabel: '법인', industry: 'software', sizeLabel: '대기업', region: '서울', summary: '공식 기업' },
       publications: [{ publicationId: publication.publication_id, categoryId: 'health', title: '건강검진', description: '연 1회 건강검진', eligibilityText: '재직자', conditionText: '회사 기준', trustLabel: '공식 확인', revision: 1 }],
     } })
-    expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v1', { p_company_id: company.company_id })
+    expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v2', { p_company_id: company.company_id })
   })
 
   it('accepts an opaque canonical company ID in detail responses without rewriting it', async () => {
     const companyId = `KR-CAN-${'a'.repeat(32)}`
-    const opaqueDetail = { ...detail, company: { ...company, company_id: companyId } }
+    const opaqueDetail = { ...detailV2, company: { ...company, company_id: companyId } }
     const transport = rpcClient(success(opaqueDetail))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
     await expect(createBenefitDirectoryRepository().detail(companyId)).resolves.toMatchObject({
       ok: true,
       data: { company: { companyId } },
     })
-    expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v1', { p_company_id: companyId })
+    expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v2', { p_company_id: companyId })
   })
 
   it.each([
@@ -165,11 +197,11 @@ describe('benefit directory repository', () => {
   })
 
   it.each([
-    [{ ...detail, submitter_id: 'private' }, 'top-level'],
-    [{ ...detail, company: { ...company, provenance: { private: true } } }, 'company'],
-    [{ ...detail, publications: [{ ...publication, reviewer_id: 'private' }] }, 'publication'],
-    [{ ...detail, publications: [{ ...publication, source_url: 'https://private.example' }] }, 'publication source'],
-    [{ ...detail, publications: [{ ...publication, verified_at: '2026-01-01T00:00:00Z' }] }, 'publication timestamp'],
+    [{ ...detailV2, submitter_id: 'private' }, 'top-level'],
+    [{ ...detailV2, company: { ...company, provenance: { private: true } } }, 'company'],
+    [{ ...detailV2, publications: [{ ...publication, reviewer_id: 'private' }] }, 'publication'],
+    [{ ...detailV2, publications: [{ ...publication, source_url: 'https://private.example' }] }, 'publication source'],
+    [{ ...detailV2, publications: [{ ...publication, verified_at: '2026-01-01T00:00:00Z' }] }, 'publication timestamp'],
   ])('rejects an unknown/private detail key at the %s object level', async (wire, level) => {
     void level
     const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
@@ -235,12 +267,12 @@ describe('benefit directory repository', () => {
   })
 
   it.each([
-    { ...detail, publications: [{ ...publication, publication_id: 'not-a-uuid' }] },
-    { ...detail, publications: [{ ...publication, category_id: 'unknown' }] },
-    { ...detail, publications: [{ ...publication, trust_label: '검증 안 됨' }] },
-    { ...detail, publications: [{ ...publication, revision: -1 }] },
-    { ...detail, publications: [publication, publication] },
-    { ...detail, publications: null },
+    { ...detailV2, publications: [{ ...publication, publication_id: 'not-a-uuid' }] },
+    { ...detailV2, publications: [{ ...publication, category_id: 'unknown' }] },
+    { ...detailV2, publications: [{ ...publication, trust_label: '검증 안 됨' }] },
+    { ...detailV2, publications: [{ ...publication, revision: -1 }] },
+    { ...detailV2, publications: [publication, publication] },
+    { ...detailV2, publications: null },
   ])('rejects malformed detail wire data', async (wire) => {
     const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
@@ -250,7 +282,7 @@ describe('benefit directory repository', () => {
     { publications: sparseAtZero(publication) },
     { publications: sparseInMiddle(publication, { ...publication, publication_id: 'b1000000-0000-0000-0000-000000000002' }) },
   ])('rejects sparse detail publication arrays', async ({ publications }) => {
-    const transport = rpcClient(success({ ...detail, publications })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const transport = rpcClient(success({ ...detailV2, publications })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
@@ -259,14 +291,14 @@ describe('benefit directory repository', () => {
       ...publication,
       publication_id: `b1000000-0000-0000-0000-${index.toString(16).padStart(12, '0')}`,
     }))
-    const transport = rpcClient(success({ company, publications }))
+    const transport = rpcClient(success({ company, publications, claims: [publicClaim] }))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
   it('rejects oversized sparse detail publications before traversing their indexes', async () => {
     const publications = oversizedSparseArray(1_000_000, publication)
-    const transport = rpcClient(success({ company, publications: publications.values })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    const transport = rpcClient(success({ company, publications: publications.values, claims: [publicClaim] })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
     const indexChecks = countDenseIndexChecks()
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
     const checks = indexChecks.checks(); indexChecks.restore()

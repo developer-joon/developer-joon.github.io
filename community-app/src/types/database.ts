@@ -1706,11 +1706,11 @@ export type Database = {
           p_category_id: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
           p_client_key: string;
           p_company_id: string;
-          p_condition_text?: string;
+          p_condition_text?: string | null;
           p_description: string;
-          p_eligibility_text?: string;
+          p_eligibility_text?: string | null;
           p_observed_on?: string;
-          p_source_url?: string;
+          p_source_url?: string | null;
           p_title: string;
         };
         Returns: Json;
@@ -1761,10 +1761,10 @@ export type Database = {
       create_manual_benefit_company_request_v1: {
         Args: {
           p_client_key: string;
-          p_industry?: string;
+          p_industry?: string | null;
           p_proposed_name: string;
-          p_region?: string;
-          p_website?: string;
+          p_region?: string | null;
+          p_website?: string | null;
         };
         Returns: Json;
       };
@@ -1846,17 +1846,17 @@ export type Database = {
       get_public_post_v3: { Args: { p_post_id: string }; Returns: Json };
       is_admin: { Args: Record<PropertyKey, never>; Returns: boolean };
       list_benefit_claim_audit_v1: {
-        Args: { p_claim_id: string; p_cursor_created_at?: string; p_cursor_kind?: "claim_event" | "official_review" | "merge"; p_cursor_id?: string; p_limit?: number };
+        Args: { p_claim_id: string; p_cursor_created_at?: string | null; p_cursor_kind?: "claim_event" | "official_review" | "merge" | null; p_cursor_id?: string | null; p_limit?: number };
         Returns: Json;
       };
       list_benefit_claim_moderation_queue_v1: {
-        Args: { p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number; p_status?: "active" | "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | "all" };
+        Args: { p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number; p_status?: "active" | "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | "all" };
         Returns: Json;
       };
       list_benefit_company_request_queue_v1: {
         Args: {
-          p_cursor_created_at?: string;
-          p_cursor_id?: string;
+          p_cursor_created_at?: string | null;
+          p_cursor_id?: string | null;
           p_limit?: number;
           p_status?: string;
         };
@@ -1918,11 +1918,11 @@ export type Database = {
         Returns: Json;
       };
       list_my_benefit_claims_v1: {
-        Args: { p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number };
+        Args: { p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number };
         Returns: Json;
       };
       list_my_benefit_company_requests_v1: {
-        Args: { p_cursor_created_at?: string; p_cursor_id?: string; p_limit?: number };
+        Args: { p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number };
         Returns: Json;
       };
       list_my_benefit_correction_requests_v1: {
@@ -2089,10 +2089,10 @@ export type Database = {
       reserve_benefit_company_nts_request_v1: {
         Args: {
           p_client_key: string;
-          p_industry?: string;
+          p_industry?: string | null;
           p_proposed_name: string;
-          p_region?: string;
-          p_website?: string;
+          p_region?: string | null;
+          p_website?: string | null;
         };
         Returns: Json;
       };
