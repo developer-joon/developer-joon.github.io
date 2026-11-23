@@ -9,6 +9,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { buildOpenDartBundle, generateOpenDartBundle, parseCorpCodeZip } from './generate-opendart-benefit-directory.mjs'
 import { buildOpenDartImportSql, computeOpenDartRowDigest } from './apply-opendart-benefit-directory.mjs'
+import { zipContractCorpus } from './opendart-zip-contract-test-corpus.mjs'
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const crc32 = bytes => {
@@ -72,6 +73,24 @@ test('rejects duplicate codes, malformed fields, DTD/entities, unexpected XML, a
   assert.throws(() => parseCorpCodeZip(zip(xml(), { method: 12 })), /method/i)
 })
 
+test('generator enforces the complete ZIP contract corpus', () => {
+  for (const sample of zipContractCorpus()) {
+    if (sample.accept) assert.doesNotThrow(() => parseCorpCodeZip(sample.bytes), sample.name)
+    else assert.throws(() => parseCorpCodeZip(sample.bytes), undefined, sample.name)
+  }
+})
+
+test('generator and apply accept only exact calendar-valid UTC-second timestamps', () => {
+  assert.doesNotThrow(() => buildOpenDartBundle(zip(xml()), { ...options, retrievedAt: '2024-02-29T23:59:59Z' }))
+  for (const retrievedAt of ['2026-02-30T00:00:00Z','2025-02-29T00:00:00Z','2026-01-01T24:00:00Z','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00.000Z']) {
+    assert.throws(() => buildOpenDartBundle(zip(xml()), { ...options, retrievedAt }), /retriev|timestamp/i, retrievedAt)
+  }
+  const built = buildOpenDartBundle(zip(xml()), options)
+  const verified = { manifest: structuredClone(built.manifest), bundleSha256: sha(built.manifestBytes) }
+  verified.manifest.source.retrieved_at = '2026-02-30T00:00:00Z'
+  assert.throws(() => buildOpenDartImportSql({ tsvPath: '/private/import/rows.tsv', verified, dryRun: true }), /retriev|timestamp/i)
+})
+
 test('pins source digest, edition, retrieval metadata, counts, and frozen base seed preservation', () => {
   const source = zip(xml())
   const built = buildOpenDartBundle(source, options)
@@ -103,13 +122,19 @@ test('normal generation is deterministic and check mode is read-only', async () 
 test('apply SQL uses framed UTF-8 digests, strong-code conflicts, exact preservation, and explicit rollback', () => {
   assert.notEqual(computeOpenDartRowDigest(['ab', 'c', ...Array(14).fill(null)]), computeOpenDartRowDigest(['a', 'bc', ...Array(14).fill(null)]))
   assert.notEqual(computeOpenDartRowDigest(['', ...Array(15).fill(null)]), computeOpenDartRowDigest(Array(16).fill(null)))
-  const built = buildOpenDartBundle(zip(xml()), options)
+  const sourceBytes = zip(xml())
+  const built = buildOpenDartBundle(sourceBytes, { schema_version:'benefit-directory-opendart-authority-v1', source_edition:options.edition, official_url:options.sourceUrl, reuse_rights_note:options.reuseRights, source_sha256:sha(sourceBytes), retrieved_at:options.retrievedAt })
   const verified = { manifest: built.manifest, bundleSha256: sha(built.manifestBytes) }
   const sql = buildOpenDartImportSql({ tsvPath: '/private/import/rows.tsv', verified, dryRun: true, injectLateFailure: true })
   assert.match(sql, /strong identifier collision/)
   assert.match(sql, /prior receipt preservation failed/)
   assert.match(sql, /publication preservation failed/)
   assert.match(sql, /injected late OpenDART failure/)
+  assert.match(sql, /pg_get_constraintdef/)
+  assert.match(sql, /relacl/)
+  assert.match(sql, /p\.prosrc/)
+  assert.match(sql, /t\.tgenabled/)
+  assert.match(sql, /t\.tgtype/)
   assert.match(sql, /ROLLBACK;/)
   assert.doesNotMatch(sql, /ON CONFLICT\s*\([^)]*display_name/i)
 })

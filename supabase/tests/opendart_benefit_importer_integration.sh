@@ -38,6 +38,43 @@ base_before="$(q "select count(*)||':'||(select count(*) from public.benefit_pub
 args=(node "$repo/scripts/apply-opendart-benefit-directory.mjs" --source "$root/source.zip" --authority "$root/authority.json" --bundle "$root/bundle")
 "${args[@]}" --dry-run >/dev/null
 [[ "$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code')||':'||(select count(*) from private.benefit_import_receipts)")" == "${base_before%%:*}:0:${base_before##*:}" ]]
+# Catalog drift must fail before COPY/write even when object names are preserved.
+for mutation in trigger_dropped trigger_disabled trigger_repointed trigger_replaced function_body check_definition fk_action unique_definition browser_grant; do
+  case "$mutation" in
+    trigger_dropped)
+      mutate="drop trigger benefit_import_receipts_immutable on private.benefit_import_receipts"
+      restore="create trigger benefit_import_receipts_immutable before update or delete on private.benefit_import_receipts for each row execute function private.reject_benefit_import_receipt_change()" ;;
+    trigger_disabled)
+      mutate="alter table private.benefit_import_receipts disable trigger benefit_import_receipts_immutable"
+      restore="alter table private.benefit_import_receipts enable trigger benefit_import_receipts_immutable" ;;
+    trigger_repointed)
+      mutate="create function private.test_opendart_receipt_change() returns trigger language plpgsql set search_path='' as \$\$ begin return new; end \$\$; drop trigger benefit_import_receipts_immutable on private.benefit_import_receipts; create trigger benefit_import_receipts_immutable before update or delete on private.benefit_import_receipts for each row execute function private.test_opendart_receipt_change()"
+      restore="drop trigger benefit_import_receipts_immutable on private.benefit_import_receipts; drop function private.test_opendart_receipt_change(); create trigger benefit_import_receipts_immutable before update or delete on private.benefit_import_receipts for each row execute function private.reject_benefit_import_receipt_change()" ;;
+    trigger_replaced)
+      mutate="drop trigger benefit_import_receipts_immutable on private.benefit_import_receipts; create trigger benefit_import_receipts_immutable before insert on private.benefit_import_receipts for each row execute function private.reject_benefit_import_receipt_change()"
+      restore="drop trigger benefit_import_receipts_immutable on private.benefit_import_receipts; create trigger benefit_import_receipts_immutable before update or delete on private.benefit_import_receipts for each row execute function private.reject_benefit_import_receipt_change()" ;;
+    function_body)
+      mutate="create or replace function private.reject_benefit_import_receipt_change() returns trigger language plpgsql set search_path='' as \$\$ begin return new; end \$\$"
+      restore="create or replace function private.reject_benefit_import_receipt_change() returns trigger language plpgsql set search_path='' as E'\\nbegin\\n  raise exception ''benefit import receipts are immutable'' using errcode=''23514'';\\nend '" ;;
+    check_definition)
+      mutate="alter table private.benefit_import_receipts drop constraint benefit_import_receipts_company_count_check, add constraint benefit_import_receipts_company_count_check check (company_count>=-1)"
+      restore="alter table private.benefit_import_receipts drop constraint benefit_import_receipts_company_count_check, add constraint benefit_import_receipts_company_count_check check (company_count>=0)" ;;
+    fk_action)
+      mutate="alter table private.benefit_company_sources drop constraint benefit_company_sources_company_id_fkey, add constraint benefit_company_sources_company_id_fkey foreign key(company_id) references public.benefit_companies(company_id) on delete cascade"
+      restore="alter table private.benefit_company_sources drop constraint benefit_company_sources_company_id_fkey, add constraint benefit_company_sources_company_id_fkey foreign key(company_id) references public.benefit_companies(company_id) on delete restrict" ;;
+    unique_definition)
+      mutate="alter table private.benefit_import_receipts drop constraint benefit_import_receipts_import_key_key, add constraint benefit_import_receipts_import_key_key unique(import_key,schema_version)"
+      restore="alter table private.benefit_import_receipts drop constraint benefit_import_receipts_import_key_key, add constraint benefit_import_receipts_import_key_key unique(import_key)" ;;
+    browser_grant)
+      mutate="grant select on private.benefit_import_receipts to anon"
+      restore="revoke all on private.benefit_import_receipts from anon" ;;
+  esac
+  q "$mutate"
+  mutation_before="$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code')||':'||(select count(*) from private.benefit_company_sources where source_contract='opendart-corp-code-v1')||':'||(select count(*) from private.benefit_import_receipts)")"
+  if "${args[@]}" --apply >/dev/null 2>&1; then echo "$mutation catalog mutation unexpectedly succeeded" >&2; exit 1; fi
+  [[ "$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers where identifier_type='opendart_corp_code')||':'||(select count(*) from private.benefit_company_sources where source_contract='opendart-corp-code-v1')||':'||(select count(*) from private.benefit_import_receipts)")" == "$mutation_before" ]]
+  q "$restore"
+done
 # Every import-owned target is verified after triggers; rewrites must roll back.
 for target in company identifier source receipt; do
   case "$target" in

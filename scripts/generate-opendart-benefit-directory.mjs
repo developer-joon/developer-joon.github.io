@@ -22,6 +22,14 @@ const exactDate = value => {
   const d = new Date(Date.UTC(year, month - 1, day))
   return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day
 }
+const exactUtcSecond = value => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(value)
+  if (!match) return false
+  const [year,month,day,hour,minute,second] = match.slice(1).map(Number)
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31,leap ? 29 : 28,31,30,31,30,31,31,30,31,30,31]
+  return month >= 1 && month <= 12 && day >= 1 && day <= days[month-1] && hour <= 23 && minute <= 59 && second <= 59
+}
 const bounded = (value, label, max, optional = false) => {
   if (optional && value === '') return ''
   if (typeof value !== 'string' || value !== value.trim() || value.length < 1 || value.length > max || Buffer.byteLength(value) > max * 4 || /[\u0000-\u001f\u007f]/u.test(value)) throw Error(`${label} invalid`)
@@ -80,20 +88,22 @@ export function parseCorpCodeZip(zip) {
   for (let i=zip.length-22;i>=Math.max(0,zip.length-65557);i--) if (zip.readUInt32LE(i)===0x06054b50) { eocd=i; break }
   if (eocd<0 || eocd+22+zip.readUInt16LE(eocd+20)!==zip.length) throw Error('ZIP central directory is malformed')
   const entries=zip.readUInt16LE(eocd+10), diskEntries=zip.readUInt16LE(eocd+8), centralSize=zip.readUInt32LE(eocd+12), centralOffset=zip.readUInt32LE(eocd+16)
-  if (entries!==1 || diskEntries!==1 || centralOffset+centralSize!==eocd) throw Error('ZIP must contain exactly one expected member')
+  if (zip.readUInt16LE(eocd+4)!==0 || zip.readUInt16LE(eocd+6)!==0 || entries!==1 || diskEntries!==1 || centralOffset+centralSize!==eocd) throw Error('ZIP must be single-disk with exactly one expected member')
   const c=centralOffset; if (zip.readUInt32LE(c)!==0x02014b50) throw Error('ZIP central directory entry malformed')
-  const flags=zip.readUInt16LE(c+8), method=zip.readUInt16LE(c+10), expectedCrc=zip.readUInt32LE(c+16), compressed=zip.readUInt32LE(c+20), uncompressed=zip.readUInt32LE(c+24), nameLen=zip.readUInt16LE(c+28), extraLen=zip.readUInt16LE(c+30), commentLen=zip.readUInt16LE(c+32), localOffset=zip.readUInt32LE(c+42)
+  const creatorVersion=zip.readUInt16LE(c+4), neededVersion=zip.readUInt16LE(c+6), flags=zip.readUInt16LE(c+8), method=zip.readUInt16LE(c+10), expectedCrc=zip.readUInt32LE(c+16), compressed=zip.readUInt32LE(c+20), uncompressed=zip.readUInt32LE(c+24), nameLen=zip.readUInt16LE(c+28), extraLen=zip.readUInt16LE(c+30), commentLen=zip.readUInt16LE(c+32), diskStart=zip.readUInt16LE(c+34), localOffset=zip.readUInt32LE(c+42)
   if (c+46+nameLen+extraLen+commentLen!==eocd) throw Error('ZIP central directory bounds invalid')
-  const name=zip.subarray(c+46,c+46+nameLen).toString('utf8')
+  const nameBytes=zip.subarray(c+46,c+46+nameLen); let name
+  try { name=new TextDecoder('utf-8',{fatal:true}).decode(nameBytes) } catch { throw Error('ZIP member name is not valid UTF-8') }
   if (name!=='CORPCODE.xml' || name.includes('/') || name.includes('\\')) throw Error('ZIP member name must be exact CORPCODE.xml')
   if ((flags & ~0x800)!==0) throw Error(flags & 1 ? 'encrypted ZIP member forbidden' : 'unsupported ZIP flag')
   if (![0,8].includes(method)) throw Error('unsupported ZIP compression method')
   if (uncompressed<1 || uncompressed>MAX_XML_BYTES || compressed<1 || uncompressed/compressed>MAX_RATIO) throw Error('ZIP decompression byte or ratio ceiling exceeded')
-  const unixMode=(zip.readUInt32LE(c+38)>>>16)&0xffff; if ((unixMode&0o170000)===0o120000) throw Error('ZIP symlink member forbidden')
+  const unixMode=(zip.readUInt32LE(c+38)>>>16)&0xffff, fileType=unixMode&0o170000
+  if (creatorVersion!==0x0314 || neededVersion!==20 || diskStart!==0 || localOffset!==0 || (fileType!==0 && fileType!==0o100000)) throw Error(fileType===0o120000?'ZIP symlink member forbidden':'ZIP version, disk, offset, or mode contract invalid')
   if (zip.readUInt32LE(localOffset)!==0x04034b50) throw Error('ZIP local header malformed')
-  const localFlags=zip.readUInt16LE(localOffset+6), localMethod=zip.readUInt16LE(localOffset+8), ln=zip.readUInt16LE(localOffset+26), le=zip.readUInt16LE(localOffset+28)
-  if (localFlags!==flags || localMethod!==method || zip.readUInt32LE(localOffset+14)!==expectedCrc || zip.subarray(localOffset+30,localOffset+30+ln).toString('utf8')!==name) throw Error('ZIP local/central metadata mismatch')
-  const start=localOffset+30+ln+le; if (start+compressed>centralOffset) throw Error('ZIP member data bounds invalid')
+  const localVersion=zip.readUInt16LE(localOffset+4), localFlags=zip.readUInt16LE(localOffset+6), localMethod=zip.readUInt16LE(localOffset+8), ln=zip.readUInt16LE(localOffset+26), le=zip.readUInt16LE(localOffset+28)
+  if (localVersion!==neededVersion || localFlags!==flags || localMethod!==method || zip.readUInt32LE(localOffset+14)!==expectedCrc || zip.readUInt32LE(localOffset+18)!==compressed || zip.readUInt32LE(localOffset+22)!==uncompressed || !zip.subarray(localOffset+30,localOffset+30+ln).equals(nameBytes)) throw Error('ZIP local/central metadata mismatch')
+  const start=localOffset+30+ln+le; if (start+compressed!==centralOffset) throw Error('ZIP member data must end exactly at central directory')
   const payload=zip.subarray(start,start+compressed); let xml
   try { xml=method===0?Buffer.from(payload):inflateRawSync(payload,{maxOutputLength:MAX_XML_BYTES}) } catch (error) { throw Error('ZIP deflate stream invalid',{cause:error}) }
   if (xml.length!==uncompressed || crc32(xml)!==expectedCrc) throw Error('ZIP uncompressed size or CRC mismatch')
@@ -105,7 +115,7 @@ function companyId(edition, code) { return `KR-CAN-${domainHash('benefit-directo
 function identifierUuid(edition, code) { const b=Buffer.from(domainHash('benefit-directory-opendart-identifier-v1',edition,code).slice(0,32),'hex'); b[6]=(b[6]&15)|0x50; b[8]=(b[8]&63)|0x80; const h=b.toString('hex'); return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}` }
 const jsonLines = rows => Buffer.from(rows.map(row=>JSON.stringify(row)).join('\n')+'\n')
 const requireMetadata = options => {
-  bounded(options.edition,'edition',100); bounded(options.retrievedAt,'retrieved-at',64); if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(options.retrievedAt) || !Number.isFinite(Date.parse(options.retrievedAt))) throw Error('retrieved-at invalid')
+  bounded(options.edition,'edition',100); bounded(options.retrievedAt,'retrieved-at',64); if (!exactUtcSecond(options.retrievedAt)) throw Error('retrieved-at invalid')
   bounded(options.sourceUrl,'source URL',500); const url=new URL(options.sourceUrl); if (url.protocol!=='https:') throw Error('source URL must use https')
   bounded(options.reuseRights,'reuse-rights',1000)
 }
@@ -118,7 +128,7 @@ export function validateOpenDartAuthority(authority, sourceBytes) {
   bounded(authority.reuse_rights_note,'authority reuse rights note',4000)
   if (!/^[0-9a-f]{64}$/.test(authority.source_sha256) || authority.source_sha256 !== sha(sourceBytes)) throw Error('authority source sha256 mismatch')
   bounded(authority.retrieved_at,'authority retrieval timestamp',64)
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(authority.retrieved_at) || !Number.isFinite(Date.parse(authority.retrieved_at))) throw Error('authority retrieval timestamp invalid')
+  if (!exactUtcSecond(authority.retrieved_at)) throw Error('authority retrieval timestamp invalid')
   return Object.freeze({...authority})
 }
 

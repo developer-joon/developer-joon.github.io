@@ -51,7 +51,7 @@ SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('benefit-dir
 DO $preflight$
 BEGIN
   IF (SELECT pg_catalog.count(*) FROM supabase_migrations.schema_migrations
-      WHERE version IN ('202611210001','202611210004'))<>2 THEN
+      WHERE version IN ('202611210001','202611210004','202611230002'))<>3 THEN
     RAISE EXCEPTION 'required benefit directory migrations are unavailable';
   END IF;
   IF EXISTS (
@@ -69,6 +69,7 @@ BEGIN
       ('public','benefit_companies',11,'provenance','jsonb',true,'''{}''::jsonb'),
       ('public','benefit_companies',12,'created_at','timestamp with time zone',true,'clock_timestamp()'),
       ('public','benefit_companies',13,'updated_at','timestamp with time zone',true,'clock_timestamp()'),
+      ('public','benefit_companies',14,'search_name','text',false,'private.normalize_benefit_company_search(normalized_name)'),
       ('public','benefit_publications',1,'publication_id','uuid',true,'gen_random_uuid()'),
       ('public','benefit_publications',2,'company_id','text',true,NULL),
       ('public','benefit_publications',3,'category_id','text',true,NULL),
@@ -117,11 +118,13 @@ BEGIN
         ('private','benefit_company_sources'),('private','benefit_import_receipts')
       ) AND a.attnum>0 AND NOT a.attisdropped
     )
-    (SELECT schema_name,table_name,ordinal,column_name,type_name,is_not_null,default_expr,''::text,''::text FROM expected
+    (SELECT schema_name,table_name,ordinal,column_name,type_name,is_not_null,default_expr,
+       CASE WHEN schema_name='public' AND table_name='benefit_companies' AND column_name='search_name' THEN 's' ELSE '' END,''::text FROM expected
      EXCEPT ALL SELECT * FROM actual)
     UNION ALL
     (SELECT * FROM actual
-     EXCEPT ALL SELECT schema_name,table_name,ordinal,column_name,type_name,is_not_null,default_expr,''::text,''::text FROM expected)
+     EXCEPT ALL SELECT schema_name,table_name,ordinal,column_name,type_name,is_not_null,default_expr,
+       CASE WHEN schema_name='public' AND table_name='benefit_companies' AND column_name='search_name' THEN 's' ELSE '' END,''::text FROM expected)
   ) THEN
     RAISE EXCEPTION 'benefit seed schema contract mismatch';
   END IF;

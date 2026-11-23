@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { generateOpenDartBundle } from './generate-opendart-benefit-directory.mjs'
-import { verifyOpenDartBundle } from './verify-opendart-benefit-directory.mjs'
+import { parseOpenDartSourceZip, verifyOpenDartBundle } from './verify-opendart-benefit-directory.mjs'
+import { zipContractCorpus } from './opendart-zip-contract-test-corpus.mjs'
 
 const options = { edition: '2026-11-23', retrievedAt: '2026-11-23T00:00:00Z', sourceUrl: 'https://opendart.fss.or.kr/api/corpCode.xml', reuseRights: 'OpenDART attribution required' }
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -21,9 +22,9 @@ function source() {
   return Buffer.concat([local,body,central,end])
 }
 
-async function fixture() {
+async function fixture(retrievedAt = options.retrievedAt) {
   const root = await mkdtemp(path.join(tmpdir(),'opendart-verifier-')); const sourceFile = path.join(root,'corp.zip'); const bundleDir = path.join(root,'bundle'); const authorityFile=path.join(root,'authority.json'); const bytes=source()
-  await writeFile(sourceFile, bytes); await writeFile(authorityFile,JSON.stringify({schema_version:'benefit-directory-opendart-authority-v1',source_edition:options.edition,official_url:options.sourceUrl,reuse_rights_note:options.reuseRights,source_sha256:sha(bytes),retrieved_at:options.retrievedAt})+'\n'); await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: bundleDir })
+  await writeFile(sourceFile, bytes); await writeFile(authorityFile,JSON.stringify({schema_version:'benefit-directory-opendart-authority-v1',source_edition:options.edition,official_url:options.sourceUrl,reuse_rights_note:options.reuseRights,source_sha256:sha(bytes),retrieved_at:retrievedAt})+'\n'); await generateOpenDartBundle({ sourceFile, authorityFile, outputDir: bundleDir })
   return { root, sourceFile, authorityFile, bundleDir }
 }
 
@@ -36,6 +37,39 @@ async function rewriteManifest(bundleDir, updater) {
 test('independent verifier accepts canonical source-bound bundle', async () => {
   const f = await fixture()
   try { const result = await verifyOpenDartBundle({ sourceFile: f.sourceFile, authorityFile:f.authorityFile, bundleDir: f.bundleDir }); assert.equal(result.companyCount, 2); assert.equal(result.sourceSha256, sha(source())) } finally { await rm(f.root,{recursive:true,force:true}) }
+})
+
+test('independent verifier enforces the same complete ZIP contract corpus', () => {
+  for (const sample of zipContractCorpus()) {
+    if (sample.accept) assert.doesNotThrow(() => parseOpenDartSourceZip(sample.bytes), sample.name)
+    else assert.throws(() => parseOpenDartSourceZip(sample.bytes), undefined, sample.name)
+  }
+})
+
+test('verifier accepts a valid leap day and rejects normalized or impossible authority timestamps', async () => {
+  const leap = await fixture('2024-02-29T23:59:59Z')
+  try { await verifyOpenDartBundle({sourceFile:leap.sourceFile,authorityFile:leap.authorityFile,bundleDir:leap.bundleDir}) }
+  finally { await rm(leap.root,{recursive:true,force:true}) }
+  for (const retrievedAt of ['2026-02-30T00:00:00Z','2025-02-29T00:00:00Z','2026-01-01T24:00:00Z']) {
+    const f = await fixture()
+    try {
+      const authority = JSON.parse(await readFile(f.authorityFile,'utf8'))
+      authority.retrieved_at = retrievedAt
+      await writeFile(f.authorityFile, JSON.stringify(authority) + '\n')
+      const identifiersPath=path.join(f.bundleDir,'identifiers.ndjson')
+      const identifiers=(await readFile(identifiersPath,'utf8')).trim().split('\n').map(JSON.parse)
+      for(const identifier of identifiers) identifier.verified_at=retrievedAt
+      const identifierBytes=Buffer.from(identifiers.map(JSON.stringify).join('\n')+'\n')
+      await writeFile(identifiersPath,identifierBytes)
+      await rewriteManifest(f.bundleDir, manifest => {
+        manifest.authority.retrieved_at=retrievedAt
+        manifest.source.retrieved_at=retrievedAt
+        manifest.outputs.identifiers.byte_count=identifierBytes.length
+        manifest.outputs.identifiers.sha256=sha(identifierBytes)
+      })
+      await assert.rejects(verifyOpenDartBundle({sourceFile:f.sourceFile,authorityFile:f.authorityFile,bundleDir:f.bundleDir}), /authority|timestamp|binding/i)
+    } finally { await rm(f.root,{recursive:true,force:true}) }
+  }
 })
 
 test('verifier rejects deletion even after mutable manifest digest/count recomputation', async () => {
