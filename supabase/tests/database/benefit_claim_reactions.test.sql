@@ -146,8 +146,8 @@ end$test$$lineage$,'23514','claim publication must preserve its immutable claim 
 
 -- The legacy submission review RPC cannot take over claim-owned publication lineage.
 update public.user_roles set role='admin' where user_id='b6100000-0000-4000-8000-000000000004';
-insert into public.benefit_submissions(id,submitter_id,client_key,payload_fingerprint,company_id,category_id,benefit_text,status,admin_response,reviewer_id,reviewed_at)
-values ('b6500000-0000-4000-8000-000000000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('9',64),'KR-BIZ-9961000001','health','Takeover fixture','reviewing','Reviewing','b6100000-0000-4000-8000-000000000004',pg_catalog.clock_timestamp());
+insert into public.benefit_submissions(id,submitter_id,client_key,payload_fingerprint,company_id,category_id,benefit_text,status,admin_response,reviewer_id,reviewed_at,created_at,updated_at)
+values ('b6500000-0000-4000-8000-000000000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('9',64),'KR-BIZ-9961000001','health','Takeover fixture','reviewing','Reviewing','b6100000-0000-4000-8000-000000000004',statement_timestamp(),statement_timestamp(),statement_timestamp());
 insert into reaction_results values ('takeover-publication',pg_catalog.jsonb_build_object('publication_id',(select active_publication_id from public.benefit_claims where claim_id='b6200000-0000-4000-8000-000000000001')));
 set local role authenticated;
 set local request.jwt.claim.sub='b6100000-0000-4000-8000-000000000004';

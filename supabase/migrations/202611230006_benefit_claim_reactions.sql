@@ -1,6 +1,24 @@
 -- Atomic claim reactions, community publication lineage, and durable replay.
 begin;
 
+-- Task 5 had no reaction ledger, so only terminally empty reaction states can
+-- cross this boundary without inventing reaction or publication lineage. Hold
+-- legacy writers out from the preflight through trigger installation.
+lock table public.benefit_claims in share row exclusive mode;
+do $$
+declare v_incompatible_count bigint;
+begin
+  select pg_catalog.count(*) into v_incompatible_count
+  from public.benefit_claims
+  where status not in ('submitted','withdrawn')
+     or active_publication_id is not null;
+
+  if v_incompatible_count>0 then
+    raise exception 'benefit claim reaction upgrade blocked: % incompatible Task 5 claim(s); resolve claims to submitted or withdrawn with no active publication before retry',v_incompatible_count
+      using errcode='55000';
+  end if;
+end $$;
+
 insert into public.rate_limit_rules(id,action,window_seconds,max_requests,is_enabled)
 values ('b6000000-0000-4000-8000-000000000001','benefit_claim.react',3600,60,true)
 on conflict(action,window_seconds) do update set max_requests=excluded.max_requests,is_enabled=excluded.is_enabled,updated_at=pg_catalog.clock_timestamp();
