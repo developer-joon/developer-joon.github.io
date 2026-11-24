@@ -11,7 +11,22 @@ insert into company_review_v2_race values(
  format('hostaddr=%s port=%s dbname=%L user=%L password=postgres options=%L',coalesce(host(inet_server_addr()),'127.0.0.1'),inet_server_port(),current_database(),current_user,'-c statement_timeout=8000 -c lock_timeout=5000'),null);
 create temporary table cr_observations(name text primary key,value text not null);
 create function pg_temp.wait_for_lock(p_pid integer,p_timeout interval default interval '3 seconds') returns boolean language plpgsql as $$declare deadline timestamptz:=clock_timestamp()+p_timeout;begin loop if exists(select 1 from pg_catalog.pg_stat_activity where pid=p_pid and wait_event_type='Lock') then return true;end if;if clock_timestamp()>=deadline then return false;end if;perform pg_catalog.pg_sleep(0.01);end loop;end$$;
+create function pg_temp.cr_startup_precondition(p_residue_counts bigint[],p_feature_enabled boolean) returns text language plpgsql immutable as $$begin
+ if pg_catalog.cardinality(p_residue_counts) is distinct from 8 or exists(select 1 from pg_catalog.unnest(p_residue_counts) n(value) where value is null or value<0) then raise exception using errcode='22023',message='company review v2 concurrency received invalid startup residue counts';end if;
+ if exists(select 1 from pg_catalog.unnest(p_residue_counts) n(value) where value>0) then return 'recover';end if;
+ if p_feature_enabled is false then return 'proceed';end if;
+ raise exception using errcode='55000',message='company review v2 concurrency requires a false feature flag when no reserved fixture residue exists';
+end$$;
 select extensions.dblink_connect('cr_setup',connection_string) from company_review_v2_race;
+insert into cr_observations select 'initial_residue',value from extensions.dblink('cr_setup',$q$
+select (select count(*) from public.rate_limit_events where user_id::text like 'c3100000-%')::text||':'||(select count(*) from private.benefit_company_review_requests where actor_snapshot::text like 'c3100000-%' or request_id::text like 'c3200000-%')::text||':'||(select count(*) from public.benefit_company_add_events where request_id::text like 'c3200000-%')::text||':'||(select count(*) from public.benefit_company_add_requests where request_id::text like 'c3200000-%' or requester_id::text like 'c3100000-%')::text||':'||(select count(*) from auth.identities where id::text like 'c3500000-%' or user_id::text like 'c3100000-%')::text||':'||(select count(*) from public.user_roles where user_id::text like 'c3100000-%')::text||':'||(select count(*) from public.profiles where id::text like 'c3100000-%')::text||':'||(select count(*) from auth.users where id::text like 'c3100000-%')::text
+$q$) r(value text);
+insert into cr_observations select 'initial_feature',coalesce(value,'missing') from extensions.dblink('cr_setup',$q$select (select enabled from private.benefit_feature_settings where setting_key='company_add_write_enabled')::text$q$) r(value text);
+insert into cr_observations
+select 'initial_precondition',pg_temp.cr_startup_precondition(
+ pg_catalog.string_to_array((select value from cr_observations where name='initial_residue'),':')::bigint[],
+ case (select value from cr_observations where name='initial_feature') when 'true' then true when 'false' then false else null end
+);
 
 -- Recover a killed prior run. SET LOCAL restores trigger behavior when an
 -- ON_ERROR_STOP caller receives a cleanup error and this transaction aborts.
@@ -100,8 +115,13 @@ insert into cr_observations values('final_connections',pg_catalog.cardinality(co
 select is((select value from cr_observations where name='final_residue'),'0:0:0:0:0:0:0:0','post-cleanup residue is exactly zero in every fixture table');
 select is((select value from cr_observations where name='final_feature'),'false','post-cleanup feature flag equals the known test default');
 select is((select value from cr_observations where name='final_connections'),'0','all concurrency connections close before outcome assertions');
-select is((select value from cr_observations where name='startup_residue'),'0:0:0:0:0:0:0:0','startup recovery leaves the reserved prefix clean before setup');
-select is((select value from cr_observations where name='startup_feature'),'false','startup recovery restores the known test-default feature flag');
+select ok((select residue.value<>'0:0:0:0:0:0:0:0' or feature.value='false' from cr_observations residue cross join cr_observations feature where residue.name='initial_residue' and feature.name='initial_feature'),'initial clean-state observation has the required false reset baseline');
+select is((select decision.value from cr_observations decision join cr_observations residue on residue.name='initial_residue' where decision.name='initial_precondition'),case when (select value from cr_observations where name='initial_residue')='0:0:0:0:0:0:0:0' then 'proceed' else 'recover' end,'initial precondition distinguishes reset baseline from interrupted fixture ownership');
+select is((select value from cr_observations where name='startup_residue'),'0:0:0:0:0:0:0:0','startup post-recovery observation has no reserved fixture residue');
+select is((select value from cr_observations where name='startup_feature'),'false','startup post-recovery observation has the documented false test baseline');
+select throws_ok($$select pg_temp.cr_startup_precondition(array[0,0,0,0,0,0,0,0]::bigint[],true)$$,'55000','company review v2 concurrency requires a false feature flag when no reserved fixture residue exists','zero residue with a true feature flag is rejected');
+select is(pg_temp.cr_startup_precondition(array[0,0,0,0,0,0,0,0]::bigint[],false),'proceed','zero residue with the false test baseline proceeds');
+select is(pg_temp.cr_startup_precondition(array[1,0,0,0,0,0,0,0]::bigint[],true),'recover','reserved residue permits interrupted-fixture recovery despite a true flag');
 select is((select value from cr_observations where name='same_wait'),'true','same-payload contender waits on the deterministic advisory lock');
 select ok((select value like 'OK:%' from cr_observations where name='same_first'),'same-payload canonical worker succeeds');
 select is((select substring(value from 4)::jsonb from cr_observations where name='same_second'),(select substring(value from 4)::jsonb from cr_observations where name='same_first'),'same-payload contender returns the stored canonical response');
