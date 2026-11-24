@@ -1,3 +1,4 @@
+import { StrictMode, Suspense, startTransition, useState } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
@@ -24,6 +25,75 @@ function repository(overrides:Record<string,unknown>={}){return{getReaction:vi.f
 function ui(value:AuthContextValue, repo:BenefitClaimRepository, dir=directory()){return <AuthContext.Provider value={value}><BenefitClaimReactionPage repository={repo} directoryRepository={dir} search={`?company=${companyId}&claim=${claimId}`}/></AuthContext.Provider>}
 
 describe('BenefitClaimReactionPage',()=>{
+  it('does not let an abandoned speculative identity render orphan the committed mutation',async()=>{
+    let release!:(value:ReturnType<typeof success>)=>void
+    let switchIdentity!:()=>void
+    let speculativeRender=false
+    const pending=new Promise<ReturnType<typeof success>>(resolve=>{release=resolve})
+    const committedRepo=repository({setReaction:vi.fn(()=>pending)})
+    const speculativeRepo=repository()
+    const never=new Promise<never>(()=>{})
+    function Harness(){
+      const [speculative,setSpeculative]=useState(false)
+      switchIdentity=()=>startTransition(()=>setSpeculative(true))
+      return <Suspense fallback={<p>speculative fallback</p>}>
+        {ui(auth(speculative?actorB:actorA),speculative?speculativeRepo:committedRepo)}
+        {speculative&&<Suspend/>}
+      </Suspense>
+    }
+    function Suspend():never{speculativeRender=true;throw never}
+    render(<Harness/>)
+
+    const dispute=await screen.findByRole('button',{name:'현재는 달라요'})
+    fireEvent.click(dispute)
+    expect(dispute).toBeDisabled()
+    act(()=>switchIdentity())
+    await waitFor(()=>expect(speculativeRender).toBe(true))
+    expect(screen.getByRole('heading',{name:'매년 건강 검진'})).toBeInTheDocument()
+
+    await act(async()=>release(success('dispute',0,1)))
+    expect(await screen.findByText('반응이 반영되었습니다.')).toBeInTheDocument()
+    expect(dispute).toBeEnabled()
+  })
+
+  it('reaches ready and completes a mutation through the StrictMode setup-cleanup-setup cycle',async()=>{
+    const setReaction=vi.fn(async()=>success('dispute',0,1))
+    const repo=repository({setReaction})
+
+    render(<StrictMode>{ui(auth(),repo)}</StrictMode>)
+
+    const dispute=await screen.findByRole('button',{name:'현재는 달라요'})
+    expect(dispute).toBeEnabled()
+    fireEvent.click(dispute)
+    expect(await screen.findByText('반응이 반영되었습니다.')).toBeInTheDocument()
+    expect(dispute).toBeEnabled()
+    expect(setReaction).toHaveBeenCalledTimes(1)
+  })
+
+  it('projects loading synchronously for a replaced source and ignores its old pending mutation',async()=>{
+    let release!:(value:ReturnType<typeof success>)=>void
+    let oldMutationSignal:AbortSignal|undefined
+    const oldMutation=new Promise<ReturnType<typeof success>>(resolve=>{release=resolve})
+    const oldRepo=repository({getReaction:vi.fn(async()=>state('confirm')),setReaction:vi.fn((_input,signal)=>{oldMutationSignal=signal;return oldMutation})})
+    const newRepo=repository({getReaction:vi.fn(async()=>state())})
+    const newClaim={...claim,title:'교체된 저장소의 건강 검진'}
+    const newDirectory=directory(vi.fn(async()=>({ok:true as const,data:{company,publications:[],claims:[newClaim]}})))
+    const view=render(ui(auth(),oldRepo))
+
+    fireEvent.click(await screen.findByRole('button',{name:'현재는 달라요'}))
+    view.rerender(ui(auth(),newRepo,newDirectory))
+
+    expect(screen.queryByRole('heading',{name:'매년 건강 검진'})).not.toBeInTheDocument()
+    expect(screen.queryByText('내 반응: 나도 확인했어요')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('제보와 내 반응을 확인하고 있습니다.')
+    expect(oldMutationSignal?.aborted).toBe(true)
+
+    expect(await screen.findByRole('heading',{name:'교체된 저장소의 건강 검진'})).toBeInTheDocument()
+    await act(async()=>release(success('dispute',0,1)))
+    expect(screen.getByText('내 반응: 아직 남기지 않음')).toBeInTheDocument()
+    expect(screen.queryByText('반응이 반영되었습니다.')).not.toBeInTheDocument()
+  })
+
   it('loads the anonymous public snapshot before actor state and disables self-confirm with an explanation',async()=>{
     const order:string[]=[]
     const repo=repository({getReaction:vi.fn(async()=>{order.push('actor');return state(null,true)})})
@@ -46,6 +116,9 @@ describe('BenefitClaimReactionPage',()=>{
     const confirm=await screen.findByRole('button',{name:'나도 확인했어요'})
     fireEvent.click(confirm);fireEvent.click(confirm)
     expect(setReaction).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('status')).toHaveTextContent('반응을 반영하고 있습니다.')
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live','polite')
+    expect(screen.getByRole('button',{name:'현재는 달라요'}).parentElement).toHaveAttribute('aria-busy','true')
     const firstKey=setReaction.mock.calls[0][0].clientKey
     expect(firstKey).toMatch(/^[0-9a-f-]{36}$/)
     await act(async()=>release(success('confirm',1,0)))
@@ -121,6 +194,6 @@ describe('BenefitClaimReactionPage',()=>{
 
     fireEvent.click(screen.getByRole('button',{name:'현재는 달라요'}))
     expect(await screen.findByText('확인 3 · 이의 1')).toBeInTheDocument()
-    expect(setReaction).toHaveBeenCalledWith(expect.objectContaining({claimId,reaction:'dispute'}))
+    expect(setReaction).toHaveBeenCalledWith(expect.objectContaining({claimId,reaction:'dispute'}),expect.any(AbortSignal))
   })
 })
