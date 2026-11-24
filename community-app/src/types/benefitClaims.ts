@@ -14,6 +14,8 @@ export interface BenefitClaimListInput {limit:number;cursor?:string|null}
 export interface BenefitClaimWithdrawInput {claimId:string;clientKey:string;expectedStatus:ActiveBenefitClaimStatus;expectedRevision:number}
 export interface BenefitClaimWithdrawResult {claimId:string;status:'withdrawn';revision:number;outcome:'withdrawn'}
 export interface BenefitClaimReactionInput {claimId:string;clientKey:string;reaction:BenefitClaimReaction|null}
+export interface BenefitClaimReactionStateInput {claimId:string}
+export interface BenefitClaimReactionState {claimId:string;reaction:BenefitClaimReaction|null;isSubmitter:boolean}
 export interface BenefitClaimReactionResult {claimId:string;reaction:BenefitClaimReaction|null;status:ActiveBenefitClaimStatus;revision:number;confirmCount:number;disputeCount:number;activePublicationId:string|null;outcome:'set'|'changed'|'cleared'|'unchanged'}
 export type BenefitClaimQueueFilter='active'|BenefitClaimStatus|'all'
 export interface BenefitClaimQueueItem {claimId:string;companyId:string;companyName:string;categoryId:BenefitDirectoryCategory;title:string;status:BenefitClaimStatus;revision:number;confirmCount:number;disputeCount:number;communityPublicationActive:boolean;officialPublicationActive:boolean;createdAt:string;updatedAt:string}

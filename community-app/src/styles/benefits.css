@@ -1029,4 +1029,10 @@
 .benefit-service-actions { display: flex; flex-wrap: wrap; gap: 12px; min-width: 0; }
 .benefit-service-actions > * { min-width: 0; }
 .benefit-service-secondary { background: #fff !important; color: #315b70 !important; }
+.benefit-reaction-page__back { display: inline-flex; min-height: 44px; align-items: center; margin-bottom: 24px; font-weight: 700; text-underline-offset: 3px; }
+.benefit-reaction-page__snapshot { margin: 24px 0; padding: 18px 0; border-block: 1px solid #d8dee7; }
+.benefit-reaction-page__snapshot p { margin: 4px 0; }
+.benefit-reaction-page__actions { margin-top: 22px; }
+.benefit-reaction-page__actions button { min-height: 48px; padding: 11px 18px; border: 1px solid #315b70; background: #315b70; color: #fff; font-weight: 700; }
+.benefit-reaction-page__actions button:disabled { opacity: .5; cursor: default; }
 @media (max-width: 520px) { .community-page.benefits-page main.benefit-service-form { width: 100%; margin: 0; padding: 24px 16px 48px; border-inline: 0; } .benefit-service-form__body fieldset { display: grid; } .benefit-service-actions > * { width: 100%; } }

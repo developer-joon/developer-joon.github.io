@@ -68,7 +68,7 @@ describe('benefit claim repository', () => {
     await expect(repo.createClaim(createInput, controller.signal)).resolves.toMatchObject({ ok: false, error: { code: 'aborted' } })
   })
 
-  it.each(['createClaim','withdrawClaim','listMyClaims','setReaction','listModerationQueue','listAudit','moderateClaim','officiallyVerifyClaim'] as const)('%s captures before touching a throwing input', async method => {
+  it.each(['createClaim','withdrawClaim','listMyClaims','getReaction','setReaction','listModerationQueue','listAudit','moderateClaim','officiallyVerifyClaim'] as const)('%s captures before touching a throwing input', async method => {
     const order: string[] = []
     const repo = createBenefitClaimRepository({ getSessionContext: async () => { order.push('session'); return context('one', vi.fn()) } })
     const input = new Proxy({}, { ownKeys() { order.push('input'); throw Error('secret') }, get() { order.push('input'); throw Error('secret') } })
@@ -175,6 +175,22 @@ describe('benefit claim repository', () => {
       const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => ok(result))) })
       await expect(repo.listMyClaims({ limit: result.has_more ? 1 : 2 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
     }
+  })
+
+  it('loads the exact actor-visible current reaction state', async () => {
+    const response = { claim_id: claimId, reaction: 'dispute', is_submitter: true }
+    const rpc = vi.fn(async () => ok(response)); const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', rpc) })
+    expect(await repo.getReaction({ claimId })).toEqual({ ok: true, data: { claimId, reaction: 'dispute', isSubmitter: true } })
+    expect(rpc).toHaveBeenCalledWith('get_benefit_claim_reaction_v1', { p_claim_id: claimId }, undefined)
+  })
+
+  it.each([
+    { claim_id: 'b1000000-0000-4000-8000-000000000002', reaction: null, is_submitter: false },
+    { claim_id: claimId, reaction: 'like', is_submitter: false },
+    { claim_id: claimId, reaction: null, is_submitter: false, actor_id: actor },
+  ])('rejects malformed or mismatched actor reaction state %o', async response => {
+    const repo = createBenefitClaimRepository({ getSessionContext: async () => context('one', vi.fn(async () => ok(response))) })
+    await expect(repo.getReaction({ claimId })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
   it('sets and clears reactions with explicit null and validates aggregate response', async () => {

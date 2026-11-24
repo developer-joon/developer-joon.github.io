@@ -25,6 +25,7 @@ const BenefitSubmissionPage = lazy(() => import('./pages/BenefitSubmissionPage')
 const MyBenefitSubmissionsPage = lazy(() => import('./pages/MyBenefitSubmissionsPage').then(m => ({ default: m.MyBenefitSubmissionsPage })))
 const BenefitCompanyRequestPage = lazy(() => import('./pages/BenefitCompanyRequestPage').then(m => ({ default: m.BenefitCompanyRequestPage })))
 const BenefitClaimPage = lazy(() => import('./pages/BenefitClaimPage').then(m => ({ default: m.BenefitClaimPage })))
+const BenefitClaimReactionPage = lazy(() => import('./pages/BenefitClaimReactionPage').then(m => ({ default: m.BenefitClaimReactionPage })))
 
 const PostDetailPage = lazy(async () => {
   const module = await import('./pages/PostDetailPage')
@@ -103,6 +104,9 @@ export function App({ pathname = window.location.pathname, search = window.locat
   }
   if (normalizedPathname === '/community/benefits/claim') {
     return <Suspense fallback={<LazyRouteFallback>복지 제보 화면을 준비하고 있습니다.</LazyRouteFallback>}><BenefitClaimPage repository={benefitClaimRepository} directoryRepository={benefitDirectoryRepository} search={search} /></Suspense>
+  }
+  if (normalizedPathname === '/community/benefits/claim-reaction') {
+    return <Suspense fallback={<LazyRouteFallback>복지 제보 반응 화면을 준비하고 있습니다.</LazyRouteFallback>}><BenefitClaimReactionPage repository={benefitClaimRepository} directoryRepository={benefitDirectoryRepository} search={search} /></Suspense>
   }
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />

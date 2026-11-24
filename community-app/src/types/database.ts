@@ -2156,6 +2156,10 @@ export type Database = {
         };
         Returns: Json;
       };
+      get_benefit_claim_reaction_v1: {
+        Args: { p_claim_id: string };
+        Returns: Json;
+      };
       set_benefit_claim_reaction_v1: {
         Args: { p_claim_id: string; p_client_key: string; p_reaction: "confirm" | "dispute" | null };
         Returns: Json;
