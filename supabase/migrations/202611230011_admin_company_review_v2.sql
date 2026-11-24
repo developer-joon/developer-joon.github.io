@@ -30,6 +30,39 @@ returns jsonb language sql stable security definer set search_path='' as $$
  from public.benefit_company_add_requests r where r.request_id=p_request_id
 $$;
 
+create function private.benefit_claim_moderation_item_v1(p_claim_id uuid)
+returns jsonb language sql stable security definer set search_path='' as $$
+ select pg_catalog.jsonb_build_object(
+   'claim_id',c.claim_id,'company_id',c.company_id,'company_name',bc.display_name,
+   'category_id',c.category_id,'title',c.title,'status',c.status,'revision',c.revision,
+   'confirm_count',(select pg_catalog.count(*) from public.benefit_claim_reactions r where r.claim_id=c.claim_id and r.reaction='confirm'),
+   'dispute_count',(select pg_catalog.count(*) from public.benefit_claim_reactions r where r.claim_id=c.claim_id and r.reaction='dispute'),
+   'community_publication_active',c.active_publication_id is not null,
+   'official_publication_active',c.official_publication_id is not null,
+   'created_at',c.created_at,'updated_at',c.updated_at
+ )
+ from public.benefit_claims c join public.benefit_companies bc using(company_id)
+ where c.claim_id=p_claim_id
+$$;
+
+create function public.get_benefit_company_request_detail_v2(p_request_id uuid)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+ perform private.require_admin();
+ if p_request_id is null then raise exception 'request id is required' using errcode='22023'; end if;
+ if not exists(select 1 from public.benefit_company_add_requests r where r.request_id=p_request_id) then raise exception 'benefit company request not found' using errcode='22023'; end if;
+ return private.benefit_company_request_admin_item_v2(p_request_id);
+end$$;
+
+create function public.get_benefit_claim_moderation_detail_v1(p_claim_id uuid)
+returns jsonb language plpgsql stable security definer set search_path='' as $$
+begin
+ perform private.require_admin();
+ if p_claim_id is null then raise exception 'claim id is required' using errcode='22023'; end if;
+ if not exists(select 1 from public.benefit_claims c where c.claim_id=p_claim_id) then raise exception 'benefit claim not found' using errcode='22023'; end if;
+ return private.benefit_claim_moderation_item_v1(p_claim_id);
+end$$;
+
 create function private.benefit_company_review_fingerprint(
  p_request_id uuid,p_expected_status text,p_expected_revision bigint,p_action text,p_reason text,p_destination_company_id text
 ) returns text language sql immutable set search_path='' as $$
@@ -127,11 +160,14 @@ end$$;
 
 alter function private.reject_benefit_company_review_request_change() owner to postgres;
 alter function private.benefit_company_request_admin_item_v2(uuid) owner to postgres;
+alter function private.benefit_claim_moderation_item_v1(uuid) owner to postgres;
 alter function private.benefit_company_review_fingerprint(uuid,text,bigint,text,text,text) owner to postgres;
+alter function public.get_benefit_company_request_detail_v2(uuid) owner to postgres;
+alter function public.get_benefit_claim_moderation_detail_v1(uuid) owner to postgres;
 alter function public.list_benefit_company_request_queue_v2(text,integer,timestamptz,uuid) owner to postgres;
 alter function public.review_benefit_company_request_v2(uuid,uuid,text,bigint,text,text,text) owner to postgres;
-revoke all on function private.reject_benefit_company_review_request_change(),private.benefit_company_request_admin_item_v2(uuid),private.benefit_company_review_fingerprint(uuid,text,bigint,text,text,text) from public,anon,authenticated,service_role;
-revoke all on function public.list_benefit_company_request_queue_v2(text,integer,timestamptz,uuid),public.review_benefit_company_request_v2(uuid,uuid,text,bigint,text,text,text) from public,anon,authenticated,service_role;
-grant execute on function public.list_benefit_company_request_queue_v2(text,integer,timestamptz,uuid),public.review_benefit_company_request_v2(uuid,uuid,text,bigint,text,text,text) to authenticated;
+revoke all on function private.reject_benefit_company_review_request_change(),private.benefit_company_request_admin_item_v2(uuid),private.benefit_claim_moderation_item_v1(uuid),private.benefit_company_review_fingerprint(uuid,text,bigint,text,text,text) from public,anon,authenticated,service_role;
+revoke all on function public.get_benefit_company_request_detail_v2(uuid),public.get_benefit_claim_moderation_detail_v1(uuid),public.list_benefit_company_request_queue_v2(text,integer,timestamptz,uuid),public.review_benefit_company_request_v2(uuid,uuid,text,bigint,text,text,text) from public,anon,authenticated,service_role;
+grant execute on function public.get_benefit_company_request_detail_v2(uuid),public.get_benefit_claim_moderation_detail_v1(uuid),public.list_benefit_company_request_queue_v2(text,integer,timestamptz,uuid),public.review_benefit_company_request_v2(uuid,uuid,text,bigint,text,text,text) to authenticated;
 
 commit;

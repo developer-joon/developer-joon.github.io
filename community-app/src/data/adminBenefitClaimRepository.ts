@@ -8,6 +8,7 @@ import type { BenefitClaimAuditInput, BenefitClaimAuditItem, BenefitClaimModerat
 
 export interface AdminBenefitClaimRepository {
  listQueue(input:BenefitClaimQueueInput,signal?:AbortSignal):Promise<BenefitClaimResult<BenefitClaimPage<BenefitClaimQueueItem>>>
+ getDetail(input:{claimId:string},signal?:AbortSignal):Promise<BenefitClaimResult<BenefitClaimQueueItem>>
  listAudit(input:BenefitClaimAuditInput,signal?:AbortSignal):Promise<BenefitClaimResult<BenefitClaimPage<BenefitClaimAuditItem>>>
  moderateClaim(input:BenefitClaimModerateInput,signal?:AbortSignal):Promise<BenefitClaimResult<BenefitClaimModerationResult>>
  officiallyVerifyClaim(input:BenefitClaimOfficialVerifyInput,signal?:AbortSignal):Promise<BenefitClaimResult<BenefitClaimOfficialVerifyResult>>
@@ -33,7 +34,7 @@ export function adminBenefitClaimActionFingerprint(intent:Intent){
 }
 export function createAdminBenefitClaimRepository({getSessionContext,now=()=>new Date()}:{getSessionContext:BenefitClaimSessionProvider;now?:()=>Date}):AdminBenefitClaimRepository{
  const base=createBenefitClaimRepository({getSessionContext,now})
- return {listQueue:(input,signal)=>base.listModerationQueue(input,signal),listAudit:(input,signal)=>base.listAudit(input,signal),moderateClaim:(input,signal)=>base.moderateClaim(input,signal),officiallyVerifyClaim:(input,signal)=>base.officiallyVerifyClaim(input,signal)}
+ return {listQueue:(input,signal)=>base.listModerationQueue(input,signal),getDetail:(input,signal)=>base.getModerationDetail(input,signal),listAudit:(input,signal)=>base.listAudit(input,signal),moderateClaim:(input,signal)=>base.moderateClaim(input,signal),officiallyVerifyClaim:(input,signal)=>base.officiallyVerifyClaim(input,signal)}
 }
 let singleton:AdminBenefitClaimRepository|undefined
 export function getAdminBenefitClaimRepository(){if(singleton)return singleton;const supabase=getSupabaseClient(),config=parseEnv(import.meta.env);singleton=createAdminBenefitClaimRepository({getSessionContext:createBenefitSubmissionSessionProvider(supabase.auth,config)});return singleton}

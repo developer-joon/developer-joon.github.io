@@ -30,6 +30,24 @@ describe('adminBenefitCompanyRequestRepository',()=>{
     await expect(repository.review({requestId,clientKey:'40000000-0000-4000-8000-000000000002',expectedStatus:'pending_review',expectedRevision:1,action:'reject',reason:'중복',destinationCompanyId:null})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
   })
 
+  it('loads exact v2 detail and rejects malformed, extra, and private fields',async()=>{
+    const rpc=vi.fn(async()=>ok(row))
+    const repository=createAdminBenefitCompanyRequestRepository({getSessionContext:async()=>context('one',rpc)})
+    await expect(repository.getDetail({requestId})).resolves.toMatchObject({ok:true,data:{requestId,status:'pending_review',revision:1}})
+    expect(rpc).toHaveBeenCalledWith('get_benefit_company_request_detail_v2',{p_request_id:requestId},undefined)
+    for(const bad of [{...row,business_number:'1234567890'},{...row,revision:'1'},{...row,requester_id:actor}]){
+      rpc.mockResolvedValueOnce(ok(bad))
+      await expect(repository.getDetail({requestId})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+    }
+  })
+
+  it('preserves all three session boundaries for exact company detail',async()=>{
+    let fingerprint='one'
+    const rpc=vi.fn(async()=>{fingerprint='two';return ok(row)})
+    const repository=createAdminBenefitCompanyRequestRepository({getSessionContext:async()=>context(fingerprint,rpc)})
+    await expect(repository.getDetail({requestId})).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
+  })
+
   it('enforces auth generation before input access and after fulfilled decode',async()=>{
     let fingerprint='one',touched=false
     const input=Object.defineProperty({},'status',{enumerable:true,get(){touched=true;return'pending_review'}}) as never

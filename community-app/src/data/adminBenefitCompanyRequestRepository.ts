@@ -7,6 +7,7 @@ import type { BenefitCompanyRequestAdminItem, BenefitCompanyRequestPage, Benefit
 export type AdminBenefitCompanyRequestReviewInput = ReviewBenefitCompanyRequestInput
 export interface AdminBenefitCompanyRequestRepository {
   listQueue(input:BenefitCompanyRequestQueueInput,signal?:AbortSignal):Promise<BenefitCompanyRequestResult<BenefitCompanyRequestPage<BenefitCompanyRequestAdminItem>>>
+  getDetail(input:{requestId:string},signal?:AbortSignal):Promise<BenefitCompanyRequestResult<BenefitCompanyRequestAdminItem>>
   review(input:AdminBenefitCompanyRequestReviewInput,signal?:AbortSignal):Promise<BenefitCompanyRequestResult<BenefitCompanyRequestAdminItem>>
 }
 function record(value:unknown):value is Record<string,unknown>{return typeof value==='object'&&value!==null&&!Array.isArray(value)}
@@ -25,6 +26,7 @@ export function createAdminBenefitCompanyRequestRepository({getSessionContext}:{
   const base=createBenefitCompanyRequestRepository({getSessionContext})
   return {
     listQueue:(input,signal)=>base.listQueue(input,signal),
+    getDetail:(input,signal)=>base.getDetail(input,signal),
     async review(input,signal){
       let context
       try{context=await getSessionContext()}catch{return{ok:false,error:{code:'unknown',message:'로그인 세션을 확인할 수 없습니다.'}}}

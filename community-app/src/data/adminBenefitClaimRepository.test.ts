@@ -32,6 +32,24 @@ describe('adminBenefitClaimRepository',()=>{
     await expect(createAdminBenefitClaimRepository({getSessionContext:async()=>context('one',rpc)}).listQueue({status:'submitted',limit:50})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
   })
 
+  it('loads exact detail through the strict queue-item projection and rejects extra private fields',async()=>{
+    const rpc=vi.fn(async()=>ok(row))
+    const repository=createAdminBenefitClaimRepository({getSessionContext:async()=>context('one',rpc)})
+    await expect(repository.getDetail({claimId})).resolves.toMatchObject({ok:true,data:{claimId,status:'submitted',revision:1}})
+    expect(rpc).toHaveBeenCalledWith('get_benefit_claim_moderation_detail_v1',{p_claim_id:claimId},undefined)
+    rpc.mockResolvedValueOnce(ok({...row,submitter_id:actor}))
+    await expect(repository.getDetail({claimId})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+    rpc.mockResolvedValueOnce(ok({...row,revision:'2'}))
+    await expect(repository.getDetail({claimId})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
+  })
+
+  it('preserves all three session boundaries for exact detail',async()=>{
+    let fingerprint='one'
+    const rpc=vi.fn(async()=>{fingerprint='two';return ok(row)})
+    const repository=createAdminBenefitClaimRepository({getSessionContext:async()=>context(fingerprint,rpc)})
+    await expect(repository.getDetail({claimId})).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
+  })
+
   it('requires official evidence and fingerprints canonical CAS payloads',()=>{
     const base={claimId,clientKey:'40000000-0000-4000-8000-000000000001',expectedStatus:'submitted' as const,expectedRevision:1,title:'건강검진',description:'연 1회',eligibilityText:null,conditionText:null,evidenceType:'official_website' as const,evidenceSourceUrl:'https://example.com/policy',evidenceObservedOn:'2026-11-20',verificationNote:'  공식 정책 확인  '}
     expect(adminBenefitClaimActionFingerprint({kind:'official_verify',payload:base})).toBe(adminBenefitClaimActionFingerprint({kind:'official_verify',payload:{...base,verificationNote:'공식 정책 확인'}}))
