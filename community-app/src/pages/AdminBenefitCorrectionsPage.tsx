@@ -232,7 +232,7 @@ export function AdminBenefitCorrectionsPage({ authorizationRepository, correctio
 
   return <AdminShell>
     <header className="admin-title"><p className="community-kicker">BENEFIT DATA · CORRECTION REVIEW</p><h1>복지 정정 검토 데스크</h1><p>제출 근거를 검토하고 상태만 기록합니다. 승인은 데이터 적용을 뜻하지 않습니다.</p></header>
-    <nav className="admin-local-nav" aria-label="관리자 도구"><a href="/community/admin/reports/">신고 관리</a><a href="/community/admin/benefit-corrections/" aria-current="page">복지 정정</a></nav>
+    <nav className="admin-local-nav" aria-label="관리자 도구"><a href="/community/admin/reports/">신고 관리</a><a href="/community/admin/benefit-corrections/" aria-current="page">복지 정정</a><a href="/community/admin/benefit-submissions/">복지 제보</a><a href="/community/admin/benefit-company-requests/">기업 요청</a><a href="/community/admin/benefit-claims/">claim 검토</a></nav>
     {reviewError && !selected && <p className="admin-operation-error" role="alert">{reviewError}</p>}
     <div className="admin-workspace">
       <BenefitCorrectionQueue items={items} selectedId={selectedId} filter={filter} loading={loading} loadingMore={loadingMore} error={queueError} hasMore={hasMore} announcement={announcement} onSelect={changeSelection} onFilterChange={setFilter} onRetry={reloadQueue} onLoadMore={loadMoreItems} />

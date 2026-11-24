@@ -392,6 +392,33 @@
 .report-form { display: grid; gap: 14px; margin-top: 22px; }
 .report-form select, .report-form textarea { width: 100%; min-width: 0; border: 1px solid var(--ink); border-radius: 0; background: var(--background-alt); padding: 12px; color: var(--ink); font: inherit; }
 .report-success { border-left: 4px solid var(--blue); background: var(--paper-deep); padding: 14px; color: var(--blue-dark); font-weight: 800; }
+.admin-benefit-moderation-page .admin-local-nav { flex-wrap: wrap; }
+.admin-queue { min-width: 0; border-right: 1px solid var(--ink); }
+.admin-filter-row { display: flex; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid var(--line); padding: 14px 20px; }
+.admin-filter-row button, .admin-load-more, .admin-action-row button, .official-evidence-form button, .admin-gate button { min-height: 44px; border: 1px solid var(--ink); border-radius: 0; background: transparent; padding: 8px 13px; color: var(--ink); font: inherit; font-weight: 900; cursor: pointer; }
+.admin-filter-row button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.admin-queue-list, .audit-timeline { margin: 0; padding: 0; list-style: none; }
+.admin-queue-list li { border-bottom: 1px solid var(--line); }
+.admin-queue-list li > button { display: grid; width: 100%; min-height: 72px; grid-template-columns: 1fr auto; gap: 5px 12px; border: 0; background: transparent; padding: 16px 20px; color: var(--ink); text-align: left; cursor: pointer; }
+.admin-queue-list li > button.selected { box-shadow: inset 4px 0 var(--blue); background: var(--paper-deep); }
+.admin-queue-list small { grid-column: 1 / -1; color: var(--muted); }
+.admin-empty, .admin-load-more { margin: 20px; }
+.admin-inspector > section > label { display: block; margin: 18px 24px 7px; font-weight: 900; }
+.admin-inspector > section > input, .admin-inspector > section > textarea { width: calc(100% - 48px); min-height: 44px; margin: 0 24px; border: 1px solid var(--ink); border-radius: 0; background: var(--paper); padding: 10px; color: var(--ink); font: inherit; }
+.admin-inspector > section > textarea { min-height: 7rem; resize: vertical; }
+.admin-inspector dl { margin: 0; }
+.admin-inspector dl > div { border-bottom: 1px solid var(--line); padding: 14px 24px; }
+.admin-inspector dd { margin: 5px 0 0; overflow-wrap: anywhere; }
+.admin-action-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 20px 24px; }
+.admin-conflict-notice, .admin-context-note { margin: 18px 24px; border-left: 4px solid var(--error); padding: 12px 14px; background: var(--paper-deep); font-weight: 800; }
+.official-evidence-form { display: grid; gap: 8px; margin: 8px 24px 22px; border: 1px solid var(--ink); padding: 16px; }
+.official-evidence-form legend { padding: 0 8px; font-family: var(--serif); font-weight: 900; }
+.official-evidence-form label { margin-top: 8px; font-weight: 900; }
+.official-evidence-form input, .official-evidence-form textarea, .official-evidence-form select { width: 100%; min-height: 44px; border: 1px solid var(--ink); border-radius: 0; background: var(--paper); padding: 10px; color: var(--ink); font: inherit; }
+.official-evidence-form textarea { min-height: 6rem; resize: vertical; }
+.audit-timeline li { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); padding: 14px 24px; }
+.audit-timeline time { color: var(--muted); font-size: 12px; }
+.admin-benefit-moderation-page button:focus-visible, .admin-benefit-moderation-page input:focus, .admin-benefit-moderation-page textarea:focus, .admin-benefit-moderation-page select:focus { outline: 3px solid var(--blue); outline-offset: -3px; }
 @media (max-width: 800px) {
   .admin-title { grid-template-columns: 1fr; gap: 18px; }
   .admin-title .community-kicker { grid-column: auto; }

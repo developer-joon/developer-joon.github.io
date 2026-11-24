@@ -50,6 +50,8 @@ export default defineConfig({
         adminReports: page('./admin/reports/index.html'),
         adminBenefitCorrections: page('./admin/benefit-corrections/index.html'),
         adminBenefitSubmissions: page('./admin/benefit-submissions/index.html'),
+        adminBenefitCompanyRequests: page('./admin/benefit-company-requests/index.html'),
+        adminBenefitClaims: page('./admin/benefit-claims/index.html'),
         authCallback: page('./auth/callback/index.html'),
       },
     },
