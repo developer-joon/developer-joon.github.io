@@ -173,3 +173,19 @@ node scripts/verify-site.mjs <scratch>/site-b
 - 이 문서만 별도 evidence commit으로 기록한다. 제품 코드 변경은 없다.
 - 브랜치 upstream은 없으며 push/PR/merge/deploy는 수행하지 않았다.
 - 본 문서는 독립 승인이나 Task 12 전체 완료 선언이 아니라, 위 리비전에 결속된 비브라우저 실행 사실과 NO-GO 경계를 기록한다.
+
+## 10. Task 14 이후 판정 경계
+
+Task 14는 위 과거 실행 결과를 소급 변경하지 않는다. 새 릴리스 계획은 claim/company
+스키마·pgTAP·dblink, strict anonymous v2 projection, OpenDART 생성/독립 검증/importer,
+NTS Edge check/test/fmt, 인증 route shell, canonical public Vite manifest graph, 민감값
+scanner를 추가한다. DB 증적에는 base importer와 별도로 OpenDART importer의 양수 count가
+필수다.
+
+현재 상태는 다음처럼 분리해 기록한다.
+
+- **Claims / manual company review:** 로컬 코드와 정적 계약 검증 대상이며, 호스팅 적용은 수행하지 않았다.
+- **NTS verification:** mock-only 로컬 검증 대상이다. 실제 NTS canary는 **NOT RUN**이며 승인·동의·실사업자 자료 없이는 실행 금지다.
+- **OpenDART production expansion:** 공식 원본과 reuse-rights authority 및 production bundle이 없어 **BLOCKED**다. 합성 fixture는 테스트 전용이다.
+- **Hosted state:** migration, import, secret configuration, Function deploy, DB push, Pages deploy, canary를 수행하지 않았다.
+- **Composite release gate:** browser/local HTTP/CDP 단계와 intentional Task 16 sentinel이 포함되므로 비브라우저 범위에서는 **NOT RUN / NO-GO**다. 허용된 constituent 결과를 composite green으로 표현하지 않는다.

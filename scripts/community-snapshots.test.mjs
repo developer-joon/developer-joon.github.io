@@ -304,9 +304,9 @@ test('restores output and sitemap when the sitemap commit rename fails', async (
 test('refuses service-role credentials before reading fixture', async () => {
   await withSetup(async (ctx) => {
     await writeJson(ctx.fixture, [page([])])
-    const result = run(ctx, { SUPABASE_SERVICE_ROLE_KEY: 'must-not-be-used' })
+    const result = run(ctx, { SUPABASE_SERVICE_ROLE_KEY: 'test-only-placeholder' })
     assert.notEqual(result.status, 0)
-    assert.doesNotMatch(result.stderr, /must-not-be-used/)
+    assert.doesNotMatch(result.stderr, /test-only-placeholder/)
     assert.match(result.stderr, /service-role/i)
   })
 })

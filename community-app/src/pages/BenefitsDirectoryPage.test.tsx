@@ -289,7 +289,7 @@ describe('dynamic benefit directory search', () => {
     expect(alert).not.toHaveTextContent('PGRST202')
     expect(alert).not.toHaveTextContent('search_benefit_companies_v1')
     expect(alert).not.toHaveTextContent('secret-project')
-    expect(screen.queryByText('조건에 맞는 기업을 찾지 못했습니다')).not.toBeInTheDocument()
+    expect(screen.queryByText('등록된 사업체 중 조건에 맞는 결과가 없습니다.')).not.toBeInTheDocument()
 
     fireEvent.click(within(alert).getByRole('button', { name: '다시 시도' }))
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2))
@@ -306,8 +306,14 @@ describe('dynamic benefit directory search', () => {
     expect(alert).not.toHaveTextContent('secret-project')
     expect(alert).not.toHaveTextContent('private_benefits')
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' }))
-    expect(await screen.findByText('조건에 맞는 기업을 찾지 못했습니다')).toBeInTheDocument()
+    expect(await screen.findByText('등록된 사업체 중 조건에 맞는 결과가 없습니다.')).toBeInTheDocument()
     expect(screen.queryByText(/복지 없음/)).not.toBeInTheDocument()
+  })
+
+  it('prefills only the bounded searched name in the empty company request action', async () => {
+    render(<BenefitsDirectoryPage search="?q=%EC%97%86%EB%8A%94+%ED%9A%8C%EC%82%AC" repository={repository(vi.fn(async () => ok(page([]))))} />)
+    expect(await screen.findByRole('link', { name: '기업 추가 요청' })).toHaveAttribute('href', '/community/benefits/company-request/?name=%EC%97%86%EB%8A%94+%ED%9A%8C%EC%82%AC')
+    expect(screen.getByText('검색 결과는 국내 전체 사업체의 존재 여부를 뜻하지 않습니다.')).toBeVisible()
   })
 
   it('appends cursor pages, deduplicates company IDs, and preserves cards when next page fails', async () => {
@@ -367,7 +373,7 @@ describe('dynamic benefit directory search', () => {
     render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([zero]))))} />)
     const card = await screen.findByRole('article')
     expect(card).toHaveTextContent('공개 확인된 복지 정보 없음')
-    expect(card).toHaveTextContent('복지가 없다는 뜻은 아닙니다')
+    expect(within(card).getByRole('link', { name: '첫 번째 혜택을 제보해 주세요.' })).toHaveAttribute('href', '/community/benefits/claim/?company=KR-CRN-1101111111111')
     expect(card).toHaveTextContent('소프트웨어 · 대기업 · 서울')
     expect(card).not.toHaveTextContent('검색 카드에 필요 없는 긴 기업 설명')
     expect(card).not.toHaveTextContent('법인')
@@ -398,16 +404,22 @@ describe('dynamic benefit directory search', () => {
 
   it('states that the directory is a bounded index rather than every domestic company', async () => {
     render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([baseItem]))))} />)
-    expect(await screen.findByText(/국내 전체 기업 명부가 아닙니다/)).toHaveTextContent('현재 확보된 40,053개 기업 인덱스')
+    expect(await screen.findByText('공개 명단과 사용자 검증으로 등록된 국내 사업체를 검색합니다.')).toBeVisible()
+    expect(screen.getByText('국내 전체 사업체 명부는 아닙니다.')).toBeVisible()
+    expect(screen.queryByText(/40,053/)).not.toBeInTheDocument()
   })
 
   it('leads benefit-positive cards with a direct availability status and categories', async () => {
     render(<BenefitsDirectoryPage search="" repository={repository(vi.fn(async () => ok(page([baseItem]))))} />)
     const card = await screen.findByRole('article')
-    expect(card).toHaveTextContent('공개 확인된 복지 정보 있음')
+    expect(card).toHaveTextContent('공개 확인 혜택 1개 · 커뮤니티 확인 혜택 1개')
     expect(card).toHaveTextContent('휴가')
     expect(card).toHaveTextContent('건강')
-    expect(card).not.toHaveTextContent('공식 확인 1건')
-    expect(card).not.toHaveTextContent('사용자 제보 1건')
+    expect(card).not.toHaveTextContent('공개 확인된 복지 정보 있음')
+    const children = Array.from(card.children)
+    const position = (selector: string) => children.findIndex(node => node.matches(selector))
+    expect(position('h3')).toBeLessThan(position('.domestic-directory__availability'))
+    expect(position('.domestic-directory__availability')).toBeLessThan(position('.domestic-directory__categories'))
+    expect(position('.domestic-directory__categories')).toBeLessThan(position('.domestic-directory__size'))
   })
 })

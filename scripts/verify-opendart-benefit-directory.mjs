@@ -1,0 +1,91 @@
+#!/usr/bin/env node
+import { createHash } from 'node:crypto'
+import { constants } from 'node:fs'
+import { open, readdir } from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { inflateRawSync } from 'node:zlib'
+
+const sha=b=>createHash('sha256').update(b).digest('hex')
+const crc32=bytes=>{let crc=0xffffffff;for(const byte of bytes){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^(0xedb88320&-(crc&1))}return(crc^0xffffffff)>>>0}
+const compare=(a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b))
+const OFFICIAL_URL='https://opendart.fss.or.kr/api/corpCode.xml'
+const exactKeys=(o,keys,label)=>{ if(!o||typeof o!=='object'||Array.isArray(o)||Object.keys(o).sort().join('\0')!==[...keys].sort().join('\0')) throw Error(`${label} exact shape invalid`) }
+const exactDate=value=>{if(!/^\d{8}$/.test(value))return false;const y=Number(value.slice(0,4)),m=Number(value.slice(4,6)),d=Number(value.slice(6,8)),date=new Date(Date.UTC(y,m-1,d));return date.getUTCFullYear()===y&&date.getUTCMonth()===m-1&&date.getUTCDate()===d}
+const exactUtcSecond = value => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(value)
+  if (!match) return false
+  const [year,month,day,hour,minute,second] = match.slice(1).map(Number)
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31,leap ? 29 : 28,31,30,31,30,31,31,30,31,30,31]
+  return month >= 1 && month <= 12 && day >= 1 && day <= days[month-1] && hour <= 23 && minute <= 59 && second <= 59
+}
+const hasUnpairedSurrogate=value=>{for(let i=0;i<value.length;i++){const code=value.charCodeAt(i);if(code>=0xd800&&code<=0xdbff){const next=value.charCodeAt(i+1);if(!(next>=0xdc00&&next<=0xdfff))return true;i++}else if(code>=0xdc00&&code<=0xdfff)return true}return false}
+const boundedText=(value,label,maxCodePoints,maxUtf8Bytes,optional=false)=>{if(optional&&value==='')return value;if(typeof value!=='string'||hasUnpairedSurrogate(value)||value!==value.trim()||[...value].length<1||[...value].length>maxCodePoints||Buffer.byteLength(value,'utf8')>maxUtf8Bytes||/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(value))throw Error(`${label} invalid Unicode or text`);return value}
+export const validateOpenDartText = boundedText
+const assertJsonUnicode=value=>{if(typeof value==='string'){if(hasUnpairedSurrogate(value))throw Error('JSON contains unpaired Unicode surrogate');return}if(Array.isArray(value)){for(const item of value)assertJsonUnicode(item);return}if(value&&typeof value==='object')for(const [key,item] of Object.entries(value)){assertJsonUnicode(key);assertJsonUnicode(item)}}
+async function readSafe(filePath,max,label){ const abs=path.resolve(filePath),parts=abs.split(path.sep).filter(Boolean),hs=[]; try{ let d=await open(path.parse(abs).root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);hs.push(d);for(const p of parts.slice(0,-1)){d=await open(`/proc/self/fd/${d.fd}/${p}`,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);hs.push(d)}const f=await open(`/proc/self/fd/${d.fd}/${parts.at(-1)}`,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);hs.push(f);const s=await f.stat({bigint:true});if(!s.isFile()||s.size<1n||s.size>BigInt(max))throw Error(`${label} unsafe regular file bound`);const b=Buffer.alloc(Number(s.size));let n=0;while(n<b.length){const r=await f.read(b,n,b.length-n,n);if(!r.bytesRead)throw Error(`${label} truncated`);n+=r.bytesRead}const a=await f.stat({bigint:true});if(a.size!==s.size||a.mtimeNs!==s.mtimeNs||a.ctimeNs!==s.ctimeNs)throw Error(`${label} changed`);return b}catch(e){if(['ELOOP','ENOTDIR'].includes(e?.code))throw Error(`${label} unsafe symlink`,{cause:e});throw e}finally{for(const h of hs.reverse())await h.close()} }
+function unzip(zip){if(zip.length<52||zip.length>32*1024*1024)throw Error('source ZIP bound');let e=-1;for(let i=zip.length-22;i>=Math.max(0,zip.length-65557);i--)if(zip.readUInt32LE(i)===0x06054b50){e=i;break}if(e<0||e+22+zip.readUInt16LE(e+20)!==zip.length||zip.readUInt16LE(e+4)!==0||zip.readUInt16LE(e+6)!==0||zip.readUInt16LE(e+8)!==1||zip.readUInt16LE(e+10)!==1)throw Error('source ZIP central directory');const centralSize=zip.readUInt32LE(e+12),c=zip.readUInt32LE(e+16);if(c+centralSize!==e||zip.readUInt32LE(c)!==0x02014b50)throw Error('source ZIP entry');const made=zip.readUInt16LE(c+4),needed=zip.readUInt16LE(c+6),flags=zip.readUInt16LE(c+8),method=zip.readUInt16LE(c+10),expectedCrc=zip.readUInt32LE(c+16),cl=zip.readUInt32LE(c+20),ul=zip.readUInt32LE(c+24),nl=zip.readUInt16LE(c+28),el=zip.readUInt16LE(c+30),ml=zip.readUInt16LE(c+32),diskStart=zip.readUInt16LE(c+34),lo=zip.readUInt32LE(c+42),mode=(zip.readUInt32LE(c+38)>>>16)&0xffff,fileType=mode&0o170000;const nameBytes=zip.subarray(c+46,c+46+nl),name=new TextDecoder('utf-8',{fatal:true}).decode(nameBytes);if(name!=='CORPCODE.xml'||name.includes('/')||name.includes('\\')||(flags&~0x800)!==0||![0,8].includes(method)||made!==0x0314||needed!==20||diskStart!==0||lo!==0||(fileType!==0&&fileType!==0o100000)||ul<1||ul>64*1024*1024||cl<1||ul/cl>200||c+46+nl+el+ml!==e)throw Error(fileType===0o120000?'source ZIP symlink':'source ZIP member contract');if(zip.readUInt32LE(lo)!==0x04034b50)throw Error('source ZIP local entry');const localVersion=zip.readUInt16LE(lo+4),localFlags=zip.readUInt16LE(lo+6),localMethod=zip.readUInt16LE(lo+8),lnl=zip.readUInt16LE(lo+26),lel=zip.readUInt16LE(lo+28),start=lo+30+lnl+lel;if(localVersion!==needed||localFlags!==flags||localMethod!==method||zip.readUInt32LE(lo+14)!==expectedCrc||zip.readUInt32LE(lo+18)!==cl||zip.readUInt32LE(lo+22)!==ul||!zip.subarray(lo+30,lo+30+lnl).equals(nameBytes)||start+cl!==c)throw Error('source ZIP local/central metadata mismatch');const payload=zip.subarray(start,start+cl);let xml;try{xml=method===0?Buffer.from(payload):inflateRawSync(payload,{maxOutputLength:64*1024*1024})}catch{throw Error('source ZIP deflate')}if(xml.length!==ul||crc32(xml)!==expectedCrc)throw Error('source ZIP size or CRC');return xml}
+function decode(s){if(/<!\[CDATA\[|&(?!(?:amp|lt|gt|quot|apos);)/u.test(s))throw Error('XML entity');return s.replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&quot;','"').replaceAll('&apos;',"'").replaceAll('&amp;','&')}
+export function parseOpenDartSourceZip(zip){let text=new TextDecoder('utf-8',{fatal:true}).decode(unzip(zip));if(/<!DOCTYPE|<!ENTITY/i.test(text))throw Error('XML authority DTD/entity');text=text.replace(/^\uFEFF?\s*<\?xml\s+version="1\.0"(?:\s+encoding="UTF-8")?\s*\?>\s*/i,'').trim();const root=text.match(/^<result>\s*([\s\S]*?)\s*<\/result>$/);if(!root)throw Error('XML authority root');let rest=root[1],rows=[];const re=/^\s*<list>\s*<corp_code>([\s\S]*?)<\/corp_code>\s*<corp_name>([\s\S]*?)<\/corp_name>\s*<corp_eng_name>([\s\S]*?)<\/corp_eng_name>\s*<stock_code>([\s\S]*?)<\/stock_code>\s*<modify_date>([\s\S]*?)<\/modify_date>\s*<\/list>/;while(rest.trim()){const m=rest.match(re);if(!m)throw Error('XML authority list');rows.push({code:decode(m[1]),name:decode(m[2]),eng:decode(m[3]),stock:decode(m[4]),date:decode(m[5])});if(rows.length>200000)throw Error('row bound');rest=rest.slice(m[0].length)}if(!rows.length)throw Error('XML authority has no rows');const seen=new Set;for(const r of rows){if(!/^\d{8}$/.test(r.code)||seen.has(r.code)||(r.stock&&!/^\d{6}$/.test(r.stock))||!exactDate(r.date))throw Error('source authority field');boundedText(r.name,'corp_name',200,800);boundedText(r.eng,'corp_eng_name',200,800,true);seen.add(r.code)}return rows}
+function dh(domain,edition,code){return sha(Buffer.concat([Buffer.from(domain+'\0'),Buffer.from(String(Buffer.byteLength(edition))+':'+edition+'\0'+code)]))}
+function cid(e,c){return`KR-CAN-${dh('benefit-directory-opendart-company-v1',e,c).slice(0,32)}`}
+function iid(e,c){const b=Buffer.from(dh('benefit-directory-opendart-identifier-v1',e,c).slice(0,32),'hex');b[6]=(b[6]&15)|0x50;b[8]=(b[8]&63)|0x80;const h=b.toString('hex');return`${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`}
+function parseLines(bytes,label){if(bytes.at(-1)!==10)throw Error(`${label} missing LF`);let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch{throw Error(`${label} invalid UTF-8`)}const lines=text.slice(0,-1).split('\n');return lines.map((line,i)=>{let value;try{value=JSON.parse(line)}catch{throw Error(`${label} row ${i+1} JSON`)}assertJsonUnicode(value);return value})}
+export function validateOpenDartAuthorityDescriptor(a,source){exactKeys(a,['schema_version','source_edition','official_url','reuse_rights_note','source_sha256','retrieved_at'],'authority descriptor');boundedText(a.source_edition,'authority source edition',100,400);boundedText(a.official_url,'authority official URL',500,2000);boundedText(a.reuse_rights_note,'authority reuse rights note',1000,4000);boundedText(a.retrieved_at,'authority retrieval timestamp',64,256);if(a.schema_version!=='benefit-directory-opendart-authority-v1')throw Error('authority descriptor schema invalid');if(a.official_url!==OFFICIAL_URL)throw Error('authority descriptor URL invalid');if(a.source_sha256!==sha(source))throw Error('authority descriptor source digest invalid');if(!exactUtcSecond(a.retrieved_at))throw Error('authority descriptor retrieval timestamp invalid');return a}
+function parseAuthorityStrict(bytes,source){
+ let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch{throw Error('authority descriptor JSON invalid')}
+ const tokens=[];let offset=0
+ while(offset<text.length){
+  if(/[\t\n\r ]/.test(text[offset])){offset++;continue}
+  if('{}[],:'.includes(text[offset])){tokens.push({type:text[offset++]});continue}
+  if(text[offset]==='"'){
+   const start=offset++
+   while(offset<text.length&&text[offset]!=='"'){
+    if(text.charCodeAt(offset)<0x20)throw Error('authority descriptor JSON invalid')
+    if(text[offset++]==='\\'){
+     if(offset>=text.length)throw Error('authority descriptor JSON invalid')
+     if(text[offset]==='u'){if(!/^[0-9a-fA-F]{4}$/.test(text.slice(offset+1,offset+5)))throw Error('authority descriptor JSON invalid');offset+=5}
+     else{if(!/["\\/bfnrt]/.test(text[offset]))throw Error('authority descriptor JSON invalid');offset++}
+    }
+   }
+   if(text[offset]!=='"')throw Error('authority descriptor JSON invalid');offset++
+   let decoded;try{decoded=JSON.parse(text.slice(start,offset))}catch{throw Error('authority descriptor JSON invalid')}
+   if(hasUnpairedSurrogate(decoded))throw Error('authority descriptor JSON contains unpaired Unicode surrogate')
+   if(Buffer.byteLength(decoded,'utf8')>4096)throw Error('authority descriptor JSON string bound exceeded')
+   tokens.push({type:'string',value:decoded});continue
+  }
+  const atom=/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(text.slice(offset));if(!atom)throw Error('authority descriptor JSON invalid');tokens.push({type:'atom'});offset+=atom[0].length
+ }
+ let position=0,keyCount=0
+ const take=type=>{if(tokens[position]?.type!==type)throw Error('authority descriptor JSON invalid');return tokens[position++]}
+ const inspect=depth=>{
+  if(depth>64)throw Error('authority descriptor JSON depth bound exceeded')
+  const token=tokens[position];if(!token)throw Error('authority descriptor JSON invalid')
+  if(token.type==='string'||token.type==='atom'){position++;return}
+  if(token.type==='['){position++;if(tokens[position]?.type===']'){position++;return}for(;;){inspect(depth+1);if(tokens[position]?.type===']'){position++;return}take(',')}}
+  if(token.type==='{'){
+   position++;if(tokens[position]?.type==='}'){position++;return}const keys=new Set
+   for(;;){const key=take('string').value;if(keys.has(key))throw Error(`authority descriptor JSON duplicate key: ${key}`);keys.add(key);if(++keyCount>1024)throw Error('authority descriptor JSON key bound exceeded');take(':');inspect(depth+1);if(tokens[position]?.type==='}'){position++;return}take(',')}
+  }
+  throw Error('authority descriptor JSON invalid')
+ }
+ inspect(1);if(position!==tokens.length)throw Error('authority descriptor JSON invalid')
+ let authority;try{authority=JSON.parse(text)}catch{throw Error('authority descriptor JSON invalid')}
+ return validateOpenDartAuthorityDescriptor(authority,source)
+}
+function parseAuthority(bytes,source){return parseAuthorityStrict(bytes,source)}
+
+export async function verifyOpenDartBundle({sourceFile,authorityFile,bundleDir}={}){
+ if(!sourceFile||!authorityFile||!bundleDir)throw Error('sourceFile, authorityFile, and bundleDir required');const inv=(await readdir(bundleDir)).sort();if(inv.join(',')!=='companies.ndjson,identifiers.ndjson,manifest.json')throw Error('bundle inventory invalid')
+ const [mb,cb,ib,sb,ab]=await Promise.all([readSafe(path.join(bundleDir,'manifest.json'),128*1024,'manifest'),readSafe(path.join(bundleDir,'companies.ndjson'),128*1024*1024,'companies'),readSafe(path.join(bundleDir,'identifiers.ndjson'),128*1024*1024,'identifiers'),readSafe(sourceFile,32*1024*1024,'source'),readSafe(authorityFile,16*1024,'authority descriptor')]);const authority=parseAuthority(ab,sb);let m;try{m=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(mb));assertJsonUnicode(m)}catch(error){if(/unpaired Unicode surrogate/.test(error?.message))throw error;throw Error('manifest JSON invalid')}
+ exactKeys(m,['schema_version','authority','source','company_count','identifier_count','ordered_code_company_sha256','outputs','base_seed_preservation','generation_contract'],'manifest');exactKeys(m.authority,['schema_version','source_edition','official_url','reuse_rights_note','source_sha256','retrieved_at'],'manifest authority');exactKeys(m.source,['sha256','byte_count','edition','retrieved_at','row_count','url','reuse_rights','member'],'source manifest');exactKeys(m.outputs,['companies','identifiers'],'output manifest');exactKeys(m.outputs.companies,['path','byte_count','sha256'],'companies manifest');exactKeys(m.outputs.identifiers,['path','byte_count','sha256'],'identifiers manifest')
+ if(JSON.stringify(m.authority)!==JSON.stringify(authority)||m.source.edition!==authority.source_edition||m.source.url!==authority.official_url||m.source.reuse_rights!==authority.reuse_rights_note||m.source.retrieved_at!==authority.retrieved_at||m.schema_version!=='benefit-directory-opendart-v1'||m.source.sha256!==sha(sb)||m.source.byte_count!==sb.length||m.source.member!=='CORPCODE.xml'||m.outputs.companies.path!=='companies.ndjson'||m.outputs.identifiers.path!=='identifiers.ndjson'||m.outputs.companies.byte_count!==cb.length||m.outputs.companies.sha256!==sha(cb)||m.outputs.identifiers.byte_count!==ib.length||m.outputs.identifiers.sha256!==sha(ib))throw Error('manifest/source/authority/output binding invalid')
+ if(JSON.stringify(m.base_seed_preservation)!==JSON.stringify({company_count:40053,source_sha256:'b7e61860d69f289735f42a6ae275c8a5303cbde367036f77865c7b20de7b9594'}))throw Error('base seed preservation contract invalid')
+ const source=parseOpenDartSourceZip(sb).sort((a,b)=>compare(a.code,b.code)),companies=parseLines(cb,'companies'),identifiers=parseLines(ib,'identifiers');if(source.length!==m.source.row_count||source.length!==m.company_count||source.length!==m.identifier_count||companies.length!==source.length||identifiers.length!==source.length)throw Error('source authority count mismatch')
+ const joined=[];for(let i=0;i<source.length;i++){const r=source[i],c=companies[i],id=identifiers[i],expectedCid=cid(m.source.edition,r.code),expectedIid=iid(m.source.edition,r.code);exactKeys(c,['company_id','identity_class','display_name','normalized_name','industry','size_class','region','summary','is_searchable','source_edition','provenance'],`company ${i}`);exactKeys(id,['identifier_id','company_id','identifier_type','identifier_digest_or_value','source_edition','verified_at'],`identifier ${i}`);const expectedAliases=r.eng&&r.eng!==r.name?[r.eng]:[];if(c.company_id!==expectedCid||c.identity_class!=='legal_corporation'||c.display_name!==r.name||c.normalized_name!==r.name.toLowerCase()||c.industry!==null||c.size_class!=='unclassified'||c.region!==null||c.summary!==null||c.is_searchable!==true||c.source_edition!==m.source.edition||JSON.stringify(c.provenance)!==JSON.stringify({source:'OpenDART corpCode',source_sha256:m.source.sha256,corp_modify_date:r.date,stock_code:r.stock||null,aliases:expectedAliases})||id.identifier_id!==expectedIid||id.company_id!==expectedCid||id.identifier_type!=='opendart_corp_code'||id.identifier_digest_or_value!==r.code||id.source_edition!==m.source.edition||id.verified_at!==m.source.retrieved_at)throw Error('bundle differs from source authority or deterministic identity contract');joined.push(`${r.code}\0${expectedCid}\n`)}
+ if(new Set(companies.map(x=>x.company_id)).size!==companies.length||new Set(identifiers.map(x=>x.identifier_id)).size!==identifiers.length||sha(Buffer.from(joined.join('')))!==m.ordered_code_company_sha256)throw Error('deterministic set collision or digest mismatch')
+ return{companyCount:companies.length,identifierCount:identifiers.length,sourceSha256:sha(sb),bundleSha256:sha(mb),manifest:m,companies,identifiers}
+}
+
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const args=process.argv.slice(2),read=k=>{const i=args.indexOf(k);return i>=0?args[i+1]:undefined};if(args.length!==6||!read('--source')||!read('--authority')||!read('--bundle'))throw Error('usage: verify-opendart-benefit-directory.mjs --source PATH --authority PATH --bundle PATH');const r=await verifyOpenDartBundle({sourceFile:read('--source'),authorityFile:read('--authority'),bundleDir:read('--bundle')});console.log(`OpenDART bundle verified: ${r.companyCount} companies; source sha256 ${r.sourceSha256}; manifest sha256 ${r.bundleSha256}`)}

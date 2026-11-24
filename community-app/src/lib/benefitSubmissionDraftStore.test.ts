@@ -33,6 +33,13 @@ describe('benefit submission draft store', () => {
     expect(benefitSubmissionDraftKey(scope)).not.toContain('user')
   })
 
+  it('restores an opaque canonical company ID unchanged', async () => {
+    const storage=memory(), lock=locks(), companyId=`KR-CAN-${'e'.repeat(32)}`
+    const draft={...createBenefitSubmissionDraft(scope),companyId,companyName:'Opaque Company'}
+    expect(await saveBenefitSubmissionDraft(scope,draft,storage,lock)).toMatchObject({ok:true})
+    expect(await loadBenefitSubmissionDraft(scope,storage,lock)).toMatchObject({state:'present',draft:{companyId}})
+  })
+
   it('distinguishes missing, invalid, unreadable, and unavailable locking without leaking content', async () => {
     expect(await loadBenefitSubmissionDraft(scope,memory(),locks())).toEqual({state:'missing'})
     const invalid=memory(); invalid.values.set(benefitSubmissionDraftKey(scope),'{}')

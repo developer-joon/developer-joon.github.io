@@ -385,6 +385,13 @@ test('browser smoke verifies the published Atlas and concrete benefit states', a
   assert.match(source, /isCanonicalCompanyId\(companyId\)/)
   assert.doesNotMatch(source, /US-EIN/)
   assert.match(source, /sourceAnchorsAreSafe\.toString\(\)/)
+  assert.match(source, /공개 명단과 사용자 검증으로 등록된 국내 사업체를 검색합니다/)
+  assert.match(source, /공개 확인 혜택/)
+  assert.match(source, /커뮤니티 확인 혜택/)
+  assert.match(source, /제보된 혜택/)
+  assert.match(source, /재확인 필요/)
+  assert.match(source, /claim-reaction/)
+  assert.match(source, /source_url\|reviewer_id\|submitter_id\|service_role/)
   assert.doesNotMatch(source, /absent manifest|zero company rows|fixture-v1|rankings_url|fitScore|rankOrder/)
 })
 

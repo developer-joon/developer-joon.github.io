@@ -16,9 +16,9 @@ import {
   type BenefitDirectorySearchInput,
   type BenefitDirectorySearchItem,
 } from '../types/benefitDirectory'
+import { benefitClaimHref, benefitCompanyRequestHref } from '../benefitsRoutes'
 
 const PAGE_SIZE = 50
-const DIRECTORY_IDENTITY_COUNT = 40_053
 
 const categoryLabels: Record<BenefitDirectoryCategory, string> = {
   leave: '휴가', family: '가족', health: '건강', growth: '성장', housing: '주거', commute: '통근',
@@ -55,18 +55,16 @@ function mergeItems(current: BenefitDirectorySearchItem[], next: BenefitDirector
 }
 function DirectoryCard({ item }: { item: BenefitDirectorySearchItem }) {
   const facts = [item.industry, item.sizeLabel, item.region].filter(Boolean).join(' · ')
-  return <article className="domestic-directory__record">
+  return <article className="domestic-directory__record" data-company-id={item.companyId} data-official-count={item.officialCount} data-community-count={item.communityCount} data-categories={item.categories.join(',')}>
     <h3><a href={detailLink(item.companyId)}>{item.displayName} <span aria-hidden="true">↗</span></a></h3>
-    <p className="domestic-directory__size">{facts}</p>
     {item.benefitCount === 0
       ? <div className="domestic-directory__availability domestic-directory__availability--empty">
           <p className="domestic-directory__status">공개 확인된 복지 정보 없음</p>
-          <p>복지가 없다는 뜻은 아닙니다.</p>
+          <p><a className="domestic-directory__report" href={benefitClaimHref(item.companyId)}>첫 번째 혜택을 제보해 주세요.</a></p>
         </div>
-      : <p className="domestic-directory__availability domestic-directory__availability--available">공개 확인된 복지 정보 있음 · {item.benefitCount}건</p>}
-    {item.categories.length > 0 && <ul className="domestic-directory__badges" aria-label="복지 범주">
-      {item.categories.map(category => <li key={category}>{categoryLabels[category]}</li>)}
-    </ul>}
+      : <p className="domestic-directory__availability domestic-directory__availability--available">공개 확인 혜택 {item.officialCount}개 · 커뮤니티 확인 혜택 {item.communityCount}개</p>}
+    {item.categories.length > 0 && <p className="domestic-directory__categories" aria-label="복지 범주">{item.categories.map(category => categoryLabels[category]).join(' · ')}</p>}
+    <p className="domestic-directory__size">{facts}</p>
   </article>
 }
 
@@ -209,7 +207,7 @@ export function BenefitsDirectoryPage({
           <input type="search" value={draft.q} maxLength={200} placeholder="기업명을 입력하세요" onChange={event => setDraft(current => ({ ...current, q: event.target.value.slice(0, 200) }))} onBlur={() => { applyTextDraft(draft); setDraft(current => ({ ...current, q: canonicalizeBenefitDirectoryQuery(current).q })) }} />
         </label>
       </div>
-      <p className="domestic-directory__scope">현재 확보된 {DIRECTORY_IDENTITY_COUNT.toLocaleString('ko-KR')}개 기업 인덱스입니다. 국내 전체 기업 명부가 아닙니다.</p>
+      <div className="domestic-directory__scope"><p>공개 명단과 사용자 검증으로 등록된 국내 사업체를 검색합니다.</p><p>국내 전체 사업체 명부는 아닙니다.</p></div>
       <div className="domestic-directory__filters">
         <fieldset><legend>복지 범주</legend><div className="domestic-directory__chips">
           {BENEFIT_DIRECTORY_CATEGORIES.map(category => <label key={category} className={draft.categories.includes(category) ? 'is-selected' : ''}>
@@ -237,7 +235,7 @@ export function BenefitsDirectoryPage({
       </div>
 
       {activePhase === 'error' && <div className="domestic-directory__error" role="alert"><p>{refreshError}</p><button type="button" onClick={() => setRetry(value => value + 1)}>다시 시도</button></div>}
-      {currentResults && activePhase === 'ready' && activeVisible.items.length === 0 && <p role="status" className="domestic-directory__empty">조건에 맞는 기업을 찾지 못했습니다</p>}
+      {currentResults && activePhase === 'ready' && activeVisible.items.length === 0 && <div role="status" className="domestic-directory__empty"><p>등록된 사업체 중 조건에 맞는 결과가 없습니다.</p><p>검색 결과는 국내 전체 사업체의 존재 여부를 뜻하지 않습니다.</p><a href={benefitCompanyRequestHref(applied.q)}>기업 추가 요청</a></div>}
       {activeVisible && activeVisible.items.length > 0 && <section className="domestic-directory__result-section" aria-labelledby="directory-results-heading">
         <h2 id="directory-results-heading">기업 검색 결과 목록</h2>
         <div className="domestic-directory__list">{activeVisible.items.map(item => <DirectoryCard key={item.companyId} item={item} />)}</div>

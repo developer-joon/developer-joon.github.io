@@ -16,6 +16,8 @@ export interface AuthClient extends OAuthClient {
 }
 
 export interface AuthContextValue {
+  /** Monotonic lifecycle token; changes even when an A→B→A session returns to the same actor/token. */
+  generation?: number
   loading: boolean
   pending: boolean
   session: Session | null
@@ -27,6 +29,7 @@ export interface AuthContextValue {
 }
 
 const defaultAuth: AuthContextValue = {
+  generation: 0,
   loading: false,
   pending: false,
   session: null,
@@ -54,6 +57,7 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
+  const [generation, setGeneration] = useState(0)
   const sessionRef = useRef<Session | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -65,6 +69,7 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
       if (!active) return
       authEventSeen = true
       sessionRef.current = nextSession
+      setGeneration(value => value + 1)
       setSession(nextSession)
       setLoading(false)
       setError(null)
@@ -139,6 +144,7 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
   }, [])
 
   const value = useMemo<AuthContextValue>(() => ({
+    generation,
     loading,
     pending,
     session,
@@ -147,7 +153,7 @@ export function AuthProvider({ children, client, origin, storage }: AuthProvider
     signIn: login,
     signOut: logout,
     invalidateStaleSession,
-  }), [error, invalidateStaleSession, loading, login, logout, pending, session])
+  }), [error, generation, invalidateStaleSession, loading, login, logout, pending, session])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

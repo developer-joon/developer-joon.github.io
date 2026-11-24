@@ -28,22 +28,30 @@ const PRODUCTION_URL = `https://${PRODUCTION_REF}.supabase.co`
 const MANDATORY_DATABASE_COUNTS = [
   { name: 'test-benefit-title-upgrade', count: 4 },
   { name: 'test-benefit-seed-importer', count: 7 },
+  { name: 'test-opendart-benefit-importer', count: 1 },
   { name: 'test-database', count: 1146 },
 ]
 const LOCAL_STEP_NAMES = [
   'repository-preflight',
+  'verify-benefit-claims-release',
   'check-benefit-seed-generation',
   'verify-benefit-seed',
+  'check-opendart-benefit-generation',
+  'verify-opendart-benefit-directory',
   'start-local-supabase',
   'reset-local-database',
   'test-benefit-title-upgrade',
   'test-benefit-seed-importer',
+  'test-opendart-benefit-importer',
   'test-storage-upgrade',
   'test-public-listing-upgrade',
   'test-community-snapshot-upgrade',
   'test-public-attachment-integration',
   'test-database',
   'lint-database',
+  'check-nts-edge-function',
+  'test-nts-edge-function',
+  'fmt-nts-edge-functions',
   'frontend-check',
   'frontend-build',
   'test-node-scripts',
@@ -146,6 +154,54 @@ test('dynamic benefits seed, DB projection, and frontend boundary commands are m
   assert.ok(steps.indexOf(byName['frontend-build']) < steps.indexOf(byName['build-site-a']))
 })
 
+test('benefit claims release commands are mandatory, fixed argv, and run before assembly', () => {
+  const steps = buildReleasePlan(parse()).steps
+  const byName = Object.fromEntries(steps.map(item => [item.name, item]))
+  assert.deepEqual(byName['verify-benefit-claims-release'], {
+    name: 'verify-benefit-claims-release', command: 'node',
+    args: ['scripts/verify-benefit-claims-release.mjs'], environment: {},
+  })
+  assert.deepEqual(byName['check-opendart-benefit-generation'], {
+    name: 'check-opendart-benefit-generation', command: 'node',
+    args: ['scripts/generate-opendart-benefit-directory.mjs', '--check', '--source', 'docs/research/company-benefits/opendart/CORPCODE.zip', '--authority', 'docs/research/company-benefits/opendart/authority.json'], environment: {},
+  })
+  assert.deepEqual(byName['verify-opendart-benefit-directory'], {
+    name: 'verify-opendart-benefit-directory', command: 'node',
+    args: ['scripts/verify-opendart-benefit-directory.mjs', '--source', 'docs/research/company-benefits/opendart/CORPCODE.zip', '--authority', 'docs/research/company-benefits/opendart/authority.json', '--bundle', 'supabase/fixtures/benefit-directory-opendart'], environment: {},
+  })
+  assert.deepEqual(byName['test-opendart-benefit-importer'].args, ['--prefix', 'community-app', 'run', 'db:test:opendart-benefit-importer'])
+  assert.deepEqual(byName['check-nts-edge-function'].args, ['--yes', 'deno@2.9.6', 'check', '--lock=deno.lock', '--frozen-lockfile', 'supabase/functions/verify-benefit-company/index.ts', 'supabase/functions/verify-benefit-company/index.test.ts'])
+  assert.deepEqual(byName['test-nts-edge-function'].args, ['--yes', 'deno@2.9.6', 'test', '--allow-env', '--allow-read', '--lock=deno.lock', '--frozen-lockfile', 'supabase/functions/verify-benefit-company/index.test.ts'])
+  assert.deepEqual(byName['fmt-nts-edge-functions'].args, ['--yes', 'deno@2.9.6', 'fmt', '--check', 'supabase/functions'])
+  assert.ok(byName['test-node-scripts'].args.includes('scripts/verify-benefit-claims-release.test.mjs'))
+  assert.ok(steps.indexOf(byName['verify-benefit-claims-release']) < steps.indexOf(byName['build-site-a']))
+})
+
+test('OpenDART importer reports PASS and count only after successful explicit cleanup', () => {
+  const repoRoot = path.resolve(import.meta.dirname, '..')
+  const script = readFileSync(path.join(repoRoot, 'supabase/tests/opendart_benefit_importer_integration.sh'), 'utf8')
+  const cleanup = script.lastIndexOf('cleanup 0')
+  const cleanupGuard = script.lastIndexOf('if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi')
+  const pass = script.lastIndexOf('OpenDART importer integration PASS:')
+  const count = script.lastIndexOf("printf 'Tests=1\\n'")
+  assert.ok(cleanup >= 0 && cleanup < cleanupGuard)
+  assert.ok(cleanupGuard < pass && pass < count)
+  assert.equal(script.slice(count).trim(), "printf 'Tests=1\\n'")
+})
+
+test('community package release entry forwards dynamically to root evidence validation', () => {
+  const repoRoot = path.resolve(import.meta.dirname, '..')
+  const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'community-app/package.json'), 'utf8'))
+  assert.equal(packageJson.scripts['release:check'], 'node ../scripts/release-gate.mjs')
+  const result = spawnSync('npm', ['--prefix', 'community-app', 'run', 'release:check'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: 'C', LC_ALL: 'C' },
+  })
+  assert.notEqual(result.status, 0)
+  assert.match(`${result.stdout}\n${result.stderr}`, /--evidence must select an output outside the repository/)
+})
+
 test('automatic release plans contain no hosted mutation or deployment command in any mode', () => {
   const modes = [
     parse(),
@@ -234,7 +290,7 @@ test('child environment uses an exact safe allowlist and only the absolute brows
     PATH: '/safe/bin', HOME: '/safe/home', USER: 'operator', LOGNAME: 'operator',
     TMPDIR: '/safe/tmp', LANG: 'C.UTF-8', TZ: 'UTC', TERM: 'dumb', CI: '1',
     XDG_RUNTIME_DIR: '/safe/run', DOCKER_CONTEXT: 'rootless',
-    SUPABASE_URL: sentinel, supabase_service_role_key: sentinel,
+    SUPABASE_URL: sentinel, supabase_service_role_key: 'too-short',
     DATABASE_URL: sentinel, Postgres_URL: sentinel, PGHOST: sentinel,
     libpq_service: sentinel, APP_DATABASE_PASSWORD: sentinel,
     vite_public_value: sentinel, NEXT_PUBLIC_VALUE: sentinel,
@@ -502,7 +558,7 @@ test('every default-runner spawn including cleanup receives the sandbox and pref
     }
     const names = [
       'check-benefit-seed-generation', 'start-local-supabase',
-      'test-benefit-title-upgrade', 'test-benefit-seed-importer', 'test-database',
+      'test-benefit-title-upgrade', 'test-benefit-seed-importer', 'test-opendart-benefit-importer', 'test-database',
       'frontend-check', 'test-benefits-browser',
     ]
     state.dependencies.plan = compactPlan('local', state.evidence, names)
@@ -511,6 +567,7 @@ test('every default-runner spawn including cleanup receives the sandbox and pref
       'start-local-supabase': 'docker',
       'test-benefit-title-upgrade': 'npm',
       'test-benefit-seed-importer': 'npm',
+      'test-opendart-benefit-importer': 'npm',
       'test-database': 'npm',
       'frontend-check': 'npm',
       'test-benefits-browser': 'node',
@@ -546,7 +603,7 @@ test('every default-runner spawn including cleanup receives the sandbox and pref
     assert.equal(calls.length, names.length + 1)
     assert.deepEqual(calls.map(call => call.command), [
       '/trusted/bin/node', '/trusted/bin/docker', '/trusted/bin/npm', '/trusted/bin/npm',
-      '/trusted/bin/npm', '/trusted/bin/npm', '/trusted/bin/node', '/trusted/bin/npm',
+      '/trusted/bin/npm', '/trusted/bin/npm', '/trusted/bin/npm', '/trusted/bin/node', '/trusted/bin/npm',
     ])
     for (const call of calls) {
       assert.equal(Object.values(call.options.env).includes(sentinel), false)
@@ -1076,7 +1133,7 @@ function passingResult(name, overrides = {}) {
     code: 0,
     stdout,
     stderr: '',
-    ...(name === 'test-benefit-title-upgrade' || name === 'test-benefit-seed-importer'
+    ...(['test-benefit-title-upgrade', 'test-benefit-seed-importer', 'test-opendart-benefit-importer'].includes(name)
       ? { orderedTranscript: transcript([{ stream: 'stdout', chunk: stdout }]) }
       : {}),
     ...overrides,
@@ -1390,6 +1447,7 @@ test('default preflight resolves immutable absolute executable identities and pi
       path.join(firstBin, 'git'),
       process.execPath,
       path.join(firstBin, 'tool'),
+      process.execPath,
       process.execPath,
       process.execPath,
       process.execPath,
@@ -1821,7 +1879,7 @@ test('evidence schema rejects missing, unknown, and malformed keys', () => {
     developmentProjectFingerprint: null,
     productionProjectFingerprint: null,
     artifactManifest: { sha256: 'a'.repeat(64), fileCount: 2 },
-    databaseTests: { steps: MANDATORY_DATABASE_COUNTS, total: 1157 },
+    databaseTests: { steps: MANDATORY_DATABASE_COUNTS, total: 1158 },
     readinessEvidence: null,
     steps: [{ name: 'check', status: 'passed', startedAt: '2026-10-03T00:00:00.000Z', finishedAt: '2026-10-03T00:00:01.000Z', durationMs: 1000 }],
     failure: null,
@@ -1856,7 +1914,7 @@ test('evidence has revision, mode, UTC timing, step durations, artifact and data
     assert.ok(evidence.startedAt.endsWith('Z') && evidence.finishedAt.endsWith('Z'))
     assert.ok(evidence.steps.every((step) => Number.isInteger(step.durationMs)))
     assert.equal(evidence.artifactManifest, null)
-    assert.deepEqual(evidence.databaseTests, { steps: MANDATORY_DATABASE_COUNTS, total: 1157 })
+    assert.deepEqual(evidence.databaseTests, { steps: MANDATORY_DATABASE_COUNTS, total: 1158 })
     assert.equal(evidence.readinessEvidence, null)
   } finally {
     state.close()
@@ -2164,6 +2222,11 @@ test('new benefit database suites clean up explicitly before their final standal
       'benefit seed importer integration PASS: trigger rewrites rolled back; schema, dry-run, receipt, late-failure, apply, replay verified',
       7,
     ],
+    [
+      path.join(import.meta.dirname, '../supabase/tests/opendart_benefit_importer_integration.sh'),
+      'OpenDART importer integration PASS: dry-run, apply, replay, collision, rollback, preservation',
+      1,
+    ],
   ]
   for (const [file, successProse, count] of contracts) {
     const source = readFileSync(file, 'utf8')
@@ -2175,14 +2238,16 @@ test('new benefit database suites clean up explicitly before their final standal
     const successLine = lines.indexOf(`printf '${successProse}\\n'`)
     const explicitCleanup = lines.lastIndexOf('cleanup 0')
     const summaryLine = lines.indexOf(`printf 'Tests=${count}\\n'`)
+    const requiresPostCleanupSuccess = file.endsWith('opendart_benefit_importer_integration.sh')
 
     assert.ok(cleanupStart >= 0 && fallbackTrap > cleanupStart, file)
     assert.equal(cleanupLines.filter(line => line.trim() === 'trap - EXIT INT TERM').length, 1, file)
     assert.equal(cleanupLines.some(line => /^\s*exit(?:\s|$)/.test(line)), false, file)
     assert.ok(cleanupLines.some(line => line.trim() === 'if (( original_status != 0 )); then return "$original_status"; fi'), file)
     assert.ok(cleanupLines.some(line => line.trim() === 'return "$cleanup_status"'), file)
-    assert.ok(successLine >= 0 && successLine < explicitCleanup, file)
-    assert.ok(explicitCleanup < summaryLine, file)
+    assert.ok(explicitCleanup >= 0, file)
+    assert.ok(requiresPostCleanupSuccess ? explicitCleanup < successLine : successLine < explicitCleanup, file)
+    assert.ok(successLine < summaryLine, file)
     assert.equal(lines[explicitCleanup + 1], 'cleanup_status=$?', file)
     assert.equal(lines[explicitCleanup + 2], 'set -e', file)
     assert.equal(lines[explicitCleanup + 3], 'if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi', file)
@@ -2192,17 +2257,96 @@ test('new benefit database suites clean up explicitly before their final standal
   }
 })
 
+test('OpenDART importer cleanup failure cannot publish a positive count', () => {
+  const file = path.join(import.meta.dirname, '../supabase/tests/opendart_benefit_importer_integration.sh')
+  const source = readFileSync(file, 'utf8')
+  const bodyStart = source.indexOf('python3 - "$root/source.zip"')
+  const cleanupStart = source.lastIndexOf('set +e\ncleanup 0')
+  assert.ok(bodyStart > 0 && cleanupStart > bodyStart)
+  const harness = `${source.slice(0, bodyStart)}started=1\n${source.slice(cleanupStart)}`
+    .replace('cli="$repo/community-app/node_modules/.bin/supabase"', 'cli="${CLEANUP_CLI:?}"')
+  const root = mkdtempSync(path.join(tmpdir(), 'opendart-cleanup-contract-'))
+  try {
+    const script = path.join(root, 'contract.sh')
+    const cli = path.join(root, 'supabase')
+    writeFileSync(script, harness, { mode: 0o700 })
+    writeFileSync(cli, '#!/usr/bin/env bash\n[[ "$1" != stop ]]\n', { mode: 0o700 })
+    const result = spawnSync('bash', [script], { encoding: 'utf8', env: { ...process.env, CLEANUP_CLI: cli } })
+    assert.notEqual(result.status, 0)
+    assert.doesNotMatch(result.stdout, /OpenDART importer integration PASS:/)
+    assert.doesNotMatch(result.stdout, /^Tests=1$/m)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('OpenDART importer cleanup streams child output to null and continues after failure', () => {
+  const file = path.join(import.meta.dirname, '../supabase/tests/opendart_benefit_importer_integration.sh')
+  const source = readFileSync(file, 'utf8')
+  const bodyStart = source.indexOf('python3 - "$root/source.zip"')
+  const cleanupStart = source.lastIndexOf('set +e\ncleanup 0')
+  assert.ok(bodyStart > 0 && cleanupStart > bodyStart)
+  const harness = `${source.slice(0, bodyStart)}started=1\n${source.slice(cleanupStart)}`
+    .replace('cli="$repo/community-app/node_modules/.bin/supabase"', 'cli="${CLEANUP_CLI:?}"')
+  const root = mkdtempSync(path.join(tmpdir(), 'opendart-cleanup-streaming-'))
+  try {
+    const bin = path.join(root, 'bin')
+    mkdirSync(bin)
+    const script = path.join(root, 'contract.sh')
+    const cli = path.join(bin, 'supabase')
+    const fakeRm = path.join(bin, 'rm')
+    const trace = path.join(root, 'trace')
+    writeFileSync(script, harness, { mode: 0o700 })
+    writeFileSync(cli, `#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"$CLEANUP_TRACE"
+if [[ "$1 $2" == 'db reset' ]]; then
+  python3 - <<'PY'
+import sys
+sentinel = 'SENTINEL-CLEANUP-SECRET https://user:password@example.invalid/private\\n'
+for stream in (sys.stdout, sys.stderr):
+    stream.write(sentinel)
+    stream.write('x' * (2 * 1024 * 1024))
+    stream.flush()
+PY
+  exit 9
+fi
+exit 0
+`, { mode: 0o700 })
+    writeFileSync(fakeRm, `#!/usr/bin/env bash
+printf 'temporary-cleanup %s\\n' "$*" >>"$CLEANUP_TRACE"
+exec /bin/rm "$@"
+`, { mode: 0o700 })
+    const result = spawnSync('bash', [script], {
+      encoding: 'utf8', timeout: 15_000,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLEANUP_CLI: cli, CLEANUP_TRACE: trace },
+    })
+    assert.equal(result.error, undefined)
+    assert.notEqual(result.status, 0)
+    const output = `${result.stdout}\n${result.stderr}`
+    assert.match(output, /database cleanup failed/)
+    assert.doesNotMatch(output, /SENTINEL-CLEANUP-SECRET|example\.invalid|password|x{100}/)
+    assert.doesNotMatch(result.stdout, /OpenDART importer integration PASS:|^Tests=1$/m)
+    const attempts = readFileSync(trace, 'utf8')
+    assert.match(attempts, /db reset --local --no-seed/)
+    assert.match(attempts, /^stop$/m)
+    assert.match(attempts, /temporary-cleanup/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('mandatory database suites reject missing, zero, and duplicate summaries and accept real success output shapes', async () => {
   const realSuccess = {
     'test-benefit-title-upgrade': 'upgrade fixture passed\nlock race passed\ninvalid-title rollback passed\ncanonical collision rollback passed\nTests=4\n',
     'test-benefit-seed-importer': 'trigger rewrites rolled back\nschema, dry-run, receipt, late-failure, apply, replay verified\nTests=7\n',
+    'test-opendart-benefit-importer': 'OpenDART importer integration PASS\nTests=1\n',
     'test-database': CANONICAL_PROVE_OUTPUT,
   }
-  for (const suite of ['test-benefit-title-upgrade', 'test-benefit-seed-importer']) {
+  for (const suite of ['test-benefit-title-upgrade', 'test-benefit-seed-importer', 'test-opendart-benefit-importer']) {
     for (const [label, output] of [
       ['missing', realSuccess[suite].replace(/^Tests=.*\n$/m, '')],
       ['zero', realSuccess[suite].replace(/^Tests=.*$/m, 'Tests=0')],
-      ['duplicate', `${realSuccess[suite]}Tests=${suite === 'test-benefit-title-upgrade' ? 4 : 7}\n`],
+      ['duplicate', `${realSuccess[suite]}Tests=${MANDATORY_DATABASE_COUNTS.find(item => item.name === suite).count}\n`],
     ]) {
       const state = executionFixture()
       try {
@@ -2233,7 +2377,7 @@ test('mandatory database suites reject missing, zero, and duplicate summaries an
       return {
         code: 0,
         stdout,
-        ...(['test-benefit-title-upgrade', 'test-benefit-seed-importer'].includes(name)
+        ...(['test-benefit-title-upgrade', 'test-benefit-seed-importer', 'test-opendart-benefit-importer'].includes(name)
           ? { orderedTranscript: transcript([{ stream: 'stdout', chunk: stdout }]) }
           : {}),
       }
@@ -2241,7 +2385,7 @@ test('mandatory database suites reject missing, zero, and duplicate summaries an
     const evidence = await runReleaseGate(state.options, state.dependencies)
     assert.deepEqual(evidence.databaseTests, {
       steps: MANDATORY_DATABASE_COUNTS,
-      total: 1157,
+      total: 1158,
     })
   } finally {
     state.close()
@@ -2362,7 +2506,7 @@ test('passed local and development evidence requires each mandatory database cou
     developmentProjectFingerprint: null,
     productionProjectFingerprint: null,
     artifactManifest: null,
-    databaseTests: { steps: MANDATORY_DATABASE_COUNTS, total: 1157 },
+    databaseTests: { steps: MANDATORY_DATABASE_COUNTS, total: 1158 },
     readinessEvidence: null,
     steps: [],
     failure: null,
@@ -2372,15 +2516,15 @@ test('passed local and development evidence requires each mandatory database cou
     ...base,
     databaseTests: {
       steps: [...MANDATORY_DATABASE_COUNTS, { name: 'test-storage-upgrade', count: 0 }],
-      total: 1157,
+      total: 1158,
     },
   }))
   for (const databaseTests of [
     null,
-    { steps: MANDATORY_DATABASE_COUNTS.slice(1), total: 1153 },
-    { steps: [...MANDATORY_DATABASE_COUNTS, MANDATORY_DATABASE_COUNTS[0]], total: 1161 },
-    { steps: MANDATORY_DATABASE_COUNTS.map(item => item.name === 'test-benefit-title-upgrade' ? { ...item, count: 0 } : item), total: 1153 },
-    { steps: [...MANDATORY_DATABASE_COUNTS, { name: 'test-storage-upgrade', count: 1 }, { name: 'test-storage-upgrade', count: 1 }], total: 1159 },
+    { steps: MANDATORY_DATABASE_COUNTS.slice(1), total: 1154 },
+    { steps: [...MANDATORY_DATABASE_COUNTS, MANDATORY_DATABASE_COUNTS[0]], total: 1162 },
+    { steps: MANDATORY_DATABASE_COUNTS.map(item => item.name === 'test-benefit-title-upgrade' ? { ...item, count: 0 } : item), total: 1154 },
+    { steps: [...MANDATORY_DATABASE_COUNTS, { name: 'test-storage-upgrade', count: 1 }, { name: 'test-storage-upgrade', count: 1 }], total: 1160 },
   ]) assert.throws(() => validateEvidence({ ...base, databaseTests }), /database/i)
 
   const production = {
@@ -3199,6 +3343,7 @@ test('default runner suppresses raw child stdout and stderr from terminal and ev
         const counts = {
           'test-benefit-title-upgrade.mjs': 4,
           'test-benefit-seed-importer.mjs': 7,
+          'test-opendart-benefit-importer.mjs': 1,
           'test-database.mjs': 1146,
         }
         const summary = counts[args?.[0]] === undefined ? '' : '\\nTests=' + counts[args[0]] + '\\n'
@@ -3219,6 +3364,7 @@ test('default runner suppresses raw child stdout and stderr from terminal and ev
             { name: 'check', command: 'node', args: ['check.mjs'], environment: {} },
             { name: 'test-benefit-title-upgrade', command: 'node', args: ['test-benefit-title-upgrade.mjs'], environment: {} },
             { name: 'test-benefit-seed-importer', command: 'node', args: ['test-benefit-seed-importer.mjs'], environment: {} },
+            { name: 'test-opendart-benefit-importer', command: 'node', args: ['test-opendart-benefit-importer.mjs'], environment: {} },
             { name: 'test-database', command: 'node', args: ['test-database.mjs'], environment: {} },
           ],
         },

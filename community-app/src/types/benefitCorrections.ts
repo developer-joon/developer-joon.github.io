@@ -3,6 +3,7 @@ export const BENEFIT_CORRECTION_STATUSES = ['submitted', 'reviewing', 'approved'
 export const BENEFIT_CORRECTION_QUEUE_FILTERS = ['active', ...BENEFIT_CORRECTION_STATUSES, 'all'] as const
 export const BENEFIT_CORRECTION_REVIEW_ACTIONS = ['start_review', 'request_additional_material', 'approve', 'reject'] as const
 export const BENEFIT_CORRECTION_AUDIT_EVENT_TYPES = ['submitted', 'start_review', 'additional_material_requested', 'approved', 'rejected', 'applied'] as const
+export const BENEFIT_CORRECTION_CURRENT_TEXT_MAX_LENGTH = 5_000
 
 export type BenefitCategory = typeof BENEFIT_CATEGORIES[number]
 export type BenefitCorrectionStatus = typeof BENEFIT_CORRECTION_STATUSES[number]

@@ -5,12 +5,15 @@ import { AuthContext, type AuthContextValue } from '../auth/AuthProvider'
 import { DEFAULT_AUTH_PROVIDER } from '../auth/providers'
 import { benefitsClient } from '../data/benefitsArtifactClient'
 import type { BenefitCorrectionRepository } from '../data/benefitCorrectionRepository'
+import type { BenefitDirectoryRepository } from '../data/benefitDirectoryRepository'
 import type { BenefitCorrectionAccountScope, BenefitCorrectionDraft, BenefitCorrectionItem } from '../types/benefitCorrections'
+import type { BenefitCompanyDetail } from '../types/benefitDirectory'
 import { categories, type CompanyListing, type Manifest } from '../types/benefits'
 import { BenefitCorrectionPage } from './BenefitCorrectionPage'
 import { MyBenefitCorrectionsPage } from './MyBenefitCorrectionsPage'
 import { benefitsCorrectionUrl } from '../components/benefits/BenefitsCorrectionLink'
 import { createBenefitCorrectionDraft, saveBenefitCorrectionDraft } from '../lib/benefitCorrectionDraftStore'
+import { renderBenefitCorrectionPublications } from '../lib/benefitCorrectionCurrentText'
 
 const actor = '56000000-0000-4000-8000-0000000000a1'
 const scope = 'a'.repeat(64) as BenefitCorrectionAccountScope
@@ -23,6 +26,17 @@ const manifest = { data_version: 'company-benefits-2026-10-31-v1' } as Manifest
 const item: BenefitCorrectionItem = {
   id: '76000000-0000-4000-8000-0000000000a1', companyId: company.company_id, categoryId: 'health', currentText: '근거 부족', proposedText: '건강검진 지원', scopeText: '대한민국 정규직', sourceUrl: 'https://example.com/benefits', observedDataVersion: manifest.data_version, status: 'submitted', adminResponse: null, appliedDataVersion: null, appliedAt: null, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z',
 }
+const canonicalCompanyId = `KR-CAN-${'c'.repeat(32)}`
+const canonicalCurrentText = '건강 검진 — 정기 검진을 지원합니다. · 대상: 정규직 구성원 · 공식 확인 / 심리 상담 — 상담 비용을 지원합니다. · 조건: 월 한도 적용 · 사용자 제보'
+const canonicalCompany: BenefitCompanyDetail = {
+  claims: [],
+  company: { companyId: canonicalCompanyId, displayName: '신규 정식 기업', identityLabel: '등록 사업자' as const, industry: null, sizeLabel: '분류 미확인' as const, region: null, summary: null },
+  publications: [
+    { publicationId: '123e4567-e89b-42d3-a456-426614174010', categoryId: 'health', title: '건강 검진', description: '정기 검진을 지원합니다.', eligibilityText: '정규직 구성원', conditionText: null, trustLabel: '공식 확인', revision: 3, originClaimId: null },
+    { publicationId: '123e4567-e89b-42d3-a456-426614174011', categoryId: 'health', title: '심리 상담', description: '상담 비용을 지원합니다.', eligibilityText: null, conditionText: '월 한도 적용', trustLabel: '사용자 제보', revision: 2, originClaimId: null },
+    { publicationId: '123e4567-e89b-42d3-a456-426614174012', categoryId: 'leave', title: '재충전 휴가', description: '장기근속 휴가를 지원합니다.', eligibilityText: null, conditionText: null, trustLabel: '공식 확인', revision: 1, originClaimId: null },
+  ],
+}
 function auth(userId: string | null, overrides: Partial<AuthContextValue> = {}): AuthContextValue {
   return { loading: false, pending: false, session: userId ? {} as never : null, user: userId ? { id: userId } as User : null, error: null, signIn: vi.fn(), signOut: vi.fn(), invalidateStaleSession: vi.fn(() => true), ...overrides }
 }
@@ -32,6 +46,17 @@ function repository(overrides: Partial<BenefitCorrectionRepository> = {}): Benef
     createRequest: vi.fn(async () => ({ ok: true as const, data: item })),
     listMyRequests: vi.fn(async () => ({ ok: true as const, data: { items: [item], hasMore: false, nextCursor: null } })),
     listAdminQueue: vi.fn(), listAdminAudit: vi.fn(), reviewRequest: vi.fn(), ...overrides,
+  }
+}
+function directoryRepository(overrides: Partial<BenefitDirectoryRepository> = {}): BenefitDirectoryRepository {
+  return {
+    search: vi.fn(),
+    detail: vi.fn(async companyId => ({ ok: true as const, data: companyId === canonicalCompanyId ? canonicalCompany : {
+      company: { companyId: company.company_id, displayName: company.display_name, identityLabel: '법인' as const, industry: null, sizeLabel: '분류 미확인' as const, region: null, summary: null },
+      publications: [],
+      claims: [],
+    } })),
+    ...overrides,
   }
 }
 function storage() {
@@ -56,7 +81,7 @@ describe('authenticated benefit correction', () => {
     const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')
     Object.defineProperty(window, 'localStorage', { configurable: true, get: () => { throw new DOMException('blocked', 'SecurityError') } })
     try {
-      wrap(<BenefitCorrectionPage repository={repository()} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+      wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repository()} search={`?company=${company.company_id}&category=health`} />, auth(actor))
       expect(await screen.findByLabelText('기업')).toHaveValue(company.company_id)
       expect(screen.getByLabelText('복지 분야')).toHaveValue('health')
       fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: '저장 없이 작성' } })
@@ -68,7 +93,7 @@ describe('authenticated benefit correction', () => {
 
   it('gates anonymous users and uses a canonical correction return path', () => {
     const value = auth(null)
-    wrap(<BenefitCorrectionPage repository={repository()} storage={storage()} search={`?company=${company.company_id}&category=health&returnTo=https://evil.example/`} currentPath={`/community/benefits/correction/?company=${company.company_id}&category=health&returnTo=https://evil.example/`} />, value)
+    wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repository()} storage={storage()} search={`?company=${company.company_id}&category=health&returnTo=https://evil.example/`} currentPath={`/community/benefits/correction/?company=${company.company_id}&category=health&returnTo=https://evil.example/`} />, value)
     fireEvent.click(screen.getByRole('button', { name: 'Google로 로그인하고 요청하기' }))
     expect(value.signIn).toHaveBeenCalledWith(DEFAULT_AUTH_PROVIDER, `/community/benefits/correction/?company=${company.company_id}&category=health`)
     expect(screen.queryByText('evil.example')).not.toBeInTheDocument()
@@ -76,7 +101,7 @@ describe('authenticated benefit correction', () => {
   })
 
   it('explains safe evidence, correction scope, and the separate publication decision', async () => {
-    wrap(<BenefitCorrectionPage repository={repository()} storage={storage()} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+    wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repository()} storage={storage()} search={`?company=${company.company_id}&category=health`} />, auth(actor))
 
     expect(await screen.findByText('개인정보, 비공개·사내 문서, 로그인해야 볼 수 있는 문서, 유료 자료는 제출하지 마세요. 공개적으로 접근 가능한 HTTPS 근거 URL이 필요합니다.')).toBeVisible()
     expect(screen.getByText('국가·관할, 대상 법인, 직군, 고용 형태, 적용 시점·기간을 적어 주세요.')).toBeVisible()
@@ -85,7 +110,7 @@ describe('authenticated benefit correction', () => {
 
   it('validates canonical company/category prefills and preserves a bounded account draft', async () => {
     const local = storage()
-    const { unmount } = wrap(<BenefitCorrectionPage repository={repository()} storage={local} search={`?company=${company.company_id}&category=health&category=injected`} />, auth(actor))
+    const { unmount } = wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repository()} storage={local} search={`?company=${company.company_id}&category=health&category=injected`} />, auth(actor))
     expect(await screen.findByRole('heading', { name: '복지 정보 수정 요청' })).toBeVisible()
     expect(screen.getByLabelText('기업')).toHaveValue(company.company_id)
     expect(screen.getByLabelText('복지 분야')).toHaveValue('')
@@ -95,7 +120,7 @@ describe('authenticated benefit correction', () => {
     fireEvent.change(screen.getByLabelText('공개 HTTPS 근거 URL'), { target: { value: 'https://example.com/benefits' } })
     await waitFor(() => expect(local.values.size).toBe(1))
     unmount()
-    wrap(<BenefitCorrectionPage repository={repository()} storage={local} search="" />, auth(actor))
+    wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repository()} storage={local} search="" />, auth(actor))
     expect(await screen.findByDisplayValue('건강검진 지원')).toBeVisible()
     expect(screen.getByDisplayValue('대한민국 정규직')).toBeVisible()
   })
@@ -105,7 +130,7 @@ describe('authenticated benefit correction', () => {
     const emptyDraft = createBenefitCorrectionDraft(scope, () => '56000000-0000-4000-8000-0000000000d1', () => '2026-11-01T00:00:00Z')
     expect(saveBenefitCorrectionDraft(scope, emptyDraft, local)).toBe(true)
 
-    wrap(<BenefitCorrectionPage repository={repository()} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+    wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repository()} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
 
     expect(await screen.findByLabelText('기업')).toHaveValue(company.company_id)
     expect(screen.getByLabelText('복지 분야')).toHaveValue('health')
@@ -113,11 +138,93 @@ describe('authenticated benefit correction', () => {
     expect(screen.getByText(manifest.data_version)).toBeVisible()
   })
 
+  it('preserves canonical public publication context through URL prefill, manual reselection, draft reload, and submission', async () => {
+    const local = storage()
+    const createRequest = vi.fn(async input => ({ ok: true as const, data: {
+      ...item,
+      companyId: input.companyId,
+      categoryId: input.categoryId,
+      currentText: input.currentText,
+      proposedText: input.proposedText,
+      scopeText: input.scopeText,
+      sourceUrl: input.sourceUrl,
+      observedDataVersion: input.observedDataVersion,
+    } }))
+    const repo = repository({ createRequest })
+    const directory = directoryRepository()
+    const search = `?company=${canonicalCompanyId}&category=health`
+
+    const first = wrap(<BenefitCorrectionPage repository={repo} directoryRepository={directory} storage={local} search={search} />, auth(actor))
+    expect(await screen.findByLabelText('기업')).toHaveValue(canonicalCompanyId)
+    expect(screen.getByRole('option', { name: `신규 정식 기업 (${canonicalCompanyId})` })).toBeVisible()
+    expect(screen.getByLabelText('현재 표시 내용')).toHaveValue(canonicalCurrentText)
+    expect(screen.getByLabelText('현재 표시 내용')).not.toHaveValue(expect.stringContaining('재충전 휴가'))
+    fireEvent.change(screen.getByLabelText('기업'), { target: { value: company.company_id } })
+    expect(screen.getByLabelText('현재 표시 내용')).toHaveValue('근거 부족')
+    fireEvent.change(screen.getByLabelText('기업'), { target: { value: canonicalCompanyId } })
+    expect(screen.getByLabelText('현재 표시 내용')).toHaveValue(canonicalCurrentText)
+    fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: item.proposedText } })
+    fireEvent.change(screen.getByLabelText('적용 범위'), { target: { value: item.scopeText } })
+    fireEvent.change(screen.getByLabelText('공개 HTTPS 근거 URL'), { target: { value: item.sourceUrl } })
+    first.unmount()
+
+    wrap(<BenefitCorrectionPage repository={repo} directoryRepository={directory} storage={local} search={search} />, auth(actor))
+    expect(await screen.findByLabelText('기업')).toHaveValue(canonicalCompanyId)
+    expect(screen.getByLabelText('현재 표시 내용')).toHaveValue(canonicalCurrentText)
+    expect(screen.getByLabelText('제안 내용')).toHaveValue(item.proposedText)
+    fireEvent.click(screen.getByRole('button', { name: '수정 요청 제출' }))
+
+    await waitFor(() => expect(createRequest).toHaveBeenCalledWith(expect.objectContaining({ companyId: canonicalCompanyId, currentText: canonicalCurrentText }), scope, expect.any(AbortSignal)))
+    expect(await screen.findByRole('status')).toHaveTextContent('수정 요청이 접수되었습니다')
+  })
+
+  it('uses the same bounded canonical context for display, saved draft, restored draft, and submit payload', async () => {
+    const publications = [
+      { ...canonicalCompany.publications[0], description: '😀'.repeat(6_000) },
+      canonicalCompany.publications[2],
+    ]
+    const expected = renderBenefitCorrectionPublications(publications, 'health')!
+    const detail = { ...canonicalCompany, publications }
+    const directory = directoryRepository({ detail: vi.fn(async () => ({ ok: true as const, data: detail })) })
+    const createRequest = vi.fn(async input => ({ ok: true as const, data: {
+      ...item,
+      companyId: input.companyId,
+      categoryId: input.categoryId,
+      currentText: input.currentText,
+      proposedText: input.proposedText,
+      scopeText: input.scopeText,
+      sourceUrl: input.sourceUrl,
+      observedDataVersion: input.observedDataVersion,
+    } }))
+    const local = storage()
+    const search = `?company=${canonicalCompanyId}&category=health`
+
+    const first = wrap(<BenefitCorrectionPage repository={repository({ createRequest })} directoryRepository={directory} storage={local} search={search} />, auth(actor))
+    expect(await screen.findByLabelText('현재 표시 내용')).toHaveValue(expected)
+    first.unmount()
+
+    wrap(<BenefitCorrectionPage repository={repository({ createRequest })} directoryRepository={directory} storage={local} search={search} />, auth(actor))
+    expect(await screen.findByLabelText('현재 표시 내용')).toHaveValue(expected)
+    fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: item.proposedText } })
+    fireEvent.change(screen.getByLabelText('적용 범위'), { target: { value: item.scopeText } })
+    fireEvent.change(screen.getByLabelText('공개 HTTPS 근거 URL'), { target: { value: item.sourceUrl } })
+    fireEvent.click(screen.getByRole('button', { name: '수정 요청 제출' }))
+
+    await waitFor(() => expect(createRequest).toHaveBeenCalledWith(expect.objectContaining({ currentText: expected }), scope, expect.any(AbortSignal)))
+  })
+
+  it('keeps the established empty-publication fallback for a canonical company', async () => {
+    const directory = directoryRepository({ detail: vi.fn(async () => ({ ok: true as const, data: { ...canonicalCompany, publications: [] } })) })
+    wrap(<BenefitCorrectionPage repository={repository()} directoryRepository={directory} storage={storage()} search={`?company=${canonicalCompanyId}&category=health`} />, auth(actor))
+
+    expect(await screen.findByLabelText('현재 표시 내용')).toHaveValue('공개 확인된 복지 정보 없음')
+  })
+
   it('preserves each non-empty saved draft field over explicit URL prefills', async () => {
     const local = storage()
     const saved: BenefitCorrectionDraft = {
       ...createBenefitCorrectionDraft(scope, () => '56000000-0000-4000-8000-0000000000d2', () => '2026-11-01T00:00:00Z'),
-      companyId: company.company_id,
+      companyId: canonicalCompanyId,
       categoryId: 'family',
       currentText: '사용자가 저장한 현재 내용',
       proposedText: '사용자가 저장한 제안',
@@ -127,7 +234,7 @@ describe('authenticated benefit correction', () => {
     }
     expect(saveBenefitCorrectionDraft(scope, saved, local)).toBe(true)
 
-    wrap(<BenefitCorrectionPage repository={repository()} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+    wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repository()} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
 
     expect(await screen.findByLabelText('복지 분야')).toHaveValue('family')
     expect(screen.getByLabelText('현재 표시 내용')).toHaveValue('사용자가 저장한 현재 내용')
@@ -137,12 +244,21 @@ describe('authenticated benefit correction', () => {
     expect(screen.getByText('company-benefits-2026-10-30-v1')).toBeVisible()
   })
 
+  it('replaces anonymous detail repository errors with fixed safe copy', async () => {
+    const directory = directoryRepository({ detail: vi.fn(async () => ({ ok: false as const, error: { code: 'unknown' as const, message: 'rpc=get_benefit_company_v1 project=private-secret' } })) })
+    wrap(<BenefitCorrectionPage repository={repository()} directoryRepository={directory} storage={storage()} search={`?company=${canonicalCompanyId}&category=health`} />, auth(actor))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('기업 복지 기준 정보를 불러오지 못했습니다.')
+    expect(document.body).not.toHaveTextContent('get_benefit_company_v1')
+    expect(document.body).not.toHaveTextContent('private-secret')
+  })
+
   it('locks duplicate submission and clears only after a matching validated success', async () => {
     let resolve!: (value: { ok: true; data: BenefitCorrectionItem }) => void
     const createRequest = vi.fn(() => new Promise<{ ok: true; data: BenefitCorrectionItem }>(done => { resolve = done }))
     const repo = repository({ createRequest })
     const local = storage()
-    wrap(<BenefitCorrectionPage repository={repo} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+    wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repo} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
     await waitFor(() => expect(screen.getByLabelText('기업')).toHaveValue(company.company_id))
     fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: item.proposedText } })
     fireEvent.change(screen.getByLabelText('적용 범위'), { target: { value: item.scopeText } })
@@ -165,7 +281,7 @@ describe('authenticated benefit correction', () => {
       return new Promise<{ ok: true; data: BenefitCorrectionItem }>(done => { resolve = done })
     })
     const local = storage()
-    const view = wrap(<BenefitCorrectionPage repository={repository({ createRequest })} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+    const view = wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repository({ createRequest })} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
     await waitFor(() => expect(screen.getByLabelText('기업')).toHaveValue(company.company_id))
     fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: item.proposedText } })
     fireEvent.change(screen.getByLabelText('적용 범위'), { target: { value: item.scopeText } })
@@ -215,7 +331,7 @@ describe('authenticated benefit correction', () => {
       getCurrentAccountScope: vi.fn(async () => ({ ok: true as const, data: currentScope })),
       createRequest,
     })
-    const view = wrap(<BenefitCorrectionPage repository={repo} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
+    const view = wrap(<BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repo} storage={local} search={`?company=${company.company_id}&category=health`} />, auth(actor))
     await waitFor(() => expect(screen.getByLabelText('기업')).toHaveValue(company.company_id))
     fireEvent.change(screen.getByLabelText('제안 내용'), { target: { value: item.proposedText } })
     fireEvent.change(screen.getByLabelText('적용 범위'), { target: { value: item.scopeText } })
@@ -224,7 +340,7 @@ describe('authenticated benefit correction', () => {
     await waitFor(() => expect(createRequest).toHaveBeenCalledTimes(1))
 
     currentScope = scopeB
-    view.rerender(<AuthContext.Provider value={auth('56000000-0000-4000-8000-0000000000b2')}><BenefitCorrectionPage repository={repo} storage={local} search={`?company=${company.company_id}&category=health`} /></AuthContext.Provider>)
+    view.rerender(<AuthContext.Provider value={auth('56000000-0000-4000-8000-0000000000b2')}><BenefitCorrectionPage directoryRepository={directoryRepository()} repository={repo} storage={local} search={`?company=${company.company_id}&category=health`} /></AuthContext.Provider>)
 
     expect(await screen.findByDisplayValue('B 계정 제안')).toBeVisible()
     const submitB = screen.getByRole('button', { name: '수정 요청 제출' })

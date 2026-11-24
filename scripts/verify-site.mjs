@@ -39,6 +39,15 @@ const requiredFiles = [
   'community/benefits/methodology/index.html',
   'community/benefits/correction/index.html',
   'community/benefits/my-corrections/index.html',
+  'community/benefits/submit/index.html',
+  'community/benefits/my-submissions/index.html',
+  'community/benefits/company-request/index.html',
+  'community/benefits/claim/index.html',
+  'community/benefits/claim-reaction/index.html',
+  'community/admin/benefit-corrections/index.html',
+  'community/admin/benefit-submissions/index.html',
+  'community/admin/benefit-company-requests/index.html',
+  'community/admin/benefit-claims/index.html',
   'benefits/index.html',
   'benefits/company/index.html',
 ]
@@ -1229,6 +1238,15 @@ async function main() {
     ['community/auth/callback/index.html', '<title>로그인 처리 · Ria &amp; Seoa PaPa</title>'],
     ['community/benefits/correction/index.html', '<title>복지 정보 수정 요청 · Ria &amp; Seoa PaPa</title>'],
     ['community/benefits/my-corrections/index.html', '<title>내 복지 수정 요청 · Ria &amp; Seoa PaPa</title>'],
+    ['community/benefits/submit/index.html', '<title>새 복지 제보 · Ria &amp; Seoa PaPa</title>'],
+    ['community/benefits/my-submissions/index.html', '<title>내 복지 제보 · Ria &amp; Seoa PaPa</title>'],
+    ['community/benefits/company-request/index.html', '<title>기업 추가 요청 · Ria &amp; Seoa PaPa</title>'],
+    ['community/benefits/claim/index.html', '<title>구조화된 복지 제보 · Ria &amp; Seoa PaPa</title>'],
+    ['community/benefits/claim-reaction/index.html', '<title>복지 제보 반응 · Ria &amp; Seoa PaPa</title>'],
+    ['community/admin/benefit-corrections/index.html', '<title>복지 정정 검토 · Ria &amp; Seoa PaPa</title>'],
+    ['community/admin/benefit-submissions/index.html', '<title>복지 제보 검토 · Ria &amp; Seoa PaPa</title>'],
+    ['community/admin/benefit-company-requests/index.html', '<title>기업 추가 요청 검토 · Ria &amp; Seoa PaPa</title>'],
+    ['community/admin/benefit-claims/index.html', '<title>복지 claim 검토 · Ria &amp; Seoa PaPa</title>'],
   ]
   for (const [relativePath, title] of communityShells) {
     const html = await readText(relativePath)

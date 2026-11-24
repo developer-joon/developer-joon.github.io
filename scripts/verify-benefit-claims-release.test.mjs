@@ -1,0 +1,241 @@
+#!/usr/bin/env node
+
+import assert from 'node:assert/strict'
+import { cp, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+import test from 'node:test'
+import { scanSensitiveReleaseFiles, verifyBenefitClaimsRelease } from './verify-benefit-claims-release.mjs'
+
+const repoRoot = path.resolve(import.meta.dirname, '..')
+
+test('repository claim release contracts agree', async () => {
+  const result = await verifyBenefitClaimsRelease(repoRoot)
+  assert.ok(result.checkedFiles > 0)
+  assert.equal(result.contractFiles, 7)
+  assert.equal(result.checkedFiles, (await scanSensitiveReleaseFiles(repoRoot)).checkedFiles)
+  assert.equal(result.migration, '202611230011_admin_company_review_v2.sql')
+  assert.equal(result.browserProjectionDecoder, 'actual-v2-detail-and-listing-decoders')
+  assert.equal(result.databaseProof, 'mandatory-release-gate-test-database-step')
+})
+
+test('release verifier does not misrepresent migration text as database verification', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-migration-mutation-'))
+  try {
+    await cp(repoRoot, root, { recursive: true, filter: source => !/(?:^|\/)(?:\.git|node_modules|dist|\.cache)(?:\/|$)/.test(source) })
+    await writeFile(path.join(root, 'supabase/migrations/202611230005_benefit_claims.sql'), '-- mutation: database body removed\n')
+    const result = await verifyBenefitClaimsRelease(root)
+    assert.equal(result.databaseProof, 'mandatory-release-gate-test-database-step')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner rejects private identity values and secret assignments outside synthetic tests', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-scan-'))
+  try {
+    await mkdir(path.join(root, 'src'), { recursive: true })
+    for (const [name, content, pattern] of [
+      ['representative.json', '{"representative_name":"홍길동"}\n', /representative/i],
+      ['opening.json', '{"opening_date":"20260102"}\n', /opening date/i],
+      ['business.txt', '123-45-67890\n', /business number/i],
+      ['nts.env', 'NTS_SERVICE_' + 'KEY=example-sensitive-value\n', /secret assignment/i],
+      ['hmac.env', 'BUSINESS_NUMBER_HMAC_' + 'SECRET=example-sensitive-value\n', /secret assignment/i],
+      ['service.env', 'SUPABASE_SERVICE_ROLE_' + 'KEY=example-sensitive-value\n', /secret assignment/i],
+    ]) {
+      const target = path.join(root, 'src', name)
+      await writeFile(target, content)
+      await assert.rejects(scanSensitiveReleaseFiles(root), pattern)
+      await rm(target)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner rejects computed, bracket-assigned, and quoted object secret keys', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-computed-secret-'))
+  try {
+    await mkdir(path.join(root, 'src'), { recursive: true })
+    const cases = [
+      `const value = { ['SUPABASE_SERVICE_ROLE_KEY'] : '${'real-like-' + 'service-value'}' }\n`,
+      `env [ 'BUSINESS_NUMBER_HMAC_SECRET' ] = '${'real-like-' + 'hmac-value'}'\n`,
+      `const value = { "NTS_SERVICE_KEY" : "${'real-like-' + 'nts-value'}" }\n`,
+    ]
+    for (const [index, content] of cases.entries()) {
+      const target = path.join(root, 'src', `computed-${index}.ts`)
+      await writeFile(target, content)
+      await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+      await rm(target)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner rejects static and mixed template-literal assignments but permits dynamic environment references', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-template-literals-'))
+  const tick = String.fromCharCode(96)
+  const interpolation = expression => '${' + expression + '}'
+  try {
+    await mkdir(path.join(root, 'src'), { recursive: true })
+    const sensitiveCases = [
+      `const fixture = { [ "representativeName" ] : ${tick}민감대표${tick} }\n`,
+      `const fixture = { 'opening_date' : ${tick}${['2026', '0102'].join('')}${tick} }\n`,
+      `fixture [ 'businessNumber' ] = ${tick}${['12345', '67890'].join('')}${tick}\n`,
+      `const fixture = { 사업자등록번호 : ${tick}${['12345', '67890'].join('')}${tick} }\n`,
+      `const fixture = { "NTS_SERVICE_KEY" : ${tick}real-like-nts-value${tick} }\n`,
+      `fixture [ 'BUSINESS_NUMBER_HMAC_SECRET' ] = ${tick}real-like-hmac-value${tick}\n`,
+      `const fixture = { ["SUPABASE_SERVICE_ROLE_KEY"] : ${tick}real-like-service-value${tick} }\n`,
+      `const fixture = { representative_name: ${tick}민감대표-${interpolation('process.env.REPRESENTATIVE_SUFFIX')}${tick} }\n`,
+      `const fixture = { openingDate: ${tick}${['2026', '0102'].join('')}-${interpolation('process.env.DATE_SUFFIX')}${tick} }\n`,
+      `const fixture = { business_number: ${tick}${['123', '-45-', '67890'].join('')}-${interpolation('process.env.NUMBER_SUFFIX')}${tick} }\n`,
+      `const fixture = { NTS_SERVICE_KEY: ${tick}real-like-${interpolation('process.env.NTS_SUFFIX')}${tick} }\n`,
+    ]
+    for (const [index, content] of sensitiveCases.entries()) {
+      const target = path.join(root, 'src', `template-${index}.ts`)
+      await writeFile(target, content)
+      await assert.rejects(scanSensitiveReleaseFiles(root), /representative|opening date|business number|secret assignment/i)
+      await rm(target)
+    }
+
+    const interpolationAttacks = [
+      `const representativeName = ${tick}${interpolation('"민감대표"')}${tick}\n`,
+      `const openingDate = ${tick}${interpolation('"20260102"')}${tick}\n`,
+      `const businessNumber = ${tick}${interpolation('"1234567890"')}${tick}\n`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation('"real-like-nts-value"')}${tick}\n`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation('process.env.NTS_SERVICE_KEY ?? "fallback"')}${tick}\n`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation(`${tick}${interpolation('process.env.NTS_SERVICE_KEY')}${tick}`)}${tick}\n`,
+    ]
+    for (const [index, content] of interpolationAttacks.entries()) {
+      const target = path.join(root, 'src', `interpolation-attack-${index}.ts`)
+      await writeFile(target, content)
+      await assert.rejects(scanSensitiveReleaseFiles(root), /representative|opening date|business number|secret assignment/i)
+      await rm(target)
+    }
+
+    await writeFile(path.join(root, 'src/dynamic.ts'), [
+      `const representativeName = ${tick}${interpolation(' \tprocess.env.REPRESENTATIVE_NAME\r\n')}${tick}`,
+      `const openingDate = ${tick}${interpolation('Deno.env.get("OPENING_DATE")')}${tick}`,
+      `const businessNumber = ${tick}${interpolation("Deno.env.get( 'BUSINESS_NUMBER' )")}${tick}`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation(' \nDeno.env.get("NTS_SERVICE_KEY")\t')}${tick}`,
+    ].join('\n'))
+    await assert.doesNotReject(scanSensitiveReleaseFiles(root))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner permits only exact known-fake secret placeholder spans', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-fake-secret-'))
+  try {
+    const directory = path.join(root, 'supabase/functions/verify-benefit-company')
+    await mkdir(directory, { recursive: true })
+    const target = path.join(directory, 'index.test.ts')
+    await writeFile(target, `const fixture = { SUPABASE_SERVICE_ROLE_KEY: "test-only-placeholder" }\n`)
+    await assert.doesNotReject(scanSensitiveReleaseFiles(root))
+    await writeFile(target, `const fixture = { SUPABASE_SERVICE_ROLE_KEY: '${'different-value-' + 'at-same-path'}' }\n`)
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+    const tick = String.fromCharCode(96)
+    await writeFile(target, `const fixture = { SUPABASE_SERVICE_ROLE_KEY: ${tick}test-only-placeholder${tick} }\n`)
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner does not skip secret-bearing dotfiles', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-dotfile-'))
+  try {
+    await writeFile(path.join(root, '.env'), 'NTS_SERVICE_' + 'KEY=example-sensitive-value\n')
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner scans tracked-content-shaped nested dist directories', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-nested-dist-'))
+  try {
+    await mkdir(path.join(root, 'packages/app/dist/secret'), { recursive: true })
+    await writeFile(path.join(root, 'packages/app/dist/secret/config.js'),
+      `export const env = { NTS_SERVICE_KEY: '${'real-like-' + 'nested-value'}' }\n`)
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner fails closed on non-regular files', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-fifo-'))
+  try {
+    await mkdir(path.join(root, 'scripts'), { recursive: true })
+    const fifo = path.join(root, 'scripts', 'sensitive-input')
+    const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8' })
+    assert.equal(created.status, 0, created.stderr)
+    await assert.rejects(scanSensitiveReleaseFiles(root), /non-regular/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner does not trust an arbitrary test filename as synthetic', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-test-name-'))
+  try {
+    await mkdir(path.join(root, 'community-app/src'), { recursive: true })
+    await writeFile(path.join(root, 'community-app/src/not-explicitly-synthetic.test.ts'), 'const fixture={business_number:"123-45-67890"}\n')
+    await assert.rejects(scanSensitiveReleaseFiles(root), /business number/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner permits only narrow synthetic test fixtures', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-synthetic-'))
+  try {
+    await mkdir(path.join(root, 'supabase/functions/verify-benefit-company'), { recursive: true })
+    const fixture = path.join(root, 'supabase/functions/verify-benefit-company/index.test.ts')
+    await writeFile(fixture, 'const fixture={representative_name:"테스트대표",opening_date:"20260102",business_number:"123-45-67890"}\n')
+    await assert.doesNotReject(scanSensitiveReleaseFiles(root))
+    await writeFile(fixture, 'const fixture={representative_name:"테스트대표",opening_date:"20260102",business_number:"123-45-67890"}\nNTS_SERVICE_' + 'KEY=obvious-sentinel-secret\n')
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+    await writeFile(fixture, 'const fixture={representative_name:"다른대표",opening_date:"20251231",business_number:"999-88-77777"}\n')
+    await assert.rejects(scanSensitiveReleaseFiles(root), /representative|opening date|business number/i)
+    await rm(fixture)
+    await writeFile(path.join(root, 'supabase/functions/verify-benefit-company/not-a-test.ts'), 'const fixture={business_number:"123-45-67890"}\n')
+    await assert.rejects(scanSensitiveReleaseFiles(root), /business number/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner rejects symlinks and bounds repository inventory', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-inventory-'))
+  try {
+    await writeFile(path.join(root, 'target'), 'safe\n')
+    await symlink('target', path.join(root, 'link'))
+    await assert.rejects(scanSensitiveReleaseFiles(root), /symbolic link/i)
+    await rm(path.join(root, 'link'))
+    await Promise.all(Array.from({ length: 1_001 }, (_, index) => writeFile(path.join(root, `f-${index}`), '')))
+    await assert.rejects(scanSensitiveReleaseFiles(root, { maxFiles: 1_000 }), /file count|inventory/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('scanner rejects chunk-split and UTF-16 encoded sensitive values and oversized files', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-encoding-'))
+  try {
+    await writeFile(path.join(root, 'split.txt'), `safe${'x'.repeat(65530)} 123-45-67890`)
+    await assert.rejects(scanSensitiveReleaseFiles(root), /business number/i)
+    await rm(path.join(root, 'split.txt'))
+    await writeFile(path.join(root, 'utf16.txt'), Buffer.from('representative_name="홍길동"', 'utf16le'))
+    await assert.rejects(scanSensitiveReleaseFiles(root), /representative/i)
+    await rm(path.join(root, 'utf16.txt'))
+    await writeFile(path.join(root, 'huge.txt'), Buffer.alloc(1025, 0x61))
+    await assert.rejects(scanSensitiveReleaseFiles(root, { maxFileBytes: 1024 }), /byte limit/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

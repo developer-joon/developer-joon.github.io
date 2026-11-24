@@ -97,6 +97,24 @@ Any missing, stale, or revision-mismatched evidence is no-go.
 
 Run local exhaustive proof from a clean revision. Task 16 must replace both intentional sentinels before a release can be green.
 
+The local plan now fails closed across the benefit-claims release boundary before
+site assembly. It runs the repository claim/schema/sensitive-data verifier, the
+base seed generator and independent verifier, the OpenDART generator check and
+independent verifier, the OpenDART importer integration, claim/company pgTAP and
+dblink suites (including the strict anonymous v2 projection), pinned Deno
+check/test/fmt for `verify-benefit-company`, frontend checks/build, authenticated
+route-shell verification, and the canonical public-bundle manifest graph check.
+The importer integrations and canonical database suite must each emit one final,
+positive `Tests=<integer>` protocol line; missing, duplicate, zero, truncated, or
+post-summary output invalidates evidence.
+
+The official production OpenDART source, reuse-rights authority descriptor, and
+generated production bundle are intentionally absent. Synthetic OpenDART data is
+test-only and is not production authority. Until an authorized official source
+and reviewed rights statement are supplied at the fixed repository paths, the
+OpenDART generator `--check` is an expected **NO-GO**. Never copy a synthetic
+fixture into those paths to make the gate green.
+
 The gate resolves Chromium during preflight, before either site build. An explicit
 `BENEFITS_CHROMIUM` path takes priority and must be an executable regular file;
 otherwise the gate searches the documented `chromium`, `chromium-browser`,
@@ -132,7 +150,7 @@ After a second explicit operator confirmation, remove `--dry-run`, then deploy e
 : "${DEVELOPMENT_MUTATION_APPROVAL:?approval is required}"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   db push --project-ref "$DEVELOPMENT_PROJECT_REF"
-for function_name in validate-upload cleanup-attachments public-attachment; do
+for function_name in validate-upload cleanup-attachments public-attachment verify-benefit-company; do
   ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
     functions deploy "$function_name" --project-ref "$DEVELOPMENT_PROJECT_REF"
 done
@@ -227,6 +245,149 @@ There is no destructive seed/schema down or bulk delete. A failed dry-run or fai
 
 `scripts/release-gate.mjs` never applies a hosted migration or seed, runs `db push`, deploys a Function or Pages, executes a canary, or writes to a hosted resource. Production-readiness remains revision-bound offline evidence aggregation.
 
+## NTS full business verification Function
+
+`verify-benefit-company` is a browser POST endpoint. Its gateway setting is
+`verify_jwt = false` by design: the handler bounds the bearer value and calls
+Supabase Auth `getUser` with `SUPABASE_URL` and `SUPABASE_ANON_KEY`. A current
+Google sign-in requires exactly one returned identity whose validated
+`last_sign_in_at` instant equals the returned user's `last_sign_in_at`, and that
+identity must have provider `google`; missing timestamps, ambiguous matches, and
+a newer linked non-Google identity fail closed. `app_metadata.provider` and
+caller-decoded JWT claims are not evidence. GoTrue does not expose a separate
+cryptographic per-session provider proof through this `getUser` response, so
+this strict server-validated timestamp correlation is the strongest available
+evidence and retains a dependency on GoTrue's identity timestamp semantics.
+Only after Auth verifies the current session as Google may the handler pull the
+request body. The same bearer transport is then used for
+`reserve_benefit_company_nts_request_v1`; a caller-supplied user ID is never
+accepted. The service-role client is separate and is used only for exact
+finalize/failure RPCs after reservation. One 8-second monotonic budget starts
+after the syntactic origin/method/content-type/Bearer/idempotency/length checks
+and before the Auth request or first body read. Authentication, bounded body
+read/parse, reservation, both NTS fetch/stream/strict-decode operations, and
+HMAC must finish before the 6-second external cutoff. The final 2 seconds are
+reserved for persistence. Every
+transport receives its own AbortSignal; active response readers and timers are
+cancelled/cleared when their phase ends. If external verification reaches the
+cutoff after reservation, finalize is never invoked: the Function persists the
+exact revision-2 `rejected/unavailable` terminal result inside the reserved
+margin before returning the normal safe unavailable response. A failure-RPC
+transport timeout or ambiguous response returns
+`503 verification_indeterminate` with the known reservation request ID, because
+aborting HTTP or failing to decode its response cannot prove whether the
+database committed.
+
+Finalize may start only before the external cutoff and uses the reserved
+persistence margin. A finalize transport/network abort, deadline, truncated or
+oversized JSON, wrong content type, malformed envelope, or invalid success
+envelope returns bounded `202 verification_indeterminate` with only the safe
+code, known request ID, and fixed Korean retry copy; it never claims that a
+company was or was not created. The same failures during reserve return `503
+reservation_indeterminate` without a request ID, because no server-confirmed ID
+is available. HTTP abort is transport cancellation, not transaction rollback.
+Retry the exact same payload
+with the same idempotency key: reserve terminal replay returns revision-2
+success without another NTS call if finalize committed, while a still-pending
+reservation safely retries verification. Pending reserve responses must be
+exactly revision 1; every terminal reserve replay, finalize response, and
+failure response must be exactly revision 2. Any impossible state/revision
+combination is indeterminate after mutation dispatch. Only an exact, byte-
+bounded PostgREST error envelope with a recognized code and matching HTTP status
+is a definite rollback/rejection and maps to fixed public copy. Unknown status
+or code, malformed/extra envelope fields, and every response decode failure are
+conservatively indeterminate; raw RPC messages are never returned or logged.
+
+Configure these exact secret names through the target's approved secret manager;
+never put their values in this repository, shell history, release evidence, a
+browser bundle, or logs:
+
+- `SUPABASE_URL` (the HTTPS project origin, accepted with or without one trailing
+  slash; credentials, path, query, and fragment are rejected)
+- `SUPABASE_ANON_KEY` (or the target's compatible publishable key value)
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `NTS_SERVICE_KEY` (the decoded key value; the Function percent-encodes it once
+  when constructing each fixed NTS URL)
+- `BUSINESS_NUMBER_HMAC_SECRET` (32 to 8,192 UTF-8 bytes, independently generated
+  per environment)
+- `BENEFIT_COMPANY_ALLOWED_ORIGINS` (one to ten comma-separated, exact HTTPS
+  origins; no wildcard, credentials, path, query, fragment, empty member, or
+  non-HTTPS development origin)
+
+The endpoint requires an `Origin` header even on POST and accepts only the exact
+configured allow-list. It requires `Authorization: Bearer ...`, canonical UUID
+`Idempotency-Key`, and `application/json`. Business numbers accept exactly ten
+digits or the user form `NNN-NN-NNNNN`; the NTS transport receives digits only.
+Opening dates are exact `YYYYMMDD` calendar dates. The NTS outbound verification
+requires all four submitted identity values: business number, opening date,
+representative name, and business name. Public responses and logs include none
+of those four. The reserve/finalize database boundary may persist the proposed
+business name as the company field (plus bounded optional region, industry, and
+website); that company name is not classified as a sensitive DB field. It must
+never persist the raw business number, opening date, or representative name.
+The only persistent strong identifier is lower-case
+`HMAC-SHA-256(BUSINESS_NUMBER_HMAC_SECRET,
+"breadlab:business-number:v1\\0" + ten_digits)`.
+
+Origin, method, content type, bounded Bearer syntax, canonical idempotency UUID,
+and declared-length syntax are rejected before Auth and the first request-body
+pull. The absolute request deadline starts before Auth; successful current-
+Google Auth is required before body consumption. Each body read and every Auth, reserve,
+NTS, finalize, and failure transport receives an operation-local AbortSignal.
+Auth uses only the fixed `/auth/v1/user` endpoint, and reserve uses only the
+fixed PostgREST RPC endpoint; neither relies on an SDK call that drops the
+signal. All transport JSON, including finalize/failure responses, is content-
+type checked and byte bounded. Every response is `no-store` and `nosniff`, and
+CORS is returned only for an allowed origin.
+
+Local validation is mock-only and must use the injected transport in
+`index.test.ts`; do not set an NTS key and do not make a real NTS request. Run:
+
+```bash
+npx --yes deno@2.9.6 check --lock=deno.lock --frozen-lockfile \
+  supabase/functions/verify-benefit-company/index.ts \
+  supabase/functions/verify-benefit-company/index.test.ts
+npx --yes deno@2.9.6 test --allow-env --allow-read \
+  --lock=deno.lock --frozen-lockfile \
+  supabase/functions/verify-benefit-company/index.test.ts
+npx --yes deno@2.9.6 fmt --check supabase/functions
+```
+
+Passing these mock-only commands establishes local NTS implementation readiness,
+not hosted configuration or business verification. No real NTS canary has been
+run. Claims and manual company-review code may be locally ready while NTS hosted
+readiness and OpenDART production expansion remain separately blocked.
+
+Migration apply, Function secret configuration, and Function deployment are
+three separate hosted mutations and require target-specific approvals. A deploy
+success does not authorize an NTS request. After deployment, begin with
+configuration/read-only checks that do not submit identity data. A real NTS
+canary requires a separate recorded approval, a legitimate operator-controlled
+Google identity, a legally authorized real business verification case, the
+business owner's consent where required, and current NTS terms/quota review.
+Never fabricate a person, representative, opening date, Google identity, or
+business record for a canary. Record only safe status classes, timing buckets,
+and the opaque Edge request ID; never retain request/response bodies, bearer
+tokens, URLs containing the NTS service key, raw NTS details, or RPC errors.
+
+Kill switch: set both private feature flags `company_add_write_enabled` and
+`nts_verification_enabled` to disabled through a separately approved database
+operation; either flag makes reserve/finalize/failure fail closed. Also remove
+the Function route or its NTS secret only through an approved incident change.
+On NTS errors, malformed responses, timeout, status uncertainty, failure-RPC
+failure, or quota exhaustion, leave verification unavailable/rejected and do
+not manually finalize. Preserve sanitized evidence, disable the two write flags,
+forward-fix, rerun mock-only local tests, redeploy under fresh approval, and use
+the same idempotency key only for the exact same safe company payload. Do not
+claim JavaScript string zeroization; the handler only drops references and wipes
+mutable byte buffers where practical.
+
+Abort is a bounded local observation, not proof that a dispatched remote write
+did not commit. In particular, a reserve timeout is returned as reservation
+indeterminate; retry only the identical safe payload with the same idempotency
+key. Finalize/failure timeout responses likewise describe uncertainty and must
+not be reported as “no request” or “no write.”
+
 ## Production backend, probes, Pages, and canary
 
 First complete [backup and recovery evidence](community-backup-restore.md). Only additive migrations are allowed. There is no destructive down migration: disable writes and forward-fix instead.
@@ -249,7 +410,7 @@ After approval, apply the same reviewed revision and explicit Function set:
 : "${PRODUCTION_BACKEND_APPROVAL:?approval is required}"
 ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
   db push --project-ref "$PRODUCTION_PROJECT_REF"
-for function_name in validate-upload cleanup-attachments public-attachment; do
+for function_name in validate-upload cleanup-attachments public-attachment verify-benefit-company; do
   ./community-app/node_modules/.bin/supabase --workdir "$REPO_ROOT" \
     functions deploy "$function_name" --project-ref "$PRODUCTION_PROJECT_REF"
 done

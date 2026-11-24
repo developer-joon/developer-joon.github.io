@@ -46,9 +46,14 @@ const createInput: CreateBenefitCorrectionInput = {
   observedDataVersion: ownerItem.observed_data_version,
 }
 
-function setup(initial = { data: ownerItem as unknown, error: null as unknown }) {
+function productionEnvelope(initial: {data:unknown;error:unknown}): BenefitCorrectionRpcResponse {
+  const embeddedStatus=typeof initial.error==='object'&&initial.error!==null&&'status' in initial.error&&typeof initial.error.status==='number'?initial.error.status:undefined
+  const error=embeddedStatus===undefined?initial.error:Object.fromEntries(Object.entries(initial.error as Record<string,unknown>).filter(([key])=>key!=='status'))
+  return {data:initial.data,error,count:null,status:embeddedStatus??(error===null?200:500),statusText:error===null?'OK':'Error'}
+}
+function setup(initial: {data:unknown;error:unknown}|Record<string,unknown> = { data: ownerItem as unknown, error: null as unknown }) {
   const calls: Array<{ name: string; args: Record<string, unknown>; signal?: AbortSignal; boundActor: string; boundSession: string }> = []
-  let response = initial
+  let response = Object.keys(initial).every(key=>key==='data'||key==='error')?productionEnvelope(initial as {data:unknown;error:unknown}):initial as unknown as BenefitCorrectionRpcResponse
   let actorId = accountAId
   let sessionFingerprint = 'session-a-1'
   const context = (): BenefitCorrectionSessionContext => {
@@ -66,7 +71,7 @@ function setup(initial = { data: ownerItem as unknown, error: null as unknown })
   return {
     repository: createBenefitCorrectionRepository({ getSessionContext: context }),
     calls,
-    setResponse(next: typeof response) { response = next },
+    setResponse(next: {data:unknown;error:unknown}|BenefitCorrectionRpcResponse) { response = Object.keys(next).every(key=>key==='data'||key==='error')?productionEnvelope(next as {data:unknown;error:unknown}):next as BenefitCorrectionRpcResponse },
     switchActor() { actorId = accountBId; sessionFingerprint = 'session-b-1' },
   }
 }
@@ -199,6 +204,18 @@ describe('benefit correction repository RPC contract', () => {
     expect(JSON.stringify(value.calls)).not.toMatch(/user|email|token|reviewer|operator/i)
   })
 
+  it('passes an opaque canonical company ID through the correction RPC unchanged', async () => {
+    const companyId = `KR-CAN-${'f'.repeat(32)}`
+    const value = setup({ data: { ...ownerItem, company_id: companyId }, error: null })
+    const result = await createFor(value.repository, { ...createInput, companyId })
+
+    expect(result).toMatchObject({ ok: true, data: { companyId } })
+    expect(value.calls[0]).toMatchObject({
+      name: 'create_benefit_correction_request_v1',
+      args: { p_company_id: companyId },
+    })
+  })
+
   it('calls own list, admin queue, and review RPCs with exact cursor/CAS arguments', async () => {
     const value = setup({ data: { items: [ownerItem], has_more: false, next_cursor: null }, error: null })
     await value.repository.listMyRequests({ limit: 25 })
@@ -222,7 +239,7 @@ describe('benefit correction repository RPC contract', () => {
 
   it('lists one request audit through the session-bound RPC with exact keyset arguments', async () => {
     const value = setup({ data: { items: [auditEvent], has_more: true, next_cursor: { created_at: auditEvent.created_at, sequence: auditEvent.sequence } }, error: null })
-    const result = await value.repository.listAdminAudit({ requestId, limit: 25 })
+    const result = await value.repository.listAdminAudit({ requestId, limit: 1 })
     expect(result).toEqual({ ok: true, data: {
       items: [{
         sequence: auditEvent.sequence, eventType: 'additional_material_requested', fromStatus: 'reviewing', toStatus: 'reviewing',
@@ -232,7 +249,7 @@ describe('benefit correction repository RPC contract', () => {
       nextCursor: { createdAt: auditEvent.created_at, sequence: auditEvent.sequence },
     } })
     expect(value.calls).toEqual([{ name: 'list_benefit_correction_audit_v1', args: {
-      p_request_id: requestId, p_limit: 25, p_cursor_created_at: undefined, p_cursor_sequence: undefined,
+      p_request_id: requestId, p_limit: 1, p_cursor_created_at: undefined, p_cursor_sequence: undefined,
     }, signal: undefined, boundActor: accountAId, boundSession: 'session-a-1' }])
     expect(JSON.stringify(result)).not.toMatch(/actor|reviewer|email|token|snapshot|diagnostic/i)
   })
@@ -246,6 +263,7 @@ describe('benefit correction repository RPC contract', () => {
     [{ items: [], has_more: true, next_cursor: { created_at: auditEvent.created_at, sequence: auditEvent.sequence } }],
     [{ items: [], has_more: false, next_cursor: { created_at: auditEvent.created_at, sequence: auditEvent.sequence } }],
     [{ items: [auditEvent], has_more: true, next_cursor: { created_at: auditEvent.created_at, sequence: '57000000-0000-4000-8000-000000000002' } }],
+    [{ items: [auditEvent], has_more: true, next_cursor: { created_at: auditEvent.created_at, sequence: auditEvent.sequence } }],
     [{ items: [auditEvent, auditEvent], has_more: false, next_cursor: null }],
     [{ items: [auditEvent, { ...auditEvent, sequence: '57000000-0000-4000-8000-000000000000' }], has_more: false, next_cursor: null }],
   ])('fails closed on malformed audit envelopes %#', async (data) => {
@@ -288,10 +306,23 @@ describe('benefit correction repository RPC contract', () => {
     { items: [], has_more: true, next_cursor: null },
     { items: [], has_more: false, next_cursor: { created_at: createdAt, id: requestId } },
     { items: [], has_more: true, next_cursor: { created_at: 'bad', id: requestId } },
+    { items: [ownerItem], has_more: true, next_cursor: { created_at: ownerItem.created_at, id: ownerItem.id } },
     { items: [{ ...ownerItem, leak: true }], has_more: false, next_cursor: null },
   ])('rejects malformed page envelopes %#', async (data) => {
     const value = setup({ data, error: null })
     await expect(value.repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects sparse request and audit item arrays', async () => {
+    const sparseRequests = Array(2)
+    sparseRequests[0] = ownerItem
+    const requests = setup({ data: { items: sparseRequests, has_more: false, next_cursor: null }, error: null })
+    await expect(requests.repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+
+    const sparseEvents = Array(2)
+    sparseEvents[0] = auditEvent
+    const events = setup({ data: { items: sparseEvents, has_more: false, next_cursor: null }, error: null })
+    await expect(events.repository.listAdminAudit({ requestId, limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
   it('rejects owner-shaped rows in the admin queue and validates applied fields', async () => {
@@ -317,22 +348,37 @@ describe('benefit correction repository RPC contract', () => {
   })
 
   it.each([
-    [{ code: 'PGRST', message: '{"code":"rate_limit_exceeded","message":"Too many requests","details":null,"hint":null}', details: null, hint: null }, 'rate_limited', 'rate_limit_exceeded'],
-    [{ code: 'PGRST204', message: 'Too many requests', status: 429 }, 'rate_limited', 'PGRST204'],
-    [{ code: 'FETCH_ERROR', message: 'Failed to fetch' }, 'network', 'NETWORK_ERROR'],
-    [{ message: 'NetworkError when attempting to fetch resource.' }, 'network', 'NETWORK_ERROR'],
+    [{ code: 'PGRST', message: '{"code":"rate_limit_exceeded","message":"Too many requests","details":null,"hint":null}', details: null, hint: null, status: 429 }, 'rate_limited', 'rate_limit_exceeded'],
+    [{ code: 'PGRST204', message: 'Too many requests', details: null, hint: null, status: 429 }, 'rate_limited', 'PGRST204'],
   ] as const)('maps realistic Supabase error envelope %#', async (error, code, sourceCode) => {
     const value = setup({ data: null, error })
     await expect(value.repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code, sourceCode } })
   })
 
   it.each([
-    { code: 'PGRST', message: '{not-json' },
-    { code: 'PGRST', message: '{"code":42}' },
-    { code: 'PGRST', message: '{"message":"rate_limit_exceeded"}' },
-  ])('fails malformed PostgREST envelopes closed as unknown: %#', async error => {
-    const value = setup({ data: null, error })
-    await expect(value.repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'unknown', sourceCode: 'PGRST' } })
+    { data: ownerItem, error: null, extra: 'private' },
+    { data: null, error: { code: 'PGRST', message: '{not-json', details: null, hint: null, status: 400, reviewer_id: accountAId } },
+    { data: null, error: { code: 'PGRST', message: 'private', details: { sql: 'secret' }, hint: null, status: 500 } },
+  ])('fails extra outer and nested transport keys closed: %#', async envelope => {
+    const value = setup(envelope)
+    const result = await value.repository.listMyRequests({ limit: 25 })
+    expect(result).toEqual({ ok: false, error: { code: 'invalid_response', message: '서버 응답을 확인할 수 없습니다.' } })
+    expect(JSON.stringify(result)).not.toMatch(/private|secret/)
+  })
+
+  it('maps thrown network failures rather than accepting network-shaped server errors', async () => {
+    const rpc = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    const repository = createBenefitCorrectionRepository({ getSessionContext: () => ({ actorId: accountAId, sessionFingerprint: 'session-a-1', rpc }) })
+    await expect(repository.listMyRequests({ limit: 25 })).resolves.toMatchObject({ ok: false, error: { code: 'network', sourceCode: 'NETWORK_ERROR' } })
+  })
+
+  it('prefers an account switch observed after RPC rejection over the network error', async () => {
+    const rpc=vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    let actorId=accountAId
+    const repository=createBenefitCorrectionRepository({getSessionContext:()=>({actorId,sessionFingerprint:`session-${actorId}`,rpc})})
+    const scope=await currentScope(repository)
+    rpc.mockImplementation(async()=>{actorId=accountBId;throw new TypeError('Failed to fetch')})
+    await expect(repository.createRequest(createInput,scope)).resolves.toMatchObject({ok:false,error:{code:'stale_response'}})
   })
 
   it('validates inputs before RPC and never accepts client actor or review identity fields', async () => {
@@ -345,7 +391,7 @@ describe('benefit correction repository RPC contract', () => {
   })
 
   it('uses the captured session-bound caller and rejects a response after the session changes', async () => {
-    let finish!: (value: { data: unknown; error: unknown }) => void
+    let finish!: (value: BenefitCorrectionRpcResponse) => void
     let actorId = accountAId
     let sessionFingerprint = 'session-a-1'
     const rpcCalls: string[] = []
@@ -368,7 +414,7 @@ describe('benefit correction repository RPC contract', () => {
     await vi.waitFor(() => expect(rpcCalls).toEqual([`${accountAId}:session-a-1`]))
     actorId = accountBId
     sessionFingerprint = 'session-b-1'
-    finish({ data: ownerItem, error: null })
+    finish(productionEnvelope({ data: ownerItem, error: null }))
     await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'stale_response' } })
 
     controller.abort()
@@ -420,7 +466,7 @@ describe('benefit correction repository RPC contract', () => {
           sessionFingerprint: boundSession,
           rpc: async () => {
             mutations.push(boundActor)
-            return { data: ownerItem, error: null }
+            return productionEnvelope({ data: ownerItem, error: null })
           },
         }
       },

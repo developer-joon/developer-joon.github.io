@@ -9,6 +9,7 @@ import { BenefitDirectoryCompanyPage } from './BenefitDirectoryCompanyPage'
 const CRN_A = 'KR-CRN-1101111111111'
 const CRN_B = 'KR-CRN-2202222222222'
 const BIZ = 'KR-BIZ-1234567890'
+const CAN = `KR-CAN-${'a'.repeat(32)}`
 const publication = (overrides: Partial<BenefitCompanyDetail['publications'][number]> = {}): BenefitCompanyDetail['publications'][number] => ({
   publicationId: '123e4567-e89b-42d3-a456-426614174000',
   categoryId: 'leave',
@@ -18,9 +19,16 @@ const publication = (overrides: Partial<BenefitCompanyDetail['publications'][num
   conditionText: '입사 1년 후',
   trustLabel: '공식 확인',
   revision: 9,
+  originClaimId: null,
   ...overrides,
 })
-const detail = (id = CRN_A, publications: BenefitCompanyDetail['publications'] = [publication()]): BenefitCompanyDetail => ({
+const claim = (overrides: Partial<BenefitCompanyDetail['claims'][number]> = {}): BenefitCompanyDetail['claims'][number] => ({
+  claimId: '223e4567-e89b-42d3-a456-426614174000', categoryId: 'health', categoryName: '건강',
+  title: '건강 지원 제보', description: '건강 지원을 관찰했습니다.', eligibilityText: '재직자', conditionText: '근속 1년',
+  statusCode: 'submitted', statusLabel: '제보됨', nickname: '빵친구', submittedAt: '2026-11-20T09:30:00.000000+09:00',
+  observedOn: '2026-11-19', confirmCount: 0, disputeCount: 0, lastConfirmationAt: null, ...overrides,
+})
+const detail = (id = CRN_A, publications: BenefitCompanyDetail['publications'] = [publication()], claims: BenefitCompanyDetail['claims'] = []): BenefitCompanyDetail => ({
   company: {
     companyId: id,
     displayName: id === CRN_B ? '나 기업' : '가 기업',
@@ -31,6 +39,7 @@ const detail = (id = CRN_A, publications: BenefitCompanyDetail['publications'] =
     summary: '공개 기업 소개입니다.',
   },
   publications,
+  claims,
 })
 const ok = (value: BenefitCompanyDetail): Result<BenefitCompanyDetail> => ({ ok: true, data: value })
 const failure = (code: BenefitDirectoryErrorCode, message = 'raw internal message'): Result<BenefitCompanyDetail> => ({ ok: false, error: { code, message } })
@@ -43,7 +52,10 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  window.history.replaceState({}, '', '/')
+})
 
 describe('BenefitDirectoryCompanyPage', () => {
   it.each([
@@ -69,7 +81,7 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
   })
 
-  it.each([CRN_A, BIZ])('passes canonical server ID %s to detail unchanged', async id => {
+  it.each([CRN_A, BIZ, CAN])('passes canonical server ID %s to detail unchanged', async id => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>().mockResolvedValue(ok(detail(id, [])))
     render(<BenefitDirectoryCompanyPage search={`?id=${id}`} repository={repository(load)} />)
     await screen.findByRole('heading', { name: '가 기업' })
@@ -88,21 +100,20 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(screen.getByRole('status')).toHaveTextContent('기업 복지 정보를 불러오고 있습니다.')
     expect(await screen.findByRole('heading', { name: '가 기업' })).toBeVisible()
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
-    expect(screen.getByText('법인')).toBeVisible()
-    expect(screen.getByText(/법인 등기 식별정보 기준/)).toBeVisible()
+    expect(screen.getByText('확인 상태 · 공개 명단에서 확인된 사업체입니다.')).toBeVisible()
     expect(screen.getByText('소프트웨어 · 중견기업 · 서울')).toBeVisible()
-    expect(screen.getByText('공개 기업 소개입니다.')).toBeVisible()
+    expect(screen.queryByText('공개 기업 소개입니다.')).not.toBeInTheDocument()
 
     const headings = screen.getAllByRole('heading', { level: 2 }).map(node => node.textContent)
-    expect(headings).toEqual(['휴가·근무시간', '건강·보험'])
-    const leave = screen.getByRole('region', { name: '휴가·근무시간' })
-    expect(within(leave).getAllByRole('article').map(node => node.querySelector('h3')?.textContent)).toEqual(['재충전 휴가', '추가 휴가'])
-    expect(within(leave).getByText('대상')).toBeVisible()
-    expect(within(leave).getByText('정규직 구성원')).toBeVisible()
-    expect(within(leave).getAllByText('조건')).toHaveLength(2)
-    expect(within(leave).getByText('입사 1년 후')).toBeVisible()
-    expect(screen.getAllByText('공식 확인')).toHaveLength(2)
-    expect(screen.getByText('사용자 제보')).toBeVisible()
+    expect(headings).toEqual(['공식 확인 혜택', '커뮤니티 확인 혜택', '제보된 혜택', '재확인 필요'])
+    const official = screen.getByRole('region', { name: '공식 확인 혜택' })
+    expect(within(official).getAllByRole('article').map(node => node.querySelector('h3')?.textContent)).toEqual(['재충전 휴가', '추가 휴가'])
+    expect(within(official).getByText('대상')).toBeVisible()
+    expect(within(official).getByText('정규직 구성원')).toBeVisible()
+    expect(within(official).getAllByText('조건')).toHaveLength(2)
+    expect(within(official).getByText('입사 1년 후')).toBeVisible()
+    expect(screen.getAllByText('공식 공개 자료')).toHaveLength(2)
+    expect(screen.getByText('커뮤니티 검토 게시')).toBeVisible()
     expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/benefits/?q=%EA%B0%80')
 
     const publicText = container.textContent ?? ''
@@ -113,12 +124,97 @@ describe('BenefitDirectoryCompanyPage', () => {
   it('binds the honest zero-publication CTA to the Task 7 submission route contract', async () => {
     const load = vi.fn<BenefitDirectoryRepository['detail']>().mockResolvedValue(ok(detail(CRN_A, [])))
     render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(load)} />)
-    await screen.findByText('게시 가능한 공개 복지 근거 미확인')
-    expect(screen.getByRole('status')).toHaveTextContent('게시 가능한 공개 복지 근거 미확인')
-    expect(screen.getByText(/게시 여부만 나타내며 실제 제도 유무를 단정하지 않습니다/)).toBeVisible()
+    await screen.findByRole('heading', { name: '가 기업' })
+    expect(screen.getByRole('region', { name: '공식 확인 혜택' })).toHaveTextContent('게시된 공식 확인 혜택이 아직 없습니다.')
     expect(screen.queryByText(/복지 없음/)).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '새 혜택 제보' })).toHaveAttribute('href', `/community/benefits/submit/?companyId=${CRN_A}`)
+    expect(screen.getByRole('link', { name: '이 기업의 혜택 제보' })).toHaveAttribute('href', `/community/benefits/claim/?company=${CRN_A}`)
     expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/benefits/')
+  })
+
+  it('renders linked claim history on its single publication card and never duplicates the promoted benefit', async () => {
+    const linkedId = '223e4567-e89b-42d3-a456-426614174001'
+    const publications = [
+      publication(),
+      publication({ publicationId: '123e4567-e89b-42d3-a456-426614174001', trustLabel: '사용자 제보', title: '커뮤니티 식대', originClaimId: linkedId }),
+    ]
+    const claims = [
+      claim({ claimId: linkedId, statusCode: 'community_confirmed', statusLabel: '커뮤니티 확인', confirmCount: 4, lastConfirmationAt: '2026-11-22T12:00:00.000000+09:00', title: '확인 이력' }),
+      claim(),
+      claim({ claimId: '223e4567-e89b-42d3-a456-426614174002', statusCode: 'disputed', statusLabel: '재확인 필요', disputeCount: 2, title: '논쟁 중 제보' }),
+    ]
+    render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(vi.fn(async () => ok(detail(CRN_A, publications, claims))))} />)
+    await screen.findByRole('heading', { name: '가 기업' })
+
+    expect(screen.getByText('확인 상태 · 공개 명단에서 확인된 사업체입니다.')).toBeVisible()
+    expect(screen.getByRole('link', { name: '이 기업의 혜택 제보' })).toHaveAttribute('href', `/community/benefits/claim/?company=${CRN_A}`)
+    expect(screen.getAllByRole('heading', { level: 2 }).map(node => node.textContent)).toEqual(['공식 확인 혜택', '커뮤니티 확인 혜택', '제보된 혜택', '재확인 필요'])
+    const community = screen.getByRole('region', { name: '커뮤니티 확인 혜택' })
+    expect(within(community).getAllByRole('article')).toHaveLength(1)
+    expect(within(community).getByRole('article')).toHaveAttribute('id', `claim-${linkedId}`)
+    expect(within(community).getByText('커뮤니티 확인 이력')).toBeVisible()
+    expect(within(community).getByText('확인 4 · 이의 0')).toBeVisible()
+    expect(screen.getAllByRole('article')).toHaveLength(4)
+
+    const submitted = screen.getByRole('region', { name: '제보된 혜택' })
+    expect(submitted).toHaveTextContent('빵친구')
+    expect(within(submitted).getByText('최초 제보').nextElementSibling).toHaveTextContent('2026. 11. 20.')
+    expect(within(submitted).getByText('마지막 확인').nextElementSibling).toHaveTextContent('아직 확인 없음')
+    expect(submitted).toHaveTextContent('확인 0 · 이의 0')
+    expect(within(submitted).getByText('관찰일').nextElementSibling).toHaveTextContent('2026. 11. 19.')
+    expect(submitted).toHaveTextContent('커뮤니티 제보이며 회사의 공식 발표가 아닙니다.')
+    expect(within(submitted).getByRole('link', { name: '확인 또는 이의 남기기' })).toHaveAttribute('href', `/community/benefits/claim-reaction/?company=${CRN_A}&claim=223e4567-e89b-42d3-a456-426614174000`)
+    expect(screen.queryByText(/자동 만료|만료 예정/)).not.toBeInTheDocument()
+  })
+
+  it('attaches community history to an official publication without rendering a second community card', async () => {
+    const linked = claim({ statusCode: 'community_confirmed', statusLabel: '커뮤니티 확인', confirmCount: 3, lastConfirmationAt: '2026-11-22T12:00:00.000000+09:00' })
+    const official = publication({ originClaimId: linked.claimId })
+    render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(vi.fn(async () => ok(detail(CRN_A, [official], [linked]))))} />)
+    await screen.findByRole('heading', { name: '가 기업' })
+    const officialGroup = screen.getByRole('region', { name: '공식 확인 혜택' })
+    expect(within(officialGroup).getAllByRole('article')).toHaveLength(1)
+    expect(within(officialGroup).getByRole('article')).toHaveAttribute('id', `claim-${linked.claimId}`)
+    expect(within(officialGroup).getByText('커뮤니티 확인 이력')).toBeVisible()
+    expect(screen.getByRole('region', { name: '커뮤니티 확인 혜택' })).toHaveTextContent('게시된 커뮤니티 확인 혜택이나 확인 이력이 아직 없습니다.')
+  })
+
+  it('renders an unmatched confirmed claim only as a non-counting inconsistency state', async () => {
+    const impossible = claim({ statusCode: 'community_confirmed', statusLabel: '커뮤니티 확인', confirmCount: 3, lastConfirmationAt: '2026-11-22T12:00:00.000000+09:00' })
+    render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(vi.fn(async () => ok(detail(CRN_A, [], [impossible]))))} />)
+    await screen.findByRole('heading', { name: '가 기업' })
+    const community = screen.getByRole('region', { name: '커뮤니티 확인 혜택' })
+    expect(within(community).queryByRole('article')).not.toBeInTheDocument()
+    expect(within(community).getByRole('status')).toHaveTextContent('연결 정보 불일치')
+  })
+
+
+  it('renders every detail group when all authority groups are empty without inferring no benefits', async () => {
+    render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(vi.fn(async () => ok(detail(CRN_A, [], []))))} />)
+    await screen.findByRole('heading', { name: '가 기업' })
+    expect(screen.getAllByRole('heading', { level: 2 }).map(node => node.textContent)).toEqual(['공식 확인 혜택', '커뮤니티 확인 혜택', '제보된 혜택', '재확인 필요'])
+    expect(screen.getByRole('region', { name: '공식 확인 혜택' })).toHaveTextContent('게시된 공식 확인 혜택이 아직 없습니다.')
+    expect(screen.getByRole('region', { name: '커뮤니티 확인 혜택' })).toHaveTextContent('게시된 커뮤니티 확인 혜택이나 확인 이력이 아직 없습니다.')
+    expect(screen.getByRole('region', { name: '제보된 혜택' })).toHaveTextContent('검토 중인 공개 제보가 없습니다.')
+    expect(screen.getByRole('region', { name: '재확인 필요' })).toHaveTextContent('재확인이 필요한 공개 제보가 없습니다.')
+    expect(document.body.textContent).not.toMatch(/복지 없음/)
+  })
+
+  it('focuses a matching rendered claim hash once and ignores invalid claim hashes', async () => {
+    const target = claim()
+    window.history.replaceState({}, '', `/?id=${CRN_A}#claim-${target.claimId}`)
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    const repo = repository(vi.fn(async () => ok(detail(CRN_A, [], [target]))))
+    const view = render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repo} />)
+    await waitFor(() => expect(document.getElementById(`claim-${target.claimId}`)).toBeInTheDocument())
+    await waitFor(() => expect(focus).toHaveBeenCalledTimes(1))
+    expect(document.getElementById(`claim-${target.claimId}`)).toHaveAttribute('tabindex', '-1')
+    view.rerender(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repo} />)
+    expect(focus).toHaveBeenCalledTimes(1)
+
+    window.history.replaceState({}, '', `/?id=${CRN_A}#claim-123e4567-e89b-42d3-a456-426614174099`)
+    const second = render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repo} />)
+    await within(second.container).findByRole('heading', { name: '가 기업' })
+    expect(focus).toHaveBeenCalledTimes(1)
   })
 
   it('keeps exactly one H1 in loading and error states', async () => {

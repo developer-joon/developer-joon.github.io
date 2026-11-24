@@ -1,4 +1,4 @@
-import type { Tables, TablesInsert, TablesUpdate } from './database'
+import type { Database, Json, Tables, TablesInsert, TablesUpdate } from './database'
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -19,11 +19,87 @@ type ProfileRowHasNullableMetadataProvider = Expect<Equal<ProfileRow['metadata_p
 type ProfileInsertMayOmitOrNullMetadataProvider = Expect<Equal<ProfileInsert['metadata_provider'], string | null | undefined>>
 type ProfileUpdateMayNullMetadataProvider = Expect<Equal<ProfileUpdate['metadata_provider'], string | null | undefined>>
 
+type ClaimEventOperation = 'create' | 'withdraw' | 'moderate' | 'promote' | 'review' | 'merge_target'
+type ClaimEventRowOperationExact = Expect<Equal<Tables<'benefit_claim_events'>['operation'], ClaimEventOperation>>
+type ClaimEventInsertOperationExact = Expect<Equal<TablesInsert<'benefit_claim_events'>['operation'], ClaimEventOperation>>
+type ClaimEventUpdateOperationExact = Expect<Equal<TablesUpdate<'benefit_claim_events'>['operation'], ClaimEventOperation | undefined>>
+type OfficialVerifyArgs = Database['public']['Functions']['officially_verify_benefit_claim_v1']['Args']
+type OfficialVerifyStatusExact = Expect<Equal<OfficialVerifyArgs['p_expected_status'], 'submitted' | 'community_confirmed' | 'disputed'>>
+type OfficialVerifyArgsExact = Expect<Equal<OfficialVerifyArgs, {
+  p_claim_id: string
+  p_client_key: string
+  p_condition_text: string | null
+  p_description: string
+  p_eligibility_text: string | null
+  p_evidence_observed_on: string
+  p_evidence_source_url: string
+  p_evidence_type: 'official_website' | 'company_policy' | 'regulatory_filing' | 'employment_document' | 'other_official'
+  p_expected_revision: number
+  p_expected_status: 'submitted' | 'community_confirmed' | 'disputed'
+  p_title: string
+  p_verification_note: string
+}>>
+type OfficialVerifyReturnExact = Expect<Equal<Database['public']['Functions']['officially_verify_benefit_claim_v1']['Returns'], Json>>
+type CreateClaimArgsExact = Expect<Equal<Database['public']['Functions']['create_benefit_claim_v1']['Args'], {
+  p_category_id: 'leave' | 'family' | 'health' | 'growth' | 'housing' | 'commute' | 'remote' | 'retirement' | 'meals' | 'inclusion'
+  p_client_key: string
+  p_company_id: string
+  p_condition_text: string | null
+  p_description: string
+  p_eligibility_text: string | null
+  p_observed_on: string
+  p_source_url: string | null
+  p_title: string
+}>>
+type ModerateClaimArgsExact = Expect<Equal<Database['public']['Functions']['moderate_benefit_claim_v1']['Args'], {
+  p_action: 'hide' | 'restore' | 'withdraw' | 'merge' | 'withdraw_official'
+  p_claim_id: string
+  p_client_key: string
+  p_evidence_observed_on?: string | null
+  p_evidence_source_url?: string | null
+  p_evidence_type?: 'official_website' | 'company_policy' | 'regulatory_filing' | 'employment_document' | 'other_official' | null
+  p_expected_revision: number
+  p_expected_status: 'submitted' | 'community_confirmed' | 'disputed' | 'hidden' | 'withdrawn' | 'merged'
+  p_reason?: string | null
+  p_target_claim_id?: string | null
+}>>
+type ModerateClaimReturnExact = Expect<Equal<Database['public']['Functions']['moderate_benefit_claim_v1']['Returns'], Json>>
+
+type CompanyStatusExact = Expect<Equal<Database['public']['Tables']['benefit_company_add_requests']['Row']['status'], 'pending_review' | 'approved' | 'rejected' | 'merged'>>
+type CompanyQueueStatusExact = Expect<Equal<Database['public']['Functions']['list_benefit_company_request_queue_v1']['Args']['p_status'], 'pending_review' | 'approved' | 'rejected' | 'merged' | 'all' | undefined>>
+type CompanyReviewActionExact = Expect<Equal<Database['public']['Functions']['review_benefit_company_request_v1']['Args']['p_action'], 'approve' | 'reject' | 'merge'>>
+type CompanyDestinationExact = Expect<Equal<Database['public']['Functions']['review_benefit_company_request_v1']['Args']['p_destination_company_id'], string | null | undefined>>
+type SearchBenefitCompaniesArgs = Database['public']['Functions']['search_benefit_companies_v1']['Args']
+type SearchBenefitCompaniesArgsExact = Expect<Equal<SearchBenefitCompaniesArgs, {
+  p_categories?: ('leave' | 'family' | 'health' | 'growth' | 'housing' | 'commute' | 'remote' | 'retirement' | 'meals' | 'inclusion')[] | null
+  p_cursor?: string | null
+  p_has_benefits_only?: boolean
+  p_industry?: string | null
+  p_page_size?: number
+  p_query?: string | null
+  p_region?: string | null
+  p_size?: 'large' | 'medium' | 'small' | 'large_affiliate' | 'unclassified' | null
+}>>
+type SearchBenefitCompaniesExplicitNulls = Expect<Equal<{
+  [Key in keyof SearchBenefitCompaniesArgs]-?: null extends SearchBenefitCompaniesArgs[Key] ? Key : never
+}[keyof SearchBenefitCompaniesArgs], 'p_categories' | 'p_cursor' | 'p_industry' | 'p_query' | 'p_region' | 'p_size'>>
+
 export type ProfileTypeAssertions = [
+  CompanyStatusExact, CompanyQueueStatusExact, CompanyReviewActionExact, CompanyDestinationExact,
+  SearchBenefitCompaniesArgsExact, SearchBenefitCompaniesExplicitNulls,
   ProfileRowHasNullableGithubId,
   ProfileInsertMayOmitOrNullGithubId,
   ProfileUpdateMayNullGithubId,
   ProfileRowHasNullableMetadataProvider,
   ProfileInsertMayOmitOrNullMetadataProvider,
   ProfileUpdateMayNullMetadataProvider,
+  ClaimEventRowOperationExact,
+  ClaimEventInsertOperationExact,
+  ClaimEventUpdateOperationExact,
+  OfficialVerifyStatusExact,
+  OfficialVerifyArgsExact,
+  OfficialVerifyReturnExact,
+  CreateClaimArgsExact,
+  ModerateClaimArgsExact,
+  ModerateClaimReturnExact,
 ]

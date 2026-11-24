@@ -23,7 +23,7 @@ describe('benefit correction operation-scoped session provider', () => {
     current = session(actorB, 'secret-token-b')
     const response = await captured?.rpc('create_benefit_correction_request_v1', { p_value: 'safe' })
 
-    expect(response).toEqual({ data: { ok: true }, error: null })
+    expect(response).toEqual({ data: { ok: true }, error: null, count: null, status: 200, statusText: '' })
     expect(fetcher).toHaveBeenCalledWith(
       'https://abcdefghijklmnopqrst.supabase.co/rest/v1/rpc/create_benefit_correction_request_v1',
       expect.objectContaining({
@@ -49,7 +49,7 @@ describe('benefit correction operation-scoped session provider', () => {
 
     const response = await (await provider())?.rpc('list_my_benefit_correction_requests_v1', {})
 
-    expect(response).toEqual({ data: null, error: { ...envelope, status: 429 } })
+    expect(response).toEqual({ data: null, error: envelope, count: null, status: 429, statusText: '' })
   })
 
   it('fails closed on malformed success JSON and does not capture unauthenticated sessions', async () => {

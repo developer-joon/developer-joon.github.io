@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../community-app/public/data/company-benefits')
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const pinned = {
-  base: 'cd971b70d4fb0d9860a6c9f0903610cb20d9cc8f9d98757478a1592cf82ed99b',
-  directory: '3ffb2259bb618e70c820005aebea1be24422d831faea908121d4884406c7ea0b',
-  overlay: 'a75a6edb58e1c4258fd79451cb64efdc936fcd1cfaaccb0cd2391267b86adbd4',
-  research: 'dee9a566771d7c03cd010c6c07d40fbd7cf2a3555a8c4f3043c5e159bb22b321',
+  base: '2778a70adab5781812a26abc92cdb8dec108daa52b028f9393a6e5b57d03230a',
+  directory: '4b78f137f798aabfd698b5690da354f6343a27d4bbb3c619baa99f57fd55de9e',
+  overlay: '1528d06d2c8c277ea57005430f14e5ff2d4e7f0b5a15af23c11f3364d693c4bb',
+  research: '84466c3a9edbfb4dce8ee57be1bd1cdcb886e77cb25311bd53512846f4d2d73b',
 }
 async function checked(relative, digest, bytes) {
   const raw = await readFile(path.join(root, relative))

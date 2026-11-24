@@ -10,6 +10,10 @@ import { getBenefitCorrectionRepository, type BenefitCorrectionRepository } from
 import type { BenefitDirectoryRepository } from './data/benefitDirectoryRepository'
 import type { BenefitSubmissionRepository } from './data/benefitSubmissionRepository'
 import type { AdminBenefitSubmissionRepository } from './data/adminBenefitSubmissionRepository'
+import type { BenefitCompanyRequestRepository } from './data/benefitCompanyRequestRepository'
+import type { BenefitClaimRepository } from './data/benefitClaimRepository'
+import type { AdminBenefitCompanyRequestRepository } from './data/adminBenefitCompanyRequestRepository'
+import type { AdminBenefitClaimRepository } from './data/adminBenefitClaimRepository'
 import { AppHeader } from './components/AppHeader'
 import { AppFooter } from './components/AppFooter'
 import { CommunityActions } from './components/CommunityActions'
@@ -21,6 +25,9 @@ const BenefitCorrectionPage = lazy(() => import('./pages/BenefitCorrectionPage')
 const MyBenefitCorrectionsPage = lazy(() => import('./pages/MyBenefitCorrectionsPage').then(m => ({ default: m.MyBenefitCorrectionsPage })))
 const BenefitSubmissionPage = lazy(() => import('./pages/BenefitSubmissionPage').then(m => ({ default: m.BenefitSubmissionPage })))
 const MyBenefitSubmissionsPage = lazy(() => import('./pages/MyBenefitSubmissionsPage').then(m => ({ default: m.MyBenefitSubmissionsPage })))
+const BenefitCompanyRequestPage = lazy(() => import('./pages/BenefitCompanyRequestPage').then(m => ({ default: m.BenefitCompanyRequestPage })))
+const BenefitClaimPage = lazy(() => import('./pages/BenefitClaimPage').then(m => ({ default: m.BenefitClaimPage })))
+const BenefitClaimReactionPage = lazy(() => import('./pages/BenefitClaimReactionPage').then(m => ({ default: m.BenefitClaimReactionPage })))
 
 const PostDetailPage = lazy(async () => {
   const module = await import('./pages/PostDetailPage')
@@ -46,6 +53,8 @@ const AdminBenefitSubmissionsPage = lazy(async () => {
   const module = await import('./pages/AdminBenefitSubmissionsPage')
   return { default: module.AdminBenefitSubmissionsPage }
 })
+const AdminBenefitCompanyRequestsPage = lazy(() => import('./pages/AdminBenefitCompanyRequestsPage').then(module => ({ default: module.AdminBenefitCompanyRequestsPage })))
+const AdminBenefitClaimsPage = lazy(() => import('./pages/AdminBenefitClaimsPage').then(module => ({ default: module.AdminBenefitClaimsPage })))
 
 
 interface AppProps {
@@ -60,6 +69,10 @@ interface AppProps {
   benefitDirectoryRepository?: BenefitDirectoryRepository
   benefitSubmissionRepository?: BenefitSubmissionRepository
   adminBenefitSubmissionRepository?: AdminBenefitSubmissionRepository
+  benefitCompanyRequestRepository?: BenefitCompanyRequestRepository
+  benefitClaimRepository?: BenefitClaimRepository
+  adminBenefitCompanyRequestRepository?: AdminBenefitCompanyRequestRepository
+  adminBenefitClaimRepository?: AdminBenefitClaimRepository
 }
 
 function LazyRouteFallback({ children }: { children: React.ReactNode }) {
@@ -73,7 +86,7 @@ function LazyRouteFallback({ children }: { children: React.ReactNode }) {
   )
 }
 
-export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, benefitCorrectionRepository, benefitDirectoryRepository, benefitSubmissionRepository, adminBenefitSubmissionRepository, authClient, onAuthCallbackNavigate }: AppProps) {
+export function App({ pathname = window.location.pathname, search = window.location.search, hash = window.location.hash, repository, uploadRepository, benefitCorrectionRepository, benefitDirectoryRepository, benefitSubmissionRepository, adminBenefitSubmissionRepository, benefitCompanyRequestRepository, benefitClaimRepository, adminBenefitCompanyRequestRepository, adminBenefitClaimRepository, authClient, onAuthCallbackNavigate }: AppProps) {
   const auth = useAuth()
   const normalizedPathname = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname
   if (benefitsRoute(pathname) === 'methodology') return <Suspense fallback={<LazyRouteFallback>조사 기준을 준비하고 있습니다.</LazyRouteFallback>}><BenefitsMethodologyPage search={search} /></Suspense>
@@ -91,6 +104,15 @@ export function App({ pathname = window.location.pathname, search = window.locat
   }
   if (normalizedPathname === '/community/benefits/my-submissions') {
     return <Suspense fallback={<LazyRouteFallback>내 복지 제보를 준비하고 있습니다.</LazyRouteFallback>}><MyBenefitSubmissionsPage repository={benefitSubmissionRepository} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/benefits/company-request') {
+    return <Suspense fallback={<LazyRouteFallback>기업 추가 요청 화면을 준비하고 있습니다.</LazyRouteFallback>}><BenefitCompanyRequestPage repository={benefitCompanyRequestRepository} search={search} /></Suspense>
+  }
+  if (normalizedPathname === '/community/benefits/claim') {
+    return <Suspense fallback={<LazyRouteFallback>복지 제보 화면을 준비하고 있습니다.</LazyRouteFallback>}><BenefitClaimPage repository={benefitClaimRepository} directoryRepository={benefitDirectoryRepository} search={search} /></Suspense>
+  }
+  if (normalizedPathname === '/community/benefits/claim-reaction') {
+    return <Suspense fallback={<LazyRouteFallback>복지 제보 반응 화면을 준비하고 있습니다.</LazyRouteFallback>}><BenefitClaimReactionPage repository={benefitClaimRepository} directoryRepository={benefitDirectoryRepository} search={search} /></Suspense>
   }
   if (normalizedPathname === '/community') {
     return <CommunityHomePage repository={repository ?? getCommunityRepository()} initialSearch={search} />
@@ -116,6 +138,12 @@ export function App({ pathname = window.location.pathname, search = window.locat
   }
   if (normalizedPathname === '/community/admin/benefit-submissions') {
     return <Suspense fallback={<LazyRouteFallback>복지 제보 검토 데스크를 준비하고 있습니다.</LazyRouteFallback>}><AdminBenefitSubmissionsPage authorizationRepository={repository ?? getCommunityRepository()} repository={adminBenefitSubmissionRepository} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/admin/benefit-company-requests') {
+    return <Suspense fallback={<LazyRouteFallback>기업 요청 검토 데스크를 준비하고 있습니다.</LazyRouteFallback>}><AdminBenefitCompanyRequestsPage authorizationRepository={repository ?? getCommunityRepository()} repository={adminBenefitCompanyRequestRepository} currentPath={`${pathname}${search}${hash}`} /></Suspense>
+  }
+  if (normalizedPathname === '/community/admin/benefit-claims') {
+    return <Suspense fallback={<LazyRouteFallback>복지 claim 검토 데스크를 준비하고 있습니다.</LazyRouteFallback>}><AdminBenefitClaimsPage authorizationRepository={repository ?? getCommunityRepository()} repository={adminBenefitClaimRepository} currentPath={`${pathname}${search}${hash}`} /></Suspense>
   }
   if (normalizedPathname === '/community/auth/callback') {
     return <AuthCallbackPage client={authClient} search={search} navigate={onAuthCallbackNavigate} />

@@ -148,6 +148,585 @@ export type Database = {
         };
         Relationships: [];
       };
+      benefit_claim_events: {
+        Row: {
+          actor_snapshot: string;
+          claim_id: string;
+          client_key: string;
+          created_at: string;
+          event_id: string;
+          event_type:
+            | "submitted"
+            | "duplicate_directed"
+            | "withdrawn"
+            | "hidden"
+            | "restored"
+            | "merged"
+            | "promoted"
+            | "demoted"
+            | "repromoted"
+            | "official_reviewed"
+            | "official_withdrawn"
+            | "reaction_recomputed";
+          from_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
+          metadata: NonNullable<Json>;
+          operation: "create" | "withdraw" | "moderate" | "promote" | "review" | "merge_target";
+          payload_fingerprint: string;
+          to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
+        };
+        ComputedFields: never;
+        Insert: {
+          actor_snapshot: string;
+          claim_id: string;
+          client_key: string;
+          created_at?: string;
+          event_id?: string;
+          event_type:
+            | "submitted"
+            | "duplicate_directed"
+            | "withdrawn"
+            | "hidden"
+            | "restored"
+            | "merged"
+            | "promoted"
+            | "demoted"
+            | "repromoted"
+            | "official_reviewed"
+            | "official_withdrawn"
+            | "reaction_recomputed";
+          from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
+          metadata?: NonNullable<Json>;
+          operation: "create" | "withdraw" | "moderate" | "promote" | "review" | "merge_target";
+          payload_fingerprint: string;
+          to_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
+        };
+        Update: {
+          actor_snapshot?: string;
+          claim_id?: string;
+          client_key?: string;
+          created_at?: string;
+          event_id?: string;
+          event_type?:
+            | "submitted"
+            | "duplicate_directed"
+            | "withdrawn"
+            | "hidden"
+            | "restored"
+            | "merged"
+            | "promoted"
+            | "demoted"
+            | "repromoted"
+            | "official_reviewed"
+            | "official_withdrawn"
+            | "reaction_recomputed";
+          from_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | null;
+          metadata?: NonNullable<Json>;
+          operation?: "create" | "withdraw" | "moderate" | "promote" | "review" | "merge_target";
+          payload_fingerprint?: string;
+          to_status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_claim_events_claim_id_fkey";
+            columns: ["claim_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_claims";
+            referencedColumns: ["claim_id"];
+          },
+        ];
+      };
+      benefit_claim_merges: {
+        Row: {
+          actor_snapshot: string;
+          merge_id: string;
+          merged_at: string;
+          request_client_key: string;
+          source_claim_id: string;
+          target_claim_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          actor_snapshot: string;
+          merge_id?: string;
+          merged_at?: string;
+          request_client_key: string;
+          source_claim_id: string;
+          target_claim_id: string;
+        };
+        Update: {
+          actor_snapshot?: string;
+          merge_id?: string;
+          merged_at?: string;
+          request_client_key?: string;
+          source_claim_id?: string;
+          target_claim_id?: string;
+        };
+        Relationships: [
+          { foreignKeyName: "benefit_claim_merges_source_claim_id_fkey"; columns: ["source_claim_id"]; isOneToOne: true; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
+          { foreignKeyName: "benefit_claim_merges_target_claim_id_fkey"; columns: ["target_claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
+        ];
+      };
+      benefit_claim_merge_reactions: {
+        Row: { created_at: string; merge_id: string; origin_claim_id: string; reaction: "confirm" | "dispute"; updated_at: string; user_id: string };
+        ComputedFields: never;
+        Insert: { created_at: string; merge_id: string; origin_claim_id: string; reaction: "confirm" | "dispute"; updated_at: string; user_id: string };
+        Update: { created_at?: string; merge_id?: string; origin_claim_id?: string; reaction?: "confirm" | "dispute"; updated_at?: string; user_id?: string };
+        Relationships: [
+          { foreignKeyName: "benefit_claim_merge_reactions_merge_id_fkey"; columns: ["merge_id"]; isOneToOne: false; referencedRelation: "benefit_claim_merges"; referencedColumns: ["merge_id"] },
+          { foreignKeyName: "benefit_claim_merge_reactions_origin_claim_id_fkey"; columns: ["origin_claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
+        ];
+      };
+      benefit_claim_moderation_requests: {
+        Row: { action: "hide" | "restore" | "withdraw" | "user_withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot: string; claim_id: string; client_key: string; created_at: string; payload_fingerprint: string; response: NonNullable<Json> };
+        ComputedFields: never;
+        Insert: { action: "hide" | "restore" | "withdraw" | "user_withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot: string; claim_id: string; client_key: string; created_at?: string; payload_fingerprint: string; response: NonNullable<Json> };
+        Update: { action?: "hide" | "restore" | "withdraw" | "user_withdraw" | "merge" | "withdraw_official" | "verify" | "reverify"; actor_snapshot?: string; claim_id?: string; client_key?: string; created_at?: string; payload_fingerprint?: string; response?: NonNullable<Json> };
+        Relationships: [{ foreignKeyName: "benefit_claim_moderation_requests_claim_id_fkey"; columns: ["claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] }];
+      };
+      benefit_claim_official_reviews: {
+        Row: { action: "verify" | "reverify" | "withdraw_official"; claim_id: string; evidence_observed_on: string; evidence_source_url: string; evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id: string | null; publication_id: string; review_id: string; reviewed_at: string; reviewer_snapshot: string; successor_publication_id: string | null; verification_note: string };
+        ComputedFields: never;
+        Insert: { action: "verify" | "reverify" | "withdraw_official"; claim_id: string; evidence_observed_on: string; evidence_source_url: string; evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id?: string | null; publication_id: string; review_id?: string; reviewed_at?: string; reviewer_snapshot: string; successor_publication_id?: string | null; verification_note: string };
+        Update: { action?: "verify" | "reverify" | "withdraw_official"; claim_id?: string; evidence_observed_on?: string; evidence_source_url?: string; evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official"; predecessor_publication_id?: string | null; publication_id?: string; review_id?: string; reviewed_at?: string; reviewer_snapshot?: string; successor_publication_id?: string | null; verification_note?: string };
+        Relationships: [
+          { foreignKeyName: "benefit_claim_official_reviews_claim_id_fkey"; columns: ["claim_id"]; isOneToOne: false; referencedRelation: "benefit_claims"; referencedColumns: ["claim_id"] },
+          { foreignKeyName: "benefit_claim_official_reviews_predecessor_publication_id_fkey"; columns: ["predecessor_publication_id"]; isOneToOne: false; referencedRelation: "benefit_publications"; referencedColumns: ["publication_id"] },
+          { foreignKeyName: "benefit_claim_official_reviews_publication_id_fkey"; columns: ["publication_id"]; isOneToOne: false; referencedRelation: "benefit_publications"; referencedColumns: ["publication_id"] },
+          { foreignKeyName: "benefit_claim_official_reviews_successor_publication_id_fkey"; columns: ["successor_publication_id"]; isOneToOne: false; referencedRelation: "benefit_publications"; referencedColumns: ["publication_id"] },
+        ];
+      };
+      benefit_claim_reaction_requests: {
+        Row: {
+          actor_snapshot: string;
+          claim_id: string;
+          client_key: string;
+          created_at: string;
+          payload_fingerprint: string;
+          response: NonNullable<Json>;
+        };
+        ComputedFields: never;
+        Insert: {
+          actor_snapshot: string;
+          claim_id: string;
+          client_key: string;
+          created_at?: string;
+          payload_fingerprint: string;
+          response: NonNullable<Json>;
+        };
+        Update: {
+          actor_snapshot?: string;
+          claim_id?: string;
+          client_key?: string;
+          created_at?: string;
+          payload_fingerprint?: string;
+          response?: NonNullable<Json>;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_claim_reaction_requests_claim_id_fkey";
+            columns: ["claim_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_claims";
+            referencedColumns: ["claim_id"];
+          },
+        ];
+      };
+      benefit_claim_reactions: {
+        Row: {
+          claim_id: string;
+          created_at: string;
+          reaction: "confirm" | "dispute";
+          updated_at: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          claim_id: string;
+          created_at?: string;
+          reaction: "confirm" | "dispute";
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          claim_id?: string;
+          created_at?: string;
+          reaction?: "confirm" | "dispute";
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_claim_reactions_claim_id_fkey";
+            columns: ["claim_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_claims";
+            referencedColumns: ["claim_id"];
+          },
+        ];
+      };
+      benefit_claims: {
+        Row: {
+          active_publication_id: string | null;
+          category_id: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
+          claim_id: string;
+          client_key: string;
+          company_id: string;
+          condition_text: string | null;
+          created_at: string;
+          description: string;
+          eligibility_text: string | null;
+          normalized_eligibility: string;
+          normalized_title: string;
+          observed_on: string;
+          official_publication_id: string | null;
+          merged_into_claim_id: string | null;
+          payload_fingerprint: string;
+          revision: number;
+          source_url: string | null;
+          status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
+          submitter_id: string | null;
+          title: string;
+          updated_at: string;
+          withdrawn_at: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          active_publication_id?: string | null;
+          category_id: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
+          claim_id?: string;
+          client_key: string;
+          company_id: string;
+          condition_text?: string | null;
+          created_at?: string;
+          description: string;
+          eligibility_text?: string | null;
+          normalized_eligibility?: string;
+          normalized_title: string;
+          observed_on: string;
+          official_publication_id?: string | null;
+          merged_into_claim_id?: string | null;
+          payload_fingerprint: string;
+          revision?: number;
+          source_url?: string | null;
+          status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
+          submitter_id?: string | null;
+          title: string;
+          updated_at?: string;
+          withdrawn_at?: string | null;
+        };
+        Update: {
+          active_publication_id?: string | null;
+          category_id?: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
+          claim_id?: string;
+          client_key?: string;
+          company_id?: string;
+          condition_text?: string | null;
+          created_at?: string;
+          description?: string;
+          eligibility_text?: string | null;
+          normalized_eligibility?: string;
+          normalized_title?: string;
+          observed_on?: string;
+          official_publication_id?: string | null;
+          merged_into_claim_id?: string | null;
+          payload_fingerprint?: string;
+          revision?: number;
+          source_url?: string | null;
+          status?: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
+          submitter_id?: string | null;
+          title?: string;
+          updated_at?: string;
+          withdrawn_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_claims_active_publication_id_fkey";
+            columns: ["active_publication_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_publications";
+            referencedColumns: ["publication_id"];
+          },
+          {
+            foreignKeyName: "benefit_claims_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_claims_merged_into_claim_id_fkey";
+            columns: ["merged_into_claim_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_claims";
+            referencedColumns: ["claim_id"];
+          },
+          {
+            foreignKeyName: "benefit_claims_official_publication_id_fkey";
+            columns: ["official_publication_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_publications";
+            referencedColumns: ["publication_id"];
+          },
+          {
+            foreignKeyName: "benefit_claims_submitter_id_fkey";
+            columns: ["submitter_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      benefit_company_add_events: {
+        Row: {
+          action: string;
+          actor_id: string | null;
+          actor_kind: string;
+          created_at: string;
+          event_id: string;
+          from_status: string | null;
+          metadata: NonNullable<Json>;
+          request_id: string;
+          resolved_company_id: string | null;
+          to_status: string;
+          verification_category: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          action: string;
+          actor_id?: string | null;
+          actor_kind: string;
+          created_at?: string;
+          event_id?: string;
+          from_status?: string | null;
+          metadata?: NonNullable<Json>;
+          request_id: string;
+          resolved_company_id?: string | null;
+          to_status: string;
+          verification_category?: string | null;
+        };
+        Update: {
+          action?: string;
+          actor_id?: string | null;
+          actor_kind?: string;
+          created_at?: string;
+          event_id?: string;
+          from_status?: string | null;
+          metadata?: NonNullable<Json>;
+          request_id?: string;
+          resolved_company_id?: string | null;
+          to_status?: string;
+          verification_category?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_company_add_events_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "benefit_company_add_events_request_id_fkey";
+            columns: ["request_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_company_add_requests";
+            referencedColumns: ["request_id"];
+          },
+          {
+            foreignKeyName: "benefit_company_add_events_resolved_company_id_fkey";
+            columns: ["resolved_company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+        ];
+      };
+      benefit_company_add_requests: {
+        Row: {
+          business_number_digest: string | null;
+          client_key: string;
+          created_at: string;
+          external_verified_at: string | null;
+          industry: string | null;
+          normalized_name: string;
+          payload_fingerprint: string;
+          processed_at: string | null;
+          proposed_name: string;
+          region: string | null;
+          request_id: string;
+          requester_id: string;
+          resolved_company_id: string | null;
+          revision: number;
+          reviewer_id: string | null;
+          status: "pending_review" | "approved" | "rejected" | "merged";
+          updated_at: string;
+          verification_method: "manual" | "nts_full";
+          verification_status: "pending" | "matched" | "mismatched" | "unavailable" | "rejected";
+          website: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          business_number_digest?: string | null;
+          client_key: string;
+          created_at?: string;
+          external_verified_at?: string | null;
+          industry?: string | null;
+          normalized_name: string;
+          payload_fingerprint: string;
+          processed_at?: string | null;
+          proposed_name: string;
+          region?: string | null;
+          request_id?: string;
+          requester_id: string;
+          resolved_company_id?: string | null;
+          revision?: number;
+          reviewer_id?: string | null;
+          status?: "pending_review" | "approved" | "rejected" | "merged";
+          updated_at?: string;
+          verification_method: "manual" | "nts_full";
+          verification_status?: "pending" | "matched" | "mismatched" | "unavailable" | "rejected";
+          website?: string | null;
+        };
+        Update: {
+          business_number_digest?: string | null;
+          client_key?: string;
+          created_at?: string;
+          external_verified_at?: string | null;
+          industry?: string | null;
+          normalized_name?: string;
+          payload_fingerprint?: string;
+          processed_at?: string | null;
+          proposed_name?: string;
+          region?: string | null;
+          request_id?: string;
+          requester_id?: string;
+          resolved_company_id?: string | null;
+          revision?: number;
+          reviewer_id?: string | null;
+          status?: "pending_review" | "approved" | "rejected" | "merged";
+          updated_at?: string;
+          verification_method?: "manual" | "nts_full";
+          verification_status?: "pending" | "matched" | "mismatched" | "unavailable" | "rejected";
+          website?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_company_add_requests_requester_id_fkey";
+            columns: ["requester_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "benefit_company_add_requests_resolved_company_id_fkey";
+            columns: ["resolved_company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_company_add_requests_reviewer_id_fkey";
+            columns: ["reviewer_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      // Project-owned tightening: Supabase generation widens CHECK-constrained text to string;
+      // keep the migration 003 identifier contract exact and guard it with database.identifier-types.test-d.ts.
+      benefit_company_identifiers: {
+        Row: {
+          company_id: string;
+          created_at: string;
+          identifier_digest_or_value: string;
+          identifier_id: string;
+          identifier_type: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          source_edition: string;
+          updated_at: string;
+          verified_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          company_id: string;
+          created_at?: string;
+          identifier_digest_or_value: string;
+          identifier_id?: string;
+          identifier_type: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          source_edition: string;
+          updated_at?: string;
+          verified_at: string;
+        };
+        Update: {
+          company_id?: string;
+          created_at?: string;
+          identifier_digest_or_value?: string;
+          identifier_id?: string;
+          identifier_type?: "legacy_company_id" | "opendart_corp_code" | "business_number_hmac_v1";
+          source_edition?: string;
+          updated_at?: string;
+          verified_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_company_identifiers_company_id_fkey";
+            columns: ["company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+        ];
+      };
+      benefit_company_merge_events: {
+        Row: {
+          actor_id: string;
+          created_at: string;
+          destination_company_id: string;
+          merge_event_id: string;
+          reason: string;
+          source_company_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          actor_id: string;
+          created_at?: string;
+          destination_company_id: string;
+          merge_event_id?: string;
+          reason: string;
+          source_company_id: string;
+        };
+        Update: {
+          actor_id?: string;
+          created_at?: string;
+          destination_company_id?: string;
+          merge_event_id?: string;
+          reason?: string;
+          source_company_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "benefit_company_merge_events_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "benefit_company_merge_events_destination_company_id_fkey";
+            columns: ["destination_company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+          {
+            foreignKeyName: "benefit_company_merge_events_source_company_id_fkey";
+            columns: ["source_company_id"];
+            isOneToOne: false;
+            referencedRelation: "benefit_companies";
+            referencedColumns: ["company_id"];
+          },
+        ];
+      };
       benefit_correction_events: {
         Row: {
           action: string;
@@ -1122,6 +1701,20 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      create_benefit_claim_v1: {
+        Args: {
+          p_category_id: "leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion";
+          p_client_key: string;
+          p_company_id: string;
+          p_condition_text: string | null;
+          p_description: string;
+          p_eligibility_text: string | null;
+          p_observed_on: string;
+          p_source_url: string | null;
+          p_title: string;
+        };
+        Returns: Json;
+      };
       create_benefit_correction_request_v1: {
         Args: {
           p_category_id: string;
@@ -1165,6 +1758,16 @@ export type Database = {
         };
         Returns: Json;
       };
+      create_manual_benefit_company_request_v1: {
+        Args: {
+          p_client_key: string;
+          p_industry?: string | null;
+          p_proposed_name: string;
+          p_region?: string | null;
+          p_website?: string | null;
+        };
+        Returns: Json;
+      };
       create_post: {
         Args: {
           p_body_markdown: string;
@@ -1198,7 +1801,27 @@ export type Database = {
         Args: { p_attachment_id: string; p_storage_path: string };
         Returns: boolean;
       };
+      fail_benefit_company_nts_request_v1: {
+        Args: {
+          p_expected_verification_status: string;
+          p_failure_category: string;
+          p_payload_fingerprint: string;
+          p_request_id: string;
+        };
+        Returns: Json;
+      };
+      finalize_benefit_company_nts_request_v1: {
+        Args: {
+          p_business_number_digest: string;
+          p_expected_verification_status: string;
+          p_external_verified_at: string;
+          p_payload_fingerprint: string;
+          p_request_id: string;
+        };
+        Returns: Json;
+      };
       get_benefit_company_v1: { Args: { p_company_id: string }; Returns: Json };
+      get_benefit_company_v2: { Args: { p_company_id: string }; Returns: Json };
       get_public_post: {
         Args: { p_post_id: string };
         Returns: {
@@ -1222,6 +1845,23 @@ export type Database = {
       get_public_post_v2: { Args: { p_post_id: string }; Returns: Json };
       get_public_post_v3: { Args: { p_post_id: string }; Returns: Json };
       is_admin: { Args: Record<PropertyKey, never>; Returns: boolean };
+      list_benefit_claim_audit_v1: {
+        Args: { p_claim_id: string; p_cursor_created_at?: string | null; p_cursor_kind?: "claim_event" | "official_review" | "merge" | null; p_cursor_id?: string | null; p_limit?: number };
+        Returns: Json;
+      };
+      list_benefit_claim_moderation_queue_v1: {
+        Args: { p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number; p_status?: "active" | "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged" | "all" };
+        Returns: Json;
+      };
+      list_benefit_company_request_queue_v1: {
+        Args: {
+          p_cursor_created_at?: string | null;
+          p_cursor_id?: string | null;
+          p_limit?: number;
+          p_status?: "pending_review" | "approved" | "rejected" | "merged" | "all";
+        };
+        Returns: Json;
+      };
       list_benefit_correction_audit_v1: {
         Args: {
           p_cursor_created_at?: string;
@@ -1275,6 +1915,14 @@ export type Database = {
           p_limit?: number;
           p_status?: string;
         };
+        Returns: Json;
+      };
+      list_my_benefit_claims_v1: {
+        Args: { p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number };
+        Returns: Json;
+      };
+      list_my_benefit_company_requests_v1: {
+        Args: { p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number };
         Returns: Json;
       };
       list_my_benefit_correction_requests_v1: {
@@ -1360,6 +2008,21 @@ export type Database = {
         };
         Returns: Json;
       };
+      moderate_benefit_claim_v1: {
+        Args: {
+          p_action: "hide" | "restore" | "withdraw" | "merge" | "withdraw_official";
+          p_claim_id: string;
+          p_client_key: string;
+          p_evidence_observed_on?: string | null;
+          p_evidence_source_url?: string | null;
+          p_evidence_type?: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official" | null;
+          p_expected_revision: number;
+          p_expected_status: "submitted" | "community_confirmed" | "disputed" | "hidden" | "withdrawn" | "merged";
+          p_reason?: string | null;
+          p_target_claim_id?: string | null;
+        };
+        Returns: Json;
+      };
       moderate_comment_v1: {
         Args: {
           p_action: string;
@@ -1379,6 +2042,23 @@ export type Database = {
           p_idempotency_key: string;
           p_post_id: string;
           p_reason: string;
+        };
+        Returns: Json;
+      };
+      officially_verify_benefit_claim_v1: {
+        Args: {
+          p_claim_id: string;
+          p_client_key: string;
+          p_condition_text: string | null;
+          p_description: string;
+          p_eligibility_text: string | null;
+          p_evidence_observed_on: string;
+          p_evidence_source_url: string;
+          p_evidence_type: "official_website" | "company_policy" | "regulatory_filing" | "employment_document" | "other_official";
+          p_expected_revision: number;
+          p_expected_status: "submitted" | "community_confirmed" | "disputed";
+          p_title: string;
+          p_verification_note: string;
         };
         Returns: Json;
       };
@@ -1406,6 +2086,16 @@ export type Database = {
         Returns: boolean;
       };
       reserve_attachment_upload: { Args: { p_idempotency_key: string }; Returns: string };
+      reserve_benefit_company_nts_request_v1: {
+        Args: {
+          p_client_key: string;
+          p_industry?: string | null;
+          p_proposed_name: string;
+          p_region?: string | null;
+          p_website?: string | null;
+        };
+        Returns: Json;
+      };
       resolve_public_attachment: {
         Args: { p_attachment_id: string };
         Returns: {
@@ -1416,6 +2106,17 @@ export type Database = {
           owner_id: string;
           storage_path: string;
         }[];
+      };
+      review_benefit_company_request_v1: {
+        Args: {
+          p_action: "approve" | "reject" | "merge";
+          p_destination_company_id?: string | null;
+          p_expected_revision: number;
+          p_expected_status: "pending_review";
+          p_reason: string;
+          p_request_id: string;
+        };
+        Returns: Json;
       };
       review_benefit_correction_request_v1: {
         Args: {
@@ -1444,15 +2145,23 @@ export type Database = {
       };
       search_benefit_companies_v1: {
         Args: {
-          p_categories?: string[];
-          p_cursor?: string;
+          p_categories?: ("leave" | "family" | "health" | "growth" | "housing" | "commute" | "remote" | "retirement" | "meals" | "inclusion")[] | null;
+          p_cursor?: string | null;
           p_has_benefits_only?: boolean;
-          p_industry?: string;
+          p_industry?: string | null;
           p_page_size?: number;
-          p_query?: string;
-          p_region?: string;
-          p_size?: string;
+          p_query?: string | null;
+          p_region?: string | null;
+          p_size?: "large" | "medium" | "small" | "large_affiliate" | "unclassified" | null;
         };
+        Returns: Json;
+      };
+      get_benefit_claim_reaction_v1: {
+        Args: { p_claim_id: string };
+        Returns: Json;
+      };
+      set_benefit_claim_reaction_v1: {
+        Args: { p_claim_id: string; p_client_key: string; p_reaction: "confirm" | "dispute" | null };
         Returns: Json;
       };
       set_comment_reaction: { Args: { p_comment_id: string; p_reacted: boolean }; Returns: Json };
@@ -1481,6 +2190,15 @@ export type Database = {
       soft_delete_post: { Args: { p_post_id: string }; Returns: string };
       toggle_comment_reaction: { Args: { p_comment_id: string }; Returns: boolean };
       toggle_post_reaction: { Args: { p_post_id: string }; Returns: boolean };
+      withdraw_benefit_claim_v1: {
+        Args: {
+          p_claim_id: string;
+          p_client_key: string;
+          p_expected_revision: number;
+          p_expected_status: "submitted" | "community_confirmed" | "disputed";
+        };
+        Returns: Json;
+      };
       update_comment: { Args: { p_body_markdown: string; p_comment_id: string }; Returns: string };
       update_post: {
         Args: { p_body_markdown: string; p_post_id: string; p_tag_ids: string[]; p_title: string };

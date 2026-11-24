@@ -855,6 +855,20 @@ def test_additive_projection_accepts_only_approved_checkpoint_and_complete_gate_
     assert sum(metadata["cell_state_counts"].values()) == 9500
 
 
+def test_public_projection_redacts_business_numbers_without_redacting_ordinary_numbers():
+    module_spec = importlib.util.spec_from_file_location("public_projection_redaction", SCRIPT)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    record = {
+        "statement": "등록번호 123-45-67890, 직원 123명, 2026년 확인",
+        "supporting_quote": "사업자등록번호: 1234567890 / 지원금 100000원",
+    }
+    projected = module.public_v2_record(record)
+    assert projected["statement"] == "등록번호 [사업자등록번호 비공개], 직원 123명, 2026년 확인"
+    assert projected["supporting_quote"] == "사업자등록번호: [사업자등록번호 비공개] / 지원금 100000원"
+
+
 def test_approved_projection_main_passes_one_bounded_manifest_snapshot_to_emission(tmp_path):
     module_spec = importlib.util.spec_from_file_location("approved_projection_main_snapshot", SCRIPT)
     assert module_spec is not None and module_spec.loader is not None

@@ -18,6 +18,8 @@ export type BenefitDirectorySizeLabel = (typeof BENEFIT_DIRECTORY_SIZE_LABELS)[n
 
 export const BENEFIT_DIRECTORY_TRUST_LABELS = ['공식 확인', '사용자 제보'] as const
 export type BenefitDirectoryTrustLabel = (typeof BENEFIT_DIRECTORY_TRUST_LABELS)[number]
+export const BENEFIT_DIRECTORY_PUBLIC_CLAIM_STATUSES = ['submitted', 'community_confirmed', 'disputed'] as const
+export type BenefitDirectoryPublicClaimStatus = (typeof BENEFIT_DIRECTORY_PUBLIC_CLAIM_STATUSES)[number]
 
 export interface BenefitDirectorySearchInput {
   query?: string | null
@@ -55,7 +57,7 @@ export interface BenefitDirectoryPage {
   total: number
 }
 
-export interface BenefitDirectoryPublication {
+export interface BenefitDirectoryPublicationV1 {
   publicationId: string
   categoryId: BenefitDirectoryCategory
   title: string
@@ -66,10 +68,43 @@ export interface BenefitDirectoryPublication {
   revision: number
 }
 
-export interface BenefitCompanyDetail {
-  company: BenefitDirectoryCompanySummary
-  publications: BenefitDirectoryPublication[]
+/** Backward-compatible name for the original public v1 projection. */
+export type BenefitDirectoryPublication = BenefitDirectoryPublicationV1
+
+export interface BenefitDirectoryPublicationV2 extends BenefitDirectoryPublicationV1 {
+  /** Public claim bound to this exact active publication, when claim-originated. */
+  originClaimId: string | null
 }
+
+export interface BenefitDirectoryPublicClaim {
+  claimId: string
+  categoryId: BenefitDirectoryCategory
+  categoryName: string
+  title: string
+  description: string
+  eligibilityText: string | null
+  conditionText: string | null
+  statusCode: BenefitDirectoryPublicClaimStatus
+  statusLabel: string
+  nickname: string
+  submittedAt: string
+  observedOn: string
+  confirmCount: number
+  disputeCount: number
+  lastConfirmationAt: string | null
+}
+
+export interface BenefitCompanyDetailV1 {
+  company: BenefitDirectoryCompanySummary
+  publications: BenefitDirectoryPublicationV1[]
+}
+
+export interface BenefitCompanyDetailV2 extends BenefitCompanyDetailV1 {
+  publications: BenefitDirectoryPublicationV2[]
+  claims: BenefitDirectoryPublicClaim[]
+}
+
+export type BenefitCompanyDetail = BenefitCompanyDetailV2
 
 export type BenefitDirectoryErrorCode =
   | 'invalid_argument'

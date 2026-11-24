@@ -22,12 +22,22 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Two fresh Docker site artifacts verify and reproduce byte-for-byte.
 - [ ] Task 16 E2E passes against local Docker; no intentional sentinel remains.
 - [ ] Local stack and only this run's temporary directory are cleaned; local evidence is current, run-identified, and revision-bound.
+- [ ] Run the pinned Deno check/test/fmt commands for `verify-benefit-company` with injected mock transport only; confirm no local or hosted NTS request occurred.
+- [ ] Confirm the NTS matrix covers pre-body origin/method/content-type/Bearer/UUID/declared-length rejection; Auth before any body pull; fake bearer plus never-closing sensitive body returning quick `401` with zero pulls; a valid current-Google session plus never-closing body bounded and cancelled at the same pre-Auth deadline; streaming byte/cancel bounds; strict current-Google timestamp evidence; exact revision matrix (pending reserve = 1; terminal reserve/finalize/failure = 2); reserve-before-NTS; terminal replay; both official endpoint decoders (`01` active, `02` suspended, `03` closed); the 8-second monotonic budget with a 6-second external cutoff and 2-second persistence margin; reserve/finalize/failure network, abort, deadline, truncated/oversized/wrong-content-type/malformed/invalid-success uncertainty and same-key retry convergence; reserve ambiguity with no invented request ID; known-ID finalize/failure ambiguity; exact bounded recognized PostgREST rejection mapping; immutable per-operation AbortSignals; fixed fetch-based Auth/reserve contracts; bounded JSON for every runtime RPC; `no-store`/`nosniff` response headers; UTF-8-byte HMAC limits; finalize/failure privacy; and reader/timer/late-promise cleanup.
+- [ ] Run `node scripts/verify-benefit-claims-release.mjs`; require migrations through `202611230011`, claim/company pgTAP+dblink coverage, strict anonymous v2 decoder mutations (extra private keys and 201 claims), authenticated route inputs, and the narrow sensitive-value scanner.
+- [ ] Require positive final count evidence for title upgrade, base seed importer, OpenDART importer integration, and canonical pgTAP. Missing/zero/duplicate/truncated/post-summary count output is **NO-GO**.
+- [ ] Verify assembled authenticated shells for submit/my-submissions/company-request/claim/claim-reaction and all benefit admin queues; verify canonical `/benefits/` eager roles remain exactly `benefits-main`, `benefits`, `react`, and `jsx-runtime`, with no auth/mutation/admin eager dependency.
+- [ ] Record readiness separately: claims/manual review local readiness; NTS mock-only local readiness; NTS hosted canary **NOT RUN** unless separately authorized; OpenDART production bundle **BLOCKED** until official source and reuse-rights authority exist.
+- [ ] Do not run the composite local gate in a no-browser scope: its graph contains Chromium/local HTTP acceptance and the intentional Task 16 sentinel. Run only authorized constituents and record composite **NOT RUN / NO-GO**.
 
 ## 2. development cloud integration+cleanup
 
 - [ ] Read-only development gate passes against the dedicated hosted development ref.
 - [ ] Obtain development-only mutation approval; inspect migration dry run.
 - [ ] Apply reviewed development migration and deploy the explicit Function set to `--project-ref "$DEVELOPMENT_PROJECT_REF"`.
+- [ ] Separately approve and configure only the exact NTS Function names: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `NTS_SERVICE_KEY`, `BUSINESS_NUMBER_HMAC_SECRET`, and `BENEFIT_COMPANY_ALLOWED_ORIGINS`; record no values.
+- [ ] Confirm `verify-benefit-company` alone has its reviewed `verify_jwt = false` setting and, under one deadline created before network/body reads, performs a signal-aware fixed `/auth/v1/user` GET before body consumption, unique current-`google` identity timestamp correlation (rejecting linked-but-current-non-Google, missing, and ambiguous evidence), then a signal-aware bearer-bound fixed reserve RPC; record the GoTrue per-session-provider proof limitation and do not weaken any other Function setting.
+- [ ] Do not run a real development NTS call unless a distinct authorized-canary approval, legitimate consented business case, real operator-controlled Google identity, and quota/terms review are recorded. Never fabricate identity or business fields.
 - [ ] Verify the separate development Google OAuth client returns through `https://${DEVELOPMENT_PROJECT_REF}.supabase.co/auth/v1/callback`, then to `http://localhost:5173/community/auth/callback/`; confirm Kakao/GitHub remain disabled.
 - [ ] Run Task 16 development cloud integration for Auth, migration, Functions, OAuth, and private Storage.
 - [ ] Record every synthetic row/Auth user/object as operator-recorded fixture IDs.
@@ -39,6 +49,8 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 
 - [ ] Start/reset local Supabase; run `db:test:benefit-title-upgrade`, `db:test:benefit-seed-importer`, `db:test`, and `db:lint` with no hosted target or credential present.
 - [ ] Run `node scripts/generate-benefit-directory-seed.mjs --check`, then the independent `node scripts/verify-benefit-directory-seed.mjs`; require `40,053` actual rows and the frozen byte/ID/source digests.
+- [ ] Run the OpenDART generator `--check` and independent verifier only with the reviewed official source and authority descriptor. The tracked production bundle is currently absent; synthetic fixtures never satisfy this item.
+- [ ] Run `db:test:opendart-benefit-importer`; require its synthetic integration fixture to identify itself as non-production and emit final `Tests=1` only after cleanup-safe completion.
 - [ ] Set loopback-only `DATABASE_URL` and trusted absolute `PSQL_BIN`; run `apply-benefit-directory-seed.mjs --dry-run`; stop and prove rollback left prior rows/publications unchanged.
 - [ ] Run the normal local import separately; read back exact company count `40,053`, identity split `1,000 / 35,910 / 3,143`, and the receipt/bundle/ordered-ID/source digests. Replay is idempotent and unrelated companies/publications are unchanged.
 - [ ] Run frontend check/build and the assembled-site A/B verification, browser acceptance, and reproducibility. Exact RPC keys and strict decoder rejection of `source_url`, `verified_at`, `reviewer_id`, or any other private provenance are mandatory.
@@ -74,6 +86,10 @@ Complete every checkbox in order. Each evidence record is external to the reposi
 - [ ] Confirm every migration is additive; no destructive down migration exists.
 - [ ] Inspect `db push --dry-run` against the explicit production ref.
 - [ ] Apply the approved migration and deploy the exact reviewed Functions with explicit `--project-ref "$PRODUCTION_PROJECT_REF"`.
+- [ ] Treat migration apply, NTS secret configuration, and `verify-benefit-company` deployment as separately approved mutations; deployment does not authorize an NTS call.
+- [ ] Verify the exact HTTPS origin allow-list has no wildcard, empty member, credential, path/query/fragment, or HTTP origin; POST without `Origin` remains denied.
+- [ ] Confirm safe logs contain only opaque Edge request ID, result/status class, and timing bucket—no token, body, raw business/representative/date value, NTS URL/key/detail, Supabase ref, SQL, or RPC error.
+- [ ] Confirm the kill switch disables both `company_add_write_enabled` and `nts_verification_enabled`; recovery is forward-fix plus mock-only validation and fresh approvals, never manual finalize.
 - [ ] On failure, write-disable and forward-fix; do not destructively reverse an applied migration.
 
 ## 5. production read-only probes

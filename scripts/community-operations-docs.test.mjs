@@ -26,6 +26,16 @@ async function allOperationsText() {
   return (await Promise.all(operationFiles.map(operationText))).join('\n')
 }
 
+test('OpenDART runbook scopes lock cleanup to cooperating generators', async () => {
+  const text = await operationText('opendart-benefit-directory-import.md')
+  assertMatches(text, [
+    /supported lock threat model.*cooperating concurrent generator/is,
+    /lstat.*unlink.*not an atomic compare-and-unlink/is,
+    /same UID.*out of scope/is,
+    /privilege separation.*kernel-backed transaction redesign/is,
+  ])
+})
+
 function assertMatches(text, patterns) {
   for (const pattern of patterns) assert.match(text, pattern)
 }

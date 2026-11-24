@@ -384,6 +384,13 @@ deno_version = 2
 [functions.public-attachment]
 verify_jwt = false
 
+# This browser endpoint performs bounded bearer parsing, server-side Auth getUser
+# verification, current Google-provider enforcement, and user-bound reserve RPCs.
+# Gateway JWT verification is disabled so the function owns one fail-closed auth
+# contract and never trusts unverified JWT metadata.
+[functions.verify-benefit-company]
+verify_jwt = false
+
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 

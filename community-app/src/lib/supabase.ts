@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { parseEnv } from '../config/env'
-import type { Database } from '../types/database'
+import { parseEnv } from '../config/env.ts'
+import type { Database } from '../types/database.ts'
 
 let browserClient: SupabaseClient<Database> | undefined
 let anonymousBrowserClient: SupabaseClient<Database> | undefined
