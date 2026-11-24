@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { open, readdir } from 'node:fs/promises'
 import path from 'node:path'
 
-const baseHash = 'cd971b70d4fb0d9860a6c9f0903610cb20d9cc8f9d98757478a1592cf82ed99b'
+const baseHash = '2778a70adab5781812a26abc92cdb8dec108daa52b028f9393a6e5b57d03230a'
 // Immutable v1 source epoch. A new acquisition requires a new schema version and pins.
 const v1 = Object.freeze({
   recruitmentSha: '16756d002508995b70f158bd279a48fb825af6a79820eb82b0009efcbeb82365',

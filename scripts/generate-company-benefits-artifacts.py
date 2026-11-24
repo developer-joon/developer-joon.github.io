@@ -26,6 +26,20 @@ UNKNOWN_MARKERS = (
     "출처에 명시되지 않음", "확인 불가",
 )
 NONABSENCE_NOTICE = "이번 조사에서 게시 가능한 공식 복지 근거를 확보하지 못했습니다. 복지가 없다는 뜻이 아닙니다."
+BUSINESS_NUMBER_REDACTION = "[사업자등록번호 비공개]"
+HYPHENATED_BUSINESS_NUMBER = re.compile(
+    r"(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{5}(?![A-Za-z0-9-])"
+)
+LABELED_BUSINESS_NUMBER = re.compile(
+    r"((?:business_number|businessNumber|사업자등록번호)\s*[:=]\s*)\d{10}", re.IGNORECASE
+)
+
+
+def redact_business_numbers(value):
+    value = HYPHENATED_BUSINESS_NUMBER.sub(BUSINESS_NUMBER_REDACTION, value)
+    return LABELED_BUSINESS_NUMBER.sub(
+        lambda match: match.group(1) + BUSINESS_NUMBER_REDACTION, value
+    )
 
 
 def freeze_snapshot(value):
@@ -654,6 +668,9 @@ def public_v2_record(record, timestamp_fields=()):
     for field in timestamp_fields:
         if field in projected:
             projected[field] = utc_time(projected[field], field)
+    for field in ("statement", "supporting_quote"):
+        if isinstance(projected.get(field), str):
+            projected[field] = redact_business_numbers(projected[field])
     if isinstance(projected.get("frozen_snapshot"), Mapping):
         projected["frozen_snapshot"] = dict(projected["frozen_snapshot"])
         projected["frozen_snapshot"]["frozen_at"] = utc_time(

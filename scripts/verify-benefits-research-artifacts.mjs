@@ -5,7 +5,7 @@ import path from 'node:path'
 import { categories } from '../community-app/src/types/benefits.ts'
 import { researchActionKey } from '../community-app/src/data/researchActionKey.ts'
 
-const baseHash = 'cd971b70d4fb0d9860a6c9f0903610cb20d9cc8f9d98757478a1592cf82ed99b'
+const baseHash = '2778a70adab5781812a26abc92cdb8dec108daa52b028f9393a6e5b57d03230a'
 const limit = 1024 * 1024
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const hex = /^[a-f0-9]{64}$/

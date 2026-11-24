@@ -177,6 +177,18 @@ test('benefit claims release commands are mandatory, fixed argv, and run before 
   assert.ok(steps.indexOf(byName['verify-benefit-claims-release']) < steps.indexOf(byName['build-site-a']))
 })
 
+test('OpenDART importer reports PASS and count only after successful explicit cleanup', () => {
+  const repoRoot = path.resolve(import.meta.dirname, '..')
+  const script = readFileSync(path.join(repoRoot, 'supabase/tests/opendart_benefit_importer_integration.sh'), 'utf8')
+  const cleanup = script.lastIndexOf('cleanup 0')
+  const cleanupGuard = script.lastIndexOf('if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi')
+  const pass = script.lastIndexOf('OpenDART importer integration PASS:')
+  const count = script.lastIndexOf("printf 'Tests=1\\n'")
+  assert.ok(cleanup >= 0 && cleanup < cleanupGuard)
+  assert.ok(cleanupGuard < pass && pass < count)
+  assert.equal(script.slice(count).trim(), "printf 'Tests=1\\n'")
+})
+
 test('community package release entry forwards dynamically to root evidence validation', () => {
   const repoRoot = path.resolve(import.meta.dirname, '..')
   const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'community-app/package.json'), 'utf8'))
@@ -278,7 +290,7 @@ test('child environment uses an exact safe allowlist and only the absolute brows
     PATH: '/safe/bin', HOME: '/safe/home', USER: 'operator', LOGNAME: 'operator',
     TMPDIR: '/safe/tmp', LANG: 'C.UTF-8', TZ: 'UTC', TERM: 'dumb', CI: '1',
     XDG_RUNTIME_DIR: '/safe/run', DOCKER_CONTEXT: 'rootless',
-    SUPABASE_URL: sentinel, ['supabase_service_role_key']: sentinel,
+    SUPABASE_URL: sentinel, supabase_service_role_key: 'too-short',
     DATABASE_URL: sentinel, Postgres_URL: sentinel, PGHOST: sentinel,
     libpq_service: sentinel, APP_DATABASE_PASSWORD: sentinel,
     vite_public_value: sentinel, NEXT_PUBLIC_VALUE: sentinel,
@@ -2226,14 +2238,16 @@ test('new benefit database suites clean up explicitly before their final standal
     const successLine = lines.indexOf(`printf '${successProse}\\n'`)
     const explicitCleanup = lines.lastIndexOf('cleanup 0')
     const summaryLine = lines.indexOf(`printf 'Tests=${count}\\n'`)
+    const requiresPostCleanupSuccess = file.endsWith('opendart_benefit_importer_integration.sh')
 
     assert.ok(cleanupStart >= 0 && fallbackTrap > cleanupStart, file)
     assert.equal(cleanupLines.filter(line => line.trim() === 'trap - EXIT INT TERM').length, 1, file)
     assert.equal(cleanupLines.some(line => /^\s*exit(?:\s|$)/.test(line)), false, file)
     assert.ok(cleanupLines.some(line => line.trim() === 'if (( original_status != 0 )); then return "$original_status"; fi'), file)
     assert.ok(cleanupLines.some(line => line.trim() === 'return "$cleanup_status"'), file)
-    assert.ok(successLine >= 0 && successLine < explicitCleanup, file)
-    assert.ok(explicitCleanup < summaryLine, file)
+    assert.ok(explicitCleanup >= 0, file)
+    assert.ok(requiresPostCleanupSuccess ? explicitCleanup < successLine : successLine < explicitCleanup, file)
+    assert.ok(successLine < summaryLine, file)
     assert.equal(lines[explicitCleanup + 1], 'cleanup_status=$?', file)
     assert.equal(lines[explicitCleanup + 2], 'set -e', file)
     assert.equal(lines[explicitCleanup + 3], 'if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi', file)
@@ -2247,9 +2261,9 @@ test('OpenDART importer cleanup failure cannot publish a positive count', () => 
   const file = path.join(import.meta.dirname, '../supabase/tests/opendart_benefit_importer_integration.sh')
   const source = readFileSync(file, 'utf8')
   const bodyStart = source.indexOf('python3 - "$root/source.zip"')
-  const successStart = source.indexOf("printf 'OpenDART importer integration PASS:")
-  assert.ok(bodyStart > 0 && successStart > bodyStart)
-  const harness = `${source.slice(0, bodyStart)}started=1\n${source.slice(successStart)}`
+  const cleanupStart = source.lastIndexOf('set +e\ncleanup 0')
+  assert.ok(bodyStart > 0 && cleanupStart > bodyStart)
+  const harness = `${source.slice(0, bodyStart)}started=1\n${source.slice(cleanupStart)}`
     .replace('cli="$repo/community-app/node_modules/.bin/supabase"', 'cli="${CLEANUP_CLI:?}"')
   const root = mkdtempSync(path.join(tmpdir(), 'opendart-cleanup-contract-'))
   try {
@@ -2259,6 +2273,7 @@ test('OpenDART importer cleanup failure cannot publish a positive count', () => 
     writeFileSync(cli, '#!/usr/bin/env bash\n[[ "$1" != stop ]]\n', { mode: 0o700 })
     const result = spawnSync('bash', [script], { encoding: 'utf8', env: { ...process.env, CLEANUP_CLI: cli } })
     assert.notEqual(result.status, 0)
+    assert.doesNotMatch(result.stdout, /OpenDART importer integration PASS:/)
     assert.doesNotMatch(result.stdout, /^Tests=1$/m)
   } finally {
     rmSync(root, { recursive: true, force: true })

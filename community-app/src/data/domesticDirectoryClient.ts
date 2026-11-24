@@ -11,9 +11,9 @@ const pinnedSources = {
 } as const
 // Immutable v1 artifact epoch; changing it requires an explicit client contract update.
 const pinnedArtifacts = {
-  base: 'cd971b70d4fb0d9860a6c9f0903610cb20d9cc8f9d98757478a1592cf82ed99b',
-  directory: '3ffb2259bb618e70c820005aebea1be24422d831faea908121d4884406c7ea0b',
-  overlay: 'a75a6edb58e1c4258fd79451cb64efdc936fcd1cfaaccb0cd2391267b86adbd4',
+  base: '2778a70adab5781812a26abc92cdb8dec108daa52b028f9393a6e5b57d03230a',
+  directory: '4b78f137f798aabfd698b5690da354f6343a27d4bbb3c619baa99f57fd55de9e',
+  overlay: '1528d06d2c8c277ea57005430f14e5ff2d4e7f0b5a15af23c11f3364d693c4bb',
   records: 'e9f3eb2e877459815b1ce075fb4c4dc834d762accac6538d6c7c4aec31b6bd43',
   shards: 73,
   listing: 36084,

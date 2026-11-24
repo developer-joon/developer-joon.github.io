@@ -158,10 +158,10 @@ q "update public.benefit_company_identifiers i set company_id=(select company_id
 before="$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers)||':'||(select count(*) from private.benefit_import_receipts)||':'||(select count(*) from public.benefit_publications)")"
 if OPENDART_IMPORT_INJECT_LATE_FAILURE=1 "${args[@]}" --apply >/dev/null 2>&1; then echo 'late failure unexpectedly succeeded' >&2; exit 1; fi
 [[ "$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers)||':'||(select count(*) from private.benefit_import_receipts)||':'||(select count(*) from public.benefit_publications)")" == "$before" ]]
-printf 'OpenDART importer integration PASS: dry-run, apply, replay, collision, rollback, preservation\n'
 set +e
 cleanup 0
 cleanup_status=$?
 set -e
 if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi
+printf 'OpenDART importer integration PASS: dry-run, apply, replay, collision, rollback, preservation\n'
 printf 'Tests=1\n'

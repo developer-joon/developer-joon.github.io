@@ -5,8 +5,8 @@ import path from 'node:path'
 
 // Immutable v1 acquisition. Changing this epoch requires a new version and reviewed pins.
 const pins = Object.freeze({
-  base: 'cd971b70d4fb0d9860a6c9f0903610cb20d9cc8f9d98757478a1592cf82ed99b',
-  directory: '3ffb2259bb618e70c820005aebea1be24422d831faea908121d4884406c7ea0b',
+  base: '2778a70adab5781812a26abc92cdb8dec108daa52b028f9393a6e5b57d03230a',
+  directory: '4b78f137f798aabfd698b5690da354f6343a27d4bbb3c619baa99f57fd55de9e',
   records: 'e9f3eb2e877459815b1ce075fb4c4dc834d762accac6538d6c7c4aec31b6bd43',
   sources: Object.freeze({
     dart_bridge: ['6dcf6031e8e9eecbcefc120a7461f9a7bd3ef97c88ba55d20d80f416285de1c3', 'https://dart.fss.or.kr/dsae001/downloadExcel.do'],

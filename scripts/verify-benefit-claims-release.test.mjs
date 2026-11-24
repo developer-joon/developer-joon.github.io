@@ -52,10 +52,57 @@ test('sensitive scanner rejects private identity values and secret assignments o
   }
 })
 
+test('sensitive scanner rejects computed, bracket-assigned, and quoted object secret keys', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-computed-secret-'))
+  try {
+    await mkdir(path.join(root, 'src'), { recursive: true })
+    const cases = [
+      `const value = { ['SUPABASE_SERVICE_ROLE_KEY'] : '${'real-like-' + 'service-value'}' }\n`,
+      `env [ 'BUSINESS_NUMBER_HMAC_SECRET' ] = '${'real-like-' + 'hmac-value'}'\n`,
+      `const value = { "NTS_SERVICE_KEY" : "${'real-like-' + 'nts-value'}" }\n`,
+    ]
+    for (const [index, content] of cases.entries()) {
+      const target = path.join(root, 'src', `computed-${index}.ts`)
+      await writeFile(target, content)
+      await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+      await rm(target)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner permits only exact known-fake secret placeholder spans', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-fake-secret-'))
+  try {
+    const directory = path.join(root, 'supabase/functions/verify-benefit-company')
+    await mkdir(directory, { recursive: true })
+    const target = path.join(directory, 'index.test.ts')
+    await writeFile(target, `const fixture = { SUPABASE_SERVICE_ROLE_KEY: "test-only-placeholder" }\n`)
+    await assert.doesNotReject(scanSensitiveReleaseFiles(root))
+    await writeFile(target, `const fixture = { SUPABASE_SERVICE_ROLE_KEY: '${'different-value-' + 'at-same-path'}' }\n`)
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('sensitive scanner does not skip secret-bearing dotfiles', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'claims-release-dotfile-'))
   try {
     await writeFile(path.join(root, '.env'), 'NTS_SERVICE_' + 'KEY=example-sensitive-value\n')
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner scans tracked-content-shaped nested dist directories', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-nested-dist-'))
+  try {
+    await mkdir(path.join(root, 'packages/app/dist/secret'), { recursive: true })
+    await writeFile(path.join(root, 'packages/app/dist/secret/config.js'),
+      `export const env = { NTS_SERVICE_KEY: '${'real-like-' + 'nested-value'}' }\n`)
     await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
   } finally {
     await rm(root, { recursive: true, force: true })

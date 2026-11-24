@@ -15,15 +15,14 @@ const DEFAULT_SCAN_LIMITS = Object.freeze({
   maxFiles: 10_000,
   maxDepth: 32,
 })
-const SKIP_DIRECTORIES = new Set([
-  '.git', 'node_modules', 'dist', 'coverage', '.cache', '.vite', '.turbo', '.next',
-])
+const SKIP_DIRECTORIES = new Set(['.git', 'node_modules'])
 const SECRET_NAMES = '(?:NTS_SERVICE_KEY|BUSINESS_NUMBER_HMAC_SECRET|SUPABASE_SERVICE_ROLE_KEY)'
+const SECRET_KEY = `(?:\\[\\s*["']${SECRET_NAMES}["']\\s*\\]|["']${SECRET_NAMES}["']|${SECRET_NAMES})`
 const SENSITIVE_PATTERNS = [
   { label: 'representative name', pattern: /(?:representative_name|representativeName|대표자(?:명)?)\s*["']?\s*[:=]\s*["'][^\s"'`,}\]]{2,}/iu },
   { label: 'opening date', pattern: /(?:opening_date|openingDate|개업일자)\s*["']?\s*[:=]\s*["']\d{8}/iu },
   { label: 'raw business number', pattern: /(?:(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{5}(?![A-Za-z0-9-])|(?:business_number|businessNumber|사업자등록번호)\s*["']?\s*[:=]\s*["']?\d{10})/iu },
-  { label: 'secret assignment', pattern: new RegExp(`${SECRET_NAMES}\\s*["']?\\s*[:=]\\s*["']?(?![\\s"']*(?:process\\.env|Deno\\.env|getEnv|\\$\\{|<|\\*{3}|redacted))[A-Za-z0-9._~+\\/-]{8,}`, 'iu') },
+  { label: 'secret assignment', pattern: new RegExp(`${SECRET_KEY}\\s*[:=]\\s*["']?(?![\\s"']*(?:process\\.env|Deno\\.env|getEnv|\\$\\{|<|\\*{3}|redacted))[A-Za-z0-9._~+\\/-]{8,}`, 'iu') },
 ]
 
 // Identity-fixture exemptions are exact path + label + matched source span rules.
@@ -69,33 +68,22 @@ const SYNTHETIC_FIXTURE_SPANS = fixtureSpans({
     'representative name': ['cmVwcmVzZW50YXRpdmVfbmFtZSI6Iu2Zjeq4uOuPmQ==', 'cmVwcmVzZW50YXRpdmVfbmFtZToi64uk66W464yA7ZGc', 'cmVwcmVzZW50YXRpdmVfbmFtZToi7YWM7Iqk7Yq464yA7ZGc', 'cmVwcmVzZW50YXRpdmVfbmFtZT0i7ZmN6ri464+Z'],
     'opening date': ['b3BlbmluZ19kYXRlIjoiMjAyNjAxMDI=', 'b3BlbmluZ19kYXRlOiIyMDI1MTIzMQ==', 'b3BlbmluZ19kYXRlOiIyMDI2MDEwMg=='],
     'raw business number': ['MTIzLTQ1LTY3ODkw', 'OTk5LTg4LTc3Nzc3'],
+    'secret assignment': ['U1VQQUJBU0VfU0VSVklDRV9ST0xFX0tFWTogInRlc3Qtb25seS1wbGFjZWhvbGRlcg=='],
+  },
+  'scripts/community-snapshots.test.mjs': {
+    'secret assignment': ['U1VQQUJBU0VfU0VSVklDRV9ST0xFX0tFWTogJ3Rlc3Qtb25seS1wbGFjZWhvbGRlcg=='],
+  },
+  'scripts/release-gate.test.mjs': {
+    'secret assignment': ['c3VwYWJhc2Vfc2VydmljZV9yb2xlX2tleTogJ3Rvby1zaG9ydA=='],
+  },
+  'scripts/tests/test_generate_company_benefits_artifacts.py': {
+    'raw business number': ['MTIzLTQ1LTY3ODkw', '7IKs7JeF7J6Q65Ox66Gd67KI7Zi4OiAxMjM0NTY3ODkw'],
   },
   'supabase/functions/verify-benefit-company/index.test.ts': {
     'representative name': ['cmVwcmVzZW50YXRpdmVfbmFtZToi7YWM7Iqk7Yq464yA7ZGc', 'cmVwcmVzZW50YXRpdmVOYW1lIjoiJHtSRVBSRVNFTlRBVElWRQ==', 'cmVwcmVzZW50YXRpdmVOYW1lOiAi66+86rCQXG7rjIDtkZw='],
     'opening date': ['b3BlbmluZ19kYXRlOiIyMDI2MDEwMg==', 'T1BFTklOR19EQVRFID0gIjIwMjAwMTAy', 'b3BlbmluZ0RhdGU6ICIyMDIzMDIyOQ=='],
     'raw business number': ['MTIzLTQ1LTY3ODkw'],
-  },
-})
-
-// Immutable publication exemptions preserve the integrity-pinned historical
-// release while remaining exact path + label + matched source span rules.
-const HISTORICAL_PUBLICATION_SPANS = fixtureSpans({
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1701110007733.json': { 'raw business number': ['NTAzLTgxLTA0MjQx'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1101110007909.json': { 'raw business number': ['MTAxLTgxLTE2Mjkz'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1101110094477.json': { 'raw business number': ['MTIwLTgxLTIyNjA4'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1101110546006.json': { 'raw business number': ['MTI0LTgxLTIzODQx'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1101111892333.json': { 'raw business number': ['ODI0LTg3LTAzNDk1'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1101114855924.json': { 'raw business number': ['MjE0LTg4LTk2MzI2'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1201110147422.json': { 'raw business number': ['ODI0LTg3LTAzNDk1'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1341110002258.json': { 'raw business number': ['MTM4LTgxLTAzMjM4'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1341110036992.json': { 'raw business number': ['MTIzLTgxLTI4NzUx'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1350110038048.json': { 'raw business number': ['MzEyLTgyLTA3ODQz'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1545110039704.json': { 'raw business number': ['ODI0LTg3LTAzNDk1'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1741110000527.json': { 'raw business number': ['MTEzLTg2LTAwOTE3'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-1942110000399.json': { 'raw business number': ['NjA5LTgxLTAyODU3'] },
-  'community-app/public/data/company-benefits/approved-v2-projection-2026-11-06/companies/KR-CRN-2149110058927.json': { 'raw business number': ['NjY4LTgxLTAxNDA2'] },
-  'docs/research/company-benefits/reference-records.jsonl': {
-    'raw business number': ['MTAxLTgxLTE2Mjkz', 'MTEzLTg2LTAwOTE3', 'MTIwLTgxLTIyNjA4', 'MTIzLTgxLTI4NzUx', 'MTI0LTgxLTIzODQx', 'MTM4LTgxLTAzMjM4', 'MjE0LTg4LTk2MzI2', 'MzEyLTgyLTA3ODQz', 'NTAzLTgxLTA0MjQx', 'NjA5LTgxLTAyODU3', 'NjY4LTgxLTAxNDA2', 'ODI0LTg3LTAzNDk1'],
+    'secret assignment': ['U1VQQUJBU0VfU0VSVklDRV9ST0xFX0tFWTogInRlc3Qtb25seS1wbGFjZWhvbGRlcg==', 'QlVTSU5FU1NfTlVNQkVSX0hNQUNfU0VDUkVUOiAidG9vLXNob3J0'],
   },
 })
 
@@ -104,10 +92,8 @@ function normalizedRelative(relativePath) {
 }
 
 function sensitiveSpanAllowed(relativePath, label, span) {
-  if (label === 'secret assignment') return false
   const normalized = normalizedRelative(relativePath)
   return SYNTHETIC_FIXTURE_SPANS.get(normalized)?.get(label)?.has(span) === true
-    || HISTORICAL_PUBLICATION_SPANS.get(normalized)?.get(label)?.has(span) === true
 }
 
 async function regularFiles(root, limits, relative = '', inventory = { files: [], totalBytes: 0 }) {
