@@ -8,11 +8,11 @@ import { getBenefitDirectoryRepository, type BenefitDirectoryRepository } from '
 import { isBenefitCompanyId } from '../lib/benefitCompanyId'
 import { isCanonicalUuid } from '../lib/uuid'
 import type { BenefitClaimReaction, BenefitClaimReactionState } from '../types/benefitClaims'
-import type { BenefitDirectoryCompanySummary, BenefitDirectoryPublicationV2, BenefitDirectoryPublicClaim } from '../types/benefitDirectory'
+import type { BenefitDirectoryCompanySummary, BenefitDirectoryPublicClaim } from '../types/benefitDirectory'
 
 const reactionPath = '/community/benefits/claim-reaction/'
 type Target = { companyId:string; claimId:string }
-type PageClaim = Pick<BenefitDirectoryPublicClaim,'claimId'|'title'|'description'|'statusCode'|'statusLabel'> & {confirmCount:number|null;disputeCount:number|null;returnAnchor:string}
+type PageClaim = Pick<BenefitDirectoryPublicClaim,'claimId'|'title'|'description'|'statusCode'|'statusLabel'|'confirmCount'|'disputeCount'>
 type Ready = { company:BenefitDirectoryCompanySummary; claim:PageClaim; actor:BenefitClaimReactionState }
 type View = { generation:number; phase:'loading'|'ready'|'error'; ready?:Ready; error?:string; notice?:string }
 
@@ -23,10 +23,9 @@ function targetFrom(search:string):Target|null {
 }
 function Shell({children}:{children:React.ReactNode}){return <div className="community-page benefits-page"><AppHeader/><main className="benefit-service-form benefit-reaction-page">{children}</main><AppFooter/></div>}
 function genericError(){return '반응 정보를 안전하게 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.'}
-function pageClaim(claim:BenefitDirectoryPublicClaim|undefined,publication:BenefitDirectoryPublicationV2|undefined):PageClaim|null{
- if(claim)return{claimId:claim.claimId,title:claim.title,description:claim.description,statusCode:claim.statusCode,statusLabel:claim.statusLabel,confirmCount:claim.confirmCount,disputeCount:claim.disputeCount,returnAnchor:`claim-${claim.claimId}`}
- if(!publication||publication.trustLabel!=='사용자 제보'||!publication.originClaimId)return null
- return{claimId:publication.originClaimId,title:publication.title,description:publication.description,statusCode:'community_confirmed',statusLabel:'커뮤니티 확인',confirmCount:null,disputeCount:null,returnAnchor:`publication-${publication.publicationId}`}
+function pageClaim(claim:BenefitDirectoryPublicClaim|undefined):PageClaim|null{
+ if(!claim)return null
+ return{claimId:claim.claimId,title:claim.title,description:claim.description,statusCode:claim.statusCode,statusLabel:claim.statusLabel,confirmCount:claim.confirmCount,disputeCount:claim.disputeCount}
 }
 
 interface Props{repository?:BenefitClaimRepository;directoryRepository?:BenefitDirectoryRepository;search?:string}
@@ -48,7 +47,7 @@ export function BenefitClaimReactionPage({repository=getBenefitClaimRepository()
      const publicResult=await directoryRepository.detail(target.companyId,controller?.signal)
      if(captured!==generation.current||controller?.signal.aborted)return
      if(!publicResult.ok||publicResult.data.company.companyId!==target.companyId){setView({generation:captured,phase:'error',error:genericError()});return}
-     const claim=pageClaim(publicResult.data.claims.find(item=>item.claimId===target.claimId),publicResult.data.publications.find(item=>item.originClaimId===target.claimId))
+     const claim=pageClaim(publicResult.data.claims.find(item=>item.claimId===target.claimId))
      if(!claim){setView({generation:captured,phase:'error',error:'요청한 복지 제보를 찾을 수 없습니다.'});return}
      const actorResult=await repository.getReaction({claimId:target.claimId},controller?.signal)
      if(captured!==generation.current||controller?.signal.aborted)return
@@ -95,5 +94,5 @@ export function BenefitClaimReactionPage({repository=getBenefitClaimRepository()
  if(visible.phase==='error'||!visible.ready)return <Shell><h1>복지 제보 반응</h1><section className="benefit-service-alert" role="alert"><p>{visible.error??genericError()}</p><button type="button" onClick={()=>void load(generation.current)}>다시 시도</button></section></Shell>
  const {company,claim,actor}=visible.ready,pending=operation.current?.generation===currentGeneration
  const actorLabel=actor.reaction==='confirm'?'나도 확인했어요':actor.reaction==='dispute'?'현재는 달라요':'아직 남기지 않음'
- return <Shell><a className="benefit-reaction-page__back" href={`/benefits/company/?id=${encodeURIComponent(company.companyId)}#${claim.returnAnchor}`}>기업 복지로 돌아가기</a><header className="benefit-service-heading"><p>{company.displayName} · 커뮤니티 제보</p><h1>{claim.title}</h1><p>{claim.description}</p></header><section className="benefit-reaction-page__snapshot" aria-label="현재 제보 상태"><p><strong>{claim.statusLabel}</strong></p>{claim.confirmCount!==null&&claim.disputeCount!==null&&<p>확인 {claim.confirmCount} · 이의 {claim.disputeCount}</p>}<p>내 반응: {actorLabel}</p></section>{actor.isSubmitter&&<section className="benefit-service-notice" id="self-confirm-help"><p>내가 제보한 내용은 직접 확인 반응을 남길 수 없습니다.</p><p>내용이 달라졌다면 이의를 남길 수 있지만, 내 제보 내역에서 제보 철회를 먼저 권장합니다.</p></section>}<div className="benefit-service-actions benefit-reaction-page__actions"><button type="button" disabled={pending||actor.isSubmitter} aria-describedby={actor.isSubmitter?'self-confirm-help':undefined} onClick={()=>void react('confirm')}>나도 확인했어요</button><button type="button" disabled={pending} onClick={()=>void react('dispute')}>현재는 달라요</button><button type="button" className="benefit-service-secondary" disabled={pending||actor.reaction===null} onClick={()=>void react(null)}>반응 취소</button></div>{visible.notice&&<p role="status">{visible.notice}</p>}{visible.error&&<p role="alert">{visible.error}</p>}</Shell>
+ return <Shell><a className="benefit-reaction-page__back" href={`/benefits/company/?id=${encodeURIComponent(company.companyId)}#claim-${claim.claimId}`}>기업 복지로 돌아가기</a><header className="benefit-service-heading"><p>{company.displayName} · 커뮤니티 제보</p><h1>{claim.title}</h1><p>{claim.description}</p></header><section className="benefit-reaction-page__snapshot" aria-label="현재 제보 상태"><p><strong>{claim.statusLabel}</strong></p><p>확인 {claim.confirmCount} · 이의 {claim.disputeCount}</p><p>내 반응: {actorLabel}</p></section>{actor.isSubmitter&&<section className="benefit-service-notice" id="self-confirm-help"><p>내가 제보한 내용은 직접 확인 반응을 남길 수 없습니다.</p><p>내용이 달라졌다면 이의를 남길 수 있지만, 내 제보 내역에서 제보 철회를 먼저 권장합니다.</p></section>}<div className="benefit-service-actions benefit-reaction-page__actions"><button type="button" disabled={pending||actor.isSubmitter} aria-describedby={actor.isSubmitter?'self-confirm-help':undefined} onClick={()=>void react('confirm')}>나도 확인했어요</button><button type="button" disabled={pending} onClick={()=>void react('dispute')}>현재는 달라요</button><button type="button" className="benefit-service-secondary" disabled={pending||actor.reaction===null} onClick={()=>void react(null)}>반응 취소</button></div>{visible.notice&&<p role="status">{visible.notice}</p>}{visible.error&&<p role="alert">{visible.error}</p>}</Shell>
 }

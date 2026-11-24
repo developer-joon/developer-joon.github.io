@@ -14,7 +14,8 @@ const claim:BenefitDirectoryPublicClaim = { claimId, categoryId:'health', catego
 const company:BenefitDirectoryCompanySummary = { companyId, displayName:'테스트 기업', identityLabel:'법인', industry:null, sizeLabel:'분류 미확인', region:null, summary:null }
 const detailResult = () => ({ ok:true as const, data:{ company, publications:[], claims:[claim] } })
 const promotedPublication:BenefitDirectoryPublicationV2 = { publicationId:'c1000000-0000-4000-8000-000000000001', categoryId:'health', title:'승격된 건강 검진', description:'커뮤니티 확인으로 게시된 검진', eligibilityText:'재직자', conditionText:null, trustLabel:'사용자 제보', revision:1, originClaimId:claimId }
-const promotedDetailResult = () => ({ ok:true as const, data:{ company, publications:[promotedPublication], claims:[] } })
+const promotedClaim:BenefitDirectoryPublicClaim = { ...claim, title:'승격된 건강 검진', description:'커뮤니티 확인으로 게시된 검진', statusCode:'community_confirmed', statusLabel:'커뮤니티 확인', confirmCount:3, lastConfirmationAt:'2026-11-23T01:00:00Z' }
+const promotedDetailResult = () => ({ ok:true as const, data:{ company, publications:[promotedPublication], claims:[promotedClaim] } })
 const state = (reaction:null|'confirm'|'dispute'=null,isSubmitter=false) => ({ ok:true as const, data:{ claimId, reaction, isSubmitter } })
 const success = (reaction:null|'confirm'|'dispute', confirmCount=0, disputeCount=0) => ({ ok:true as const, data:{ claimId, reaction, status:disputeCount ? 'disputed' as const : confirmCount >= 3 ? 'community_confirmed' as const : 'submitted' as const, revision:2, confirmCount, disputeCount, activePublicationId:null, outcome:'set' as const } })
 function auth(actor=actorA, token=`token-${actor}`, generation=0):AuthContextValue{return{generation,loading:false,pending:false,session:{access_token:token} as never,user:{id:actor} as never,error:null,signIn:vi.fn(),signOut:vi.fn(),invalidateStaleSession:vi.fn(()=>false)}}
@@ -95,16 +96,28 @@ describe('BenefitClaimReactionPage',()=>{
     expect(link).toHaveAttribute('href',`/benefits/company/?id=${companyId}#claim-${claimId}`)
   })
 
-  it('loads and operates on a promoted linked claim that is represented only by its v2 publication',async()=>{
+  it('fails closed when a publication linkage has no corresponding public claim',async()=>{
+    const getReaction=vi.fn(async()=>state('confirm'))
+    const repo=repository({getReaction})
+    const dangling = { ok:true as const, data:{ company, publications:[promotedPublication], claims:[] } }
+    render(ui(auth(),repo,directory(vi.fn(async()=>dangling))))
+
+    expect(await screen.findByText('요청한 복지 제보를 찾을 수 없습니다.')).toBeInTheDocument()
+    expect(getReaction).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading',{name:'승격된 건강 검진'})).not.toBeInTheDocument()
+  })
+
+  it('loads one production-shaped promoted claim and returns to its canonical claim anchor',async()=>{
     const setReaction=vi.fn(async()=>success('dispute',3,1))
     const repo=repository({getReaction:vi.fn(async()=>state('confirm')),setReaction})
     render(ui(auth(),repo,directory(vi.fn(async()=>promotedDetailResult()))))
 
     expect(await screen.findByRole('heading',{name:'승격된 건강 검진'})).toBeInTheDocument()
+    expect(screen.getAllByRole('heading',{name:'승격된 건강 검진'})).toHaveLength(1)
     expect(screen.getByText('커뮤니티 확인')).toBeInTheDocument()
     expect(screen.getByText('내 반응: 나도 확인했어요')).toBeInTheDocument()
-    expect(screen.queryByText(/확인 0 · 이의 0/)).not.toBeInTheDocument()
-    expect(screen.getByRole('link',{name:'기업 복지로 돌아가기'})).toHaveAttribute('href',`/benefits/company/?id=${companyId}#publication-${promotedPublication.publicationId}`)
+    expect(screen.getByText('확인 3 · 이의 0')).toBeInTheDocument()
+    expect(screen.getByRole('link',{name:'기업 복지로 돌아가기'})).toHaveAttribute('href',`/benefits/company/?id=${companyId}#claim-${claimId}`)
 
     fireEvent.click(screen.getByRole('button',{name:'현재는 달라요'}))
     expect(await screen.findByText('확인 3 · 이의 1')).toBeInTheDocument()

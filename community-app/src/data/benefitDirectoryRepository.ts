@@ -227,7 +227,8 @@ export function decodeBenefitCompanyDetailV2(value: unknown, requestedCompanyId:
   if (company.companyId !== requestedCompanyId
     || new Set(publications.map(publication => publication.publicationId.toLowerCase())).size !== publications.length
     || claimIds.size !== claims.length
-    || new Set(linkedClaimIds).size !== linkedClaimIds.length) {
+    || new Set(linkedClaimIds).size !== linkedClaimIds.length
+    || linkedClaimIds.some(claimId => !claimIds.has(claimId))) {
     throw new Error('inconsistent detail projection')
   }
   return { company, publications, claims }

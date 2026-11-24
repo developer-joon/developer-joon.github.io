@@ -209,10 +209,12 @@ describe('benefit directory repository', () => {
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
-  it('accepts a linked publication when the promoted claim is deduplicated from claims', async () => {
+  it('rejects a dangling publication linkage in the v2 decoder and repository', async () => {
     const linked = { ...publication, origin_claim_id: publicClaim.claim_id }
+    expect(() => decodeBenefitCompanyDetailV2({ ...detailV2, publications: [linked], claims: [] }, company.company_id))
+      .toThrow('inconsistent detail projection')
     const transport = rpcClient(success({ ...detailV2, publications: [linked], claims: [] })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
-    await expect(createBenefitDirectoryRepository().detail(company.company_id)).resolves.toMatchObject({ ok: true, data: { publications: [{ originClaimId: publicClaim.claim_id }], claims: [] } })
+    await expect(createBenefitDirectoryRepository().detail(company.company_id)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
   it('rejects duplicate publication linkage before duplicate DOM anchors are possible', async () => {
