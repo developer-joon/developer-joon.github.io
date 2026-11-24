@@ -32,6 +32,7 @@ export interface BenefitDirectoryRepository {
 }
 
 const searchPageKeys = ['items', 'has_more', 'next_cursor', 'total'] as const
+// search_benefit_companies_v1 already separates active official_verified and community_reviewed publications exactly.
 const searchItemKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary', 'benefit_count', 'official_count', 'community_count', 'categories'] as const
 const detailKeys = ['company', 'publications', 'claims'] as const
 const companyKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary'] as const

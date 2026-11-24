@@ -19,6 +19,8 @@ const profile = await mkdtemp(path.join(tmpdir(), 'benefits-browser-'))
 const server = createServer(async (request, response) => {
   try {
     let name = new URL(request.url, 'http://localhost').pathname
+    if (name === '/benefits/' || name === '/benefits/index.html') name = '/community/benefits-root/index.html'
+    if (name === '/benefits/company/' || name === '/benefits/company/index.html') name = '/community/benefits-root/company/index.html'
     if (!name.startsWith('/community/')) return response.writeHead(404).end()
     name = name.slice('/community/'.length)
     if (!name || name.endsWith('/')) name += 'index.html'
@@ -107,6 +109,26 @@ try {
   const companyText = await bodyText()
   assert.match(companyText, /확인된 복지 혜택/)
   assert.equal(await evaluate(`(${sourceAnchorsAreSafe.toString()})(Array.from(document.querySelectorAll('.benefits-specific-card a[href]')))`), true)
+
+  await call('Page.navigate', { url: `${origin}/benefits/` })
+  await wait(`document.querySelector('.domestic-directory__record')`)
+  await assertNoAlert()
+  const directoryText = await bodyText()
+  assert.match(directoryText, /공개 명단과 사용자 검증으로 등록된 국내 사업체를 검색합니다/)
+  assert.match(directoryText, /국내 전체 사업체 명부는 아닙니다/)
+  assert.match(directoryText, /공개 확인 혜택|공개 확인된 복지 정보 없음/)
+  assert.doesNotMatch(directoryText, /source_url|reviewer_id|submitter_id|service_role/i)
+  const dynamicCompanyHref = await evaluate(`document.querySelector('.domestic-directory__record h3 a')?.href`)
+  assert.match(dynamicCompanyHref, /\/benefits\/company\/\?id=/)
+
+  await call('Page.navigate', { url: dynamicCompanyHref })
+  await wait(`document.querySelectorAll('.benefit-company-page__group h2').length === 4`)
+  await assertNoAlert()
+  const dynamicCompanyText = await bodyText()
+  for (const label of ['공식 확인 혜택', '커뮤니티 확인 혜택', '제보된 혜택', '재확인 필요']) assert.match(dynamicCompanyText, new RegExp(label))
+  assert.doesNotMatch(dynamicCompanyText, /source_url|reviewer_id|submitter_id|service_role/i)
+  assert.equal(await evaluate(`document.querySelector('.benefit-company-page__submit')?.getAttribute('href')?.startsWith('/community/benefits/claim/?company=')`), true)
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('.benefit-company-page__claim')).every((card) => card.querySelector('a[href*="/community/benefits/claim-reaction/"]'))`), true)
 
   await call('Page.navigate', { url: `${origin}/community/benefits/methodology/` })
   await wait(`document.querySelector('.benefits-evidence h2')`)

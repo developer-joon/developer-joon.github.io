@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { benefitClaimHref, benefitCompanyRequestHref, benefitSubmissionHref, benefitsRoute, legacyBenefitsRedirect } from './benefitsRoutes'
+import { benefitClaimHref, benefitClaimReactionHref, benefitCompanyRequestHref, benefitSubmissionHref, benefitsRoute, legacyBenefitsRedirect } from './benefitsRoutes'
 
 describe('Task 10 company and claim route contract',()=>{
   it('builds canonical slash URLs and bounds the optional public company name',()=>{expect(benefitCompanyRequestHref(' 테스트 기업 ')).toBe('/community/benefits/company-request/?name=%ED%85%8C%EC%8A%A4%ED%8A%B8+%EA%B8%B0%EC%97%85');expect(benefitCompanyRequestHref('x'.repeat(101))).toBe('/community/benefits/company-request/');expect(benefitClaimHref('KR-BIZ-1234567890')).toBe('/community/benefits/claim/?company=KR-BIZ-1234567890')})
   it('rejects a noncanonical claim company hint',()=>expect(()=>benefitClaimHref('KR-BIZ-123')).toThrow('Invalid canonical company ID'))
+  it('builds the exact future authenticated reaction link and rejects malformed targets',()=>{expect(benefitClaimReactionHref('KR-BIZ-1234567890','223e4567-e89b-42d3-a456-426614174000')).toBe('/community/benefits/claim-reaction/?company=KR-BIZ-1234567890&claim=223e4567-e89b-42d3-a456-426614174000');expect(()=>benefitClaimReactionHref('KR-BIZ-1234567890','not-a-claim')).toThrow('Invalid public claim target')})
 })
 
 describe('Task 7 benefit submission route contract', () => {
@@ -67,6 +68,7 @@ describe('non-ranking benefits routes', () => {
     '/community/benefits/my-corrections/',
     '/community/benefits/company-request/',
     '/community/benefits/claim/',
+    '/community/benefits/claim-reaction/',
   ])('keeps authenticated route %s outside the public bundle', (path) => {
     expect(benefitsRoute(path)).toBe(null)
   })
