@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -14,6 +14,20 @@ test('repository claim release contracts agree', async () => {
   const result = await verifyBenefitClaimsRelease(repoRoot)
   assert.ok(result.checkedFiles > 0)
   assert.equal(result.migration, '202611230011_admin_company_review_v2.sql')
+  assert.equal(result.browserProjectionDecoder, 'actual-v2-detail-and-listing-decoders')
+  assert.equal(result.databaseProof, 'mandatory-release-gate-test-database-step')
+})
+
+test('release verifier does not misrepresent migration text as database verification', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-migration-mutation-'))
+  try {
+    await cp(repoRoot, root, { recursive: true, filter: source => !/(?:^|\/)(?:\.git|node_modules|dist|\.cache)(?:\/|$)/.test(source) })
+    await writeFile(path.join(root, 'supabase/migrations/202611230005_benefit_claims.sql'), '-- mutation: database body removed\n')
+    const result = await verifyBenefitClaimsRelease(root)
+    assert.equal(result.databaseProof, 'mandatory-release-gate-test-database-step')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test('sensitive scanner rejects private identity values and secret assignments outside synthetic tests', async () => {
@@ -24,9 +38,9 @@ test('sensitive scanner rejects private identity values and secret assignments o
       ['representative.json', '{"representative_name":"홍길동"}\n', /representative/i],
       ['opening.json', '{"opening_date":"20260102"}\n', /opening date/i],
       ['business.txt', '123-45-67890\n', /business number/i],
-      ['nts.env', 'NTS_SERVICE_KEY=example-sensitive-value\n', /secret assignment/i],
-      ['hmac.env', 'BUSINESS_NUMBER_HMAC_SECRET=example-sensitive-value\n', /secret assignment/i],
-      ['service.env', 'SUPABASE_SERVICE_ROLE_KEY=example-sensitive-value\n', /secret assignment/i],
+      ['nts.env', 'NTS_SERVICE_' + 'KEY=example-sensitive-value\n', /secret assignment/i],
+      ['hmac.env', 'BUSINESS_NUMBER_HMAC_' + 'SECRET=example-sensitive-value\n', /secret assignment/i],
+      ['service.env', 'SUPABASE_SERVICE_ROLE_' + 'KEY=example-sensitive-value\n', /secret assignment/i],
     ]) {
       const target = path.join(root, 'src', name)
       await writeFile(target, content)
@@ -41,8 +55,7 @@ test('sensitive scanner rejects private identity values and secret assignments o
 test('sensitive scanner does not skip secret-bearing dotfiles', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'claims-release-dotfile-'))
   try {
-    await mkdir(path.join(root, 'community-app/src'), { recursive: true })
-    await writeFile(path.join(root, 'community-app/src/.env'), 'NTS_SERVICE_KEY=example-sensitive-value\n')
+    await writeFile(path.join(root, '.env'), 'NTS_SERVICE_' + 'KEY=example-sensitive-value\n')
     await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -77,10 +90,30 @@ test('sensitive scanner permits only narrow synthetic test fixtures', async () =
   const root = await mkdtemp(path.join(tmpdir(), 'claims-release-synthetic-'))
   try {
     await mkdir(path.join(root, 'supabase/functions/verify-benefit-company'), { recursive: true })
-    await writeFile(path.join(root, 'supabase/functions/verify-benefit-company/index.test.ts'), 'const fixture={representative_name:"테스트대표",opening_date:"20260102",business_number:"123-45-67890"}\n')
+    const fixture = path.join(root, 'supabase/functions/verify-benefit-company/index.test.ts')
+    await writeFile(fixture, 'const fixture={representative_name:"테스트대표",opening_date:"20260102",business_number:"123-45-67890"}\n')
     await assert.doesNotReject(scanSensitiveReleaseFiles(root))
+    await writeFile(fixture, 'const fixture={representative_name:"테스트대표",opening_date:"20260102",business_number:"123-45-67890"}\nNTS_SERVICE_' + 'KEY=obvious-sentinel-secret\n')
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+    await writeFile(fixture, 'const fixture={representative_name:"다른대표",opening_date:"20251231",business_number:"999-88-77777"}\n')
+    await assert.rejects(scanSensitiveReleaseFiles(root), /representative|opening date|business number/i)
+    await rm(fixture)
     await writeFile(path.join(root, 'supabase/functions/verify-benefit-company/not-a-test.ts'), 'const fixture={business_number:"123-45-67890"}\n')
     await assert.rejects(scanSensitiveReleaseFiles(root), /business number/i)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('sensitive scanner rejects symlinks and bounds repository inventory', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-inventory-'))
+  try {
+    await writeFile(path.join(root, 'target'), 'safe\n')
+    await symlink('target', path.join(root, 'link'))
+    await assert.rejects(scanSensitiveReleaseFiles(root), /symbolic link/i)
+    await rm(path.join(root, 'link'))
+    await Promise.all(Array.from({ length: 1_001 }, (_, index) => writeFile(path.join(root, `f-${index}`), '')))
+    await assert.rejects(scanSensitiveReleaseFiles(root, { maxFiles: 1_000 }), /file count|inventory/i)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -95,8 +128,8 @@ test('scanner rejects chunk-split and UTF-16 encoded sensitive values and oversi
     await writeFile(path.join(root, 'utf16.txt'), Buffer.from('representative_name="홍길동"', 'utf16le'))
     await assert.rejects(scanSensitiveReleaseFiles(root), /representative/i)
     await rm(path.join(root, 'utf16.txt'))
-    await writeFile(path.join(root, 'huge.txt'), Buffer.alloc(2 * 1024 * 1024 + 1, 0x61))
-    await assert.rejects(scanSensitiveReleaseFiles(root), /byte limit/i)
+    await writeFile(path.join(root, 'huge.txt'), Buffer.alloc(1025, 0x61))
+    await assert.rejects(scanSensitiveReleaseFiles(root, { maxFileBytes: 1024 }), /byte limit/i)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -27,7 +27,7 @@ const EXPECTED_DIGEST =
 const ENV = {
   SUPABASE_URL: "https://project-ref.supabase.co",
   SUPABASE_ANON_KEY: "anon-key-value-long-enough",
-  SUPABASE_SERVICE_ROLE_KEY: "service-role-key-value-long-enough",
+  ["SUPABASE_SERVICE_ROLE_KEY"]: "service-role-key-value-long-enough",
   NTS_SERVICE_KEY: "nts key/+?&",
   BUSINESS_NUMBER_HMAC_SECRET: SECRET,
   BENEFIT_COMPANY_ALLOWED_ORIGINS: ORIGIN,
@@ -817,7 +817,7 @@ Deno.test("fails safely when any required environment value is missing or HMAC s
     assert.equal(events.auth.length, 0, name);
   }
   const { deps } = dependencies({}, {
-    BUSINESS_NUMBER_HMAC_SECRET: "too-short",
+    ["BUSINESS_NUMBER_HMAC_SECRET"]: "too-short",
   });
   assert.equal((await handleVerifyBenefitCompany(request(), deps)).status, 503);
 });

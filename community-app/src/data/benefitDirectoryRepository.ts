@@ -1,7 +1,7 @@
-import { getAnonymousSupabaseClient } from '../lib/supabase'
-import { isCanonicalUuid } from '../lib/uuid'
-import { comparePostgresTimestamps, parsePostgresTimestampMicros } from '../lib/postgresTimestamp'
-import { isBenefitCompanyId } from '../lib/benefitCompanyId'
+import { getAnonymousSupabaseClient } from '../lib/supabase.ts'
+import { isCanonicalUuid } from '../lib/uuid.ts'
+import { comparePostgresTimestamps, parsePostgresTimestampMicros } from '../lib/postgresTimestamp.ts'
+import { isBenefitCompanyId } from '../lib/benefitCompanyId.ts'
 import {
   BENEFIT_DIRECTORY_CATEGORIES,
   BENEFIT_DIRECTORY_IDENTITY_LABELS,
@@ -22,8 +22,8 @@ import {
   type BenefitDirectorySearchInput,
   type BenefitDirectorySearchItem,
   type Result,
-} from '../types/benefitDirectory'
-import type { Database } from '../types/database'
+} from '../types/benefitDirectory.ts'
+import type { Database } from '../types/database.ts'
 
 type GeneratedSearchRpcArgs = Database['public']['Functions']['search_benefit_companies_v1']['Args']
 type SearchRpcArgs = { [Key in keyof GeneratedSearchRpcArgs]-?: Exclude<GeneratedSearchRpcArgs[Key], undefined> }
@@ -125,7 +125,7 @@ function validOpaqueCursor(value: unknown): value is string {
   return typeof value === 'string' && codePointLength(value) >= 1 && codePointLength(value) <= 500 && byteLength(value) <= 2000
 }
 
-function decodePage(value: unknown, input: BenefitDirectorySearchInput): BenefitDirectoryPage {
+export function decodeBenefitDirectoryPage(value: unknown, input: BenefitDirectorySearchInput): BenefitDirectoryPage {
   if (!isRecord(value) || !hasExactKeys(value, searchPageKeys) || !Array.isArray(value.items)
     || value.items.length > input.pageSize || value.items.length > 50 || !isDenseArray(value.items)
     || typeof value.has_more !== 'boolean' || !nonnegativeInteger(value.total)) throw new Error('invalid search page')
@@ -382,7 +382,7 @@ export function createBenefitDirectoryRepository(): BenefitDirectoryRepository {
         p_page_size: input.pageSize,
         p_cursor: input.cursor ?? null,
       } satisfies SearchRpcArgs
-      return execute('search_benefit_companies_v1', client => client.rpc('search_benefit_companies_v1', args), value => decodePage(value, input), signal)
+      return execute('search_benefit_companies_v1', client => client.rpc('search_benefit_companies_v1', args), value => decodeBenefitDirectoryPage(value, input), signal)
     },
     detail(companyId, signal) {
       if (!isCompanyId(companyId)) return Promise.resolve(invalidArgument())

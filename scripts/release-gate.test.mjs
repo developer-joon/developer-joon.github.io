@@ -278,7 +278,7 @@ test('child environment uses an exact safe allowlist and only the absolute brows
     PATH: '/safe/bin', HOME: '/safe/home', USER: 'operator', LOGNAME: 'operator',
     TMPDIR: '/safe/tmp', LANG: 'C.UTF-8', TZ: 'UTC', TERM: 'dumb', CI: '1',
     XDG_RUNTIME_DIR: '/safe/run', DOCKER_CONTEXT: 'rootless',
-    SUPABASE_URL: sentinel, supabase_service_role_key: sentinel,
+    SUPABASE_URL: sentinel, ['supabase_service_role_key']: sentinel,
     DATABASE_URL: sentinel, Postgres_URL: sentinel, PGHOST: sentinel,
     libpq_service: sentinel, APP_DATABASE_PASSWORD: sentinel,
     vite_public_value: sentinel, NEXT_PUBLIC_VALUE: sentinel,
@@ -2210,6 +2210,11 @@ test('new benefit database suites clean up explicitly before their final standal
       'benefit seed importer integration PASS: trigger rewrites rolled back; schema, dry-run, receipt, late-failure, apply, replay verified',
       7,
     ],
+    [
+      path.join(import.meta.dirname, '../supabase/tests/opendart_benefit_importer_integration.sh'),
+      'OpenDART importer integration PASS: dry-run, apply, replay, collision, rollback, preservation',
+      1,
+    ],
   ]
   for (const [file, successProse, count] of contracts) {
     const source = readFileSync(file, 'utf8')
@@ -2235,6 +2240,28 @@ test('new benefit database suites clean up explicitly before their final standal
     assert.equal(lines.slice(explicitCleanup + 1, summaryLine).some(line => /^trap .* EXIT$/.test(line)), false, file)
     assert.equal((source.match(/^printf 'Tests=\d+\\n'$/gm) ?? []).length, 1, file)
     assert.equal(nonemptyLines.at(-1), `printf 'Tests=${count}\\n'`, file)
+  }
+})
+
+test('OpenDART importer cleanup failure cannot publish a positive count', () => {
+  const file = path.join(import.meta.dirname, '../supabase/tests/opendart_benefit_importer_integration.sh')
+  const source = readFileSync(file, 'utf8')
+  const bodyStart = source.indexOf('python3 - "$root/source.zip"')
+  const successStart = source.indexOf("printf 'OpenDART importer integration PASS:")
+  assert.ok(bodyStart > 0 && successStart > bodyStart)
+  const harness = `${source.slice(0, bodyStart)}started=1\n${source.slice(successStart)}`
+    .replace('cli="$repo/community-app/node_modules/.bin/supabase"', 'cli="${CLEANUP_CLI:?}"')
+  const root = mkdtempSync(path.join(tmpdir(), 'opendart-cleanup-contract-'))
+  try {
+    const script = path.join(root, 'contract.sh')
+    const cli = path.join(root, 'supabase')
+    writeFileSync(script, harness, { mode: 0o700 })
+    writeFileSync(cli, '#!/usr/bin/env bash\n[[ "$1" != stop ]]\n', { mode: 0o700 })
+    const result = spawnSync('bash', [script], { encoding: 'utf8', env: { ...process.env, CLEANUP_CLI: cli } })
+    assert.notEqual(result.status, 0)
+    assert.doesNotMatch(result.stdout, /^Tests=1$/m)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })
 

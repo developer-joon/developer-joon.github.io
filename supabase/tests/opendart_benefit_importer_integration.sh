@@ -4,8 +4,39 @@ repo="$(cd "${BASH_SOURCE[0]%/*}/../.." && pwd -P)"
 cli="$repo/community-app/node_modules/.bin/supabase"
 root="$(mktemp -d "${TMPDIR:-$HOME}/opendart-import.XXXXXX")"
 started=0
-cleanup(){ status=$?; trap - EXIT; if ((started)); then "$cli" db reset --local --no-seed >/dev/null 2>&1 || true; "$cli" stop >/dev/null 2>&1 || true; fi; rm -rf -- "$root"; exit "$status"; }
-trap cleanup EXIT INT TERM
+cleanup() {
+  local original_status="${1:-$?}" cleanup_status=0 cleanup_diagnostics='' output step_status
+  trap - EXIT INT TERM
+  set +e
+  if (( started == 1 )); then
+    output="$("$cli" db reset --local --no-seed 2>&1)"
+    step_status=$?
+    if (( step_status != 0 )); then
+      cleanup_status=1
+      cleanup_diagnostics+=$'database cleanup failed:\n'"$output"$'\n'
+    fi
+    output="$("$cli" stop 2>&1)"
+    step_status=$?
+    if (( step_status != 0 )); then
+      cleanup_status=1
+      cleanup_diagnostics+=$'Supabase stop failed:\n'"$output"$'\n'
+    fi
+  fi
+  output="$(rm -rf -- "$root" 2>&1)"
+  step_status=$?
+  if (( step_status != 0 )); then
+    cleanup_status=1
+    cleanup_diagnostics+=$'temporary directory cleanup failed:\n'"$output"$'\n'
+  fi
+  if (( cleanup_status != 0 )); then
+    printf 'OpenDART importer integration cleanup: %s\n' "${cleanup_diagnostics: -4000}" >&2
+  fi
+  if (( original_status != 0 )); then return "$original_status"; fi
+  return "$cleanup_status"
+}
+trap 'cleanup "$?"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 python3 - "$root/source.zip" <<'PY'
 import sys,zipfile
 xml='''<?xml version="1.0" encoding="UTF-8"?><result><list><corp_code>00123456</corp_code><corp_name>Integration Alpha</corp_name><corp_eng_name>INTEGRATION ALPHA</corp_eng_name><stock_code>123456</stock_code><modify_date>20261122</modify_date></list><list><corp_code>00999999</corp_code><corp_name>Integration Alpha</corp_name><corp_eng_name></corp_eng_name><stock_code></stock_code><modify_date>20260101</modify_date></list></result>'''
@@ -127,5 +158,10 @@ q "update public.benefit_company_identifiers i set company_id=(select company_id
 before="$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers)||':'||(select count(*) from private.benefit_import_receipts)||':'||(select count(*) from public.benefit_publications)")"
 if OPENDART_IMPORT_INJECT_LATE_FAILURE=1 "${args[@]}" --apply >/dev/null 2>&1; then echo 'late failure unexpectedly succeeded' >&2; exit 1; fi
 [[ "$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers)||':'||(select count(*) from private.benefit_import_receipts)||':'||(select count(*) from public.benefit_publications)")" == "$before" ]]
-echo 'OpenDART importer integration PASS: dry-run, apply, replay, collision, rollback, preservation'
-echo 'Tests=1'
+printf 'OpenDART importer integration PASS: dry-run, apply, replay, collision, rollback, preservation\n'
+set +e
+cleanup 0
+cleanup_status=$?
+set -e
+if (( cleanup_status != 0 )); then exit "$cleanup_status"; fi
+printf 'Tests=1\n'

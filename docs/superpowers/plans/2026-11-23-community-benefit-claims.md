@@ -1056,6 +1056,7 @@ git commit -m "feat: moderate company requests and benefit claims"
 - OpenDART importer integration
 - NTS Edge Function check/test/fmt
 - claim/company request pgTAP and dblink tests
+- mandatory `test-database` release step executes the real `supabase test db` suite; release evidence must record its parsed positive `Tests=N` count from the final `Result: PASS` prove summary (SQL projection/schema proof is never inferred from source-token presence)
 - strict anonymous v2 projection test
 - assembled authenticated route shells
 - public bundle still free of auth/mutation dependencies
