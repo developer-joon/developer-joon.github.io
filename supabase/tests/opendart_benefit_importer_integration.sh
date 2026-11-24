@@ -128,3 +128,4 @@ before="$(q "select count(*)||':'||(select count(*) from public.benefit_company_
 if OPENDART_IMPORT_INJECT_LATE_FAILURE=1 "${args[@]}" --apply >/dev/null 2>&1; then echo 'late failure unexpectedly succeeded' >&2; exit 1; fi
 [[ "$(q "select count(*)||':'||(select count(*) from public.benefit_company_identifiers)||':'||(select count(*) from private.benefit_import_receipts)||':'||(select count(*) from public.benefit_publications)")" == "$before" ]]
 echo 'OpenDART importer integration PASS: dry-run, apply, replay, collision, rollback, preservation'
+echo 'Tests=1'

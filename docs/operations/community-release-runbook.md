@@ -97,6 +97,24 @@ Any missing, stale, or revision-mismatched evidence is no-go.
 
 Run local exhaustive proof from a clean revision. Task 16 must replace both intentional sentinels before a release can be green.
 
+The local plan now fails closed across the benefit-claims release boundary before
+site assembly. It runs the repository claim/schema/sensitive-data verifier, the
+base seed generator and independent verifier, the OpenDART generator check and
+independent verifier, the OpenDART importer integration, claim/company pgTAP and
+dblink suites (including the strict anonymous v2 projection), pinned Deno
+check/test/fmt for `verify-benefit-company`, frontend checks/build, authenticated
+route-shell verification, and the canonical public-bundle manifest graph check.
+The importer integrations and canonical database suite must each emit one final,
+positive `Tests=<integer>` protocol line; missing, duplicate, zero, truncated, or
+post-summary output invalidates evidence.
+
+The official production OpenDART source, reuse-rights authority descriptor, and
+generated production bundle are intentionally absent. Synthetic OpenDART data is
+test-only and is not production authority. Until an authorized official source
+and reviewed rights statement are supplied at the fixed repository paths, the
+OpenDART generator `--check` is an expected **NO-GO**. Never copy a synthetic
+fixture into those paths to make the gate green.
+
 The gate resolves Chromium during preflight, before either site build. An explicit
 `BENEFITS_CHROMIUM` path takes priority and must be an executable regular file;
 otherwise the gate searches the documented `chromium`, `chromium-browser`,
@@ -334,6 +352,11 @@ npx --yes deno@2.9.6 test --allow-env --allow-read \
   supabase/functions/verify-benefit-company/index.test.ts
 npx --yes deno@2.9.6 fmt --check supabase/functions
 ```
+
+Passing these mock-only commands establishes local NTS implementation readiness,
+not hosted configuration or business verification. No real NTS canary has been
+run. Claims and manual company-review code may be locally ready while NTS hosted
+readiness and OpenDART production expansion remain separately blocked.
 
 Migration apply, Function secret configuration, and Function deployment are
 three separate hosted mutations and require target-specific approvals. A deploy

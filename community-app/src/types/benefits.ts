@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isFrozenBenefitArtifactCompanyId } from '../lib/benefitCompanyId'
+import { isFrozenBenefitArtifactCompanyId } from '../lib/benefitCompanyId.ts'
 
 export const categories = ['leave','family','health','growth','housing','commute','remote','retirement','meals','inclusion'] as const
 export type Category = (typeof categories)[number]

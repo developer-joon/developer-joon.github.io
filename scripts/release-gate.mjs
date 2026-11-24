@@ -18,6 +18,7 @@ const readinessInputBindings = new WeakMap()
 const DATABASE_TEST_STEPS = new Set([
   'test-benefit-title-upgrade',
   'test-benefit-seed-importer',
+  'test-opendart-benefit-importer',
   'test-storage-upgrade',
   'test-public-listing-upgrade',
   'test-community-snapshot-upgrade',
@@ -27,11 +28,13 @@ const DATABASE_TEST_STEPS = new Set([
 const MANDATORY_DATABASE_TEST_STEPS = new Set([
   'test-benefit-title-upgrade',
   'test-benefit-seed-importer',
+  'test-opendart-benefit-importer',
   'test-database',
 ])
 const ORDERED_TRANSCRIPT_DATABASE_STEPS = new Set([
   'test-benefit-title-upgrade',
   'test-benefit-seed-importer',
+  'test-opendart-benefit-importer',
 ])
 const CHILD_ENV_ALLOWLIST = Object.freeze([
   'PATH', 'HOME', 'USER', 'LOGNAME',
@@ -582,18 +585,25 @@ function localCoreSteps(workspace) {
   const { siteA, siteB, manifests } = workspace
   return [
     step('repository-preflight', 'git', ['status', '--porcelain']),
+    step('verify-benefit-claims-release', 'node', ['scripts/verify-benefit-claims-release.mjs']),
     step('check-benefit-seed-generation', 'node', ['scripts/generate-benefit-directory-seed.mjs', '--check']),
     step('verify-benefit-seed', 'node', ['scripts/verify-benefit-directory-seed.mjs']),
+    step('check-opendart-benefit-generation', 'node', ['scripts/generate-opendart-benefit-directory.mjs', '--check', '--source', 'docs/research/company-benefits/opendart/CORPCODE.zip', '--authority', 'docs/research/company-benefits/opendart/authority.json']),
+    step('verify-opendart-benefit-directory', 'node', ['scripts/verify-opendart-benefit-directory.mjs', '--source', 'docs/research/company-benefits/opendart/CORPCODE.zip', '--authority', 'docs/research/company-benefits/opendart/authority.json', '--bundle', 'supabase/fixtures/benefit-directory-opendart']),
     step('start-local-supabase', 'npm', ['--prefix', 'community-app', 'run', 'db:start']),
     step('reset-local-database', 'npm', ['--prefix', 'community-app', 'run', 'db:reset']),
     step('test-benefit-title-upgrade', 'npm', ['--prefix', 'community-app', 'run', 'db:test:benefit-title-upgrade']),
     step('test-benefit-seed-importer', 'npm', ['--prefix', 'community-app', 'run', 'db:test:benefit-seed-importer']),
+    step('test-opendart-benefit-importer', 'npm', ['--prefix', 'community-app', 'run', 'db:test:opendart-benefit-importer']),
     step('test-storage-upgrade', 'npm', ['--prefix', 'community-app', 'run', 'db:test:storage-upgrade']),
     step('test-public-listing-upgrade', 'npm', ['--prefix', 'community-app', 'run', 'db:test:public-listing-upgrade']),
     step('test-community-snapshot-upgrade', 'npm', ['--prefix', 'community-app', 'run', 'db:test:community-snapshot-upgrade']),
     step('test-public-attachment-integration', 'npm', ['--prefix', 'community-app', 'run', 'db:test:public-attachment-integration']),
     step('test-database', 'npm', ['--prefix', 'community-app', 'run', 'db:test']),
     step('lint-database', 'npm', ['--prefix', 'community-app', 'run', 'db:lint']),
+    step('check-nts-edge-function', 'npx', ['--yes', 'deno@2.9.6', 'check', '--lock=deno.lock', '--frozen-lockfile', 'supabase/functions/verify-benefit-company/index.ts', 'supabase/functions/verify-benefit-company/index.test.ts']),
+    step('test-nts-edge-function', 'npx', ['--yes', 'deno@2.9.6', 'test', '--allow-env', '--allow-read', '--lock=deno.lock', '--frozen-lockfile', 'supabase/functions/verify-benefit-company/index.test.ts']),
+    step('fmt-nts-edge-functions', 'npx', ['--yes', 'deno@2.9.6', 'fmt', '--check', 'supabase/functions']),
     step('frontend-check', 'npm', ['--prefix', 'community-app', 'run', 'check']),
     step('frontend-build', 'npm', ['--prefix', 'community-app', 'run', 'build']),
     step('test-node-scripts', 'node', [
@@ -603,6 +613,7 @@ function localCoreSteps(workspace) {
       'scripts/community-snapshots.test.mjs',
       'scripts/assert-benefit-seed-target.test.mjs',
       'scripts/verify-benefit-directory-seed.test.mjs',
+      'scripts/verify-benefit-claims-release.test.mjs',
       'scripts/verify-site.test.mjs',
     ]),
     step('build-site-a', './scripts/build-site-docker.sh', [siteA]),
