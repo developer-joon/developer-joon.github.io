@@ -100,11 +100,26 @@ test('sensitive scanner rejects static and mixed template-literal assignments bu
       await rm(target)
     }
 
+    const interpolationAttacks = [
+      `const representativeName = ${tick}${interpolation('"민감대표"')}${tick}\n`,
+      `const openingDate = ${tick}${interpolation('"20260102"')}${tick}\n`,
+      `const businessNumber = ${tick}${interpolation('"1234567890"')}${tick}\n`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation('"real-like-nts-value"')}${tick}\n`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation('process.env.NTS_SERVICE_KEY ?? "fallback"')}${tick}\n`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation(`${tick}${interpolation('process.env.NTS_SERVICE_KEY')}${tick}`)}${tick}\n`,
+    ]
+    for (const [index, content] of interpolationAttacks.entries()) {
+      const target = path.join(root, 'src', `interpolation-attack-${index}.ts`)
+      await writeFile(target, content)
+      await assert.rejects(scanSensitiveReleaseFiles(root), /representative|opening date|business number|secret assignment/i)
+      await rm(target)
+    }
+
     await writeFile(path.join(root, 'src/dynamic.ts'), [
-      `const representativeName = ${tick}${interpolation('process.env.REPRESENTATIVE_NAME')}${tick}`,
-      `const openingDate = ${tick}${interpolation('process.env.OPENING_DATE')}${tick}`,
-      `const businessNumber = ${tick}${interpolation('process.env.BUSINESS_NUMBER')}${tick}`,
-      `const NTS_SERVICE_KEY = ${tick}${interpolation('process.env.NTS_SERVICE_KEY')}${tick}`,
+      `const representativeName = ${tick}${interpolation(' \tprocess.env.REPRESENTATIVE_NAME\r\n')}${tick}`,
+      `const openingDate = ${tick}${interpolation('Deno.env.get("OPENING_DATE")')}${tick}`,
+      `const businessNumber = ${tick}${interpolation("Deno.env.get( 'BUSINESS_NUMBER' )")}${tick}`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation(' \nDeno.env.get("NTS_SERVICE_KEY")\t')}${tick}`,
     ].join('\n'))
     await assert.doesNotReject(scanSensitiveReleaseFiles(root))
   } finally {

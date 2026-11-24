@@ -26,31 +26,69 @@ const SENSITIVE_PATTERNS = [
 ]
 
 const TEMPLATE_ASSIGNMENTS = [
-  { label: 'representative name', names: ['representative_name', 'representativeName', '대표자', '대표자명'] },
-  { label: 'opening date', names: ['opening_date', 'openingDate', '개업일자'] },
-  { label: 'raw business number', names: ['business_number', 'businessNumber', '사업자등록번호'] },
-  { label: 'secret assignment', names: ['NTS_SERVICE_KEY', 'BUSINESS_NUMBER_HMAC_SECRET', 'SUPABASE_SERVICE_ROLE_KEY'] },
+  {
+    label: 'representative name',
+    names: ['representative_name', 'representativeName', '대표자', '대표자명'],
+    environmentNames: ['REPRESENTATIVE_NAME', 'REPRESENTATIVE_NAME', 'REPRESENTATIVE_NAME', 'REPRESENTATIVE_NAME'],
+  },
+  {
+    label: 'opening date',
+    names: ['opening_date', 'openingDate', '개업일자'],
+    environmentNames: ['OPENING_DATE', 'OPENING_DATE', 'OPENING_DATE'],
+  },
+  {
+    label: 'raw business number',
+    names: ['business_number', 'businessNumber', '사업자등록번호'],
+    environmentNames: ['BUSINESS_NUMBER', 'BUSINESS_NUMBER', 'BUSINESS_NUMBER'],
+  },
+  {
+    label: 'secret assignment',
+    names: ['NTS_SERVICE_KEY', 'BUSINESS_NUMBER_HMAC_SECRET', 'SUPABASE_SERVICE_ROLE_KEY'],
+    environmentNames: ['NTS_SERVICE_KEY', 'BUSINESS_NUMBER_HMAC_SECRET', 'SUPABASE_SERVICE_ROLE_KEY'],
+  },
 ]
+
+function quotedEnd(text, start, quote) {
+  for (let index = start + 1; index < text.length; index += 1) {
+    if (text[index] === '\\') index += 1
+    else if (text[index] === quote) return index + 1
+  }
+  return null
+}
 
 function templateLiteral(text, start) {
   const segments = ['']
+  const expressions = []
   for (let index = start + 1; index < text.length; index += 1) {
     const character = text[index]
     if (character === '\\') {
       if (index + 1 < text.length) segments.at(-1) += text[++index]
     } else if (character === '`') {
-      return { end: index + 1, segments }
+      return { end: index + 1, segments, expressions }
     } else if (character === '$' && text[index + 1] === '{') {
+      const expressionStart = index + 2
+      let cursor = expressionStart
       let depth = 1
-      index += 2
-      for (; index < text.length && depth > 0; index += 1) {
-        if (text[index] === '\\') index += 1
-        else if (text[index] === '{') depth += 1
-        else if (text[index] === '}') depth -= 1
+      for (; cursor < text.length && depth > 0;) {
+        const expressionCharacter = text[cursor]
+        if (expressionCharacter === '"' || expressionCharacter === "'") {
+          const end = quotedEnd(text, cursor, expressionCharacter)
+          if (end === null) return null
+          cursor = end
+        } else if (expressionCharacter === '`') {
+          const nested = templateLiteral(text, cursor)
+          if (nested === null) return null
+          cursor = nested.end
+        } else {
+          if (expressionCharacter === '{') depth += 1
+          else if (expressionCharacter === '}') depth -= 1
+          if (depth > 0) cursor += 1
+        }
       }
       if (depth !== 0) return null
-      index -= 1
+      expressions.push(text.slice(expressionStart, cursor))
       segments.push('')
+      index = cursor
     } else {
       segments[segments.length - 1] += character
     }
@@ -66,16 +104,35 @@ function templateSegmentSensitive(label, segment) {
     && !/(?:process\.env|Deno\.env|getEnv|<|\*{3}|redacted)/iu.test(segment)
 }
 
+function pureEnvironmentLookup(expression, expectedName) {
+  const processLookup = expression.match(/^[\t\n\v\f\r ]*process\.env\.([A-Za-z_][A-Za-z0-9_]*)[\t\n\v\f\r ]*$/u)
+  if (processLookup) return processLookup[1] === expectedName
+  const denoLookup = expression.match(/^[\t\n\v\f\r ]*Deno\.env\.get\([\t\n\v\f\r ]*(["'])([A-Za-z_][A-Za-z0-9_]*)\1[\t\n\v\f\r ]*\)[\t\n\v\f\r ]*$/u)
+  return denoLookup?.[2] === expectedName
+}
+
+function templateAssignmentSensitive(label, literal, expectedEnvironmentName) {
+  if (literal.expressions.length === 0) {
+    return literal.segments.some(segment => templateSegmentSensitive(label, segment))
+  }
+  return literal.segments.some(segment => segment !== '')
+    || literal.expressions.some(expression => !pureEnvironmentLookup(expression, expectedEnvironmentName))
+}
+
 function * templateAssignmentFindings(text) {
-  for (const { label, names } of TEMPLATE_ASSIGNMENTS) {
-    const alternatives = names.map(name => name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|')
+  for (const { label, names, environmentNames } of TEMPLATE_ASSIGNMENTS) {
+    const escapedNames = names.map(name => name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+    const alternatives = escapedNames.join('|')
     const key = `(?:\\[\\s*["'](?:${alternatives})["']\\s*\\]|["'](?:${alternatives})["']|(?<![\\p{L}\\p{N}_])(?:${alternatives})(?![\\p{L}\\p{N}_]))\\s*[:=]\\s*`
     const matcher = new RegExp(key, 'giu')
     for (const match of text.matchAll(matcher)) {
       const valueStart = match.index + match[0].length
       if (text[valueStart] !== '`') continue
+      const nameIndex = escapedNames.findIndex(name => new RegExp(`(?:^|[^\\p{L}\\p{N}_])${name}(?:$|[^\\p{L}\\p{N}_])`, 'iu').test(match[0]))
       const literal = templateLiteral(text, valueStart)
-      if (literal && literal.segments.some(segment => templateSegmentSensitive(label, segment))) {
+      if (literal === null) {
+        yield { label, span: text.slice(match.index, valueStart + 1) }
+      } else if (nameIndex < 0 || templateAssignmentSensitive(label, literal, environmentNames[nameIndex])) {
         yield { label, span: text.slice(match.index, literal.end) }
       }
     }
