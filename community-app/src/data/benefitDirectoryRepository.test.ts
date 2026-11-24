@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const getAnonymousSupabaseClient = vi.hoisted(() => vi.fn())
 vi.mock('../lib/supabase', () => ({ getAnonymousSupabaseClient }))
 
-import { createBenefitDirectoryRepository } from './benefitDirectoryRepository'
+import {
+  createBenefitDirectoryRepository,
+  decodeBenefitCompanyDetailV1,
+  decodeBenefitCompanyDetailV2,
+} from './benefitDirectoryRepository'
 
 const company = {
   company_id: 'KR-CRN-1101111111111', display_name: '가나다 공식', identity_label: '법인',
@@ -17,8 +21,10 @@ const publication = {
   description: '연 1회 건강검진', eligibility_text: '재직자', condition_text: '회사 기준',
   trust_label: '공식 확인', revision: 1, origin_claim_id: null,
 }
+const { origin_claim_id: _originClaimId, ...publicationV1 } = publication
+void _originClaimId
 const page = { items: [searchItem], has_more: false, next_cursor: null, total: 1 }
-const detail = { company, publications: [publication] }
+const detail = { company, publications: [publicationV1] }
 const publicClaim = {
   claim_id: 'b2000000-0000-0000-0000-000000000001', category_id: 'health', category_name: '건강',
   title: '건강 지원', description: '건강 지원 설명', eligibility_text: null, condition_text: null,
@@ -26,7 +32,7 @@ const publicClaim = {
   submitted_at: '2026-11-22T01:00:00.000000+00:00', observed_on: '2026-11-21',
   confirm_count: 3, dispute_count: 0, last_confirmation_at: '2026-11-22T02:00:00.000000+00:00',
 }
-const detailV2 = { ...detail, claims: [publicClaim] }
+const detailV2 = { ...detail, publications: [publication], claims: [publicClaim] }
 
 function sparseAtZero<T>(value: T): T[] {
   const values = Array<T>(2)
@@ -77,6 +83,23 @@ function rpcClient(response: Response | Promise<Response>) {
 beforeEach(() => vi.clearAllMocks())
 
 describe('benefit directory repository', () => {
+  it('accepts a v1 publication without linkage only in the v1 decoder', () => {
+    expect(decodeBenefitCompanyDetailV1(detail, company.company_id)).toEqual({
+      company: expect.objectContaining({ companyId: company.company_id }),
+      publications: [expect.not.objectContaining({ originClaimId: expect.anything() })],
+    })
+    expect(() => decodeBenefitCompanyDetailV2({ ...detail, claims: [publicClaim] }, company.company_id)).toThrow('invalid publication projection')
+  })
+
+  it('accepts a required v2 linkage only in the v2 decoder', () => {
+    expect(decodeBenefitCompanyDetailV2({ ...detailV2, publications: [publication] }, company.company_id)).toEqual({
+      company: expect.objectContaining({ companyId: company.company_id }),
+      publications: [expect.objectContaining({ originClaimId: null })],
+      claims: [expect.objectContaining({ claimId: publicClaim.claim_id })],
+    })
+    expect(() => decodeBenefitCompanyDetailV1({ ...detail, publications: [publication] }, company.company_id)).toThrow('invalid publication projection')
+  })
+
   it('calls only the public search RPC with the exact server arguments and forwards AbortSignal', async () => {
     const transport = rpcClient(success(page))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)

@@ -13,7 +13,6 @@ function publication(overrides: Partial<BenefitDirectoryPublication> = {}): Bene
     conditionText: null,
     trustLabel: '공식 확인',
     revision: 1,
-    originClaimId: null,
     ...overrides,
   }
 }

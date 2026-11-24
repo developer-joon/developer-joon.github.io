@@ -57,7 +57,7 @@ export interface BenefitDirectoryPage {
   total: number
 }
 
-export interface BenefitDirectoryPublication {
+export interface BenefitDirectoryPublicationV1 {
   publicationId: string
   categoryId: BenefitDirectoryCategory
   title: string
@@ -66,6 +66,12 @@ export interface BenefitDirectoryPublication {
   conditionText: string | null
   trustLabel: BenefitDirectoryTrustLabel
   revision: number
+}
+
+/** Backward-compatible name for the original public v1 projection. */
+export type BenefitDirectoryPublication = BenefitDirectoryPublicationV1
+
+export interface BenefitDirectoryPublicationV2 extends BenefitDirectoryPublicationV1 {
   /** Public claim bound to this exact active publication, when claim-originated. */
   originClaimId: string | null
 }
@@ -90,12 +96,15 @@ export interface BenefitDirectoryPublicClaim {
 
 export interface BenefitCompanyDetailV1 {
   company: BenefitDirectoryCompanySummary
-  publications: BenefitDirectoryPublication[]
+  publications: BenefitDirectoryPublicationV1[]
 }
 
-export interface BenefitCompanyDetail extends BenefitCompanyDetailV1 {
+export interface BenefitCompanyDetailV2 extends BenefitCompanyDetailV1 {
+  publications: BenefitDirectoryPublicationV2[]
   claims: BenefitDirectoryPublicClaim[]
 }
+
+export type BenefitCompanyDetail = BenefitCompanyDetailV2
 
 export type BenefitDirectoryErrorCode =
   | 'invalid_argument'

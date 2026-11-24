@@ -10,11 +10,14 @@ import {
   BENEFIT_DIRECTORY_SIZE_LABELS,
   BENEFIT_DIRECTORY_TRUST_LABELS,
   type BenefitCompanyDetail,
+  type BenefitCompanyDetailV1,
+  type BenefitCompanyDetailV2,
   type BenefitDirectoryCategory,
   type BenefitDirectoryCompanySummary,
   type BenefitDirectoryErrorCode,
   type BenefitDirectoryPage,
-  type BenefitDirectoryPublication,
+  type BenefitDirectoryPublicationV1,
+  type BenefitDirectoryPublicationV2,
   type BenefitDirectoryPublicClaim,
   type BenefitDirectorySearchInput,
   type BenefitDirectorySearchItem,
@@ -36,7 +39,8 @@ const searchPageKeys = ['items', 'has_more', 'next_cursor', 'total'] as const
 const searchItemKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary', 'benefit_count', 'official_count', 'community_count', 'categories'] as const
 const detailKeys = ['company', 'publications', 'claims'] as const
 const companyKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary'] as const
-const publicationKeys = ['publication_id', 'category_id', 'title', 'description', 'eligibility_text', 'condition_text', 'trust_label', 'revision', 'origin_claim_id'] as const
+const publicationV1Keys = ['publication_id', 'category_id', 'title', 'description', 'eligibility_text', 'condition_text', 'trust_label', 'revision'] as const
+const publicationV2Keys = [...publicationV1Keys, 'origin_claim_id'] as const
 const publicClaimKeys = ['claim_id','category_id','category_name','title','description','eligibility_text','condition_text','status_code','status_label','nickname','submitted_at','observed_on','confirm_count','dispute_count','last_confirmation_at'] as const
 const searchInputKeys = ['query', 'categories', 'industry', 'size', 'region', 'hasBenefitsOnly', 'pageSize', 'cursor'] as const
 
@@ -136,18 +140,31 @@ function decodePage(value: unknown, input: BenefitDirectorySearchInput): Benefit
   return { items, hasMore: value.has_more, nextCursor: value.next_cursor as string | null, total: value.total }
 }
 
-function decodePublication(value: unknown): BenefitDirectoryPublication {
-  if (!isRecord(value) || !hasExactKeys(value, publicationKeys) || !isCanonicalUuid(value.publication_id)
+function decodePublicationBase(value: unknown, exactKeys: readonly string[]): BenefitDirectoryPublicationV1 {
+  if (!isRecord(value) || !hasExactKeys(value, exactKeys) || !isCanonicalUuid(value.publication_id)
     || !isCategory(value.category_id) || !boundedWireText(value.title, 200) || !boundedWireText(value.description, 5000)
     || !nullableBoundedWireText(value.eligibility_text, 2000) || !nullableBoundedWireText(value.condition_text, 2000)
-    || !inValues(value.trust_label, BENEFIT_DIRECTORY_TRUST_LABELS) || !nonnegativeInteger(value.revision)
-    || (value.origin_claim_id !== null && !isCanonicalUuid(value.origin_claim_id))) {
+    || !inValues(value.trust_label, BENEFIT_DIRECTORY_TRUST_LABELS) || !nonnegativeInteger(value.revision)) {
     throw new Error('invalid publication projection')
   }
   return {
     publicationId: value.publication_id, categoryId: value.category_id, title: value.title,
     description: value.description, eligibilityText: value.eligibility_text, conditionText: value.condition_text,
     trustLabel: value.trust_label, revision: value.revision,
+  }
+}
+
+function decodePublicationV1(value: unknown): BenefitDirectoryPublicationV1 {
+  return decodePublicationBase(value, publicationV1Keys)
+}
+
+function decodePublicationV2(value: unknown): BenefitDirectoryPublicationV2 {
+  const publication = decodePublicationBase(value, publicationV2Keys)
+  if (!isRecord(value) || (value.origin_claim_id !== null && !isCanonicalUuid(value.origin_claim_id))) {
+    throw new Error('invalid publication projection')
+  }
+  return {
+    ...publication,
     originClaimId: value.origin_claim_id === null ? null : value.origin_claim_id.toLowerCase(),
   }
 }
@@ -186,12 +203,24 @@ function decodePublicClaim(value: unknown): BenefitDirectoryPublicClaim {
     lastConfirmationAt:value.last_confirmation_at }
 }
 
-function decodeDetail(value: unknown, requestedCompanyId: string): BenefitCompanyDetail {
+export function decodeBenefitCompanyDetailV1(value: unknown, requestedCompanyId: string): BenefitCompanyDetailV1 {
+  if (!isRecord(value) || !hasExactKeys(value, ['company', 'publications']) || !Array.isArray(value.publications)
+    || value.publications.length > MAX_BENEFIT_DETAIL_PUBLICATIONS || !isDenseArray(value.publications)) throw new Error('invalid detail projection')
+  const company = decodeCompany(value.company)
+  const publications = value.publications.map(decodePublicationV1)
+  if (company.companyId !== requestedCompanyId
+    || new Set(publications.map(publication => publication.publicationId.toLowerCase())).size !== publications.length) {
+    throw new Error('inconsistent detail projection')
+  }
+  return { company, publications }
+}
+
+export function decodeBenefitCompanyDetailV2(value: unknown, requestedCompanyId: string): BenefitCompanyDetailV2 {
   if (!isRecord(value) || !hasExactKeys(value, detailKeys) || !Array.isArray(value.publications)
     || value.publications.length > MAX_BENEFIT_DETAIL_PUBLICATIONS || !isDenseArray(value.publications)
     || !Array.isArray(value.claims) || value.claims.length > 200 || !isDenseArray(value.claims)) throw new Error('invalid detail projection')
   const company = decodeCompany(value.company)
-  const publications = value.publications.map(decodePublication)
+  const publications = value.publications.map(decodePublicationV2)
   const claims = value.claims.map(decodePublicClaim)
   const linkedClaimIds = publications.flatMap(publication => publication.originClaimId ? [publication.originClaimId] : [])
   const claimIds = new Set(claims.map(claim => claim.claimId))
@@ -360,7 +389,7 @@ export function createBenefitDirectoryRepository(): BenefitDirectoryRepository {
       const args = { p_company_id: companyId } satisfies DetailRpcArgs
       return execute('get_benefit_company_v2', client => client.rpc('get_benefit_company_v2', args), value => {
         if (value === null) throw new BenefitDirectoryNotFoundError()
-        return decodeDetail(value, companyId)
+        return decodeBenefitCompanyDetailV2(value, companyId)
       }, signal)
     },
   }

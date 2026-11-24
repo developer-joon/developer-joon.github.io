@@ -9,7 +9,7 @@ import { presentPublicDirectoryError } from '../lib/publicDirectoryErrorPresenta
 import {
   type BenefitCompanyDetail,
   type BenefitDirectoryError,
-  type BenefitDirectoryPublication,
+  type BenefitDirectoryPublicationV2,
   type BenefitDirectoryPublicClaim,
 } from '../types/benefitDirectory'
 
@@ -92,7 +92,7 @@ function ClaimHistory({ claim, companyId }: { claim: BenefitDirectoryPublicClaim
   </>
 }
 
-function PublicationCard({ item, authority, claim, companyId }: { item: BenefitDirectoryPublication; authority: 'official' | 'community'; claim?: BenefitDirectoryPublicClaim; companyId: string }) {
+function PublicationCard({ item, authority, claim, companyId }: { item: BenefitDirectoryPublicationV2; authority: 'official' | 'community'; claim?: BenefitDirectoryPublicClaim; companyId: string }) {
   const anchor = claim ? `claim-${claim.claimId}` : `publication-${item.publicationId}`
   return <article id={anchor} data-benefit-kind={authority} data-category={item.categoryId} className={`benefit-company-page__card benefit-company-page__card--${authority}`}>
     <p className="benefit-company-page__authority">{authority === 'official' ? '공식 공개 자료' : '커뮤니티 검토 게시'}</p>
