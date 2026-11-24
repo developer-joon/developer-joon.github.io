@@ -25,8 +25,65 @@ const SENSITIVE_PATTERNS = [
   { label: 'secret assignment', pattern: new RegExp(`${SECRET_KEY}\\s*[:=]\\s*["']?(?![\\s"']*(?:process\\.env|Deno\\.env|getEnv|\\$\\{|<|\\*{3}|redacted))[A-Za-z0-9._~+\\/-]{8,}`, 'iu') },
 ]
 
+const TEMPLATE_ASSIGNMENTS = [
+  { label: 'representative name', names: ['representative_name', 'representativeName', '대표자', '대표자명'] },
+  { label: 'opening date', names: ['opening_date', 'openingDate', '개업일자'] },
+  { label: 'raw business number', names: ['business_number', 'businessNumber', '사업자등록번호'] },
+  { label: 'secret assignment', names: ['NTS_SERVICE_KEY', 'BUSINESS_NUMBER_HMAC_SECRET', 'SUPABASE_SERVICE_ROLE_KEY'] },
+]
+
+function templateLiteral(text, start) {
+  const segments = ['']
+  for (let index = start + 1; index < text.length; index += 1) {
+    const character = text[index]
+    if (character === '\\') {
+      if (index + 1 < text.length) segments.at(-1) += text[++index]
+    } else if (character === '`') {
+      return { end: index + 1, segments }
+    } else if (character === '$' && text[index + 1] === '{') {
+      let depth = 1
+      index += 2
+      for (; index < text.length && depth > 0; index += 1) {
+        if (text[index] === '\\') index += 1
+        else if (text[index] === '{') depth += 1
+        else if (text[index] === '}') depth -= 1
+      }
+      if (depth !== 0) return null
+      index -= 1
+      segments.push('')
+    } else {
+      segments[segments.length - 1] += character
+    }
+  }
+  return null
+}
+
+function templateSegmentSensitive(label, segment) {
+  if (label === 'opening date') return /\d{8}/u.test(segment)
+  if (label === 'raw business number') return /(?:\d{3}-\d{2}-\d{5}|\d{10})/u.test(segment)
+  if (label === 'representative name') return /[^\s`$,{\]}]{2,}/u.test(segment)
+  return /[A-Za-z0-9._~+/-]{8,}/u.test(segment)
+    && !/(?:process\.env|Deno\.env|getEnv|<|\*{3}|redacted)/iu.test(segment)
+}
+
+function * templateAssignmentFindings(text) {
+  for (const { label, names } of TEMPLATE_ASSIGNMENTS) {
+    const alternatives = names.map(name => name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|')
+    const key = `(?:\\[\\s*["'](?:${alternatives})["']\\s*\\]|["'](?:${alternatives})["']|(?<![\\p{L}\\p{N}_])(?:${alternatives})(?![\\p{L}\\p{N}_]))\\s*[:=]\\s*`
+    const matcher = new RegExp(key, 'giu')
+    for (const match of text.matchAll(matcher)) {
+      const valueStart = match.index + match[0].length
+      if (text[valueStart] !== '`') continue
+      const literal = templateLiteral(text, valueStart)
+      if (literal && literal.segments.some(segment => templateSegmentSensitive(label, segment))) {
+        yield { label, span: text.slice(match.index, literal.end) }
+      }
+    }
+  }
+}
+
 // Identity-fixture exemptions are exact path + label + matched source span rules.
-// Secret assignments are intentionally never exempted.
+// Exact known-fake placeholder spans may be exempted; real-like values never are.
 function fixtureSpans(encoded) {
   return new Map(Object.entries(encoded).map(([fixturePath, labels]) => [
     fixturePath,
@@ -165,6 +222,11 @@ export async function scanSensitiveReleaseFiles(repoRoot, overrides = {}) {
           }
         }
       }
+      for (const { label, span } of templateAssignmentFindings(text)) {
+        if (!sensitiveSpanAllowed(relativePath, label, span)) {
+          throw new Error(`${label} leaked outside an exact approved source span: ${relativePath}`)
+        }
+      }
     }
   }
   return { checkedFiles: targets.length }
@@ -277,7 +339,8 @@ export async function verifyBenefitClaimsRelease(repoRoot) {
   const browserProjectionDecoder = verifyActualBrowserProjectionDecoders()
   const scan = await scanSensitiveReleaseFiles(root)
   return {
-    checkedFiles: scan.checkedFiles + inventoryContracts.size,
+    checkedFiles: scan.checkedFiles,
+    contractFiles: inventoryContracts.size,
     migration: '202611230011_admin_company_review_v2.sql',
     browserProjectionDecoder,
     databaseProof: 'mandatory-release-gate-test-database-step',
@@ -287,7 +350,7 @@ export async function verifyBenefitClaimsRelease(repoRoot) {
 async function main() {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const result = await verifyBenefitClaimsRelease(repoRoot)
-  console.log(`Benefit claims browser projection decoded by ${result.browserProjectionDecoder} across ${result.checkedFiles} inventory files; database proof is delegated to ${result.databaseProof}.`)
+  console.log(`Benefit claims browser projection decoded by ${result.browserProjectionDecoder} across ${result.checkedFiles} unique scanned inventory files (${result.contractFiles} release contracts checked separately); database proof is delegated to ${result.databaseProof}.`)
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

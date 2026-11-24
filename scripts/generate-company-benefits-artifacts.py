@@ -31,14 +31,17 @@ HYPHENATED_BUSINESS_NUMBER = re.compile(
     r"(?<![A-Za-z0-9-])\d{3}-\d{2}-\d{5}(?![A-Za-z0-9-])"
 )
 LABELED_BUSINESS_NUMBER = re.compile(
-    r"((?:business_number|businessNumber|사업자등록번호)\s*[:=]\s*)\d{10}", re.IGNORECASE
+    r"((?:(['\"])(?:business_number|businessNumber|사업자등록번호)\2|"
+    r"(?<![\w])(?:business_number|businessNumber|사업자등록번호)(?![\w]))"
+    r"\s*(?::|=)?\s*)(['\"]?)\d{10}\3", re.IGNORECASE
 )
 
 
 def redact_business_numbers(value):
     value = HYPHENATED_BUSINESS_NUMBER.sub(BUSINESS_NUMBER_REDACTION, value)
     return LABELED_BUSINESS_NUMBER.sub(
-        lambda match: match.group(1) + BUSINESS_NUMBER_REDACTION, value
+        lambda match: match.group(1) + match.group(3)
+        + BUSINESS_NUMBER_REDACTION + match.group(3), value
     )
 
 

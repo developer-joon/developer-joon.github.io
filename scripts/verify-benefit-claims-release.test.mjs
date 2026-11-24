@@ -13,6 +13,8 @@ const repoRoot = path.resolve(import.meta.dirname, '..')
 test('repository claim release contracts agree', async () => {
   const result = await verifyBenefitClaimsRelease(repoRoot)
   assert.ok(result.checkedFiles > 0)
+  assert.equal(result.contractFiles, 7)
+  assert.equal(result.checkedFiles, (await scanSensitiveReleaseFiles(repoRoot)).checkedFiles)
   assert.equal(result.migration, '202611230011_admin_company_review_v2.sql')
   assert.equal(result.browserProjectionDecoder, 'actual-v2-detail-and-listing-decoders')
   assert.equal(result.databaseProof, 'mandatory-release-gate-test-database-step')
@@ -72,6 +74,44 @@ test('sensitive scanner rejects computed, bracket-assigned, and quoted object se
   }
 })
 
+test('sensitive scanner rejects static and mixed template-literal assignments but permits dynamic environment references', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'claims-release-template-literals-'))
+  const tick = String.fromCharCode(96)
+  const interpolation = expression => '${' + expression + '}'
+  try {
+    await mkdir(path.join(root, 'src'), { recursive: true })
+    const sensitiveCases = [
+      `const fixture = { [ "representativeName" ] : ${tick}민감대표${tick} }\n`,
+      `const fixture = { 'opening_date' : ${tick}${['2026', '0102'].join('')}${tick} }\n`,
+      `fixture [ 'businessNumber' ] = ${tick}${['12345', '67890'].join('')}${tick}\n`,
+      `const fixture = { 사업자등록번호 : ${tick}${['12345', '67890'].join('')}${tick} }\n`,
+      `const fixture = { "NTS_SERVICE_KEY" : ${tick}real-like-nts-value${tick} }\n`,
+      `fixture [ 'BUSINESS_NUMBER_HMAC_SECRET' ] = ${tick}real-like-hmac-value${tick}\n`,
+      `const fixture = { ["SUPABASE_SERVICE_ROLE_KEY"] : ${tick}real-like-service-value${tick} }\n`,
+      `const fixture = { representative_name: ${tick}민감대표-${interpolation('process.env.REPRESENTATIVE_SUFFIX')}${tick} }\n`,
+      `const fixture = { openingDate: ${tick}${['2026', '0102'].join('')}-${interpolation('process.env.DATE_SUFFIX')}${tick} }\n`,
+      `const fixture = { business_number: ${tick}${['123', '-45-', '67890'].join('')}-${interpolation('process.env.NUMBER_SUFFIX')}${tick} }\n`,
+      `const fixture = { NTS_SERVICE_KEY: ${tick}real-like-${interpolation('process.env.NTS_SUFFIX')}${tick} }\n`,
+    ]
+    for (const [index, content] of sensitiveCases.entries()) {
+      const target = path.join(root, 'src', `template-${index}.ts`)
+      await writeFile(target, content)
+      await assert.rejects(scanSensitiveReleaseFiles(root), /representative|opening date|business number|secret assignment/i)
+      await rm(target)
+    }
+
+    await writeFile(path.join(root, 'src/dynamic.ts'), [
+      `const representativeName = ${tick}${interpolation('process.env.REPRESENTATIVE_NAME')}${tick}`,
+      `const openingDate = ${tick}${interpolation('process.env.OPENING_DATE')}${tick}`,
+      `const businessNumber = ${tick}${interpolation('process.env.BUSINESS_NUMBER')}${tick}`,
+      `const NTS_SERVICE_KEY = ${tick}${interpolation('process.env.NTS_SERVICE_KEY')}${tick}`,
+    ].join('\n'))
+    await assert.doesNotReject(scanSensitiveReleaseFiles(root))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('sensitive scanner permits only exact known-fake secret placeholder spans', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'claims-release-fake-secret-'))
   try {
@@ -81,6 +121,9 @@ test('sensitive scanner permits only exact known-fake secret placeholder spans',
     await writeFile(target, `const fixture = { SUPABASE_SERVICE_ROLE_KEY: "test-only-placeholder" }\n`)
     await assert.doesNotReject(scanSensitiveReleaseFiles(root))
     await writeFile(target, `const fixture = { SUPABASE_SERVICE_ROLE_KEY: '${'different-value-' + 'at-same-path'}' }\n`)
+    await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
+    const tick = String.fromCharCode(96)
+    await writeFile(target, `const fixture = { SUPABASE_SERVICE_ROLE_KEY: ${tick}test-only-placeholder${tick} }\n`)
     await assert.rejects(scanSensitiveReleaseFiles(root), /secret assignment/i)
   } finally {
     await rm(root, { recursive: true, force: true })

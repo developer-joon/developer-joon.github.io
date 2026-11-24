@@ -5,31 +5,28 @@ cli="$repo/community-app/node_modules/.bin/supabase"
 root="$(mktemp -d "${TMPDIR:-$HOME}/opendart-import.XXXXXX")"
 started=0
 cleanup() {
-  local original_status="${1:-$?}" cleanup_status=0 cleanup_diagnostics='' output step_status
+  local original_status="${1:-$?}" cleanup_status=0 step_status
   trap - EXIT INT TERM
   set +e
   if (( started == 1 )); then
-    output="$("$cli" db reset --local --no-seed 2>&1)"
+    "$cli" db reset --local --no-seed >/dev/null 2>&1
     step_status=$?
     if (( step_status != 0 )); then
       cleanup_status=1
-      cleanup_diagnostics+=$'database cleanup failed:\n'"$output"$'\n'
+      printf 'database cleanup failed\n' >&2
     fi
-    output="$("$cli" stop 2>&1)"
+    "$cli" stop >/dev/null 2>&1
     step_status=$?
     if (( step_status != 0 )); then
       cleanup_status=1
-      cleanup_diagnostics+=$'Supabase stop failed:\n'"$output"$'\n'
+      printf 'Supabase stop failed\n' >&2
     fi
   fi
-  output="$(rm -rf -- "$root" 2>&1)"
+  rm -rf -- "$root" >/dev/null 2>&1
   step_status=$?
   if (( step_status != 0 )); then
     cleanup_status=1
-    cleanup_diagnostics+=$'temporary directory cleanup failed:\n'"$output"$'\n'
-  fi
-  if (( cleanup_status != 0 )); then
-    printf 'OpenDART importer integration cleanup: %s\n' "${cleanup_diagnostics: -4000}" >&2
+    printf 'temporary directory cleanup failed\n' >&2
   fi
   if (( original_status != 0 )); then return "$original_status"; fi
   return "$cleanup_status"

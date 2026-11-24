@@ -2280,6 +2280,61 @@ test('OpenDART importer cleanup failure cannot publish a positive count', () => 
   }
 })
 
+test('OpenDART importer cleanup streams child output to null and continues after failure', () => {
+  const file = path.join(import.meta.dirname, '../supabase/tests/opendart_benefit_importer_integration.sh')
+  const source = readFileSync(file, 'utf8')
+  const bodyStart = source.indexOf('python3 - "$root/source.zip"')
+  const cleanupStart = source.lastIndexOf('set +e\ncleanup 0')
+  assert.ok(bodyStart > 0 && cleanupStart > bodyStart)
+  const harness = `${source.slice(0, bodyStart)}started=1\n${source.slice(cleanupStart)}`
+    .replace('cli="$repo/community-app/node_modules/.bin/supabase"', 'cli="${CLEANUP_CLI:?}"')
+  const root = mkdtempSync(path.join(tmpdir(), 'opendart-cleanup-streaming-'))
+  try {
+    const bin = path.join(root, 'bin')
+    mkdirSync(bin)
+    const script = path.join(root, 'contract.sh')
+    const cli = path.join(bin, 'supabase')
+    const fakeRm = path.join(bin, 'rm')
+    const trace = path.join(root, 'trace')
+    writeFileSync(script, harness, { mode: 0o700 })
+    writeFileSync(cli, `#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"$CLEANUP_TRACE"
+if [[ "$1 $2" == 'db reset' ]]; then
+  python3 - <<'PY'
+import sys
+sentinel = 'SENTINEL-CLEANUP-SECRET https://user:password@example.invalid/private\\n'
+for stream in (sys.stdout, sys.stderr):
+    stream.write(sentinel)
+    stream.write('x' * (2 * 1024 * 1024))
+    stream.flush()
+PY
+  exit 9
+fi
+exit 0
+`, { mode: 0o700 })
+    writeFileSync(fakeRm, `#!/usr/bin/env bash
+printf 'temporary-cleanup %s\\n' "$*" >>"$CLEANUP_TRACE"
+exec /bin/rm "$@"
+`, { mode: 0o700 })
+    const result = spawnSync('bash', [script], {
+      encoding: 'utf8', timeout: 15_000,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLEANUP_CLI: cli, CLEANUP_TRACE: trace },
+    })
+    assert.equal(result.error, undefined)
+    assert.notEqual(result.status, 0)
+    const output = `${result.stdout}\n${result.stderr}`
+    assert.match(output, /database cleanup failed/)
+    assert.doesNotMatch(output, /SENTINEL-CLEANUP-SECRET|example\.invalid|password|x{100}/)
+    assert.doesNotMatch(result.stdout, /OpenDART importer integration PASS:|^Tests=1$/m)
+    const attempts = readFileSync(trace, 'utf8')
+    assert.match(attempts, /db reset --local --no-seed/)
+    assert.match(attempts, /^stop$/m)
+    assert.match(attempts, /temporary-cleanup/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('mandatory database suites reject missing, zero, and duplicate summaries and accept real success output shapes', async () => {
   const realSuccess = {
     'test-benefit-title-upgrade': 'upgrade fixture passed\nlock race passed\ninvalid-title rollback passed\ncanonical collision rollback passed\nTests=4\n',
