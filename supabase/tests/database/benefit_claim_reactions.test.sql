@@ -1,9 +1,12 @@
 begin;
-select no_plan();
+select plan(78);
 
 select has_table('public','benefit_claim_reactions','claim reactions table exists');
 select has_table('public','benefit_claim_reaction_requests','durable reaction request audit exists');
 select has_function('public','set_benefit_claim_reaction_v1',array['uuid','text','uuid'],'reaction RPC exists');
+select has_function('public','get_benefit_claim_reaction_v1',array['uuid'],'reaction-state RPC exists');
+select ok((select p.proowner='postgres'::regrole and p.prosecdef and p.proconfig=array['search_path=""'] from pg_proc p where p.oid='public.get_benefit_claim_reaction_v1(uuid)'::regprocedure),'reaction-state RPC is postgres-owned security definer with an empty search path');
+select ok(has_function_privilege('authenticated','public.get_benefit_claim_reaction_v1(uuid)','EXECUTE') and not has_function_privilege('anon','public.get_benefit_claim_reaction_v1(uuid)','EXECUTE') and not has_function_privilege('service_role','public.get_benefit_claim_reaction_v1(uuid)','EXECUTE') and not has_function_privilege('public','public.get_benefit_claim_reaction_v1(uuid)','EXECUTE'),'reaction-state RPC execute ACL is exactly authenticated-only');
 select ok((select count(*)=0 from pg_constraint where conrelid='public.benefit_claims'::regclass and conname='benefit_claims_task5_no_active_publication_check'),'Task 5 phase constraint is explicitly removed');
 select ok((select bool_and(relrowsecurity) from pg_class where oid=any(array['public.benefit_claim_reactions'::regclass,'public.benefit_claim_reaction_requests'::regclass])),'reaction tables enable RLS');
 select ok((select bool_and(not has_table_privilege('public',oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE') and not has_table_privilege('anon',oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE') and not has_table_privilege('authenticated',oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE') and not has_table_privilege('service_role',oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')) from pg_class where oid=any(array['public.benefit_claim_reactions'::regclass,'public.benefit_claim_reaction_requests'::regclass])),'browser and service roles have no raw reaction/audit rights');
@@ -35,17 +38,38 @@ values
  ('b6200000-0000-4000-8000-000000000001','KR-BIZ-9961000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('a',64),'health','Health reaction','health reaction','Health description','',date '2026-01-01'),
  ('b6200000-0000-4000-8000-000000000002','KR-BIZ-9961000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('b',64),'leave','Hidden reaction','hidden reaction','Hidden description','',date '2026-01-01'),
  ('b6200000-0000-4000-8000-000000000003','KR-BIZ-9961000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('c',64),'remote','Withdrawn reaction','withdrawn reaction','Withdrawn description','',date '2026-01-01'),
- ('b6200000-0000-4000-8000-000000000004','KR-BIZ-9961000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('e',64),'growth','Self reaction','self reaction','Self reaction description','',date '2026-01-01');
+ ('b6200000-0000-4000-8000-000000000004','KR-BIZ-9961000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('e',64),'growth','Self reaction','self reaction','Self reaction description','',date '2026-01-01'),
+ ('b6200000-0000-4000-8000-000000000005','KR-BIZ-9961000001','b6100000-0000-4000-8000-000000000001',gen_random_uuid(),repeat('1',64),'housing','State isolation','state isolation','State isolation description','',date '2026-01-01');
+insert into public.benefit_claim_reactions(claim_id,user_id,reaction) values ('b6200000-0000-4000-8000-000000000005','b6100000-0000-4000-8000-000000000003','dispute');
 update public.benefit_claims set status='hidden',revision=2,updated_at=clock_timestamp() where claim_id='b6200000-0000-4000-8000-000000000002';
 update public.benefit_claims set status='withdrawn',revision=2,updated_at=statement_timestamp(),withdrawn_at=statement_timestamp() where claim_id='b6200000-0000-4000-8000-000000000003';
 
 set local role anon;
+select throws_ok($$select public.get_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000005')$$,'42501','permission denied for function get_benefit_claim_reaction_v1','anonymous reaction-state read rejected at the grant boundary');
 select throws_ok($$select public.set_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000001','confirm',gen_random_uuid())$$,'42501','permission denied for function set_benefit_claim_reaction_v1','anonymous mutation rejected at the grant boundary');
 reset role;
 set local role authenticated;
 set local request.jwt.claim.sub='b6100000-0000-4000-8000-000000000005';
+select throws_ok($$select public.get_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000005')$$,'42501','trusted Google identity required','non-Google reaction-state read rejected');
 select throws_ok($$select public.set_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000001','confirm',gen_random_uuid())$$,'42501','trusted Google identity required','non-Google mutation rejected');
 reset role;
+
+create temporary table reaction_state_results(name text primary key,payload jsonb);
+grant select,insert on reaction_state_results to authenticated;
+set local role authenticated;
+set local request.jwt.claim.sub='b6100000-0000-4000-8000-000000000002';
+insert into reaction_state_results values ('unrelated',public.get_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000005'));
+set local request.jwt.claim.sub='b6100000-0000-4000-8000-000000000003';
+insert into reaction_state_results values ('owner',public.get_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000005'));
+set local request.jwt.claim.sub='b6100000-0000-4000-8000-000000000001';
+insert into reaction_state_results values ('submitter',public.get_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000005'));
+select throws_ok($$select public.get_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000002')$$,'22023','benefit claim is not visible','hidden claim reaction-state read rejected');
+select throws_ok($$select public.get_benefit_claim_reaction_v1('b6200000-0000-4000-8000-000000000003')$$,'22023','benefit claim is not visible','withdrawn claim reaction-state read rejected');
+reset role;
+select is((select jsonb_object_agg(key,true order by key) from reaction_state_results cross join lateral jsonb_object_keys(payload) key where name='owner'),'{"claim_id":true,"is_submitter":true,"reaction":true}'::jsonb,'reaction-state response has exactly the three actor-safe keys');
+select is((select payload from reaction_state_results where name='unrelated'),'{"claim_id":"b6200000-0000-4000-8000-000000000005","reaction":null,"is_submitter":false}'::jsonb,'unrelated actor sees neither another user reaction nor submitter status');
+select is((select payload from reaction_state_results where name='owner'),'{"claim_id":"b6200000-0000-4000-8000-000000000005","reaction":"dispute","is_submitter":false}'::jsonb,'reaction owner sees only their own reaction');
+select is((select payload from reaction_state_results where name='submitter'),'{"claim_id":"b6200000-0000-4000-8000-000000000005","reaction":null,"is_submitter":true}'::jsonb,'claim submitter receives is_submitter true without another user reaction');
 
 update private.benefit_feature_settings set enabled=true,updated_at=clock_timestamp() where setting_key='claim_reactions_write_enabled';
 set local role authenticated;

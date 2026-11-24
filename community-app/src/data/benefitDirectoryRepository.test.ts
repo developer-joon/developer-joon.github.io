@@ -209,12 +209,15 @@ describe('benefit directory repository', () => {
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
-  it('rejects duplicate or dangling publication linkage before duplicate DOM anchors are possible', async () => {
+  it('accepts a linked publication when the promoted claim is deduplicated from claims', async () => {
     const linked = { ...publication, origin_claim_id: publicClaim.claim_id }
-    for (const publications of [
-      [linked, { ...linked, publication_id: 'b1000000-0000-0000-0000-000000000002' }],
-      [{ ...publication, origin_claim_id: 'b2000000-0000-0000-0000-000000000099' }],
-    ]) {
+    const transport = rpcClient(success({ ...detailV2, publications: [linked], claims: [] })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    await expect(createBenefitDirectoryRepository().detail(company.company_id)).resolves.toMatchObject({ ok: true, data: { publications: [{ originClaimId: publicClaim.claim_id }], claims: [] } })
+  })
+
+  it('rejects duplicate publication linkage before duplicate DOM anchors are possible', async () => {
+    const linked = { ...publication, origin_claim_id: publicClaim.claim_id }
+    for (const publications of [[linked, { ...linked, publication_id: 'b1000000-0000-0000-0000-000000000002' }]]) {
       const transport = rpcClient(success({ ...detailV2, publications })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
       await expect(createBenefitDirectoryRepository().detail(company.company_id)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
     }
