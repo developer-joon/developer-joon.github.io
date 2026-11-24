@@ -96,22 +96,22 @@ describe('benefit company request repository', () => {
   })
 
   it('rejects queue items outside the requested status', async () => {
-    const repo = createBenefitCompanyRequestRepository({getSessionContext:async()=>ctx('one',vi.fn(async()=>ok({items:[{...item,verification_method:'manual'}],has_more:false,next_cursor:null})))})
+    const repo = createBenefitCompanyRequestRepository({getSessionContext:async()=>ctx('one',vi.fn(async()=>ok({items:[{...item,verification_method:'manual',external_verified_at:null}],has_more:false,next_cursor:null})))})
     await expect(repo.listQueue({status:'approved',limit:10})).resolves.toMatchObject({ok:false,error:{code:'invalid_response'}})
   })
 
   it('supports admin queue and review with exact RPC names', async () => {
-    const admin = { ...item, verification_method: 'manual' }
-    const rpc = vi.fn(async name => ok(name === 'list_benefit_company_request_queue_v1' ? { items: [admin], has_more: false, next_cursor: null } : { ...admin, status: 'approved', verification_status: 'matched', revision: 2, resolved_company_id: 'KR-CAN-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', updated_at: '2026-11-23T02:00:00Z' }))
+    const admin = { ...item, verification_method: 'manual', external_verified_at: null }
+    const rpc = vi.fn(async name => ok(name === 'list_benefit_company_request_queue_v2' ? { items: [admin], has_more: false, next_cursor: null } : { ...admin, status: 'approved', verification_status: 'matched', revision: 2, resolved_company_id: 'KR-CAN-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', updated_at: '2026-11-23T02:00:00Z' }))
     const repo = createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', rpc) })
     expect((await repo.listQueue({ status: 'pending_review', limit: 20 })).ok).toBe(true)
-    expect((await repo.review({ requestId, expectedStatus: 'pending_review', expectedRevision: 1, action: 'approve', reason: '확인 완료', destinationCompanyId: null })).ok).toBe(true)
+    expect((await repo.review({ clientKey, requestId, expectedStatus: 'pending_review', expectedRevision: 1, action: 'approve', reason: '확인 완료', destinationCompanyId: null })).ok).toBe(true)
   })
 
   it('rejects a review result for a different action or destination', async () => {
-    const admin = { ...item, verification_method: 'manual', status: 'merged', verification_status: 'matched', revision: 2, resolved_company_id: 'KR-CAN-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
+    const admin = { ...item, verification_method: 'manual', external_verified_at: null, status: 'merged', verification_status: 'matched', revision: 2, resolved_company_id: 'KR-CAN-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
     const repo = createBenefitCompanyRequestRepository({ getSessionContext: async () => ctx('one', vi.fn(async () => ok(admin))) })
-    await expect(repo.review({ requestId, expectedStatus: 'pending_review', expectedRevision: 1, action: 'reject', reason: '확인', destinationCompanyId: null })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    await expect(repo.review({ clientKey, requestId, expectedStatus: 'pending_review', expectedRevision: 1, action: 'reject', reason: '확인', destinationCompanyId: null })).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
   it('validates sensitive NTS input in memory and invokes only the Edge Function', async () => {

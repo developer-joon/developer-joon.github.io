@@ -4,7 +4,7 @@ import { isStrictUuid } from '../lib/uuid'
 import { createBenefitCompanyRequestRepository, createBenefitCompanyRequestSessionProvider, type BenefitCompanyRequestRepository, type BenefitCompanyRequestSessionProvider } from './benefitCompanyRequestRepository'
 import type { BenefitCompanyRequestAdminItem, BenefitCompanyRequestPage, BenefitCompanyRequestQueueInput, BenefitCompanyRequestResult, ReviewBenefitCompanyRequestInput } from '../types/benefitCompanyRequests'
 
-export interface AdminBenefitCompanyRequestReviewInput extends ReviewBenefitCompanyRequestInput {clientKey:string}
+export type AdminBenefitCompanyRequestReviewInput = ReviewBenefitCompanyRequestInput
 export interface AdminBenefitCompanyRequestRepository {
   listQueue(input:BenefitCompanyRequestQueueInput,signal?:AbortSignal):Promise<BenefitCompanyRequestResult<BenefitCompanyRequestPage<BenefitCompanyRequestAdminItem>>>
   review(input:AdminBenefitCompanyRequestReviewInput,signal?:AbortSignal):Promise<BenefitCompanyRequestResult<BenefitCompanyRequestAdminItem>>
@@ -33,7 +33,7 @@ export function createAdminBenefitCompanyRequestRepository({getSessionContext}:{
       if(!record(input)||!isStrictUuid(input.clientKey))return{ok:false,error:{code:'invalid_argument',message:'검토 입력을 확인해 주세요.'}}
       const value=canonical({requestId:input.requestId,expectedStatus:input.expectedStatus,expectedRevision:input.expectedRevision,action:input.action,reason:input.reason,destinationCompanyId:input.destinationCompanyId})
       if(!value)return{ok:false,error:{code:'invalid_argument',message:'검토 입력을 확인해 주세요.'}}
-      return base.review(value,signal)
+      return base.review({...value,clientKey:input.clientKey},signal)
     },
   }
 }

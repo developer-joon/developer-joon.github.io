@@ -18,6 +18,7 @@ describe('AdminBenefitClaimsPage',()=>{
     expect(await screen.findByRole('heading',{name:'복지 claim 검토 데스크'})).toBeInTheDocument();expect(repo.listQueue).toHaveBeenCalledWith({status:'submitted',limit:50},expect.any(AbortSignal))
     fireEvent.click(await screen.findByRole('button',{name:/건강검진 선택/}));await waitFor(()=>expect(repo.listAudit).toHaveBeenCalledWith({claimId,limit:50},expect.any(AbortSignal)))
     expect(screen.getAllByText(/확인 3 · 이의 0/)).toHaveLength(2);expect(screen.getByText(/확인 수는 공식 확인의 근거가 아닙니다/)).toBeInTheDocument()
+    const buttons=screen.getByRole('group',{name:'claim 상태 필터'}).querySelectorAll('button');expect([...buttons].map(button=>button.textContent)).toEqual(['제출','커뮤니티 확인','이의 있음','숨김','철회'])
   })
 
   it('requires every official evidence field before invoking verification',async()=>{

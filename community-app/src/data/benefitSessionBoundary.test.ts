@@ -15,7 +15,7 @@ const claimCalls = [
 const companyCalls = [
   ['createManual', {clientKey:key, proposedName:'기업', region:null, industry:null, website:null}],
   ['listMine',{limit:1}], ['listQueue',{status:'all',limit:1}],
-  ['review',{requestId:id, expectedStatus:'pending_review', expectedRevision:1, action:'reject', reason:'사유', destinationCompanyId:null}],
+  ['review',{clientKey:key,requestId:id, expectedStatus:'pending_review', expectedRevision:1, action:'reject', reason:'사유', destinationCompanyId:null}],
 ] as const
 
 describe('authenticated response boundaries', () => {
