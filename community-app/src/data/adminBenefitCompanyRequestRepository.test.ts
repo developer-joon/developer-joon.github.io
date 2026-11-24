@@ -48,6 +48,23 @@ describe('adminBenefitCompanyRequestRepository',()=>{
     await expect(repository.getDetail({requestId})).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
   })
 
+  it('rejects an A-to-B review session change before transport',async()=>{
+    const rpc=vi.fn(async()=>ok({...row,status:'rejected',verification_status:'rejected',revision:2}))
+    let captures=0
+    const repository=createAdminBenefitCompanyRequestRepository({getSessionContext:async()=>context(captures++===0?'A':'B',rpc)})
+    await expect(repository.review({requestId,clientKey:'40000000-0000-4000-8000-000000000003',expectedStatus:'pending_review',expectedRevision:1,action:'reject',reason:'중복',destinationCompanyId:null})).resolves.toMatchObject({ok:false,error:{code:'stale_session'}})
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('gives an already-aborted review precedence over a rejected session lookup',async()=>{
+    const getSessionContext=vi.fn(async()=>{throw Error('session lookup failed')})
+    const repository=createAdminBenefitCompanyRequestRepository({getSessionContext})
+    const controller=new AbortController()
+    controller.abort()
+    await expect(repository.review({requestId,clientKey:'40000000-0000-4000-8000-000000000004',expectedStatus:'pending_review',expectedRevision:1,action:'reject',reason:'중복',destinationCompanyId:null},controller.signal)).resolves.toMatchObject({ok:false,error:{code:'aborted'}})
+    expect(getSessionContext).not.toHaveBeenCalled()
+  })
+
   it('enforces auth generation before input access and after fulfilled decode',async()=>{
     let fingerprint='one',touched=false
     const input=Object.defineProperty({},'status',{enumerable:true,get(){touched=true;return'pending_review'}}) as never

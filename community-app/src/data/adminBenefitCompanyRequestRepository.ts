@@ -1,6 +1,5 @@
 import { parseEnv } from '../config/env'
 import { getSupabaseClient } from '../lib/supabase'
-import { isStrictUuid } from '../lib/uuid'
 import { createBenefitCompanyRequestRepository, createBenefitCompanyRequestSessionProvider, type BenefitCompanyRequestRepository, type BenefitCompanyRequestSessionProvider } from './benefitCompanyRequestRepository'
 import type { BenefitCompanyRequestAdminItem, BenefitCompanyRequestPage, BenefitCompanyRequestQueueInput, BenefitCompanyRequestResult, ReviewBenefitCompanyRequestInput } from '../types/benefitCompanyRequests'
 
@@ -27,16 +26,7 @@ export function createAdminBenefitCompanyRequestRepository({getSessionContext}:{
   return {
     listQueue:(input,signal)=>base.listQueue(input,signal),
     getDetail:(input,signal)=>base.getDetail(input,signal),
-    async review(input,signal){
-      let context
-      try{context=await getSessionContext()}catch{return{ok:false,error:{code:'unknown',message:'로그인 세션을 확인할 수 없습니다.'}}}
-      if(!context)return{ok:false,error:{code:'auth_required',message:'로그인이 필요합니다.'}}
-      if(signal?.aborted)return{ok:false,error:{code:'aborted',message:'요청이 취소되었습니다.'}}
-      if(!record(input)||!isStrictUuid(input.clientKey))return{ok:false,error:{code:'invalid_argument',message:'검토 입력을 확인해 주세요.'}}
-      const value=canonical({requestId:input.requestId,expectedStatus:input.expectedStatus,expectedRevision:input.expectedRevision,action:input.action,reason:input.reason,destinationCompanyId:input.destinationCompanyId})
-      if(!value)return{ok:false,error:{code:'invalid_argument',message:'검토 입력을 확인해 주세요.'}}
-      return base.review({...value,clientKey:input.clientKey},signal)
-    },
+    review:(input,signal)=>base.review(input,signal),
   }
 }
 let singleton:AdminBenefitCompanyRequestRepository|undefined
