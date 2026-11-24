@@ -66,6 +66,8 @@ export interface BenefitDirectoryPublication {
   conditionText: string | null
   trustLabel: BenefitDirectoryTrustLabel
   revision: number
+  /** Public claim bound to this exact active publication, when claim-originated. */
+  originClaimId: string | null
 }
 
 export interface BenefitDirectoryPublicClaim {

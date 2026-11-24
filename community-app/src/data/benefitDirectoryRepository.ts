@@ -36,7 +36,7 @@ const searchPageKeys = ['items', 'has_more', 'next_cursor', 'total'] as const
 const searchItemKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary', 'benefit_count', 'official_count', 'community_count', 'categories'] as const
 const detailKeys = ['company', 'publications', 'claims'] as const
 const companyKeys = ['company_id', 'display_name', 'identity_label', 'industry', 'size_label', 'region', 'summary'] as const
-const publicationKeys = ['publication_id', 'category_id', 'title', 'description', 'eligibility_text', 'condition_text', 'trust_label', 'revision'] as const
+const publicationKeys = ['publication_id', 'category_id', 'title', 'description', 'eligibility_text', 'condition_text', 'trust_label', 'revision', 'origin_claim_id'] as const
 const publicClaimKeys = ['claim_id','category_id','category_name','title','description','eligibility_text','condition_text','status_code','status_label','nickname','submitted_at','observed_on','confirm_count','dispute_count','last_confirmation_at'] as const
 const searchInputKeys = ['query', 'categories', 'industry', 'size', 'region', 'hasBenefitsOnly', 'pageSize', 'cursor'] as const
 
@@ -140,13 +140,15 @@ function decodePublication(value: unknown): BenefitDirectoryPublication {
   if (!isRecord(value) || !hasExactKeys(value, publicationKeys) || !isCanonicalUuid(value.publication_id)
     || !isCategory(value.category_id) || !boundedWireText(value.title, 200) || !boundedWireText(value.description, 5000)
     || !nullableBoundedWireText(value.eligibility_text, 2000) || !nullableBoundedWireText(value.condition_text, 2000)
-    || !inValues(value.trust_label, BENEFIT_DIRECTORY_TRUST_LABELS) || !nonnegativeInteger(value.revision)) {
+    || !inValues(value.trust_label, BENEFIT_DIRECTORY_TRUST_LABELS) || !nonnegativeInteger(value.revision)
+    || (value.origin_claim_id !== null && !isCanonicalUuid(value.origin_claim_id))) {
     throw new Error('invalid publication projection')
   }
   return {
     publicationId: value.publication_id, categoryId: value.category_id, title: value.title,
     description: value.description, eligibilityText: value.eligibility_text, conditionText: value.condition_text,
     trustLabel: value.trust_label, revision: value.revision,
+    originClaimId: value.origin_claim_id === null ? null : value.origin_claim_id.toLowerCase(),
   }
 }
 
@@ -191,9 +193,13 @@ function decodeDetail(value: unknown, requestedCompanyId: string): BenefitCompan
   const company = decodeCompany(value.company)
   const publications = value.publications.map(decodePublication)
   const claims = value.claims.map(decodePublicClaim)
+  const linkedClaimIds = publications.flatMap(publication => publication.originClaimId ? [publication.originClaimId] : [])
+  const claimIds = new Set(claims.map(claim => claim.claimId))
   if (company.companyId !== requestedCompanyId
     || new Set(publications.map(publication => publication.publicationId.toLowerCase())).size !== publications.length
-    || new Set(claims.map(claim => claim.claimId)).size !== claims.length) {
+    || claimIds.size !== claims.length
+    || new Set(linkedClaimIds).size !== linkedClaimIds.length
+    || linkedClaimIds.some(claimId => !claimIds.has(claimId))) {
     throw new Error('inconsistent detail projection')
   }
   return { company, publications, claims }

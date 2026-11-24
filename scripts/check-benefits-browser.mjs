@@ -9,9 +9,13 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createCdpClient, fetchJsonWithTimeout, isCanonicalCompanyId, sourceAnchorsAreSafe, waitForWebSocketOpen } from './browser-smoke-cdp.mjs'
 import { cleanupBrowserSmoke } from './browser-smoke-cleanup.mjs'
+import { assertClaimFixture } from './check-benefits-browser-assertions.mjs'
 
 const root = path.resolve(process.argv[2] ?? 'community-app/dist')
 const chrome = process.env.BENEFITS_CHROMIUM
+const claimFixture = process.env.BENEFITS_BROWSER_CLAIM_FIXTURE
+  ? JSON.parse(process.env.BENEFITS_BROWSER_CLAIM_FIXTURE)
+  : null
 if (!chrome) throw Error('Set BENEFITS_CHROMIUM to a local Chromium executable')
 await assert.rejects(access(path.join(root, 'benefits/rankings/index.html')))
 const WebSocketClient = globalThis.WebSocket ?? createRequire(import.meta.url)('ws').WebSocket
@@ -118,7 +122,19 @@ try {
   assert.match(directoryText, /국내 전체 사업체 명부는 아닙니다/)
   assert.match(directoryText, /공개 확인 혜택|공개 확인된 복지 정보 없음/)
   assert.doesNotMatch(directoryText, /source_url|reviewer_id|submitter_id|service_role/i)
-  const dynamicCompanyHref = await evaluate(`document.querySelector('.domestic-directory__record h3 a')?.href`)
+  if (claimFixture) await wait(`Array.from(document.querySelectorAll('.domestic-directory__record')).some((row) => row.dataset.companyId === ${JSON.stringify(claimFixture.companyId)})`)
+  const directoryFixture = await evaluate(`(() => {
+    const row = ${claimFixture ? `Array.from(document.querySelectorAll('.domestic-directory__record')).find((item) => item.dataset.companyId === ${JSON.stringify(claimFixture.companyId)})` : `document.querySelector('.domestic-directory__record')`}
+    return row ? {
+      officialCount: Number(row.dataset.officialCount),
+      communityCount: Number(row.dataset.communityCount),
+      categories: row.dataset.categories ? row.dataset.categories.split(',') : [],
+    } : null
+  })()`)
+  const dynamicCompanyHref = await evaluate(`(() => {
+    const row = ${claimFixture ? `Array.from(document.querySelectorAll('.domestic-directory__record')).find((item) => item.dataset.companyId === ${JSON.stringify(claimFixture.companyId)})` : `document.querySelector('.domestic-directory__record')`}
+    return row?.querySelector('h3 a')?.href
+  })()`)
   assert.match(dynamicCompanyHref, /\/benefits\/company\/\?id=/)
 
   await call('Page.navigate', { url: dynamicCompanyHref })
@@ -128,7 +144,17 @@ try {
   for (const label of ['공식 확인 혜택', '커뮤니티 확인 혜택', '제보된 혜택', '재확인 필요']) assert.match(dynamicCompanyText, new RegExp(label))
   assert.doesNotMatch(dynamicCompanyText, /source_url|reviewer_id|submitter_id|service_role/i)
   assert.equal(await evaluate(`document.querySelector('.benefit-company-page__submit')?.getAttribute('href')?.startsWith('/community/benefits/claim/?company=')`), true)
-  assert.equal(await evaluate(`Array.from(document.querySelectorAll('.benefit-company-page__claim')).every((card) => card.querySelector('a[href*="/community/benefits/claim-reaction/"]'))`), true)
+  let coverage = 'generic'
+  if (claimFixture) {
+    const cards = await evaluate(`Array.from(document.querySelectorAll('.benefit-company-page__card')).map((card) => ({
+      kind: card.dataset.benefitKind,
+      category: card.dataset.category,
+      id: card.id,
+      metadata: Boolean(card.querySelector('.benefit-company-page__claim-facts')),
+      reactionHref: card.querySelector('a[href*="/community/benefits/claim-reaction/"]')?.getAttribute('href') ?? null,
+    }))`)
+    coverage = assertClaimFixture({ rpc: directoryFixture, cards, expected: claimFixture }).coverage
+  }
 
   await call('Page.navigate', { url: `${origin}/community/benefits/methodology/` })
   await wait(`document.querySelector('.benefits-evidence h2')`)
@@ -137,7 +163,7 @@ try {
 
   cdp.assertHealthy()
   assert.equal(errors.length, 0)
-  console.log('Benefits browser smoke passed: published explorer, fit, concrete company benefits, methodology, and safe sources.')
+  console.log(`Benefits browser smoke passed (coverage=${coverage}): published explorer, fit, company detail, methodology, and safe sources.${coverage === 'generic' ? ' Claim-card behavior was not fixture-verified.' : ''}`)
 } catch (error) {
   primaryError = error instanceof Error ? error : Error(String(error), { cause: error })
   throw primaryError

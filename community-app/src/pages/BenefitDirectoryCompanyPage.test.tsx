@@ -19,6 +19,7 @@ const publication = (overrides: Partial<BenefitCompanyDetail['publications'][num
   conditionText: '입사 1년 후',
   trustLabel: '공식 확인',
   revision: 9,
+  originClaimId: null,
   ...overrides,
 })
 const claim = (overrides: Partial<BenefitCompanyDetail['claims'][number]> = {}): BenefitCompanyDetail['claims'][number] => ({
@@ -130,13 +131,14 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(screen.getByRole('link', { name: '기업 검색으로 돌아가기' })).toHaveAttribute('href', '/benefits/')
   })
 
-  it('renders all four anonymous authority sections in order with honest claim details', async () => {
+  it('renders linked claim history on its single publication card and never duplicates the promoted benefit', async () => {
+    const linkedId = '223e4567-e89b-42d3-a456-426614174001'
     const publications = [
       publication(),
-      publication({ publicationId: '123e4567-e89b-42d3-a456-426614174001', trustLabel: '사용자 제보', title: '커뮤니티 식대' }),
+      publication({ publicationId: '123e4567-e89b-42d3-a456-426614174001', trustLabel: '사용자 제보', title: '커뮤니티 식대', originClaimId: linkedId }),
     ]
     const claims = [
-      claim({ claimId: '223e4567-e89b-42d3-a456-426614174001', statusCode: 'community_confirmed', statusLabel: '커뮤니티 확인', confirmCount: 4, lastConfirmationAt: '2026-11-22T12:00:00.000000+09:00', title: '확인 이력' }),
+      claim({ claimId: linkedId, statusCode: 'community_confirmed', statusLabel: '커뮤니티 확인', confirmCount: 4, lastConfirmationAt: '2026-11-22T12:00:00.000000+09:00', title: '확인 이력' }),
       claim(),
       claim({ claimId: '223e4567-e89b-42d3-a456-426614174002', statusCode: 'disputed', statusLabel: '재확인 필요', disputeCount: 2, title: '논쟁 중 제보' }),
     ]
@@ -146,7 +148,12 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(screen.getByText('확인 상태 · 공개 명단에서 확인된 사업체입니다.')).toBeVisible()
     expect(screen.getByRole('link', { name: '이 기업의 혜택 제보' })).toHaveAttribute('href', `/community/benefits/claim/?company=${CRN_A}`)
     expect(screen.getAllByRole('heading', { level: 2 }).map(node => node.textContent)).toEqual(['공식 확인 혜택', '커뮤니티 확인 혜택', '제보된 혜택', '재확인 필요'])
-    expect(screen.getByText('커뮤니티 확인 이력')).toBeVisible()
+    const community = screen.getByRole('region', { name: '커뮤니티 확인 혜택' })
+    expect(within(community).getAllByRole('article')).toHaveLength(1)
+    expect(within(community).getByRole('article')).toHaveAttribute('id', `claim-${linkedId}`)
+    expect(within(community).getByText('커뮤니티 확인 이력')).toBeVisible()
+    expect(within(community).getByText('확인 4 · 이의 0')).toBeVisible()
+    expect(screen.getAllByRole('article')).toHaveLength(4)
 
     const submitted = screen.getByRole('region', { name: '제보된 혜택' })
     expect(submitted).toHaveTextContent('빵친구')
@@ -158,6 +165,28 @@ describe('BenefitDirectoryCompanyPage', () => {
     expect(within(submitted).getByRole('link', { name: '확인 또는 이의 남기기' })).toHaveAttribute('href', `/community/benefits/claim-reaction/?company=${CRN_A}&claim=223e4567-e89b-42d3-a456-426614174000`)
     expect(screen.queryByText(/자동 만료|만료 예정/)).not.toBeInTheDocument()
   })
+
+  it('attaches community history to an official publication without rendering a second community card', async () => {
+    const linked = claim({ statusCode: 'community_confirmed', statusLabel: '커뮤니티 확인', confirmCount: 3, lastConfirmationAt: '2026-11-22T12:00:00.000000+09:00' })
+    const official = publication({ originClaimId: linked.claimId })
+    render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(vi.fn(async () => ok(detail(CRN_A, [official], [linked]))))} />)
+    await screen.findByRole('heading', { name: '가 기업' })
+    const officialGroup = screen.getByRole('region', { name: '공식 확인 혜택' })
+    expect(within(officialGroup).getAllByRole('article')).toHaveLength(1)
+    expect(within(officialGroup).getByRole('article')).toHaveAttribute('id', `claim-${linked.claimId}`)
+    expect(within(officialGroup).getByText('커뮤니티 확인 이력')).toBeVisible()
+    expect(screen.getByRole('region', { name: '커뮤니티 확인 혜택' })).toHaveTextContent('게시된 커뮤니티 확인 혜택이나 확인 이력이 아직 없습니다.')
+  })
+
+  it('renders an unmatched confirmed claim only as a non-counting inconsistency state', async () => {
+    const impossible = claim({ statusCode: 'community_confirmed', statusLabel: '커뮤니티 확인', confirmCount: 3, lastConfirmationAt: '2026-11-22T12:00:00.000000+09:00' })
+    render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(vi.fn(async () => ok(detail(CRN_A, [], [impossible]))))} />)
+    await screen.findByRole('heading', { name: '가 기업' })
+    const community = screen.getByRole('region', { name: '커뮤니티 확인 혜택' })
+    expect(within(community).queryByRole('article')).not.toBeInTheDocument()
+    expect(within(community).getByRole('status')).toHaveTextContent('연결 정보 불일치')
+  })
+
 
   it('renders every detail group when all authority groups are empty without inferring no benefits', async () => {
     render(<BenefitDirectoryCompanyPage search={`?id=${CRN_A}`} repository={repository(vi.fn(async () => ok(detail(CRN_A, [], []))))} />)

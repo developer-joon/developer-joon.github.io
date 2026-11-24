@@ -15,7 +15,7 @@ const searchItem = {
 const publication = {
   publication_id: 'b1000000-0000-0000-0000-000000000001', category_id: 'health', title: '건강검진',
   description: '연 1회 건강검진', eligibility_text: '재직자', condition_text: '회사 기준',
-  trust_label: '공식 확인', revision: 1,
+  trust_label: '공식 확인', revision: 1, origin_claim_id: null,
 }
 const page = { items: [searchItem], has_more: false, next_cursor: null, total: 1 }
 const detail = { company, publications: [publication] }
@@ -151,10 +151,13 @@ describe('benefit directory repository', () => {
   })
 
   it('calls public v2 detail through the anonymous client and decodes strict public claims', async () => {
-    const transport = rpcClient(success(detailV2))
+    const transport = rpcClient(success({ ...detailV2, publications: [{ ...publication, origin_claim_id: publicClaim.claim_id }] }))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
     const result = await createBenefitDirectoryRepository().detail(company.company_id)
-    expect(result).toMatchObject({ ok: true, data: { claims: [{ claimId: publicClaim.claim_id, statusCode: 'community_confirmed', confirmCount: 3 }] } })
+    expect(result).toMatchObject({ ok: true, data: {
+      publications: [{ originClaimId: publicClaim.claim_id }],
+      claims: [{ claimId: publicClaim.claim_id, statusCode: 'community_confirmed', confirmCount: 3 }],
+    } })
     expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v2', { p_company_id: company.company_id })
     expect(getAnonymousSupabaseClient).toHaveBeenCalledTimes(1)
   })
@@ -174,13 +177,33 @@ describe('benefit directory repository', () => {
     expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
   })
 
+  it.each([
+    { ...detailV2, publications: [{ ...publication, origin_claim_id: 'not-a-uuid' }] },
+    { ...detailV2, publications: [{ ...publication, origin_claim_id: publicClaim.claim_id, provenance: { claim_id: publicClaim.claim_id } }] },
+    { ...detailV2, publications: [{ ...publication, origin_claim_id: undefined }] },
+  ])('rejects malformed, leaked, or version-inexact v2 publication linkage', async wire => {
+    const transport = rpcClient(success(wire)); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+    expect(await createBenefitDirectoryRepository().detail(company.company_id)).toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+  })
+
+  it('rejects duplicate or dangling publication linkage before duplicate DOM anchors are possible', async () => {
+    const linked = { ...publication, origin_claim_id: publicClaim.claim_id }
+    for (const publications of [
+      [linked, { ...linked, publication_id: 'b1000000-0000-0000-0000-000000000002' }],
+      [{ ...publication, origin_claim_id: 'b2000000-0000-0000-0000-000000000099' }],
+    ]) {
+      const transport = rpcClient(success({ ...detailV2, publications })); getAnonymousSupabaseClient.mockReturnValue(transport.client)
+      await expect(createBenefitDirectoryRepository().detail(company.company_id)).resolves.toMatchObject({ ok: false, error: { code: 'invalid_response' } })
+    }
+  })
+
   it('calls the public detail RPC and preserves PostgreSQL UUID text without version restrictions', async () => {
     const transport = rpcClient(success(detailV2))
     getAnonymousSupabaseClient.mockReturnValue(transport.client)
     const result = await createBenefitDirectoryRepository().detail(company.company_id)
     expect(result).toMatchObject({ ok: true, data: {
       company: { companyId: company.company_id, displayName: company.display_name, identityLabel: '법인', industry: 'software', sizeLabel: '대기업', region: '서울', summary: '공식 기업' },
-      publications: [{ publicationId: publication.publication_id, categoryId: 'health', title: '건강검진', description: '연 1회 건강검진', eligibilityText: '재직자', conditionText: '회사 기준', trustLabel: '공식 확인', revision: 1 }],
+      publications: [{ publicationId: publication.publication_id, categoryId: 'health', title: '건강검진', description: '연 1회 건강검진', eligibilityText: '재직자', conditionText: '회사 기준', trustLabel: '공식 확인', revision: 1, originClaimId: null }],
     } })
     expect(transport.rpc).toHaveBeenCalledWith('get_benefit_company_v2', { p_company_id: company.company_id })
   })

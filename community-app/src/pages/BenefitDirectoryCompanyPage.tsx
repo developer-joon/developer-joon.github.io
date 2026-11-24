@@ -77,8 +77,24 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'numeric', day: 'numeric' }).format(date)
 }
 
-function PublicationCard({ item, authority }: { item: BenefitDirectoryPublication; authority: 'official' | 'community' }) {
-  return <article className={`benefit-company-page__card benefit-company-page__card--${authority}`}>
+function ClaimHistory({ claim, companyId }: { claim: BenefitDirectoryPublicClaim; companyId: string }) {
+  return <>
+    <p className="benefit-company-page__authority">커뮤니티 확인 이력</p>
+    <dl className="benefit-company-page__claim-facts">
+      <dt>제보자</dt><dd>{claim.nickname || '탈퇴한 사용자'}</dd>
+      <dt>최초 제보</dt><dd>{formatDate(claim.submittedAt)}</dd>
+      <dt>마지막 확인</dt><dd>{claim.lastConfirmationAt ? formatDate(claim.lastConfirmationAt) : '아직 확인 없음'}</dd>
+      <dt>반응</dt><dd>확인 {claim.confirmCount} · 이의 {claim.disputeCount}</dd>
+      <dt>관찰일</dt><dd>{formatDate(claim.observedOn)}</dd>
+    </dl>
+    <p className="benefit-company-page__disclaimer">커뮤니티 제보 이력이며 회사의 공식 발표와 구분됩니다.</p>
+    <a className="benefit-company-page__reaction" href={benefitClaimReactionHref(companyId, claim.claimId)}>확인 또는 이의 남기기</a>
+  </>
+}
+
+function PublicationCard({ item, authority, claim, companyId }: { item: BenefitDirectoryPublication; authority: 'official' | 'community'; claim?: BenefitDirectoryPublicClaim; companyId: string }) {
+  const anchor = claim ? `claim-${claim.claimId}` : `publication-${item.publicationId}`
+  return <article id={anchor} data-benefit-kind={authority} data-category={item.categoryId} className={`benefit-company-page__card benefit-company-page__card--${authority}`}>
     <p className="benefit-company-page__authority">{authority === 'official' ? '공식 공개 자료' : '커뮤니티 검토 게시'}</p>
     <h3>{item.title}</h3>
     <p>{item.description}</p>
@@ -86,12 +102,13 @@ function PublicationCard({ item, authority }: { item: BenefitDirectoryPublicatio
       {item.eligibilityText && <><dt>대상</dt><dd>{item.eligibilityText}</dd></>}
       {item.conditionText && <><dt>조건</dt><dd>{item.conditionText}</dd></>}
     </dl>}
+    {claim && <ClaimHistory claim={claim} companyId={companyId} />}
   </article>
 }
 
-function ClaimCard({ claim, companyId, history = false }: { claim: BenefitDirectoryPublicClaim; companyId: string; history?: boolean }) {
-  return <article id={`claim-${claim.claimId}`} className={`benefit-company-page__card benefit-company-page__claim benefit-company-page__claim--${claim.statusCode}`}>
-    <p className="benefit-company-page__authority">{history ? '커뮤니티 확인 이력' : claim.statusLabel}</p>
+function ClaimCard({ claim, companyId }: { claim: BenefitDirectoryPublicClaim; companyId: string }) {
+  return <article id={`claim-${claim.claimId}`} data-benefit-kind={claim.statusCode} data-category={claim.categoryId} className={`benefit-company-page__card benefit-company-page__claim benefit-company-page__claim--${claim.statusCode}`}>
+    <p className="benefit-company-page__authority">{claim.statusLabel}</p>
     <h3>{claim.title}</h3>
     <p>{claim.description}</p>
     {(claim.eligibilityText || claim.conditionText) && <dl>
@@ -209,9 +226,11 @@ export function BenefitDirectoryCompanyPage({
   const facts = [company.industry, company.sizeLabel, company.region].filter((value): value is string => value !== null)
   const official = publications.filter(item => item.trustLabel === '공식 확인')
   const community = publications.filter(item => item.trustLabel === '사용자 제보')
-  const confirmed = claims.filter(item => item.statusCode === 'community_confirmed')
-  const submitted = claims.filter(item => item.statusCode === 'submitted')
-  const disputed = claims.filter(item => item.statusCode === 'disputed')
+  const claimsById = new Map(claims.map(claim => [claim.claimId, claim]))
+  const consumed = new Set(publications.flatMap(publication => publication.originClaimId ? [publication.originClaimId] : []))
+  const unmatchedConfirmed = claims.filter(item => item.statusCode === 'community_confirmed' && !consumed.has(item.claimId))
+  const submitted = claims.filter(item => item.statusCode === 'submitted' && !consumed.has(item.claimId))
+  const disputed = claims.filter(item => item.statusCode === 'disputed' && !consumed.has(item.claimId))
   return <PageShell>
     <a className="benefit-company-page__back" href={backHref(parsed.directoryQuery)}>기업 검색으로 돌아가기</a>
     <header className="benefit-company-page__header">
@@ -223,14 +242,14 @@ export function BenefitDirectoryCompanyPage({
     <div className="benefit-company-page__groups">
       <section className="benefit-company-page__group benefit-company-page__group--official" aria-labelledby="official-benefits-heading">
         <h2 id="official-benefits-heading">공식 확인 혜택</h2>
-        {official.length === 0 ? <p className="benefit-company-page__group-empty">게시된 공식 확인 혜택이 아직 없습니다.</p> : <div className="benefit-company-page__cards">{official.map(item => <PublicationCard key={item.publicationId} item={item} authority="official" />)}</div>}
+        {official.length === 0 ? <p className="benefit-company-page__group-empty">게시된 공식 확인 혜택이 아직 없습니다.</p> : <div className="benefit-company-page__cards">{official.map(item => <PublicationCard key={item.publicationId} item={item} authority="official" claim={item.originClaimId ? claimsById.get(item.originClaimId) : undefined} companyId={company.companyId} />)}</div>}
       </section>
       <section className="benefit-company-page__group benefit-company-page__group--community" aria-labelledby="community-benefits-heading">
         <h2 id="community-benefits-heading">커뮤니티 확인 혜택</h2>
-        {community.length === 0 && confirmed.length === 0 ? <p className="benefit-company-page__group-empty">게시된 커뮤니티 확인 혜택이나 확인 이력이 아직 없습니다.</p> : <div className="benefit-company-page__cards">
-          {community.map(item => <PublicationCard key={item.publicationId} item={item} authority="community" />)}
-          {confirmed.map(item => <ClaimCard key={item.claimId} claim={item} companyId={company.companyId} history />)}
+        {community.length === 0 ? <p className="benefit-company-page__group-empty">게시된 커뮤니티 확인 혜택이나 확인 이력이 아직 없습니다.</p> : <div className="benefit-company-page__cards">
+          {community.map(item => <PublicationCard key={item.publicationId} item={item} authority="community" claim={item.originClaimId ? claimsById.get(item.originClaimId) : undefined} companyId={company.companyId} />)}
         </div>}
+        {unmatchedConfirmed.length > 0 && <p className="benefit-company-page__group-empty" role="status">연결 정보 불일치로 확인 이력을 혜택 수에 포함하지 않았습니다.</p>}
       </section>
       <section className="benefit-company-page__group" aria-labelledby="submitted-claims-heading">
         <h2 id="submitted-claims-heading">제보된 혜택</h2>

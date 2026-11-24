@@ -55,9 +55,8 @@ function mergeItems(current: BenefitDirectorySearchItem[], next: BenefitDirector
 }
 function DirectoryCard({ item }: { item: BenefitDirectorySearchItem }) {
   const facts = [item.industry, item.sizeLabel, item.region].filter(Boolean).join(' · ')
-  return <article className="domestic-directory__record">
+  return <article className="domestic-directory__record" data-company-id={item.companyId} data-official-count={item.officialCount} data-community-count={item.communityCount} data-categories={item.categories.join(',')}>
     <h3><a href={detailLink(item.companyId)}>{item.displayName} <span aria-hidden="true">↗</span></a></h3>
-    <p className="domestic-directory__size">{facts}</p>
     {item.benefitCount === 0
       ? <div className="domestic-directory__availability domestic-directory__availability--empty">
           <p className="domestic-directory__status">공개 확인된 복지 정보 없음</p>
@@ -65,6 +64,7 @@ function DirectoryCard({ item }: { item: BenefitDirectorySearchItem }) {
         </div>
       : <p className="domestic-directory__availability domestic-directory__availability--available">공개 확인 혜택 {item.officialCount}개 · 커뮤니티 확인 혜택 {item.communityCount}개</p>}
     {item.categories.length > 0 && <p className="domestic-directory__categories" aria-label="복지 범주">{item.categories.map(category => categoryLabels[category]).join(' · ')}</p>}
+    <p className="domestic-directory__size">{facts}</p>
   </article>
 }
 

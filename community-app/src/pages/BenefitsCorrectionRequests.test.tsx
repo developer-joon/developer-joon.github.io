@@ -32,9 +32,9 @@ const canonicalCompany: BenefitCompanyDetail = {
   claims: [],
   company: { companyId: canonicalCompanyId, displayName: '신규 정식 기업', identityLabel: '등록 사업자' as const, industry: null, sizeLabel: '분류 미확인' as const, region: null, summary: null },
   publications: [
-    { publicationId: '123e4567-e89b-42d3-a456-426614174010', categoryId: 'health', title: '건강 검진', description: '정기 검진을 지원합니다.', eligibilityText: '정규직 구성원', conditionText: null, trustLabel: '공식 확인', revision: 3 },
-    { publicationId: '123e4567-e89b-42d3-a456-426614174011', categoryId: 'health', title: '심리 상담', description: '상담 비용을 지원합니다.', eligibilityText: null, conditionText: '월 한도 적용', trustLabel: '사용자 제보', revision: 2 },
-    { publicationId: '123e4567-e89b-42d3-a456-426614174012', categoryId: 'leave', title: '재충전 휴가', description: '장기근속 휴가를 지원합니다.', eligibilityText: null, conditionText: null, trustLabel: '공식 확인', revision: 1 },
+    { publicationId: '123e4567-e89b-42d3-a456-426614174010', categoryId: 'health', title: '건강 검진', description: '정기 검진을 지원합니다.', eligibilityText: '정규직 구성원', conditionText: null, trustLabel: '공식 확인', revision: 3, originClaimId: null },
+    { publicationId: '123e4567-e89b-42d3-a456-426614174011', categoryId: 'health', title: '심리 상담', description: '상담 비용을 지원합니다.', eligibilityText: null, conditionText: '월 한도 적용', trustLabel: '사용자 제보', revision: 2, originClaimId: null },
+    { publicationId: '123e4567-e89b-42d3-a456-426614174012', categoryId: 'leave', title: '재충전 휴가', description: '장기근속 휴가를 지원합니다.', eligibilityText: null, conditionText: null, trustLabel: '공식 확인', revision: 1, originClaimId: null },
   ],
 }
 function auth(userId: string | null, overrides: Partial<AuthContextValue> = {}): AuthContextValue {
