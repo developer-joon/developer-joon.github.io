@@ -534,6 +534,10 @@ function hasBenefitsAjaxOptOut(html) {
   return hasNavigationAjaxOptOut(html, '/benefits/', 'Benefits', true)
 }
 
+function hasKkorinoteAjaxOptOut(html) {
+  return hasNavigationAjaxOptOut(html, '/kkorinote/', 'app: kkorinote', true)
+}
+
 function communityAssetReferences(html, shellPath) {
   const references = []
   const attributePattern = /\b(src|href|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi
@@ -1211,6 +1215,9 @@ async function main() {
   }
   if (!hasBenefitsAjaxOptOut(home)) {
     fail('index.html Benefits navigation link must include the js-no-ajax class in the actual menu')
+  }
+  if (!hasKkorinoteAjaxOptOut(home)) {
+    fail('index.html Kkorinote navigation link must include the js-no-ajax class in the actual menu')
   }
   const canonicalEntries = []
   for (const relativePath of ['benefits/index.html', 'benefits/company/index.html']) {

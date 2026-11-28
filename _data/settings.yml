@@ -18,6 +18,9 @@ menu_settings:
     - title: "Benefit Atlas"
       url: "/community/benefits/"
       no_ajax: true
+    - title: "app: kkorinote"
+      url: "/kkorinote/"
+      no_ajax: true
     - title: "Shop"
       url: "/shop/"
     - title: "About"

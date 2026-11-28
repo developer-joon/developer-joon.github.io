@@ -86,7 +86,7 @@ async function put(root, relativePath, content = '') {
 async function makeValidArtifact() {
   const root = await mkdtemp(path.join(tmpdir(), 'verify-site-test-'))
   const routes = [
-    ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/', '<ul class="menu__list"><li><a class="menu__list__item__link js-no-ajax" href="/community/">Community</a></li><li><a class="menu__list__item__link js-no-ajax" href="/benefits/">Benefits</a></li></ul>'],
+    ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/', '<ul class="menu__list"><li><a class="menu__list__item__link js-no-ajax" href="/community/">Community</a></li><li><a class="menu__list__item__link js-no-ajax" href="/benefits/">Benefits</a></li><li><a class="menu__list__item__link js-no-ajax" href="/kkorinote/">app: kkorinote</a></li></ul>'],
     ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/', ''],
     ['lab/index.html', '<title>수익실험실 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
 
@@ -428,6 +428,22 @@ test('rejects an unmarked real benefits nav link despite a marked body decoy', a
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /Benefits navigation link.*js-no-ajax/)
   })
+})
+
+test('rejects a missing Kkorinote menu link and AJAX opt-out', async () => {
+  await withArtifact(async (root) => {
+    const home = path.join(root, 'index.html')
+    const html = await readFile(home, 'utf8')
+    await writeFile(home, html.replace('<li><a class="menu__list__item__link js-no-ajax" href="/kkorinote/">app: kkorinote</a></li>', ''))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /Kkorinote navigation link.*js-no-ajax/)
+  })
+})
+
+test('Kkorinote menu source uses the exact label, route, and full-navigation boundary', async () => {
+  const settings = await readFile(path.join(repoRoot, '_data/settings.yml'), 'utf8')
+  assert.match(settings, /- title: ["']app: kkorinote["']\s+url: ["']\/kkorinote\/["']\s+no_ajax: true/)
 })
 
 test('rejects a duplicate community benefits-root tree', async () => {
@@ -1359,7 +1375,7 @@ test('rejects an unmarked Community menu link despite a marked body-link decoy',
 
 test('accepts a marked Community menu link without imposing the opt-out on a body link', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">Benefits</a></li></ul></nav><main><a href="/community/">Community</a></main></body></html>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><nav><a href="/community/" class="menu__list__item__link js-no-ajax">Community</a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">Benefits</a></li><li><a href="/kkorinote/" class="menu__list__item__link js-no-ajax">app: kkorinote</a></li></ul></nav><main><a href="/community/">Community</a></main></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -1385,7 +1401,7 @@ test('rejects a marked Community body link when no actual menu link exists', asy
 
 test('accepts a marked Community link with a greater-than sign in a quoted attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">Benefits</a></li></ul></body></html>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a title="1 > 0" href="/community/" class="menu__list__item__link js-no-ajax">Community</a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">Benefits</a></li><li><a href="/kkorinote/" class="menu__list__item__link js-no-ajax">app: kkorinote</a></li></ul></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
@@ -1393,7 +1409,7 @@ test('accepts a marked Community link with a greater-than sign in a quoted attri
 
 test('accepts visible Community text inside nested markup with a quoted greater-than attribute', async () => {
   await withArtifact(async (root) => {
-    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">Benefits</a></li></ul></body></html>')
+    await put(root, 'index.html', '<html><head><title>Ria & Seoa PaPa – 수익실험실</title><link rel="canonical" href="https://www.breadlab.ai/"></head><body><a href="/community/" class="menu__list__item__link js-no-ajax"><span title="1 > 0">Community</span></a><ul class="menu__list"><li><a href="/benefits/" class="menu__list__item__link js-no-ajax">Benefits</a></li><li><a href="/kkorinote/" class="menu__list__item__link js-no-ajax">app: kkorinote</a></li></ul></body></html>')
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
   })
