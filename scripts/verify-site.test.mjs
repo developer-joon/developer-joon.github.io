@@ -77,6 +77,7 @@ async function makeValidArtifact() {
     ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/', '<ul class="menu__list"><li><a class="menu__list__item__link js-no-ajax" href="/community/">Community</a></li><li><a class="menu__list__item__link js-no-ajax" href="/benefits/">Benefits</a></li></ul>'],
     ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/', ''],
     ['lab/index.html', '<title>수익실험실 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
+    ['kkorinote/pricacy.html', '<title>꼬리노트 개인정보처리방침 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/kkorinote/pricacy', ''],
     ['blog/ceph-cluster-install-with-helm.html', '<title>[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm', ''],
     ['404.html', '<title>Page Not Found – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/404.html', ''],
   ]
@@ -215,6 +216,15 @@ test('accepts a minimal valid generated artifact', async () => {
   await withArtifact(async (root) => {
     const result = verify(root)
     assert.equal(result.status, 0, result.stderr)
+  })
+})
+
+test('rejects an artifact without the Kkorinote privacy route', async () => {
+  await withArtifact(async (root) => {
+    await rm(path.join(root, 'kkorinote/pricacy.html'))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /cannot read kkorinote\/pricacy\.html/)
   })
 })
 

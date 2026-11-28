@@ -1126,6 +1126,11 @@ async function main() {
     ['blog/index.html', 'Blog – Ria & Seoa PaPa', 'https://www.breadlab.ai/blog/'],
     ['lab/index.html', '수익실험실 – Ria & Seoa PaPa', 'https://www.breadlab.ai/lab/'],
     [
+      'kkorinote/pricacy.html',
+      '꼬리노트 개인정보처리방침 – Ria & Seoa PaPa',
+      'https://www.breadlab.ai/kkorinote/pricacy',
+    ],
+    [
       'blog/ceph-cluster-install-with-helm.html',
       '[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa',
       'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm',
