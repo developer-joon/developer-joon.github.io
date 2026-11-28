@@ -116,6 +116,7 @@ async function makeValidArtifact() {
     'notes/generated.txt',
     'community/assets/benefits-main-Ab12Cd34.js',
     'community/assets/benefits-Xk34Lm90.js',
+    'community/assets/benefitCompanyId-DLfMjzZG.js',
     'community/assets/jsx-runtime-Xy12Za34.js',
     'community/assets/react-Zy98Xw76.js',
     'community/assets/main-Qw12Er34.js',
@@ -133,13 +134,17 @@ async function makeValidArtifact() {
     '_benefits-Xk34Lm90.js': {
       file: 'assets/benefits-Xk34Lm90.js',
       name: 'benefits',
-      imports: ['_jsx-runtime-Xy12Za34.js', '_react-Zy98Xw76.js'],
+      imports: ['_jsx-runtime-Xy12Za34.js', '_react-Zy98Xw76.js', '_benefitCompanyId-DLfMjzZG.js'],
       dynamicImports: [
         'src/pages/BenefitsMethodologyPage.tsx',
         'src/pages/BenefitsExplorerPage.tsx',
         'src/pages/BenefitsDirectoryPage.tsx',
         'src/pages/BenefitDirectoryCompanyPage.tsx',
       ],
+    },
+    '_benefitCompanyId-DLfMjzZG.js': {
+      file: 'assets/benefitCompanyId-DLfMjzZG.js',
+      name: 'benefitCompanyId',
     },
     '_react-Zy98Xw76.js': {
       file: 'assets/react-Zy98Xw76.js',
@@ -400,6 +405,13 @@ test('accepts the production-shaped Vite manifest benefits-main binding', async 
   })
 })
 
+test('accepts the current production eager benefitCompanyId utility role', async () => {
+  await withArtifact(async (root) => {
+    const result = verify(root)
+    assert.equal(result.status, 0, result.stderr)
+  })
+})
+
 test('rejects an extra public-looking module in the eager closure', async () => {
   await withArtifact(async (root) => {
     await put(root, 'community/assets/public-shell-Ab12Cd34.js')
@@ -415,7 +427,7 @@ test('rejects an extra public-looking module in the eager closure', async () => 
 
 test('accepts the exact canonical eager role graph with arbitrary hashes and manifest key order', async () => {
   await withArtifact(async (root) => {
-    for (const file of ['benefits-main-Q1w2E3r4T5.js', 'benefits-Aa_bb-99.js', 'react-Z9y8X7w6.js', 'jsx-runtime-Mn45_Pq8.js']) {
+    for (const file of ['benefits-main-Q1w2E3r4T5.js', 'benefits-Aa_bb-99.js', 'benefitCompanyId-Cc44Dd55.js', 'react-Z9y8X7w6.js', 'jsx-runtime-Mn45_Pq8.js']) {
       await put(root, `community/assets/${file}`)
     }
     await mutateManifest(root, (manifest) => {
@@ -432,8 +444,12 @@ test('accepts the exact canonical eager role graph with arbitrary hashes and man
         '_benefits-Aa_bb-99.js': {
           file: 'assets/benefits-Aa_bb-99.js',
           name: 'benefits',
-          imports: ['_react-Z9y8X7w6.js', '_jsx-runtime-Mn45_Pq8.js'],
+          imports: ['_react-Z9y8X7w6.js', '_benefitCompanyId-Cc44Dd55.js', '_jsx-runtime-Mn45_Pq8.js'],
           dynamicImports: ['src/pages/BenefitsExplorerPage.tsx'],
+        },
+        '_benefitCompanyId-Cc44Dd55.js': {
+          file: 'assets/benefitCompanyId-Cc44Dd55.js',
+          name: 'benefitCompanyId',
         },
         '_benefits-main-Q1w2E3r4T5.js': {
           file: 'assets/benefits-main-Q1w2E3r4T5.js',
@@ -487,7 +503,7 @@ for (const [description, mutate, expected] of [
     manifest['_benefits-main-Ab12Cd34.js'].imports = ['_jsx-runtime-Xy12Za34.js', '_react-Zy98Xw76.js']
   }, /canonical eager closure|missing.*benefits/i],
   ['missing required react direct edge from benefits', (manifest) => {
-    manifest['_benefits-Xk34Lm90.js'].imports = ['_jsx-runtime-Xy12Za34.js']
+    manifest['_benefits-Xk34Lm90.js'].imports = ['_jsx-runtime-Xy12Za34.js', '_benefitCompanyId-DLfMjzZG.js']
   }, /direct imports|role graph/i],
   ['extra benefits-to-entry direct edge', (manifest) => {
     manifest['_benefits-Xk34Lm90.js'].imports.push('_benefits-main-Ab12Cd34.js')

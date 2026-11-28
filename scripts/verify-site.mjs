@@ -883,7 +883,12 @@ const EAGER_BENEFITS_ROLES = new Map([
   ['benefits', {
     key: /^_benefits-([A-Za-z0-9_-]{8,})\.js$/,
     file: /^assets\/benefits-([A-Za-z0-9_-]{8,})\.js$/,
-    imports: new Set(['react', 'jsx-runtime']),
+    imports: new Set(['react', 'jsx-runtime', 'benefitCompanyId']),
+  }],
+  ['benefitCompanyId', {
+    key: /^_benefitCompanyId-([A-Za-z0-9_-]{8,})\.js$/,
+    file: /^assets\/benefitCompanyId-([A-Za-z0-9_-]{8,})\.js$/,
+    imports: new Set(),
   }],
   ['react', {
     key: /^_react-([A-Za-z0-9_-]{8,})\.js$/,
