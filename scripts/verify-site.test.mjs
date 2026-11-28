@@ -16,6 +16,7 @@ const verifier = path.join(repoRoot, 'scripts/verify-site.mjs')
 const snapshotId = '11111111-1111-4111-8111-111111111111'
 const snapshotPath = `community/content/${snapshotId}/index.html`
 const snapshotUrl = `https://www.breadlab.ai/community/content/${snapshotId}/`
+const privateEmail = `${['developer', 'joon'].join('.')}@${['gmail', 'com'].join('.')}`
 
 test('recursive benefits release assertion rejects nested fixture, ranking, and evaluation leaks', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'benefits-leak-test-'))
@@ -65,6 +66,17 @@ const shellTitles = new Map([
   ['community/admin/benefit-claims/index.html', '<title>복지 claim 검토 · Ria &amp; Seoa PaPa</title>'],
 ])
 
+const kkorinoteRoutes = [
+  ['kkorinote/index.html', '꼬리노트', 'https://breadlab.ai/kkorinote/', '반려동물의 투약·증상·병원 기록을 한곳에.'],
+  ['kkorinote/privacy/index.html', '꼬리노트 개인정보처리방침', 'https://breadlab.ai/kkorinote/privacy/', '개인정보의 국외 이전'],
+  ['kkorinote/terms/index.html', '꼬리노트 이용약관', 'https://breadlab.ai/kkorinote/terms/', 'Apple 표준 최종 사용자 사용권 계약'],
+  ['kkorinote/support/index.html', '꼬리노트 지원', 'https://breadlab.ai/kkorinote/support/', 'kkorinote.support@gmail.com'],
+]
+
+function kkorinoteFixture(title, canonical, coreCopy) {
+  return `<!doctype html><html lang="ko"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><link rel="canonical" href="${canonical}"><link rel="stylesheet" href="/css/kkorinote.css"></head><body><header><a href="/kkorinote/">꼬리노트</a></header><main><h1>${title}</h1><p>${coreCopy}</p></main><footer>© 2026 김준우 <a href="/kkorinote/privacy/">개인정보처리방침</a> <a href="/kkorinote/terms/">이용약관</a> <a href="/kkorinote/support/">지원</a></footer></body></html>`
+}
+
 async function put(root, relativePath, content = '') {
   const destination = path.join(root, relativePath)
   await mkdir(path.dirname(destination), { recursive: true })
@@ -77,12 +89,15 @@ async function makeValidArtifact() {
     ['index.html', '<title>Ria & Seoa PaPa – 수익실험실</title>', 'https://www.breadlab.ai/', '<ul class="menu__list"><li><a class="menu__list__item__link js-no-ajax" href="/community/">Community</a></li><li><a class="menu__list__item__link js-no-ajax" href="/benefits/">Benefits</a></li></ul>'],
     ['blog/index.html', '<title>Blog – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/', ''],
     ['lab/index.html', '<title>수익실험실 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/lab/', ''],
-    ['kkorinote/pricacy.html', '<title>꼬리노트 개인정보처리방침 – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/kkorinote/pricacy', ''],
+
     ['blog/ceph-cluster-install-with-helm.html', '<title>[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/blog/ceph-cluster-install-with-helm', ''],
     ['404.html', '<title>Page Not Found – Ria & Seoa PaPa</title>', 'https://www.breadlab.ai/404.html', ''],
   ]
   for (const [relativePath, title, canonical, body] of routes) {
     await put(root, relativePath, `<!doctype html><html><head>${title}<link rel="canonical" href="${canonical}"></head><body>${body}</body></html>`)
+  }
+  for (const [relativePath, title, canonical, coreCopy] of kkorinoteRoutes) {
+    await put(root, relativePath, kkorinoteFixture(title, canonical, coreCopy))
   }
   for (const [relativePath, title] of shellTitles) {
     await put(root, relativePath, `${title}<script type="module" src="/community/assets/benefits-main-Ab12Cd34.js"></script><img src="/community/assets/logo-Xy12Za34.png"><img srcset="/community/assets/logo-Xy12Za34.png 1x, https://cdn.example/logo.png 2x, data:image/png;base64,AA== 3x"><img src="https://cdn.example/logo.png"><img src="data:image/png;base64,AA==">`)
@@ -109,6 +124,7 @@ async function makeValidArtifact() {
   ].map((location) => `<loc>${location}</loc>`).join('\n'))
   for (const relativePath of [
     'css/style.css',
+    'css/kkorinote.css',
     'js/personal-min.js',
     'images/favicon.ico',
     'images/generated.png',
@@ -224,13 +240,115 @@ test('accepts a minimal valid generated artifact', async () => {
   })
 })
 
-test('rejects an artifact without the Kkorinote privacy route', async () => {
+for (const [relativePath] of kkorinoteRoutes) {
+  test(`Kkorinote rejects missing route ${relativePath}`, async () => {
+    await withArtifact(async (root) => {
+      await rm(path.join(root, relativePath))
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, new RegExp(`missing required artifact: ${relativePath.replaceAll('/', '\\/')}`))
+    })
+  })
+}
+
+test('Kkorinote rejects obsolete pricacy output', async () => {
   await withArtifact(async (root) => {
-    await rm(path.join(root, 'kkorinote/pricacy.html'))
+    await put(root, 'kkorinote/pricacy/index.html', 'obsolete')
     const result = verify(root)
     assert.notEqual(result.status, 0)
-    assert.match(result.stderr, /cannot read kkorinote\/pricacy\.html/)
+    assert.match(result.stderr, /Kkorinote.*pricacy/i)
   })
+})
+
+test('Kkorinote rejects stale metadata and missing core copy', async () => {
+  await withArtifact(async (root) => {
+    const route = path.join(root, 'kkorinote/terms/index.html')
+    const html = await readFile(route, 'utf8')
+    await writeFile(route, html.replace('꼬리노트 이용약관', '잘못된 제목').replace('https://breadlab.ai/kkorinote/terms/', 'https://www.breadlab.ai/stale/').replace('Apple 표준 최종 사용자 사용권 계약', ''))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /kkorinote\/terms\/index\.html.*(?:title|canonical|core copy)/i)
+  })
+})
+
+for (const [label, injected, expected] of [
+  ['script', '<script src="https://www.googletagmanager.com/gtag/js"></script>', /forbidden script/i],
+  ['private email', privateEmail, /private email/i],
+  ['placeholder', 'TODO [이름]', /placeholder|TODO/i],
+]) {
+  test(`Kkorinote rejects ${label}`, async () => {
+    await withArtifact(async (root) => {
+      const route = path.join(root, 'kkorinote/support/index.html')
+      await writeFile(route, (await readFile(route, 'utf8')).replace('</main>', `${injected}</main>`))
+      const result = verify(root)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, expected)
+    })
+  })
+}
+
+test('Kkorinote rejects a missing page heading', async () => {
+  await withArtifact(async (root) => {
+    const route = path.join(root, 'kkorinote/privacy/index.html')
+    const html = await readFile(route, 'utf8')
+    await writeFile(route, html.replace('<h1>꼬리노트 개인정보처리방침</h1>', ''))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /kkorinote\/privacy\/index\.html.*heading/i)
+  })
+})
+
+test('Kkorinote rejects a missing common footer link', async () => {
+  await withArtifact(async (root) => {
+    const route = path.join(root, 'kkorinote/index.html')
+    await writeFile(route, (await readFile(route, 'utf8')).replace('<a href="/kkorinote/support/">지원</a>', ''))
+    const result = verify(root)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /common footer/i)
+  })
+})
+
+test('Kkorinote source pages use exact routes, canonicals, layout, and approved copy', async () => {
+  const sourceContracts = [
+    ['_pages/kkorinote-index.md', '/kkorinote/', 'https://breadlab.ai/kkorinote/', ['반려동물의 투약·증상·병원 기록을 한곳에.', '투약·접종 알림', '기록 타임라인', '병원용 리포트(PDF)', '가족과 함께 돌보기(iCloud)', '기록은 내 기기와 내 iCloud에만 저장돼요. 건강 기록을 광고에 쓰지 않아요.', '곧 출시']],
+    ['_pages/kkorinote-privacy.md', '/kkorinote/privacy/', 'https://breadlab.ai/kkorinote/privacy/', ['# 꼬리노트 개인정보처리방침', '2026년 11월 28일', '김준우(개인 개발자, 이하 “운영자”)', '## 3. 개인정보의 국외 이전', '## 7. 유럽(EEA)·영국·스위스 이용자 안내', '[kkorinote.support@gmail.com](mailto:kkorinote.support@gmail.com)']],
+    ['_pages/kkorinote-terms.md', '/kkorinote/terms/', 'https://breadlab.ai/kkorinote/terms/', ['https://www.apple.com/legal/internetservices/itunes/dev/stdeula/', '모든 기능은 무료', '비소모성', 'reportaproblem.apple.com', '꼬리노트는 기록 도구이며 수의사의 진단·처방을 대신하지 않습니다.', '알림은 기기 상태(무음·배터리·알림 설정)에 따라 늦거나 오지 않을 수 있으니 중요한 투약은 따로 확인하세요.', '접근하거나 복구할 수 없습니다', '/kkorinote/support/', '2026년 11월 28일']],
+    ['_pages/kkorinote-support.md', '/kkorinote/support/', 'https://breadlab.ai/kkorinote/support/', ['mailto:kkorinote.support@gmail.com', '2~3영업일', '앱 버전(설정 하단)', 'iOS 버전', '기기 모델', '건강 기록 내용은 보내지 마세요', 'iOS 설정 > 알림 > 꼬리노트', '집중 모드', '앱을 지운 적이 있으면 알림을 다시 설정', '같은 Apple 계정', 'iCloud', '저장 공간', '반려동물 > 함께 돌보기에서 초대', '설정 > 구매 복원', '설정 > 데이터', '7일', '취소', '유럽(EEA)·영국·스위스', '설정 > 개인정보 > 광고 개인정보 설정']],
+  ]
+  for (const [relativePath, permalink, canonical, copy] of sourceContracts) {
+    const source = await readFile(path.join(repoRoot, relativePath), 'utf8')
+    assert.match(source, /^---[\s\S]*?layout: kkorinote[\s\S]*?---/)
+    assert.ok(source.includes(`permalink: ${permalink}`), relativePath)
+    assert.ok(source.includes(`canonical_url: ${canonical}`), relativePath)
+    for (const expected of copy) assert.ok(source.includes(expected), `${relativePath} missing ${expected}`)
+    assert.ok(!source.includes(privateEmail), `${relativePath} contains private email`)
+    assert.doesNotMatch(source, /\b(?:TODO|TBD)\b/i)
+    assert.doesNotMatch(source.replaceAll('[이름]', ''), /\[(?:이름|앱 이름|개발자 이름|이메일|날짜|URL)\]/i)
+  }
+})
+
+test('Kkorinote standalone shell and CSS meet accessibility and overflow contracts', async () => {
+  const layout = await readFile(path.join(repoRoot, '_layouts/kkorinote.html'), 'utf8')
+  const footer = await readFile(path.join(repoRoot, '_includes/kkorinote-footer.html'), 'utf8')
+  const css = await readFile(path.join(repoRoot, 'css/kkorinote.css'), 'utf8')
+  assert.match(layout, /<html lang="ko">/)
+  assert.match(layout, /<meta name="viewport" content="width=device-width, initial-scale=1">/)
+  assert.match(layout, /<header[\s>]/)
+  assert.match(layout, /<main[\s>]/)
+  assert.match(layout, /<footer[\s>]/)
+  assert.match(layout, /href="\/css\/kkorinote\.css"/)
+  assert.doesNotMatch(layout, /<script|https?:\/\/(?!breadlab\.ai)/i)
+  assert.match(footer, /© 2026 김준우/)
+  for (const href of ['/kkorinote/privacy/', '/kkorinote/terms/', '/kkorinote/support/']) assert.ok(footer.includes(`href="${href}"`))
+  assert.match(css, /max-width:\s*720px/)
+  assert.match(css, /font-size:\s*17px/)
+  assert.match(css, /padding(?:-inline)?:\s*[^;]*16px/)
+  assert.match(css, /overflow-wrap:\s*(?:anywhere|break-word)/)
+  assert.match(css, /min-width:\s*0/)
+  assert.match(css, /table[\s\S]*overflow-x:\s*auto/)
+  assert.match(css, /:focus-visible/)
+  assert.match(css, /prefers-color-scheme:\s*dark/)
+  assert.doesNotMatch(css, /body\s*\{[^}]*overflow-x:\s*(?:hidden|clip)/s)
 })
 
 test('rejects a FIFO artifact without opening or hanging on it', { skip: process.platform === 'win32' }, async () => {

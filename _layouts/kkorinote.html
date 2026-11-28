@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.title }}</title>
+  <meta name="description" content="{{ page.description }}">
+  <link rel="canonical" href="{{ page.canonical_url }}">
+  <link rel="stylesheet" href="/css/kkorinote.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="page-width">
+      <a class="wordmark" href="/kkorinote/">꼬리노트</a>
+    </div>
+  </header>
+  <main class="page-width">
+    {{ content }}
+  </main>
+  <footer class="site-footer">
+    {% include kkorinote-footer.html %}
+  </footer>
+</body>
+</html>

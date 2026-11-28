@@ -13,17 +13,23 @@ import process from 'node:process'
 const siteRoot = path.resolve(process.argv[2] ?? '_site')
 const errors = []
 let artifactInventorySafe = true
+const privateEmail = `${['developer', 'joon'].join('.')}@${['gmail', 'com'].join('.')}`
 
 const requiredFiles = [
   'index.html',
   'blog/index.html',
   'lab/index.html',
+  'kkorinote/index.html',
+  'kkorinote/privacy/index.html',
+  'kkorinote/terms/index.html',
+  'kkorinote/support/index.html',
   'blog/ceph-cluster-install-with-helm.html',
   '404.html',
   'CNAME',
   'robots.txt',
   'sitemap.xml',
   'css/style.css',
+  'css/kkorinote.css',
   'js/personal-min.js',
   'images/favicon.ico',
   'community/index.html',
@@ -1130,11 +1136,10 @@ async function main() {
     ['index.html', 'Ria & Seoa PaPa – 수익실험실', 'https://www.breadlab.ai/'],
     ['blog/index.html', 'Blog – Ria & Seoa PaPa', 'https://www.breadlab.ai/blog/'],
     ['lab/index.html', '수익실험실 – Ria & Seoa PaPa', 'https://www.breadlab.ai/lab/'],
-    [
-      'kkorinote/pricacy.html',
-      '꼬리노트 개인정보처리방침 – Ria & Seoa PaPa',
-      'https://www.breadlab.ai/kkorinote/pricacy',
-    ],
+    ['kkorinote/index.html', '꼬리노트', 'https://breadlab.ai/kkorinote/'],
+    ['kkorinote/privacy/index.html', '꼬리노트 개인정보처리방침', 'https://breadlab.ai/kkorinote/privacy/'],
+    ['kkorinote/terms/index.html', '꼬리노트 이용약관', 'https://breadlab.ai/kkorinote/terms/'],
+    ['kkorinote/support/index.html', '꼬리노트 지원', 'https://breadlab.ai/kkorinote/support/'],
     [
       'blog/ceph-cluster-install-with-helm.html',
       '[Kubernets] Ceph Cluster install with helm – Ria & Seoa PaPa',
@@ -1166,6 +1171,39 @@ async function main() {
     if (documentTitle.canonicalLinks.length !== 1 || documentTitle.canonicalLinks[0] !== canonical) {
       fail(`${relativePath} is missing canonical URL in the document head`)
     }
+  }
+  const kkorinoteChecks = [
+    ['kkorinote/index.html', '꼬리노트', '반려동물의 투약·증상·병원 기록을 한곳에.'],
+    ['kkorinote/privacy/index.html', '꼬리노트 개인정보처리방침', '개인정보의 국외 이전'],
+    ['kkorinote/terms/index.html', '꼬리노트 이용약관', 'Apple 표준 최종 사용자 사용권 계약'],
+    ['kkorinote/support/index.html', '꼬리노트 지원', 'kkorinote.support@gmail.com'],
+  ]
+  for (const [relativePath, heading, coreCopy] of kkorinoteChecks) {
+    const html = await readText(relativePath)
+    const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (!new RegExp(`<h1(?:\\s[^>]*)?>${escapedHeading}</h1>`).test(html)) {
+      fail(`${relativePath} is missing its Kkorinote page heading`)
+    }
+    assertIncludes(html, coreCopy, relativePath, 'Kkorinote core copy')
+    assertIncludes(html, '© 2026 김준우', relativePath, 'Kkorinote common footer copyright')
+    for (const [href, label] of [
+      ['/kkorinote/privacy/', '개인정보처리방침'],
+      ['/kkorinote/terms/', '이용약관'],
+      ['/kkorinote/support/', '지원'],
+    ]) {
+      assertIncludes(html, `<a href="${href}">${label}</a>`, relativePath, 'Kkorinote common footer link')
+    }
+    if (/<script\b/i.test(html) || /(?:googletagmanager|google-analytics|facebook|giscus)/i.test(html)) {
+      fail(`${relativePath} contains a forbidden script or tracking integration`)
+    }
+    if (html.toLowerCase().includes(privateEmail)) fail(`${relativePath} contains a private email`)
+    if (/\b(?:TODO|TBD)\b/i.test(html) || /\[(?:앱 이름|개발자 이름|이메일|날짜|URL)\]/i.test(html)) {
+      fail(`${relativePath} contains a placeholder or TODO marker`)
+    }
+    if (/pricacy/i.test(html)) fail(`${relativePath} contains obsolete Kkorinote pricacy text`)
+  }
+  if (files.some(relativePath => /^kkorinote\/pricacy(?:\/|\.html$)/i.test(relativePath))) {
+    fail('Kkorinote obsolete pricacy output must be absent')
   }
   const home = await readText('index.html')
   if (!hasCommunityAjaxOptOut(home)) {
