@@ -1,13 +1,17 @@
 ---
+layout: kkorinote
 title: 꼬리노트 개인정보처리방침
 subtitle: Privacy Policy
-permalink: /kkorinote/pricacy
+permalink: /kkorinote/privacy/
+canonical_url: https://breadlab.ai/kkorinote/privacy/
 description: '꼬리노트 개인정보처리방침. 앱에서 처리하는 정보, 저장 위치, 광고 및 이용자 권리를 안내합니다.'
 ---
 
-**시행일: 2026년 12월 1일**
+# 꼬리노트 개인정보처리방침
 
-운영자 김준우(이하 "운영자")는 꼬리노트(이하 "앱")를 이용하는 분의 개인정보를 소중히 다루며, 「개인정보 보호법」 등 관련 법령을 지킵니다. 이 방침은 앱이 어떤 정보를 어디에 저장하고, 누구에게 전달되는지 설명합니다.
+**시행일: 2026년 11월 28일**
+
+김준우(개인 개발자, 이하 “운영자”)는 꼬리노트(이하 “앱”)를 이용하는 분의 개인정보를 소중히 다루며, 「개인정보 보호법」 등 관련 법령을 지킵니다. 이 방침은 앱이 어떤 정보를 어디에 저장하고, 누구에게 전달되는지 설명합니다.
 
 ## 1. 한눈에 보기
 
@@ -106,7 +110,7 @@ Google이 광고 데이터를 사용하는 방식: [Google 서비스를 사용�
 ## 9. 개인정보 보호책임자와 문의
 
 - **개인정보 보호책임자:** 김준우
-- **이메일:** [privacy@breadlab.ai](mailto:privacy@breadlab.ai)
+- **이메일:** [kkorinote.support@gmail.com](mailto:kkorinote.support@gmail.com)
 
 개인정보 침해에 대한 상담이나 신고가 필요하면 아래 기관에 문의할 수 있습니다.
 
